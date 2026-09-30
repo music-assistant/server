@@ -25,6 +25,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistError,
@@ -145,7 +146,7 @@ async def run_setup(session: SetupSession) -> None:
         # everything needed is collected by now; the developer key is a purely optional extra,
         # so it is offered as an opt-in rather than a field the user has to reason about
         client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
-        errors: dict[str, str] | None = None
+        errors: dict[str, str | SetupFlowError] | None = None
         while True:
             optin_values = await session.form(
                 [replace(CONF_ENTRY_USE_DEV_KEY, value=bool(client_id_default))],
@@ -161,7 +162,7 @@ async def run_setup(session: SetupSession) -> None:
                     await session.finish(setup_data)
                     return
                 except SetupFlowError as err:
-                    errors = {"base": err.translation_key or str(err)}
+                    errors = {"base": err}
                     continue
             client_id_default, errors = await _authorize_developer_key(
                 session, setup_data, client_id_default
@@ -177,7 +178,7 @@ async def run_setup(session: SetupSession) -> None:
 
 async def _authorize_developer_key(
     session: SetupSession, setup_data: dict[str, Any], client_id_default: str
-) -> tuple[str, dict[str, str] | None]:
+) -> tuple[str, dict[str, str | SetupFlowError] | None]:
     """
     Collect and authorize the user's own Spotify developer key, then finish the flow.
 
@@ -208,7 +209,7 @@ async def _authorize_developer_key(
             setup_data[CONF_REFRESH_TOKEN_DEV] = None
         await session.finish(setup_data)
     except SetupFlowError as err:
-        return client_id, {"base": err.translation_key or str(err)}
+        return client_id, {"base": err}
     return client_id, None
 
 
@@ -298,7 +299,7 @@ async def _setup_playback(
     # anyone onto another playback path. An account librespot cannot serve
     # (created since late 2024) has to switch, which the choice step explains.
     preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or BACKEND_LIBRESPOT
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
         errors = None
@@ -323,7 +324,7 @@ async def _setup_playback(
 
 
 async def _choose_playback_backend(
-    session: SetupSession, preselect: str, errors: dict[str, str] | None
+    session: SetupSession, preselect: str, errors: dict[str, str | SetupFlowError] | None
 ) -> str:
     """
     Show the playback backend choice step until a usable backend is selected.
@@ -381,7 +382,7 @@ async def _authorize_soloist(
     keep_session = await _has_existing_soloist_session(session) and not await _ask_soloist_repair(
         session
     )
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         await _ask_soloist_api_key(session, setup_data, errors)
         if keep_session:
@@ -473,7 +474,9 @@ async def _ask_soloist_consent(session: SetupSession, prefill: bool) -> bool:
 
 
 async def _ask_soloist_api_key(
-    session: SetupSession, setup_data: dict[str, Any], errors: dict[str, str] | None = None
+    session: SetupSession,
+    setup_data: dict[str, Any],
+    errors: dict[str, str | SetupFlowError] | None = None,
 ) -> None:
     """
     Collect the Soloist API key.
@@ -585,7 +588,11 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         librespot_bin = await get_librespot_binary()
     except RuntimeError as err:
         raise SetupFlowError(str(err), translation_key="librespot_unavailable") from err
-    errors: dict[str, str] | None = None
+    # pair on the network the players use; a NAT publish IP isn't local, so advertise everywhere
+    publish_ip = session.mass.streams.publish_ip
+    local_ips = await get_ip_addresses(include_ipv6=True)
+    zeroconf_interface = publish_ip if publish_ip in local_ips else None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         method_values = await session.form(
             [CONF_ENTRY_PLAYBACK_AUTH_METHOD],
@@ -598,7 +605,9 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         try:
             if method == PLAYBACK_AUTH_APP:
                 credentials = await session.progress_until(
-                    librespot_credentials_via_pairing(librespot_bin, PAIRING_DEVICE_NAME),
+                    librespot_credentials_via_pairing(
+                        librespot_bin, PAIRING_DEVICE_NAME, zeroconf_interface
+                    ),
                     step_id="playback_pairing",
                     text="pairing_instructions",
                     expires_in=PAIRING_TIMEOUT,
@@ -616,7 +625,7 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
                 else "playback_not_completed"
             }
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or "playback_auth_failed"}
+            errors = {"base": err if err.translation_key else "playback_auth_failed"}
         except LoginFailed, ClientError, KeyError:
             # librespot refusing the token, a transport failure, or a token response without a
             # token; LoginFailed's own default key is too generic to show here

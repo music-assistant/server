@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
@@ -901,6 +901,7 @@ class InternetArchiveProvider(MusicProvider):
         # Add metadata
         if description := clean_text(item_metadata.get("description")):
             podcast.metadata.description = description
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # Add thumbnail
         add_item_image(podcast, prov_podcast_id, self.instance_id)

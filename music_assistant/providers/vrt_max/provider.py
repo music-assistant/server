@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
@@ -483,7 +484,7 @@ class VrtMaxProvider(MusicProvider):
         # is itself account-gated: the browse folders are hidden and the library features
         # are undeclared without credentials, and caches are keyed per provider instance.
         playable = self._auth.enabled
-        return Podcast(
+        podcast = Podcast(
             name=title,
             item_id=page_id,
             provider=self.instance_id,
@@ -497,6 +498,8 @@ class VrtMaxProvider(MusicProvider):
                 )
             },
         )
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        return podcast
 
     def _episode_item(
         self, episode: VrtEpisode, podcast: ItemMapping, position: int

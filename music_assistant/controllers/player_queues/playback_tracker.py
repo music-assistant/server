@@ -29,8 +29,10 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemType,
+    PodcastEpisode,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -38,6 +40,7 @@ from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
@@ -489,6 +492,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
+                    dynamic_tracks = await without_disliked_tracks(
+                        self.mass, queue_data.userid, dynamic_tracks
+                    )
                     if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
                         return
@@ -695,6 +701,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     else None,
                 )
             )
+            if not is_playing and isinstance(media_item, Audiobook | PodcastEpisode):
+                # a later pass over the queue resumes from this, not from the enqueue-time bookmark
+                media_item.resume_position_ms = 0 if fully_played else seconds_played * 1000
             if fully_played and not is_playing:
                 if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(

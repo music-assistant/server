@@ -55,6 +55,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.filesystem_consolidation import (
+    consolidate_filesystem_sources,
+)
 from music_assistant.controllers.config.provider_access_migration import (
     migrate_provider_access,
 )
@@ -68,6 +71,7 @@ from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
@@ -228,6 +232,7 @@ class MusicAssistant:
     translations: TranslationController
     diagnostics: DiagnosticsController
     dashboard: DashboardController
+    storage: StorageController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -272,6 +277,9 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         self.discovery = DiscoveryController(self)
+        # the shared http sessions resolve .local names through this zeroconf instance,
+        # so it must exist before anything can send a request
+        await self.discovery.start_zeroconf()
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup/migrate storage
@@ -309,6 +317,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
             tg.create_task(setup_controller(self.dashboard))
+            tg.create_task(setup_controller(self.storage))
 
         for controller_name in (
             "cache",
@@ -332,12 +341,26 @@ class MusicAssistant:
         # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
+        # turn the SMB and NFS music sources into Local files sources on a storage location. Runs
+        # at every start and only does something when such a source exists. Needs the library
+        # database, so it cannot run with the settings migrations, and must precede the provider
+        # load so a converted source loads as Local files.
+        # TODO: remove after 2.13 release
+        await consolidate_filesystem_sources(self)
         # one-off: convert the music source restrictions that used to live on each user into
         # the access records that now live on the sources. Needs the users from the auth
         # database, so it cannot run with the settings migrations, and must precede the
         # provider load so no provider is served a record that is still to be written.
         # TODO: remove after 2.11 release
         await migrate_provider_access(self)
+        # one-off: hand the favorites the library migration parked to their users. Needs the
+        # owners of the music sources (migrated just above) and the users from the auth
+        # database, neither of which is there while the library migrates.
+        try:
+            await self.music.favorites.settle_pending()
+        except Exception as err:
+            # the parked rows stay where they are and get another chance on the next start
+            LOGGER.warning("Could not hand out the migrated favorites: %s", err)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
         # them. Reads the provider config, so it must not wait for the providers to load.
@@ -384,6 +407,7 @@ class MusicAssistant:
             "translations",
             "diagnostics",
             "dashboard",
+            "storage",
             "config",
             "cache",
         ):
@@ -705,7 +729,7 @@ class MusicAssistant:
             if is_coro:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
-                self.create_task(cb_func, event_obj)
+                self.create_task(cb_func(event_obj))
             else:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], None]", cb_func)
@@ -744,6 +768,7 @@ class MusicAssistant:
         target: Callable[..., Coroutine[Any, Any, _R]] | Awaitable[_R],
         *args: Any,
         task_id: str | None = None,
+        task_name: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
         log_exceptions: bool = True,
@@ -754,9 +779,16 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
 
-        :param target: Coroutine function or awaitable to run as a task.
+        :param target: The coroutine to run as a task. Build it at the call site
+            (``create_task(self._work(a, b))``) rather than passing the function and its
+            arguments on: the arguments are then checked against the function's signature,
+            and they cannot collide with the options below. A coroutine function plus args
+            and kwargs still works, for a caller that forwards arguments it never sees.
         :param args: Arguments to pass to the coroutine function.
         :param task_id: Optional ID to track and deduplicate tasks.
+        :param task_name: Optional name identifying the task in log messages. Task ids are
+            not used for this: they key on arguments such as image urls and search terms,
+            which do not belong in a log line. Keep a name free of those too.
         :param abort_existing: If True, cancel existing task with same task_id.
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
@@ -764,7 +796,9 @@ class MusicAssistant:
         :param log_exceptions: Set to False when the caller awaits the task and reports
                                its failures itself; the task then logs at debug level
                                instead of warning.
-        :param kwargs: Keyword arguments to pass to the coroutine function.
+        :param kwargs: Keyword arguments to pass to the coroutine function. The options
+            above take these names for themselves, which is the collision building the
+            coroutine at the call site avoids.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
@@ -788,11 +822,16 @@ class MusicAssistant:
         else:
             raise RuntimeError("Target is missing")
 
-        # Use asyncio.Task directly with eager_start for immediate execution
-        task: asyncio.Task[_R] = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
-
         if task_id is None:
             task_id = uuid4().hex
+
+        # asyncio.Task is used directly for eager_start (immediate execution). An eagerly
+        # started task runs its first step inside the constructor, so the name has to be set
+        # here: it is what identifies the task in asyncio's own slow-callback warnings and in
+        # the exception log below. Without one asyncio numbers the task itself.
+        task: asyncio.Task[_R] = asyncio.Task(
+            coro, loop=self.loop, eager_start=eager_start, name=task_name
+        )
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
             # done callbacks run one event loop iteration after the task finished, so a
@@ -920,6 +959,8 @@ class MusicAssistant:
     async def load_provider_config(
         self,
         prov_conf: ProviderConfig,
+        *,
+        auto_setup: bool = False,
     ) -> None:
         """Load (or reload) a provider from its config, recording any load failure."""
         # cancel existing (re)load timer if needed
@@ -928,7 +969,7 @@ class MusicAssistant:
             existing.cancel()
 
         try:
-            await self._load_provider(prov_conf)
+            await self._load_provider(prov_conf, auto_setup=auto_setup)
         except Exception as exc:
             # persist the failure so the provider surfaces a clear status (e.g. auth_required)
             # to the UI instead of appearing stuck loading, then propagate to the caller
@@ -989,7 +1030,7 @@ class MusicAssistant:
         self,
         instance_id: str,
         allow_retry: bool = False,
-        remove_if_unsupported: bool = False,
+        auto_setup: bool = False,
         retry_attempt: int = 0,
     ) -> None:
         """
@@ -997,7 +1038,7 @@ class MusicAssistant:
 
         :param instance_id: Instance ID of the provider to load.
         :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
-        :param remove_if_unsupported: Drop the config if the host can not run this provider.
+        :param auto_setup: First-boot setup of a default provider; drop the config if refused.
         :param retry_attempt: How many retries of this load already failed, which decides
             how long the next one waits.
         """
@@ -1017,13 +1058,13 @@ class MusicAssistant:
             existing.cancel()
 
         try:
-            await self.load_provider_config(prov_conf)
+            await self.load_provider_config(prov_conf, auto_setup=auto_setup)
         except UnsupportedSystemError as exc:
             # The host does not meet this provider's hardware requirements. This is a
             # permanent condition, so we never retry. For a provider that was just
             # auto-set-up as a default, drop the config again so it does not linger as a
             # broken provider (it stays marked done so it is not auto-created again).
-            if remove_if_unsupported:
+            if auto_setup:
                 LOGGER.info(
                     "Not enabling default provider %s: %s",
                     prov_conf.name or prov_conf.instance_id,
@@ -1213,6 +1254,7 @@ class MusicAssistant:
             self.streams.audio_analysis,
             self.diagnostics,
             self.dashboard,
+            self.storage,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1249,6 +1291,7 @@ class MusicAssistant:
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
         self.dashboard = DashboardController(self)
+        self.storage = StorageController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -1319,9 +1362,10 @@ class MusicAssistant:
                         break
                 else:
                     continue
-            await self.config.create_builtin_provider_config(manifest.domain)
+            # A config the user enabled by hand before this became a default is not an auto setup.
+            if await self.config.create_builtin_provider_config(manifest.domain):
+                newly_created_defaults.add(manifest.domain)
             changes_made = True
-            newly_created_defaults.add(manifest.domain)
             # TEMP: migration - to be removed after 2.8 release
             # enable all existing players of the default providers if they are not already enabled
             # due to the linked protocol feature we introduced
@@ -1359,11 +1403,11 @@ class MusicAssistant:
                     self.load_provider(
                         prov_conf.instance_id,
                         allow_retry=True,
-                        remove_if_unsupported=prov_conf.domain in newly_created_defaults,
+                        auto_setup=prov_conf.domain in newly_created_defaults,
                     )
                 )
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:
+    async def _load_provider(self, conf: ProviderConfig, *, auto_setup: bool = False) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -1404,7 +1448,11 @@ class MusicAssistant:
         async with _provider_load_step(domain, "import its module"):
             prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
-            provider = await prov_mod.setup(self, prov_manifest, conf)
+            if auto_setup and "auto_setup" in inspect.signature(prov_mod.setup).parameters:
+                # Only a provider that may refuse an automatic setup declares the flag.
+                provider = await prov_mod.setup(self, prov_manifest, conf, auto_setup=True)
+            else:
+                provider = await prov_mod.setup(self, prov_manifest, conf)
 
         # The instance now exists, so its full (options) config entries can be resolved
         # (get_config_entries is an instance method). Rehydrate the config values from
@@ -1500,8 +1548,10 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         # track the task per instance so unload_provider can cancel it: left running, a
         # suspended loaded_in_mass() would resume after teardown and announce a gone provider
+        post_load_task_id = f"post_load_provider_{provider.instance_id}"
+        # this id carries nothing but the instance, so it doubles as the logged task name
         self.create_task(
-            _on_provider_loaded(), task_id=f"post_load_provider_{provider.instance_id}"
+            _on_provider_loaded(), task_id=post_load_task_id, task_name=post_load_task_id
         )
 
     async def __load_provider_manifests(self) -> None:
