@@ -2025,24 +2025,6 @@ class MusicProvider(Provider):
                 yield track
             page += 1
 
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
-        """Return library generator for given media_type."""
-        if media_type == MediaType.ARTIST:
-            return self.get_library_artists()
-        if media_type == MediaType.ALBUM:
-            return self.get_library_albums()
-        if media_type == MediaType.TRACK:
-            return self.get_library_tracks()
-        if media_type == MediaType.PLAYLIST:
-            return self.get_library_playlists()
-        if media_type == MediaType.RADIO:
-            return self.get_library_radios()
-        if media_type == MediaType.AUDIOBOOK:
-            return self.get_library_audiobooks()
-        if media_type == MediaType.PODCAST:
-            return self.get_library_podcasts()
-        raise NotImplementedError
-
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
