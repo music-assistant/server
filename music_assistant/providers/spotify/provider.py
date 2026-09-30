@@ -223,7 +223,17 @@ class SpotifyProvider(MusicProvider):
         await self.backend.setup()
         try:
             # try login which will raise if it fails (logs in global session)
-            await self.login()
+            try:
+                await self.login()
+            except ResourceTemporarilyUnavailable:
+                # Spotify does not answer the login right now: load on the stored account
+                # details, the first request retries the login through its throttler
+                if (stored := self._stored_account()) is None:
+                    raise
+                self._set_account(stored)
+                self.logger.info(
+                    "Spotify did not answer the login, loaded with the stored account details"
+                )
 
             # Check if user has a custom client ID with valid dev token
             client_id = self.get_setup_value(CONF_CLIENT_ID)
@@ -1139,13 +1149,9 @@ class SpotifyProvider(MusicProvider):
             try:
                 userinfo = await self._get_data("me", auth_info=auth_info, use_global_session=True)
             except RetriesExhausted, ResourceTemporarilyUnavailable:
-                if not (account_id := self.get_setup_value(CONF_ACCOUNT_ID)):
+                if (stored := self._stored_account()) is None:
                     raise
-                userinfo = {
-                    "id": account_id,
-                    "display_name": self.get_setup_value(CONF_ACCOUNT_NAME) or account_id,
-                    "country": self.get_setup_value(CONF_ACCOUNT_COUNTRY),
-                }
+                userinfo = stored
                 self.logger.info(
                     "Spotify did not answer the account lookup, loaded with the stored "
                     "account details of %s",
@@ -1165,9 +1171,7 @@ class SpotifyProvider(MusicProvider):
                 self.logger.info(
                     "Successfully logged in to Spotify as %s", userinfo["display_name"]
                 )
-            self._sp_user = userinfo
-            if country := userinfo.get("country"):
-                self.mass.metadata.set_default_preferred_language(country)
+            self._set_account(userinfo)
         return auth_info
 
     @lock
@@ -1844,6 +1848,26 @@ class SpotifyProvider(MusicProvider):
             on_unauthorized,
             fallback_for_playback=fallback_for_playback,
         )
+
+    def _stored_account(self) -> dict[str, Any] | None:
+        """Return the account details of the last successful login, None when never logged in."""
+        if not (account_id := self.get_setup_value(CONF_ACCOUNT_ID)):
+            return None
+        return {
+            "id": account_id,
+            "display_name": self.get_setup_value(CONF_ACCOUNT_NAME) or account_id,
+            "country": self.get_setup_value(CONF_ACCOUNT_COUNTRY),
+        }
+
+    def _set_account(self, userinfo: dict[str, Any]) -> None:
+        """
+        Take the given Spotify account as the one this instance serves.
+
+        :param userinfo: The account details, as the me endpoint returns them.
+        """
+        self._sp_user = userinfo
+        if country := userinfo.get("country"):
+            self.mass.metadata.set_default_preferred_language(country)
 
     def _clear_auth_info_global(self) -> None:
         """Drop the cached access token of the global session."""

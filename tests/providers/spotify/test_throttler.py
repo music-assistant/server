@@ -5,10 +5,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import RateLimited
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.spotify import provider as provider_module
 from music_assistant.providers.spotify.constants import (
+    CONF_ACCOUNT_ID,
+    CONF_ACCOUNT_NAME,
     CONF_AUDIOBOOKS_SUPPORTED,
     CONF_CLIENT_ID,
     CONF_REFRESH_TOKEN_DEV,
@@ -72,6 +75,27 @@ def clear_throttlers() -> Generator[None]:
     with patch.object(provider_module, "app_var", return_value=SHARED_CLIENT_ID):
         yield
     provider_module._THROTTLERS.clear()
+
+
+async def test_load_goes_ahead_when_the_login_is_not_answered() -> None:
+    """A login Spotify does not answer at load falls back on the stored account details."""
+    provider = _make_provider({CONF_ACCOUNT_ID: "u1", CONF_ACCOUNT_NAME: "tester"})
+    provider.login.side_effect = RateLimited("token endpoint", backoff_time=3600)  # type: ignore[attr-defined]
+
+    await provider.handle_async_init()
+
+    assert provider._sp_user == {"id": "u1", "display_name": "tester", "country": None}
+    provider.backend.unload.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_load_without_a_stored_account_still_needs_the_login() -> None:
+    """Without stored account details a login Spotify does not answer fails the load."""
+    provider = _make_provider()
+    provider.login.side_effect = RateLimited("token endpoint", backoff_time=3600)  # type: ignore[attr-defined]
+
+    with pytest.raises(RateLimited):
+        await provider.handle_async_init()
+    provider.backend.unload.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 async def test_reload_keeps_the_throttlers_and_their_cooldowns() -> None:
