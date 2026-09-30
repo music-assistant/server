@@ -493,7 +493,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return None
         user = get_current_user()
         for holder_id, queue_data in self._queue_data.items():
-            if holder_id == queue_id or not self._is_paused(holder_id):
+            # a stop only releases the audio of a session, so a queue without one has
+            # nothing to hand over
+            if (
+                holder_id == queue_id
+                or queue_data.session_id is None
+                or not self._is_paused(holder_id)
+            ):
                 continue
             # the starting user only takes the slot of a player they may control
             if not has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):

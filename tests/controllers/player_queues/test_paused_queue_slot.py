@@ -377,6 +377,19 @@ async def test_a_user_only_takes_the_slot_of_a_player_they_may_control(
     await paused_buffer.clear()
 
 
+async def test_a_paused_queue_without_a_session_is_no_holder(rig: _Rig) -> None:
+    """A stop releases only a session's audio, so a queue without one has nothing to hand over."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    rig.queues._queue_data[PAUSED_QUEUE].session_id = None
+
+    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE)
+    assert not await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+
+    rig.stop_device.assert_not_awaited()
+    await paused_buffer.clear()
+
+
 async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig) -> None:
     """The stop waits for the queue's playback lock, and a resume holding it wins."""
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
