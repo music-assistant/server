@@ -1359,8 +1359,7 @@ class MusicAssistant:
                         break
                 else:
                     continue
-            # A config the user created by hand before this became a default provider is
-            # not an automatic setup, so it must not be refused (and dropped) as one.
+            # A config the user enabled by hand before this became a default is not an auto setup.
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)
             changes_made = True

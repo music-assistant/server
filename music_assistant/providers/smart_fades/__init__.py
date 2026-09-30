@@ -46,8 +46,7 @@ async def setup(
     if auto_setup and not system_meets_requirements(
         min_memory_gb=RECOMMENDED_RAM_GB, min_cpu_cores=RECOMMENDED_CPU_CORES
     ):
-        # Refused before the minimum gate and its ML probe: a host this size can still
-        # run Smart Fades, but only when the user enables it deliberately.
+        # Before the minimum gate, so a refused automatic setup never spawns the ML probe.
         msg = (
             f"Smart Fades is not enabled automatically below the recommended hardware "
             f"({RECOMMENDED_RAM_GB:.0f}GB RAM, {RECOMMENDED_CPU_CORES} CPU cores)"
