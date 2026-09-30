@@ -551,7 +551,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         albums = []
         for album_obj in artist_obj.get("albums", {}).get("results", []):
-            if "artists" not in album_obj:
+            if not album_obj.get("artists"):
                 album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
             albums.append(self._parse_album(album_obj, album_obj["browseId"]))
         return albums
