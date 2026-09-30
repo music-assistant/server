@@ -1,5 +1,6 @@
 """Regression coverage for identifier-first album listings and safe backfill."""
 
+from itertools import permutations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -50,6 +51,18 @@ def test_unknown_title_does_not_choose_repeated_position() -> None:
     """One unknown movement cannot be assigned to either of two positions."""
     tracks = [entry("a", "one", 0), entry("b", "two", 1), entry("c", "three", 2)]
     assert len(album_tracks.select_album_tracks([], tracks)) == 3
+
+
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_editions_at_one_position_collapse_whichever_is_listed_first(
+    order: tuple[int, ...],
+) -> None:
+    """Re-releases at one position share a slot even when a different recording holds it too."""
+    other = entry("a", "one", 1, "GBAYC2100001")
+    other.name = "Adagio"
+    editions = [other, entry("b", "two", 1, "GBAYC2100002"), entry("c", "three", 1, "GBAYC2100003")]
+    tracks = [editions[index] for index in order]
+    assert len(album_tracks.select_album_tracks([], tracks)) == 2
 
 
 def test_repeated_isrc_within_a_listing_identifies_nothing() -> None:
