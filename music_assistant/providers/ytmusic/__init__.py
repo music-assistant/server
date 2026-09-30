@@ -549,16 +549,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
-        if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            albums = []
-            for album_obj in artist_obj["albums"]["results"]:
-                if "artists" not in album_obj:
-                    album_obj["artists"] = [
-                        {"id": artist_obj["channelId"], "name": artist_obj["name"]}
-                    ]
-                albums.append(self._parse_album(album_obj, album_obj["browseId"]))
-            return albums
-        return []
+        albums = []
+        for album_obj in artist_obj.get("albums", {}).get("results", []):
+            if "artists" not in album_obj:
+                album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
+            albums.append(self._parse_album(album_obj, album_obj["browseId"]))
+        return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
