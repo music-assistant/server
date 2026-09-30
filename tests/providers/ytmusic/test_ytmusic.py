@@ -262,3 +262,193 @@ def test_parse_thumbnails_skips_zero_height(provider: YoutubeMusicProvider) -> N
     ]
     images = provider._parse_thumbnails(thumbnails)
     assert [img.path for img in images] == ["https://lh3.googleusercontent.com/good=w600-h600-p"]
+
+
+async def test_get_artist_albums_includes_albums_and_singles(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums should return both albums and singles/EPs for an artist."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Test Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_album_1",
+                    "title": "Full Album",
+                    "year": "2023",
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_1",
+                    "title": "Hit Single",
+                    "type": "Single",
+                    "year": "2024",
+                },
+                {
+                    "browseId": "MPREb_ep_1",
+                    "title": "Summer EP",
+                    "type": "EP",
+                    "year": "2024",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 3
+    assert albums[0].item_id == "MPREb_album_1"
+    assert albums[0].name == "Full Album"
+    # This matches real behavior where ytmusicapi doesn't indicate the type for
+    # artist albums. Maybe we could still safely mark them as albums nonetheless?
+    assert albums[0].album_type == AlbumType.UNKNOWN
+
+    assert albums[1].item_id == "MPREb_single_1"
+    assert albums[1].name == "Hit Single"
+    assert albums[1].album_type == AlbumType.SINGLE
+
+    assert albums[2].item_id == "MPREb_ep_1"
+    assert albums[2].name == "Summer EP"
+    assert albums[2].album_type == AlbumType.EP
+
+
+async def test_get_artist_albums_handles_missing_and_empty_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums falls back to the artist details when artists is missing or empty."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Fallback Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_empty_artists",
+                    "title": "Album with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_no_artists_key",
+                    "title": "Album with No Artists Key",
+                },
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_empty_artists",
+                    "title": "Single with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_single_no_artists_key",
+                    "title": "Single with No Artists Key",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 4
+    for album in albums:
+        assert len(album.artists) == 1
+        assert album.artists[0].item_id == "UC_artist_123"
+        assert album.artists[0].name == "Fallback Artist"
+
+
+async def test_get_artist_albums_preserves_existing_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums preserves existing artists when present in album or single."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Primary Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_album",
+                    "title": "Collaborative Album",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_single",
+                    "title": "Collaborative Single",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 2
+    assert albums[0].artists[0].item_id == "UC_collab_456"
+    assert albums[0].artists[0].name == "Collaborator"
+    assert albums[1].artists[0].item_id == "UC_collab_456"
+    assert albums[1].artists[0].name == "Collaborator"
+
+
+@pytest.mark.parametrize(
+    "artist_data",
+    [
+        # Only albums, no singles section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Albums Artist",
+            "albums": {"results": [{"browseId": "MPREb_only_album", "title": "Only Album"}]},
+        },
+        # Only singles, no albums section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Singles Artist",
+            "singles": {"results": [{"browseId": "MPREb_only_single", "title": "Only Single"}]},
+        },
+        # Empty sections
+        {
+            "channelId": "UC_artist_123",
+            "name": "Empty Artist",
+            "albums": {"results": []},
+            "singles": {"results": []},
+        },
+        # Missing both keys completely
+        {
+            "channelId": "UC_artist_123",
+            "name": "No Keys Artist",
+        },
+    ],
+)
+async def test_get_artist_albums_handles_missing_or_empty_sections(
+    provider: YoutubeMusicProvider, artist_data: dict[str, Any]
+) -> None:
+    """get_artist_albums safely handles responses with missing or empty albums/singles sections."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    expected_count = len(artist_data.get("albums", {}).get("results", [])) + len(
+        artist_data.get("singles", {}).get("results", [])
+    )
+    assert len(albums) == expected_count
