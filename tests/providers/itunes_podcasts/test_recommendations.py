@@ -9,15 +9,17 @@ import pytest
 from music_assistant_models.media_items import Podcast, ProviderMapping
 
 from music_assistant.providers.itunes_podcasts import (
+    SUPPORTED_FEATURES,
+    ITunesPodcastsProvider,
+)
+from music_assistant.providers.itunes_podcasts.constants import (
     CACHE_CATEGORY_FEED_LOOKUP,
     LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION,
     MAX_INLINE_RESOLVES,
     RECOMMENDATION_ROW_FOR_YOU,
     RECOMMENDATION_ROW_TOP_PODCASTS,
-    SUPPORTED_FEATURES,
     TOP_PODCASTS_NUM_PAGES,
     TOP_PODCASTS_ROTATION,
-    ITunesPodcastsProvider,
 )
 from music_assistant.providers.itunes_podcasts.schema import PodcastSearchResult, TopPodcastsHelper
 
