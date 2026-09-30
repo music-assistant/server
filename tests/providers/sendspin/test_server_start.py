@@ -7,20 +7,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import SENDSPIN_SERVER_PORT
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, SENDSPIN_SERVER_PORT
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
 def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock, MagicMock]:
     mass = MagicMock()
-    server_api = MagicMock(start_server=start_server)
-    provider = SendspinProvider.__new__(SendspinProvider)
-    provider.mass = mass
-    provider.logger = MagicMock()
-    provider.config = MagicMock(instance_id="sendspin")
+    mass.players.iter_players.return_value = []
+    manifest = MagicMock(domain="sendspin")
+    manifest.name = "Sendspin"
+    config = MagicMock(instance_id="sendspin")
+    config.name = "Sendspin"
+    config.get_value.side_effect = lambda key, default=None: (
+        ["192.168.1.50"] if key == CONF_ENTRY_MANUAL_DISCOVERY_IPS.key else default
+    )
+    provider = SendspinProvider(mass, manifest, config)
+    server_api = MagicMock(start_server=start_server, close=AsyncMock())
     provider.server_api = server_api
-    provider.unregister_cbs = []
-    provider._manual_ip_config = ("192.168.1.50",)
     provider._remove_orphan_virtual_player_configs = MagicMock()  # type: ignore[method-assign]
     return provider, mass, server_api
 
@@ -41,11 +44,25 @@ async def test_server_start_failure_unloads_with_error() -> None:
     server_api.connect_to_client.assert_not_called()
 
 
+async def test_unload_after_failed_start_skips_server_close() -> None:
+    """Unloading after a failed start does not close the server that never started."""
+    start_server = AsyncMock(side_effect=OSError(errno.EADDRINUSE, "Address already in use"))
+    provider, _mass, server_api = _make_provider(start_server)
+    await provider.loaded_in_mass()
+
+    await provider.unload()
+
+    server_api.close.assert_not_called()
+    assert provider.unregister_cbs == []
+
+
 async def test_server_start_success_connects_manual_clients() -> None:
-    """A started server keeps the provider loaded and connects manual clients."""
+    """A started server keeps the provider loaded, connects manual clients and closes on unload."""
     provider, mass, server_api = _make_provider(AsyncMock())
 
     await provider.loaded_in_mass()
+    await provider.unload()
 
     mass.call_later.assert_not_called()
     server_api.connect_to_client.assert_called_once()
+    server_api.close.assert_awaited_once()
