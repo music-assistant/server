@@ -80,26 +80,16 @@ def _mutations(supervisor: FakeSupervisor) -> list[tuple[str, str]]:
     return [request[:2] for request in supervisor.requests if request[0] != "GET"]
 
 
-def _before_discovery(storage: StorageController) -> Callable[[], None]:
+def _hold_the_listing(supervisor: FakeSupervisor) -> Callable[[], None]:
     """
-    Put the server back in its start, before its discovery controller is set up.
+    Hold the answer of the Supervisor to a listing of its mounts, as a slow Supervisor does.
 
-    Until then the server can not create its http session, so a request to the Supervisor fails
-    the way it does in a real start. Returns what sets up the discovery controller.
+    Returns what releases the answer.
 
-    :param storage: The storage controller.
+    :param supervisor: The fake Supervisor.
     """
-    mass = storage.mass
-    session = mass._http_session_no_ssl
-    mass._http_session_no_ssl = None
-    mass.discovery.initialized.clear()
-
-    def set_up_discovery() -> None:
-        # the session to the fake Supervisor stands in for the one the server can create now
-        mass._http_session_no_ssl = session
-        mass.discovery.initialized.set()
-
-    return set_up_discovery
+    supervisor.list_released.clear()
+    return supervisor.list_released.set
 
 
 def _problems(records: list[logging.LogRecord]) -> list[str]:
@@ -537,26 +527,21 @@ async def test_supervisor_found_later(
     assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
 
 
-async def test_start_asks_the_supervisor_once_discovery_is_set_up(
+async def test_start_mounts_the_stored_shares_once_the_supervisor_answers(
     storage: StorageController, supervisor: FakeSupervisor
 ) -> None:
-    """
-    At start the Supervisor is asked nothing until discovery is set up, then the shares mount.
-
-    The server sets up its discovery controller after the storage controller.
-    """
+    """At start the stored shares mount in the background, once the Supervisor answers."""
     _store(storage, supervisor, "music")
-    set_up_discovery = _before_discovery(storage)
+    release = _hold_the_listing(supervisor)
 
     with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
         await storage.setup(await storage.mass.config.get_core_config(storage.domain))
         shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
-        await asyncio.sleep(0.1)
+        await wait_until(lambda: supervisor.requests != [])
 
         assert not shares_setup.done()
-        assert supervisor.requests == []
 
-        set_up_discovery()
+        release()
         await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
 
     # the probe of the backends, then the reconcile, which mounts the share
@@ -571,28 +556,6 @@ async def test_start_asks_the_supervisor_once_discovery_is_set_up(
     assert _problems(records) == []
 
 
-async def test_info_before_discovery_is_set_up(
-    storage: StorageController, supervisor: FakeSupervisor
-) -> None:
-    """The info asked for before discovery is set up answers once it is, asking nothing before."""
-    set_up_discovery = _before_discovery(storage)
-
-    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
-        info_task = asyncio.create_task(storage.get_info())
-        # the info got as far as looking for a mount backend
-        await wait_until(lambda: info_task.done() or storage._backends_lock.locked())
-        await asyncio.sleep(0.1)
-
-        assert not info_task.done()
-        assert supervisor.requests == []
-
-        set_up_discovery()
-        info = await info_task
-
-    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
-    assert _problems(records) == []
-
-
 async def test_reconcile_while_the_start_looks_for_the_supervisor(
     storage: StorageController, supervisor: FakeSupervisor
 ) -> None:
@@ -601,7 +564,7 @@ async def test_reconcile_while_the_start_looks_for_the_supervisor(
 
     Its share is mounted once, although the start mounts the shares as well.
     """
-    set_up_discovery = _before_discovery(storage)
+    release = _hold_the_listing(supervisor)
     await storage.setup(await storage.mass.config.get_core_config(storage.domain))
     # a share stored at start, e.g. by a conversion of a music source
     _store(storage, supervisor, "music")
@@ -609,7 +572,8 @@ async def test_reconcile_while_the_start_looks_for_the_supervisor(
 
     reconcile = asyncio.create_task(storage.reconcile())
     await asyncio.sleep(0.1)
-    set_up_discovery()
+    assert not reconcile.done()
+    release()
     await reconcile
 
     location = storage.get_location_for_path(supervisor.path("music"))
@@ -632,7 +596,7 @@ async def test_info_while_the_start_looks_for_the_supervisor(
     It starts no reconcile of its own: the start mounts the shares.
     """
     _store(storage, supervisor, "music")
-    set_up_discovery = _before_discovery(storage)
+    release = _hold_the_listing(supervisor)
     await storage.setup(await storage.mass.config.get_core_config(storage.domain))
     probe_backends = storage._probe_backends
     asked = 0
@@ -645,7 +609,7 @@ async def test_info_while_the_start_looks_for_the_supervisor(
     monkeypatch.setattr(storage, "_probe_backends", _probe_backends)
     info_task = asyncio.create_task(storage.get_info())
     await wait_until(lambda: asked == 1)
-    set_up_discovery()
+    release()
     info = await info_task
     await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
     await wait_until(lambda: RECONCILE_TASK_ID not in storage.mass._tracked_tasks)
@@ -658,22 +622,24 @@ async def test_info_while_the_start_looks_for_the_supervisor(
     ]
 
 
-async def test_stop_before_discovery_is_set_up(
+async def test_stop_while_the_start_waits_for_the_supervisor(
     storage: StorageController, supervisor: FakeSupervisor
 ) -> None:
-    """A server that stops before discovery is set up asks the Supervisor nothing, quietly."""
+    """A server that stops while the start waits for the Supervisor stops the start, quietly."""
     _store(storage, supervisor, "music")
-    _before_discovery(storage)
+    _hold_the_listing(supervisor)
 
     with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
         await storage.setup(await storage.mass.config.get_core_config(storage.domain))
         shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
+        await wait_until(lambda: supervisor.requests != [])
 
         await storage.close()
         await wait_until(shares_setup.done)
 
     assert shares_setup.cancelled()
-    assert supervisor.requests == []
+    # only the probe of the start, which got no answer
+    assert [request[:2] for request in supervisor.requests] == [("GET", "/mounts")]
     assert _problems(records) == []
 
 

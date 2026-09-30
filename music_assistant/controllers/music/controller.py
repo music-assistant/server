@@ -149,6 +149,7 @@ from music_assistant.helpers.provider_access import (
     visible_playback_sources,
 )
 from music_assistant.helpers.tags import split_artists
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
@@ -3406,16 +3407,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     continue
                 music_prov = cast("MusicProvider", music_prov)
                 reported_to.add(target)
-                self.mass.create_task(
-                    music_prov.on_played(
-                        media_type=media_item.media_type,
-                        prov_item_id=prov_mapping.item_id,
-                        fully_played=fully_played,
-                        position=position,
-                        media_item=media_item,
-                        is_playing=is_playing,
+                # a play report is background work
+                with request_priority(RequestPriority.LOW):
+                    self.mass.create_task(
+                        music_prov.on_played(
+                            media_type=media_item.media_type,
+                            prov_item_id=prov_mapping.item_id,
+                            fully_played=fully_played,
+                            position=position,
+                            media_item=media_item,
+                            is_playing=is_playing,
+                        )
                     )
-                )
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """

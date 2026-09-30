@@ -791,6 +791,23 @@ class TestGroupAndMemberLockOrder:
 
         assert lock_keys[:2] == ["playback_g1", "playback_extra"]
 
+    async def test_redirect_lock_and_set_members_agree_on_the_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Commands, locks and member changes for a captured leader's follower reach its group."""
+        controller, group, member, _ = self._setup(mock_mass)
+        self._add_follower(controller, member)
+        lock_keys = _spy_on_lock_order(controller)
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        assert controller._get_player_with_redirect("extra") is group
+        async with controller.get_group_and_player_lock("extra"):
+            pass
+        await controller.cmd_set_members("member", player_ids_to_remove=["extra"])
+
+        assert lock_keys[:2] == ["playback_g1", "playback_extra"]
+        controller._handle_set_members.assert_awaited_once_with(group, None, ["extra"])
+
     async def test_a_leader_power_off_leaves_its_followers_powered(
         self, mock_mass: MagicMock
     ) -> None:

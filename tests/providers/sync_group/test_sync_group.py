@@ -12,8 +12,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import OutputProtocol, PlayerSource
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
 from music_assistant.controllers.players import PlayerController
@@ -2620,6 +2621,99 @@ class TestSupportedFeaturesPower:
         mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
         sgp = _make_sync_group(mass)
         assert PlayerFeature.POWER in sgp.supported_features
+
+
+class TestLeaderTransportForwarding:
+    """Transport commands on a formed group are handled by its sync leader."""
+
+    def _make_group_with_leader(self) -> tuple[SyncGroupPlayer, MagicMock, MagicMock]:
+        mass = _make_mock_mass()
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.players._handle_cmd_pause = AsyncMock()
+        mass.players._handle_cmd_play = AsyncMock()
+        mass.players.cmd_resume = AsyncMock()
+        leader = _make_mock_player("leader", playback_state=PlaybackState.PLAYING)
+        leader.state.supported_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.PAUSE,
+            PlayerFeature.SEEK,
+            PlayerFeature.NEXT_PREVIOUS,
+        }
+        for method in ("seek", "next_track", "previous_track", "set_shuffle", "set_repeat"):
+            setattr(leader, method, AsyncMock())
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = leader
+        return sgp, leader, mass
+
+    def test_transport_features_follow_the_leader(self) -> None:
+        """PAUSE, SEEK and NEXT_PREVIOUS are advertised only when the leader has them."""
+        transport = {PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.NEXT_PREVIOUS}
+        sgp, leader, _mass = self._make_group_with_leader()
+        assert transport <= sgp.supported_features
+
+        leader.state.supported_features = {PlayerFeature.PLAY_MEDIA}
+        assert not transport & sgp.supported_features
+
+    def test_transport_features_not_advertised_without_leader(self) -> None:
+        """An unformed group does not borrow transport features from its members."""
+        mass = _make_mock_mass()
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        member = _make_mock_player("member")
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.PAUSE}
+        mass.players.get_player = _player_lookup({"member": member})
+        sgp = _make_sync_group(mass)
+        sgp._attr_group_members = ["member"]
+        assert PlayerFeature.PAUSE not in sgp.supported_features
+
+    async def test_pause_goes_to_the_leader(self) -> None:
+        """Pause runs the controller's internal handler on the leader, keeping the group."""
+        sgp, leader, mass = self._make_group_with_leader()
+        await sgp.pause()
+        mass.players._handle_cmd_pause.assert_awaited_once_with(leader.player_id)
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+    async def test_source_commands_go_to_the_leader(self) -> None:
+        """Seek, next/previous, shuffle and repeat are forwarded to the leader."""
+        sgp, leader, _mass = self._make_group_with_leader()
+        await sgp.seek(42)
+        await sgp.next_track()
+        await sgp.previous_track()
+        await sgp.set_shuffle(True)
+        await sgp.set_repeat(RepeatMode.ALL)
+        leader.seek.assert_awaited_once_with(42)
+        leader.next_track.assert_awaited_once()
+        leader.previous_track.assert_awaited_once()
+        leader.set_shuffle.assert_awaited_once_with(True)
+        leader.set_repeat.assert_awaited_once_with(RepeatMode.ALL)
+
+    async def test_commands_without_leader_fail(self) -> None:
+        """An unformed group refuses transport commands."""
+        sgp = _make_sync_group(_make_mock_mass())
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.pause()
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.seek(10)
+
+    async def test_play_resumes_the_leaders_own_source(self) -> None:
+        """Play on a leader-owned source resumes it on the leader without restreaming."""
+        sgp, leader, mass = self._make_group_with_leader()
+        leader.active_source = "spotify"
+        leader.active_output_protocol = None
+        leader.source_list = [PlayerSource(id="spotify", name="Spotify", passive=False)]
+        await sgp.play()
+        mass.players._handle_cmd_play.assert_awaited_once_with(leader.player_id)
+        mass.players.cmd_resume.assert_not_awaited()
+
+    async def test_play_restreams_group_content(self) -> None:
+        """Play on the group's own content still resumes through the group."""
+        sgp, leader, mass = self._make_group_with_leader()
+        leader.active_source = sgp.player_id
+        leader.active_output_protocol = None
+        leader.source_list = [PlayerSource(id="spotify", name="Spotify", passive=False)]
+        with patch.object(sgp, "_form_syncgroup", AsyncMock()):
+            await sgp.play()
+        mass.players._handle_cmd_play.assert_not_awaited()
+        mass.players.cmd_resume.assert_awaited_once()
 
 
 def _recording_wait(order: list[str]) -> MagicMock:

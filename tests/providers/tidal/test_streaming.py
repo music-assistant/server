@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import ContentType, StreamType
@@ -35,13 +35,8 @@ def _bts_manifest(**fields: Any) -> str:
 
 @pytest.fixture
 def provider_mock(provider_mock: Mock) -> Mock:
-    """Return the shared provider mock with the streaming quality and throttler bypass wired."""
+    """Return the shared provider mock with the streaming quality wired."""
     provider_mock.config.get_value.return_value = "HIGH"
-
-    # the streaming manager enters api.throttler.bypass() as an async context manager,
-    # which a MagicMock supports out of the box
-    provider_mock.api.throttler.bypass = Mock(return_value=MagicMock())
-
     return provider_mock
 
 

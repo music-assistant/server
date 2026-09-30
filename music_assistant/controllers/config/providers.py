@@ -552,9 +552,9 @@ class ProviderConfigMixin:
             return
         self.set(f"{conf_key}/last_error", error.to_dict() if error else None)
 
-    async def create_builtin_provider_config(self, provider_domain: str) -> None:
+    async def create_builtin_provider_config(self, provider_domain: str) -> bool:
         """
-        Create builtin ProviderConfig.
+        Create builtin ProviderConfig, returning False if the provider already has one.
 
         This is meant as helper to create default configs for builtin/default providers.
         Called by the server initialization code which load all providers at startup.
@@ -564,7 +564,7 @@ class ProviderConfigMixin:
         """
         for _ in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already any config
-            return
+            return False
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
@@ -591,6 +591,7 @@ class ProviderConfigMixin:
         )
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set_default(conf_key, default_config.to_raw())
+        return True
 
     if TYPE_CHECKING:
         # Overload for when default is provided - return type matches default type

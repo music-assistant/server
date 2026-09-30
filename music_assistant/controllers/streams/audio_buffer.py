@@ -40,6 +40,11 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    request_priority,
+    set_request_priority,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -331,6 +336,8 @@ class AudioBuffer:
         self._source_name = source_name
 
         async def _fill_task() -> None:
+            # the producer reads the source for playback
+            set_request_priority(RequestPriority.HIGH)
             chunk_count = 0
             status = "running"
             try:
@@ -907,7 +914,11 @@ def _new_buffer(
         # audio analysis providers (loudness, beat tracking, key detection, etc.).
         # Fire-and-forget: analysis setup — including a possible model (re)load — must never
         # delay the buffer fill. The analysis worker reads the retained chunks once ready.
-        mass.create_task(mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails))
+        # It is background work, whatever priority the stream that feeds it runs at.
+        with request_priority(RequestPriority.LOW):
+            mass.create_task(
+                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            )
 
     return audio_buffer, buffer_seek_seconds
 
