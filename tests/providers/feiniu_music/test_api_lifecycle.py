@@ -25,7 +25,7 @@ from music_assistant.controllers.discovery.controller import DiscoveryController
 from music_assistant.controllers.music.controller import MusicController
 from music_assistant.controllers.tasks.controller import TasksController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
-from music_assistant.helpers import aiohttp_client
+from music_assistant.helpers import aiohttp_client, throttle_retry
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.feiniu_music import client as client_module
 from music_assistant.providers.feiniu_music import provider as provider_module
@@ -234,7 +234,8 @@ async def prepare_wait(
 
         monkeypatch.setattr(manager, "acquire", observe_wait)
         if mode == "cooldown":
-            manager.set_cooldown(3600)
+            # Stay below MA's fail-fast limit; older helpers have no MAX_WAIT_TIME.
+            manager.set_cooldown(min(getattr(throttle_retry, "MAX_WAIT_TIME", 10) / 2, 5))
         else:
             manager.throttler.period = 3600
     if mode in {"login_lock", "login_body"}:

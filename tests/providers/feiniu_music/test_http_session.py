@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import MediaType
 from yarl import URL
 
-from music_assistant.helpers import aiohttp_client
+from music_assistant.helpers import aiohttp_client, throttle_retry
 from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.feiniu_music.client import (
@@ -374,7 +374,8 @@ async def test_unload_cancels_waiters_without_late_requests(
 
     monkeypatch.setattr(manager, "acquire", observed_acquire)
     if wait == "cooldown":
-        manager.set_cooldown(3600)
+        # Stay below MA's fail-fast limit; older helpers have no MAX_WAIT_TIME.
+        manager.set_cooldown(min(getattr(throttle_retry, "MAX_WAIT_TIME", 10) / 2, 5))
     else:
         manager.throttler.period = 3600
     stream = client.audio_stream("held")
