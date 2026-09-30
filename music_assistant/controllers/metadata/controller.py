@@ -544,7 +544,17 @@ class MetaDataController(
         if not items:
             update_current_task_progress_text("No artists or albums with missing metadata found")
             return
+        skipped = 0
         for index, item in enumerate(items, 1):
+            feature = (
+                ProviderFeature.ARTIST_METADATA
+                if isinstance(item, Artist)
+                else ProviderFeature.ALBUM_METADATA
+            )
+            if self._metadata_rate_limited(feature):
+                # the item stays never-refreshed, so the next run selects it again
+                skipped += 1
+                continue
             try:
                 update_current_task_progress_from_index(
                     index,
@@ -565,7 +575,11 @@ class MetaDataController(
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-        update_current_task_progress(100, f"Processed {len(items)} item(s)")
+        summary = f"Processed {len(items) - skipped} item(s)"
+        if skipped:
+            summary += f", skipped {skipped} while a metadata provider is rate limiting"
+            self.logger.debug("Missing metadata scan: %s", summary)
+        update_current_task_progress(100, summary)
 
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
@@ -614,7 +628,12 @@ class MetaDataController(
         if not albums:
             update_current_task_progress_text("No albums require reconciliation")
             return
+        skipped = 0
         for index, album in enumerate(albums, 1):
+            if self._metadata_rate_limited(ProviderFeature.ALBUM_METADATA):
+                # the album stays untouched, so the next run selects it again
+                skipped += 1
+                continue
             try:
                 update_current_task_progress_from_index(
                     index,
@@ -641,7 +660,11 @@ class MetaDataController(
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-        update_current_task_progress(100, f"Processed {len(albums)} album(s)")
+        summary = f"Processed {len(albums) - skipped} album(s)"
+        if skipped:
+            summary += f", skipped {skipped} while a metadata provider is rate limiting"
+            self.logger.debug("Album reconciliation: %s", summary)
+        update_current_task_progress(100, summary)
 
     async def _cleanup_thumb_cache(self) -> None:
         """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
@@ -841,6 +864,16 @@ class MetaDataController(
                 f"SELECT 1 FROM {table} WHERE {_valid_metadata_guard(table)} AND {query}", stale
             )
         return counts
+
+    def _metadata_rate_limited(self, feature: ProviderFeature) -> bool:
+        """
+        Return whether a metadata provider offering the given feature is rate limiting.
+
+        :param feature: The metadata feature an item's refresh needs, e.g. ARTIST_METADATA.
+        """
+        return any(
+            prov.rate_limited for prov in self.providers if feature in prov.supported_features
+        )
 
     async def _get_scan_batch[ItemCls: MediaItemType](
         self,

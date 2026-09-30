@@ -14,8 +14,15 @@ from dataclasses import replace
 from time import time
 from typing import TYPE_CHECKING, cast
 
+import aiohttp
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
 
@@ -29,7 +36,12 @@ from music_assistant.helpers.external_ids import is_valid_barcode
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
 
-from .constants import CONF_ENABLE_ONLINE_METADATA, CONF_PREFER_LOCAL_GENRES, REFRESH_INTERVAL
+from .constants import (
+    CONF_ENABLE_ONLINE_METADATA,
+    CONF_PREFER_LOCAL_GENRES,
+    REFRESH_INTERVAL,
+    REFRESH_RETRY_INTERVAL,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -50,6 +62,15 @@ _MUSICBRAINZ_ID_TYPES = {
     ExternalID.MB_RELEASEGROUP,
     ExternalID.MB_RECORDING,
 }
+# the errors a metadata provider is expected to recover from, which make the item's
+# refresh due again after REFRESH_RETRY_INTERVAL
+_TEMPORARY_ERRORS = (
+    aiohttp.ClientError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    TimeoutError,
+)
 
 
 class MetadataEnrichmentMixin:
@@ -75,7 +96,9 @@ class MetadataEnrichmentMixin:
         @property
         def link_providers_via_musicbrainz(self) -> bool: ...  # noqa: D102
 
-    async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
+    async def _update_artist_metadata(  # noqa: PLR0915
+        self, artist: Artist, force_refresh: bool = False
+    ) -> None:
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
@@ -144,12 +167,22 @@ class MetadataEnrichmentMixin:
 
         # collect metadata from all (online)[metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
+        retry_soon = False
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
             for provider in self.providers:
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
                 try:
                     metadata = await provider.get_artist_metadata(artist)
+                except _TEMPORARY_ERRORS as err:
+                    retry_soon = True
+                    self.logger.debug(
+                        "Metadata for Artist %s is not available from provider %s right now: %s",
+                        artist.name,
+                        provider.name,
+                        err,
+                    )
+                    continue
                 except Exception as err:
                     self.logger.warning(
                         "Error fetching metadata for Artist %s from provider %s: %s",
@@ -181,7 +214,7 @@ class MetadataEnrichmentMixin:
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
-        artist.metadata.last_refresh = int(time())
+        artist.metadata.last_refresh = _refresh_timestamp(retry_soon)
         await self.mass.music.artists.update_item_in_library(artist.item_id, artist)
 
     def _select_description(
@@ -267,12 +300,22 @@ class MetadataEnrichmentMixin:
 
         # collect metadata from all (online) [metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
+        retry_soon = False
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
                 try:
                     metadata = await provider.get_album_metadata(album)
+                except _TEMPORARY_ERRORS as err:
+                    retry_soon = True
+                    self.logger.debug(
+                        "Metadata for Album %s is not available from provider %s right now: %s",
+                        album.name,
+                        provider.name,
+                        err,
+                    )
+                    continue
                 except Exception as err:
                     self.logger.warning(
                         "Error fetching metadata for Album %s from provider %s: %s",
@@ -293,7 +336,7 @@ class MetadataEnrichmentMixin:
                     )
         # update final item in library database
         # set timestamp, used to determine when this function was last called
-        album.metadata.last_refresh = int(time())
+        album.metadata.last_refresh = _refresh_timestamp(retry_soon)
         await self.mass.music.albums.update_item_in_library(album.item_id, album)
 
     async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
@@ -339,6 +382,7 @@ class MetadataEnrichmentMixin:
         # Only fetch metadata from these sources if force_refresh is set OR
         # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
+        retry_soon = False
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
@@ -346,6 +390,15 @@ class MetadataEnrichmentMixin:
 
                 try:
                     metadata = await provider.get_track_metadata(track)
+                except _TEMPORARY_ERRORS as err:
+                    retry_soon = True
+                    self.logger.debug(
+                        "Metadata for Track %s is not available from provider %s right now: %s",
+                        track.name,
+                        provider.name,
+                        err,
+                    )
+                    continue
                 except Exception as err:
                     self.logger.warning(
                         "Error fetching metadata for Track %s from provider %s: %s",
@@ -365,7 +418,7 @@ class MetadataEnrichmentMixin:
                         provider.name,
                     )
         # set timestamp, used to determine when this function was last called
-        track.metadata.last_refresh = int(time())
+        track.metadata.last_refresh = _refresh_timestamp(retry_soon)
         # update final item in library database
         await self.mass.music.tracks.update_item_in_library(track.item_id, track)
 
@@ -728,3 +781,14 @@ def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[Ite
         return 2
 
     return sorted(items, key=_rank)[:MAX_MUSICBRAINZ_REF_ITEMS]
+
+
+def _refresh_timestamp(retry_soon: bool) -> int:
+    """
+    Return the last_refresh stamp of a refresh that finishes now.
+
+    :param retry_soon: Whether a metadata provider failed temporarily, which makes the
+        item due again after REFRESH_RETRY_INTERVAL rather than REFRESH_INTERVAL.
+    """
+    now = int(time())
+    return now - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL if retry_soon else now

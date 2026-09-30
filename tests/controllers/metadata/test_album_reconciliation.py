@@ -28,6 +28,7 @@ from music_assistant.controllers.metadata.controller import _duplicate_album_sib
 from music_assistant.mass import MusicAssistant
 
 _REPORT_FAILURE = "music_assistant.controllers.metadata.controller.report_current_task_failure"
+_PROGRESS = "music_assistant.controllers.metadata.controller.update_current_task_progress"
 _CONTROLLER_TIME = "music_assistant.controllers.metadata.controller.time"
 # every way a provider may spell out the retail suffix on one and the same album
 _RETAIL_SUFFIX_NAMES = [
@@ -51,6 +52,13 @@ def _controller() -> MetaDataController:
     return ctrl
 
 
+def _mass() -> Mock:
+    """Build a stand-in for MusicAssistant without any metadata providers."""
+    mass = Mock()
+    mass.get_providers.return_value = []
+    return mass
+
+
 def _album_stub(item_id: str = "1", name: str = "Test Album") -> Mock:
     """Build a lightweight stand-in for a library Album."""
     album = Mock()
@@ -67,7 +75,7 @@ def _album_stub(item_id: str = "1", name: str = "Test Album") -> Mock:
 async def test_reconcile_duplicate_albums_query_matches_unknown_or_duplicate_and_stale() -> None:
     """The candidate query selects unknown-typed or possibly-duplicated stale albums."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[])
     ctrl.mass = mass
 
@@ -202,7 +210,7 @@ async def test_reconcile_duplicate_albums_selects_typed_album_with_duplicate_sib
 async def test_reconcile_duplicate_albums_skips_row_merged_away_earlier_in_the_batch() -> None:
     """A row already merged into its duplicate is skipped silently, not reported as a failure."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     merged_away = _album_stub("1", "Merged Away")
     healthy = _album_stub("2", "Healthy Album")
     reloaded_healthy = _album_stub("2", "Healthy Album")
@@ -224,7 +232,7 @@ async def test_reconcile_duplicate_albums_skips_row_merged_away_earlier_in_the_b
 async def test_reconcile_duplicate_albums_reports_match_providers_not_found() -> None:
     """A not-found raised by a provider search is reported, not mistaken for a merged row."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub("1", "Searched Album")
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
     mass.music.albums.get_library_item = AsyncMock(return_value=album)
@@ -452,7 +460,7 @@ async def test_reconcile_duplicate_albums_ignores_titles_that_normalize_to_nothi
 async def test_reconcile_duplicate_albums_empty_queue_is_a_noop() -> None:
     """An empty candidate batch does not touch any album."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[])
     ctrl.mass = mass
 
@@ -470,7 +478,7 @@ async def test_reconcile_duplicate_albums_empty_queue_is_a_noop() -> None:
 async def test_reconcile_duplicate_albums_enriches_then_reloads_before_matching() -> None:
     """Each album is enriched, the library row reloaded, then re-matched with fresh data."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub("1", "Original Name")
     reloaded_album = _album_stub("1", "Enriched Name")
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
@@ -490,7 +498,7 @@ async def test_reconcile_duplicate_albums_enriches_then_reloads_before_matching(
 async def test_reconcile_duplicate_albums_never_adds_or_deletes_directly() -> None:
     """The task never adds a new library item or deletes one outside the safe merge path."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub()
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
     mass.music.albums.get_library_item = AsyncMock(return_value=album)
@@ -508,7 +516,7 @@ async def test_reconcile_duplicate_albums_never_adds_or_deletes_directly() -> No
 async def test_reconcile_duplicate_albums_batch_size_bound() -> None:
     """The batch never exceeds METADATA_SCAN_BATCH_SIZE, even when more items match."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     albums = [_album_stub(str(i), f"Album {i}") for i in range(METADATA_SCAN_BATCH_SIZE)]
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=albums)
     mass.music.albums.get_library_item = AsyncMock(side_effect=lambda item_id: _album_stub(item_id))
@@ -538,7 +546,7 @@ async def test_reconcile_duplicate_albums_batch_size_bound() -> None:
 async def test_reconcile_duplicate_albums_isolates_metadata_failure(error: Exception) -> None:
     """An expected per-item metadata failure is reported and does not raise."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub("1", "Failing Album")
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
     mass.music.albums.get_library_item = AsyncMock()
@@ -558,7 +566,7 @@ async def test_reconcile_duplicate_albums_isolates_metadata_failure(error: Excep
 async def test_reconcile_duplicate_albums_isolates_match_providers_failure() -> None:
     """A provider search failure during re-matching is caught and reported, not raised."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub("1", "Flaky Album")
     reloaded = _album_stub("1", "Flaky Album")
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
@@ -578,7 +586,7 @@ async def test_reconcile_duplicate_albums_isolates_match_providers_failure() -> 
 async def test_reconcile_duplicate_albums_failure_does_not_abort_the_batch() -> None:
     """A failing album is isolated; the remaining albums in the batch still get processed."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     failing_album = _album_stub("1", "Failing Album")
     healthy_album = _album_stub("2", "Healthy Album")
     reloaded_healthy = _album_stub("2", "Healthy Album")
@@ -603,7 +611,7 @@ async def test_reconcile_duplicate_albums_failure_does_not_abort_the_batch() -> 
 async def test_reconcile_duplicate_albums_no_match_completes_without_failure() -> None:
     """A normal no-match completion is not treated as a failure; the album stays attempted."""
     ctrl = _controller()
-    mass = Mock()
+    mass = _mass()
     album = _album_stub("1", "No Match Album")
     reloaded = _album_stub("1", "No Match Album")
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
@@ -618,6 +626,47 @@ async def test_reconcile_duplicate_albums_no_match_completes_without_failure() -
     report_failure.assert_not_called()
     ctrl._update_album_metadata.assert_awaited_once_with(album, force_refresh=False)
     mass.music.albums.match_providers.assert_awaited_once_with(reloaded)
+
+
+# --------------------------------------------------------------------------- #
+#  metadata provider rate limits                                              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("limited_feature", "skipped"),
+    [(ProviderFeature.ALBUM_METADATA, True), (ProviderFeature.ARTIST_METADATA, False)],
+)
+async def test_reconcile_duplicate_albums_skips_albums_while_rate_limited(
+    limited_feature: ProviderFeature, skipped: bool
+) -> None:
+    """An album is left for the next run while an album metadata provider is rate limiting."""
+    ctrl = _controller()
+    mass = _mass()
+    mass.get_providers.return_value = [
+        Mock(priority=0, supported_features={limited_feature}, rate_limited=True)
+    ]
+    album = _album_stub("1", "Waiting Album")
+    mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[album])
+    mass.music.albums.get_library_item = AsyncMock(return_value=album)
+    mass.music.albums.match_providers = AsyncMock()
+    ctrl.mass = mass
+    ctrl._update_album_metadata = AsyncMock()  # type: ignore[method-assign]
+
+    with patch(_REPORT_FAILURE) as report_failure, patch(_PROGRESS) as progress:
+        await ctrl._reconcile_duplicate_albums()
+
+    report_failure.assert_not_called()
+    if skipped:
+        ctrl._update_album_metadata.assert_not_called()
+        mass.music.albums.match_providers.assert_not_called()
+        progress.assert_called_once_with(
+            100, "Processed 0 album(s), skipped 1 while a metadata provider is rate limiting"
+        )
+    else:
+        ctrl._update_album_metadata.assert_awaited_once_with(album, force_refresh=False)
+        mass.music.albums.match_providers.assert_awaited_once_with(album)
+        progress.assert_called_once_with(100, "Processed 1 album(s)")
 
 
 # --------------------------------------------------------------------------- #

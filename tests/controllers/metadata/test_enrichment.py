@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID, ProviderFeature
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.errors import (
+    ProviderUnavailableError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.controllers.metadata.constants import CONF_ENABLE_ONLINE_METADATA
+from music_assistant.controllers.metadata.constants import (
+    CONF_ENABLE_ONLINE_METADATA,
+    REFRESH_INTERVAL,
+    REFRESH_RETRY_INTERVAL,
+)
 from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMixin
 from music_assistant.controllers.music.helpers import fill_track_from_recording
 from music_assistant.providers.musicbrainz.models import (
@@ -23,6 +33,15 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzReleaseGroup,
     MusicBrainzUrl,
 )
+
+_ENRICHMENT_TIME = "music_assistant.controllers.metadata.enrichment.time"
+NOW = 1_700_000_000
+# the provider method and metadata feature each refreshed media type is enriched through
+_REFRESHES = {
+    MediaType.ARTIST: (ProviderFeature.ARTIST_METADATA, "get_artist_metadata"),
+    MediaType.ALBUM: (ProviderFeature.ALBUM_METADATA, "get_album_metadata"),
+    MediaType.TRACK: (ProviderFeature.TRACK_METADATA, "get_track_metadata"),
+}
 
 
 def _online_metadata_only(key: str, *_args: Any, **_kwargs: Any) -> bool:
@@ -84,7 +103,7 @@ async def test_album_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.ALBUM_METADATA)
-    boom.get_album_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_album_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.ALBUM_METADATA)
     good.get_album_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -97,13 +116,15 @@ async def test_album_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    # a transient provider error must not abort enrichment
-    await enrichment._update_album_metadata(album, force_refresh=True)
+    # an unexpected provider error must not abort enrichment
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
 
     boom.get_album_metadata.assert_awaited_once()
     good.get_album_metadata.assert_awaited_once()  # loop continued past the failing provider
     _logger(enrichment).warning.assert_called_once()
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW
 
 
 @pytest.mark.asyncio
@@ -144,7 +165,7 @@ async def test_track_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.TRACK_METADATA)
-    boom.get_track_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_track_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.TRACK_METADATA)
     good.get_track_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -157,11 +178,14 @@ async def test_track_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    await enrichment._update_track_metadata(track, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
 
     boom.get_track_metadata.assert_awaited_once()
     good.get_track_metadata.assert_awaited_once()
     _logger(enrichment).warning.assert_called_once()
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once()
+    assert track.metadata.last_refresh == NOW
 
 
 @pytest.mark.asyncio
@@ -170,7 +194,7 @@ async def test_artist_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.ARTIST_METADATA)
-    boom.get_artist_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_artist_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.ARTIST_METADATA)
     good.get_artist_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -184,11 +208,102 @@ async def test_artist_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    await enrichment._update_artist_metadata(artist, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
 
     boom.get_artist_metadata.assert_awaited_once()
     good.get_artist_metadata.assert_awaited_once()
     _logger(enrichment).warning.assert_called_once()
+    _mass(enrichment).music.artists.update_item_in_library.assert_awaited_once()
+    assert artist.metadata.last_refresh == NOW
+
+
+async def _refresh(
+    enrichment: MetadataEnrichmentMixin, media_type: MediaType
+) -> Artist | Album | Track:
+    """
+    Refresh the metadata of a new library item of the given media type and return the item.
+
+    :param enrichment: The enrichment mixin to refresh the item with.
+    :param media_type: Artist, album or track.
+    """
+    if media_type == MediaType.ARTIST:
+        # the metadata providers are only asked about an artist with a MusicBrainz id
+        artist = Artist(
+            item_id="1",
+            provider="library",
+            name="Test Artist",
+            provider_mappings=set(),
+            external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        )
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+        return artist
+    if media_type == MediaType.ALBUM:
+        album = Album(item_id="1", provider="library", name="Test Album", provider_mappings=set())
+        await enrichment._update_album_metadata(album, force_refresh=True)
+        return album
+    track = Track(item_id="1", provider="library", name="Test Track", provider_mappings=set())
+    await enrichment._update_track_metadata(track, force_refresh=True)
+    return track
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_REFRESHES))
+@pytest.mark.parametrize(
+    "error",
+    [
+        RetriesExhausted("retries exhausted"),
+        RateLimited("rate limited", backoff_time=120),
+        ResourceTemporarilyUnavailable("backend overloaded"),
+        ProviderUnavailableError("provider unavailable"),
+        aiohttp.ClientError("network down"),
+        TimeoutError(),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+async def test_enrichment_is_due_again_soon_after_a_temporary_provider_error(
+    media_type: MediaType, error: Exception
+) -> None:
+    """A provider failing temporarily is skipped quietly and the item is due again soon."""
+    enrichment = _enrichment()
+    feature, method = _REFRESHES[media_type]
+    failing = _metadata_provider("failing", feature)
+    setattr(failing, method, AsyncMock(side_effect=error))
+    good = _metadata_provider("good", feature)
+    setattr(good, method, AsyncMock(return_value=None))
+    enrichment.providers = [failing, good]  # type: ignore[misc]
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        item = await _refresh(enrichment, media_type)
+
+    getattr(good, method).assert_awaited_once()  # loop continued past the failing provider
+    logger = _logger(enrichment)
+    logger.warning.assert_not_called()
+    assert any(
+        "not available from provider" in call.args[0] for call in logger.debug.call_args_list
+    )
+    library = getattr(_mass(enrichment).music, f"{media_type.value}s")
+    library.update_item_in_library.assert_awaited_once()
+    assert item.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_REFRESHES))
+async def test_enrichment_without_provider_errors_is_due_after_the_refresh_interval(
+    media_type: MediaType,
+) -> None:
+    """A refresh no provider failed is stamped with the current time."""
+    enrichment = _enrichment()
+    feature, method = _REFRESHES[media_type]
+    good = _metadata_provider("good", feature)
+    setattr(good, method, AsyncMock(return_value=None))
+    enrichment.providers = [good]  # type: ignore[misc]
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        item = await _refresh(enrichment, media_type)
+
+    getattr(good, method).assert_awaited_once()
+    assert item.metadata.last_refresh == NOW
 
 
 MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
