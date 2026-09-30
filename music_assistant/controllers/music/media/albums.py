@@ -7,7 +7,7 @@ import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from time import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiohttp
 from music_assistant_models.auth import Scope
@@ -17,8 +17,6 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -59,7 +57,11 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import share_url_provider
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -80,17 +82,12 @@ if TYPE_CHECKING:
     )
 
 
-# expected failures from a provider album-track lookup: a missing item, an unavailable or
-# rate limiting provider or a transient transport outage. Each leaves that tracklist
-# unavailable so the (best-effort, multi-provider) match can continue rather than aborting
-# the whole operation.
-_ALBUM_TRACK_LOOKUP_ERRORS = (
-    MediaNotFoundError,
-    ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
-    TimeoutError,
-    aiohttp.ClientError,
+# on top of the fetch failures, a MusicBrainz lookup tolerates an HTTP status error: unlike
+# a music provider, MusicBrainz has no account whose failure must surface, and the evidence
+# it supplies is optional
+_MUSICBRAINZ_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
+    *PROVIDER_FETCH_ERRORS,
+    aiohttp.ClientResponseError,
 )
 
 # how many seconds the duration of one and the same track may differ between sources
@@ -462,7 +459,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     await self.mass.music.mark_provider_mapping_unavailable(
                         library_album, provider_mapping
                     )
-                self.logger.warning(
+                self.logger.log(
+                    provider_fetch_log_level(err),
                     "Unable to fetch tracks for album %s from provider %s: %s",
                     library_album.name,
                     provider_mapping.provider_instance,
@@ -931,7 +929,7 @@ class AlbumsController(MediaControllerBase[Album]):
             provider_tracks = await self._get_provider_album_tracks(
                 mapping.item_id, mapping.provider_instance
             )
-        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+        except PROVIDER_FETCH_ERRORS as err:
             self.logger.debug(
                 "Album tracks unavailable for %s on %s: %s",
                 mapping.item_id,
@@ -1189,7 +1187,7 @@ class AlbumsController(MediaControllerBase[Album]):
         base_tracks = await self._resolve_base_album_tracks(db_album, base_tracks_memo)
         try:
             compare_tracks = await provider.get_album_tracks(prov_album.item_id)
-        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+        except PROVIDER_FETCH_ERRORS as err:
             # the candidate tracklist is unavailable: treat it as absent and let MusicBrainz decide
             self.logger.debug(
                 "Album tracks unavailable for %s on %s: %s",
@@ -1252,7 +1250,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_tracks = await self._get_provider_album_tracks(
                     mapping.item_id, mapping.provider_instance
                 )
-            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+            except PROVIDER_FETCH_ERRORS as err:
                 # this mapping's tracklist is unavailable: try the next existing mapping
                 self.logger.debug(
                     "Base album tracks unavailable for %s on %s: %s",
@@ -1289,7 +1287,7 @@ class AlbumsController(MediaControllerBase[Album]):
         try:
             for barcode in sorted(base_barcodes | compare_barcodes):
                 releases_by_barcode[barcode] = await musicbrainz.get_releases_by_barcode(barcode)
-        except (RetriesExhausted, InvalidDataError, TimeoutError, aiohttp.ClientError) as err:
+        except _MUSICBRAINZ_LOOKUP_ERRORS as err:
             self.logger.debug(
                 "MusicBrainz barcode lookup failed while matching album %s: %s",
                 base_album.name,
