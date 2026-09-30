@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
@@ -29,6 +30,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 INSTANCE = "spotify--one"
@@ -146,6 +148,7 @@ class _Rig:
             player_id=queue_id,
             state=SimpleNamespace(playback_state=state, active_source=queue_id),
             extra_data={},
+            private=False,
         )
         return item
 
@@ -347,6 +350,27 @@ async def test_a_paused_queue_still_waiting_for_a_slot_is_no_holder(rig: _Rig) -
 
     await waiting_buffer.clear()
     await playing_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("player_filter", "expected"),
+    [([STARTING_QUEUE], False), ([STARTING_QUEUE, PAUSED_QUEUE], True), ([], True)],
+    ids=["other-player-not-allowed", "other-player-allowed", "unrestricted"],
+)
+async def test_a_user_only_takes_the_slot_of_a_player_they_may_control(
+    rig: _Rig, player_filter: list[str], expected: bool
+) -> None:
+    """A user limited to some players never stops a paused player outside their filter."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    set_current_user(
+        User(user_id="kid", username="kid", role=UserRole.USER, player_filter=player_filter)
+    )
+    try:
+        assert rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE) is expected
+    finally:
+        set_current_user(None)
+    await paused_buffer.clear()
 
 
 async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig) -> None:

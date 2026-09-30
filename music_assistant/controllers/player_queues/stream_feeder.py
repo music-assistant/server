@@ -28,6 +28,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -487,8 +491,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
         provider = self.mass.get_provider(provider_instance, return_unavailable=True)
         if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
             return None
+        user = get_current_user()
         for holder_id, queue_data in self._queue_data.items():
             if holder_id == queue_id or not self._is_paused(holder_id):
+                continue
+            # the starting user only takes the slot of a player they may control
+            if not has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):
                 continue
             # a buffer holds its provider's slot from its first audio until its source stops
             # producing; one that is not ready yet can still be waiting for a slot itself
