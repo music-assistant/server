@@ -29,7 +29,7 @@ from music_assistant.helpers.datetime import utc
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
 
-class Priority(IntEnum):
+class RequestPriority(IntEnum):
     """Priority of a request that asks a throttler for a slot."""
 
     LOW = 0  # background work: library sync, metadata scans, cache refreshes
@@ -38,11 +38,9 @@ class Priority(IntEnum):
 
 
 # a request made without a priority set counts as a user action
-REQUEST_PRIORITY: ContextVar[Priority] = ContextVar("REQUEST_PRIORITY", default=Priority.NORMAL)
-
-# playback flag some providers read or set themselves, raised only around a playback
-# lookup (request_priority), never for a whole task
-BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=False)
+REQUEST_PRIORITY: ContextVar[RequestPriority] = ContextVar(
+    "REQUEST_PRIORITY", default=RequestPriority.NORMAL
+)
 
 # share of the rate limit low priority requests may use,
 # the rest is headroom for user actions and playback
@@ -61,14 +59,12 @@ MAX_RETRY_AFTER = 86400
 MAX_WAIT_TIME = 60
 
 
-def current_priority() -> Priority:
+def current_priority() -> RequestPriority:
     """Return the throttler priority of the current context."""
-    if BYPASS_THROTTLER.get():
-        return Priority.HIGH
     return REQUEST_PRIORITY.get()
 
 
-def set_request_priority(priority: Priority) -> None:
+def set_request_priority(priority: RequestPriority) -> None:
     """
     Set the throttler priority for the rest of the current context.
 
@@ -77,27 +73,24 @@ def set_request_priority(priority: Priority) -> None:
     :param priority: The priority of the requests made from this context.
     """
     REQUEST_PRIORITY.set(priority)
-    BYPASS_THROTTLER.set(False)
 
 
 @contextmanager
-def request_priority(priority: Priority) -> Generator[None]:
+def request_priority(priority: RequestPriority) -> Generator[None]:
     """
     Set the throttler priority for the duration of the block.
 
     :param priority: The priority of the requests made within the block.
     """
     token = REQUEST_PRIORITY.set(priority)
-    bypass_token = BYPASS_THROTTLER.set(priority is Priority.HIGH)
     try:
         yield
     finally:
-        BYPASS_THROTTLER.reset(bypass_token)
         REQUEST_PRIORITY.reset(token)
 
 
 def with_request_priority[**P, R](
-    priority: Priority,
+    priority: RequestPriority,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Coroutine[Any, Any, R]]]:
     """
     Run each call of the decorated async function with the given throttler priority.
@@ -159,7 +152,7 @@ class Throttler:
         self._waiters: list[_Waiter] = []
         self._sequence = itertools.count()
 
-    async def acquire(self, priority: Priority | None = None) -> float:
+    async def acquire(self, priority: RequestPriority | None = None) -> float:
         """
         Acquire a free slot from the Throttler, returns the throttled time.
 
@@ -188,7 +181,7 @@ class Throttler:
             if self._waiters:
                 self._waiters[0].turn.set()
         self._task_logs.append(now)
-        if priority is Priority.LOW:
+        if priority is RequestPriority.LOW:
             self._last_low_grant = now
         return now - start_time  # exactly 0 if not throttled
 
@@ -204,17 +197,17 @@ class Throttler:
     ) -> bool | None:
         """Nothing to do on exit."""
 
-    def _time_until_free(self, priority: Priority, now: float) -> float:
+    def _time_until_free(self, priority: RequestPriority, now: float) -> float:
         """Return the seconds until a request of the given priority may take a slot."""
         # a slot stops counting once a full period has passed since it was granted
         while self._task_logs and self._task_logs[0] + self.period - now <= _WAIT_EPSILON:
             self._task_logs.popleft()
         low_share = self.rate_limit * LOW_PRIORITY_SHARE
-        limit = max(1, int(low_share)) if priority is Priority.LOW else self.rate_limit
+        limit = max(1, int(low_share)) if priority is RequestPriority.LOW else self.rate_limit
         delay = 0.0
         if (excess := len(self._task_logs) - limit) >= 0:
             delay = self._task_logs[excess] + self.period - now
-        if priority is Priority.LOW and self._last_low_grant is not None:
+        if priority is RequestPriority.LOW and self._last_low_grant is not None:
             # the pacer spreads the low priority share evenly over the period
             delay = max(delay, self._last_low_grant + self.period / low_share - now)
         return delay
@@ -247,7 +240,7 @@ class ThrottlerManager:
         :raises RateLimited: When a server-imposed cooldown holds for longer than MAX_WAIT_TIME.
         """
         priority = current_priority()
-        if priority is Priority.HIGH:
+        if priority is RequestPriority.HIGH:
             # playback neither sits out nor fails on a cooldown
             yield await self.throttler.acquire(priority)
             return
@@ -267,12 +260,6 @@ class ThrottlerManager:
             if self._cooldown_until <= honored:
                 break
         yield delay
-
-    @asynccontextmanager
-    async def bypass(self) -> AsyncGenerator[None]:
-        """Give the requests made within the block playback priority."""
-        with request_priority(Priority.HIGH):
-            yield None
 
     def set_cooldown(self, seconds: float) -> None:
         """
@@ -404,7 +391,7 @@ def _give_up(err: ResourceTemporarilyUnavailable, wait: float) -> RetriesExhaust
 class _Waiter:
     """A request waiting in line for a slot of a Throttler."""
 
-    priority: Priority
+    priority: RequestPriority
     sequence: int
     turn: asyncio.Event = field(default_factory=asyncio.Event)
 

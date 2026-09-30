@@ -115,7 +115,7 @@ from music_assistant.helpers.ffmpeg import (
 )
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.throttle_retry import (
-    Priority,
+    RequestPriority,
     request_priority,
     set_request_priority,
 )
@@ -703,7 +703,7 @@ class StreamsController(CoreController):
         """Stream single queueitem audio to a player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
-        set_request_priority(Priority.HIGH)
+        set_request_priority(RequestPriority.HIGH)
         queue_id = request.match_info["queue_id"]
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
@@ -1144,7 +1144,7 @@ class StreamsController(CoreController):
         """Stream a live AudioSource playing on a player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
-        set_request_priority(Priority.HIGH)
+        set_request_priority(RequestPriority.HIGH)
         session, player, prov = self._resolve_audio_source_request(request)
         playback_session_id = session.playback_session_id
         # the session's own player, never the url's: the consuming player differs for
@@ -1255,7 +1255,7 @@ class StreamsController(CoreController):
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
-        set_request_priority(Priority.HIGH)
+        set_request_priority(RequestPriority.HIGH)
         queue_id = request.match_info["queue_id"]
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
@@ -1477,7 +1477,7 @@ class StreamsController(CoreController):
         """Stream announcement audio to a player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
-        set_request_priority(Priority.HIGH)
+        set_request_priority(RequestPriority.HIGH)
         player_id = request.match_info["player_id"]
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -1775,7 +1775,7 @@ class StreamsController(CoreController):
             msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
             raise InvalidDataError(msg) from err
 
-        with request_priority(Priority.HIGH):
+        with request_priority(RequestPriority.HIGH):
             streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
@@ -2054,7 +2054,7 @@ class StreamsController(CoreController):
             ):
                 raise AudioError("AudioSource session was superseded")
             if (streamdetails := session.streamdetails) is None:
-                with request_priority(Priority.HIGH):
+                with request_priority(RequestPriority.HIGH):
                     streamdetails = await prov.get_stream_details(
                         session.source_id, MediaType.AUDIO_SOURCE
                     )

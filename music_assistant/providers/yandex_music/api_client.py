@@ -30,7 +30,11 @@ from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedE
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    Throttler,
+    current_priority,
+)
 
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
@@ -996,7 +1000,7 @@ class YandexMusicClient:
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
         # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
-        # Bypass when refresh is in progress (BYPASS_THROTTLER): a refresh fires
+        # Bypass when refresh is in progress (playback priority): a refresh fires
         # specifically because the previous URL expired on the CDN side, so the
         # cached entry is useless.
         # Include `codecs` in the key: the server may pick a different codec
@@ -1004,7 +1008,7 @@ class YandexMusicClient:
         # same (track, quality, transport) but different codec lists must not
         # share a cache slot.
         cache_key = (track_id, quality, codecs, transport)
-        if not BYPASS_THROTTLER.get():
+        if current_priority() is not RequestPriority.HIGH:
             # Check the file_info circuit-breaker BEFORE the cache lookup —
             # otherwise a cooldown-period caller could be served a stale URL
             # from before the block was engaged. Fail fast (return None) so
@@ -1092,7 +1096,7 @@ class YandexMusicClient:
                     parsed.get("codec"),
                     transport,
                 )
-                # Always store the freshest URL — including under BYPASS_THROTTLER.
+                # Always store the freshest URL — including under playback priority.
                 # A successful refresh proves the previously cached entry was
                 # stale, so replacing it avoids serving the old URL to the next
                 # non-bypass caller until its TTL expires.
@@ -1607,7 +1611,7 @@ class YandexMusicClient:
         """
         Raise immediately if `kind` is under a captcha quarantine.
 
-        BYPASS_THROTTLER callers (stream URL refresh) must skip this check so a
+        Playback priority callers (stream URL refresh) must skip this check so a
         currently playing track isn't dropped mid-stream when an unrelated
         endpoint family trips smart-captcha.
         """
@@ -1757,7 +1761,7 @@ class YandexMusicClient:
             "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
-        if self._global_concurrency is not None and not BYPASS_THROTTLER.get():
+        if self._global_concurrency is not None and current_priority() is not RequestPriority.HIGH:
             async with self._global_concurrency:
                 return await self._call_with_retry_inner(func, kind=kind)
         return await self._call_with_retry_inner(func, kind=kind)
@@ -1772,23 +1776,26 @@ class YandexMusicClient:
         # Per-request diagnostic — emits caller + kind so a DEBUG-level capture
         # can reconstruct request density before any captcha trip. Stays at
         # DEBUG so steady-state logs are clean.
+        priority = current_priority()
         if LOGGER.isEnabledFor(logging.DEBUG):
             caller = getattr(func, "__qualname__", "?")
             if ".<locals>." in caller:
                 caller = caller.split(".<locals>.")[0]
             LOGGER.debug(
-                "req: kind=%s caller=%s bypass=%s",
+                "req: kind=%s caller=%s priority=%s",
                 kind,
                 caller,
-                BYPASS_THROTTLER.get(),
+                priority.name,
             )
-        if not BYPASS_THROTTLER.get():
-            # Fast path: short-circuit before queueing if the kind is already
-            # blocked. Re-check after acquire() — another concurrent request
-            # may have engaged the cooldown while we were queued.
+        # Fast path: short-circuit before queueing if the kind is already
+        # blocked. Re-check after acquire() — another concurrent request
+        # may have engaged the cooldown while we were queued. Playback
+        # priority skips the block check and jitter but still takes a slot.
+        if priority is not RequestPriority.HIGH:
             self._check_block(kind)
             await self._initial_sync_jitter(kind)
-            await self._get_throttler(kind).acquire()
+        await self._get_throttler(kind).acquire()
+        if priority is not RequestPriority.HIGH:
             self._check_block(kind)
         client = await self._ensure_connected()
         endpoint = self._derive_endpoint(func)
@@ -1810,11 +1817,12 @@ class YandexMusicClient:
             # retry. Skipping ``acquire()`` here lets reconnect-retries
             # bypass rate-limiting, doubling the effective request rate
             # during connection flap — the conditions that already increase
-            # captcha-trip risk. BYPASS_THROTTLER paths skip this so an
+            # captcha-trip risk. Playback priority skips the block check so an
             # in-flight stream refresh can still attempt the retry.
-            if not BYPASS_THROTTLER.get():
+            if priority is not RequestPriority.HIGH:
                 self._check_block(kind)
-                await self._get_throttler(kind).acquire()
+            await self._get_throttler(kind).acquire()
+            if priority is not RequestPriority.HIGH:
                 self._check_block(kind)
             # Reconnect-retry must also go through 429 classification —
             # otherwise a captcha on the retry attempt bypasses the cooldown
@@ -1860,11 +1868,13 @@ class YandexMusicClient:
             "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
-        if not BYPASS_THROTTLER.get():
-            # Same dual check as _call_with_retry — see comment there.
+        priority = current_priority()
+        # Same dual check as _call_with_retry — see comment there.
+        if priority is not RequestPriority.HIGH:
             self._check_block(kind)
             await self._initial_sync_jitter(kind)
-            await self._get_throttler(kind).acquire()
+        await self._get_throttler(kind).acquire()
+        if priority is not RequestPriority.HIGH:
             self._check_block(kind)
         client = await self._ensure_connected()
         try:

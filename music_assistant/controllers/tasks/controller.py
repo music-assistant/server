@@ -34,7 +34,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_impersonated_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.throttle_retry import Priority, set_request_priority
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 from music_assistant.models.core_controller import CoreController
 
 from .constants import (
@@ -765,7 +765,7 @@ class TasksController(CoreController):
         # make its requests with that caller's throttler priority
         set_current_user(None)
         set_impersonated_user(None)
-        set_request_priority(Priority.LOW)
+        set_request_priority(RequestPriority.LOW)
         try:
             await managed.handler()
         except asyncio.CancelledError:

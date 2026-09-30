@@ -54,8 +54,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.throttle_retry import (
-    BYPASS_THROTTLER,
-    Priority,
+    RequestPriority,
     current_priority,
     request_priority,
 )
@@ -409,17 +408,16 @@ async def test_task_runs_with_low_priority_whatever_its_caller_had(
     tasks_controller: TasksController,
 ) -> None:
     """A managed task queued during playback makes its requests as background work."""
-    seen: list[tuple[Priority, bool]] = []
+    seen: list[RequestPriority] = []
 
     async def handler() -> None:
-        seen.append((current_priority(), BYPASS_THROTTLER.get()))
+        seen.append(current_priority())
 
-    with request_priority(Priority.HIGH):
-        assert BYPASS_THROTTLER.get()
+    with request_priority(RequestPriority.HIGH):
         task = tasks_controller.run_background_task(name="Sync library", handler=handler)
     await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
 
-    assert seen == [(Priority.LOW, False)]
+    assert seen == [RequestPriority.LOW]
 
 
 async def test_user_scoped_task_visibility(tasks_controller: TasksController) -> None:

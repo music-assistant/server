@@ -16,11 +16,10 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.throttle_retry import (
-    BYPASS_THROTTLER,
     MAX_RETRY_AFTER,
     MAX_WAIT_TIME,
     REQUEST_PRIORITY,
-    Priority,
+    RequestPriority,
     Throttler,
     ThrottlerManager,
     current_priority,
@@ -108,7 +107,7 @@ def fake_clock() -> Generator[FakeClock]:
 
 
 async def _acquire_in_order(
-    throttler: Throttler, priorities: Sequence[Priority]
+    throttler: Throttler, priorities: Sequence[RequestPriority]
 ) -> tuple[list[int], list[asyncio.Task[float]]]:
     """
     Queue one waiter per priority, in the given order of arrival.
@@ -121,7 +120,7 @@ async def _acquire_in_order(
     """
     served: list[int] = []
 
-    async def waiter(index: int, priority: Priority) -> float:
+    async def waiter(index: int, priority: RequestPriority) -> float:
         delay = await throttler.acquire(priority)
         served.append(index)
         return delay
@@ -319,12 +318,12 @@ class TestSharedCooldown:
         # initial_backoff 2, doubled by each of the 4 retries
         assert fake_clock.now - exhausted_at == pytest.approx(32)
 
-    async def test_bypassing_caller_still_backs_off(
+    async def test_playback_caller_still_backs_off(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A caller that bypasses the gate waits out its own backoff before retrying."""
+        """A playback caller waits out its own backoff before retrying."""
         provider.set_side_effects([RateLimited("rate limited", backoff_time=50), "ok"])
-        async with provider.throttler.bypass():
+        with request_priority(RequestPriority.HIGH):
             assert await provider.api_call("ok") == "ok"
         assert fake_clock.now >= 50
 
@@ -467,24 +466,23 @@ class TestLongWaits:
         assert await provider.api_call("ok") == "ok"
         assert fake_clock.now == pytest.approx(MAX_WAIT_TIME)
 
-    async def test_bypassing_caller_ignores_a_long_cooldown(
+    async def test_playback_caller_ignores_a_long_cooldown(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A caller that bypasses the gate still reaches the api during a long cooldown."""
+        """A playback caller still reaches the api during a long cooldown."""
         provider.throttler.set_cooldown(3600)
-        async with provider.throttler.bypass():
+        with request_priority(RequestPriority.HIGH):
             assert await provider.api_call("ok") == "ok"
         assert provider.call_count == 1
         assert fake_clock.now == 0
 
-    async def test_bypassing_caller_gives_up_on_a_long_retry_after(
+    async def test_playback_caller_gives_up_on_a_long_retry_after(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A caller that bypasses the gate gives up right away when asked to wait too long."""
+        """A playback caller gives up right away when asked to wait too long."""
         provider.set_side_effects([RateLimited("rate limited", backoff_time=3600), "ok"])
-        async with provider.throttler.bypass():
-            with pytest.raises(RetriesExhausted):
-                await provider.api_call("ok")
+        with request_priority(RequestPriority.HIGH), pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
         assert provider.call_count == 1
         assert fake_clock.now == 0
         assert provider.throttler.cooldown_remaining == pytest.approx(3600)
@@ -663,58 +661,45 @@ class TestRequestPriority:
 
     def test_default_is_normal(self) -> None:
         """A request made without a priority set counts as a user action."""
-        assert current_priority() is Priority.NORMAL
-        assert not BYPASS_THROTTLER.get()
+        assert current_priority() is RequestPriority.NORMAL
 
     def test_request_priority_applies_within_the_block(self) -> None:
-        """The priority applies within the block and both contextvars are reset after it."""
-        with request_priority(Priority.LOW):
-            assert current_priority() is Priority.LOW
-            assert not BYPASS_THROTTLER.get()
-            with request_priority(Priority.HIGH):
-                assert current_priority() is Priority.HIGH
-                assert BYPASS_THROTTLER.get()
-            assert current_priority() is Priority.LOW
-            assert not BYPASS_THROTTLER.get()
-        assert REQUEST_PRIORITY.get() is Priority.NORMAL
-        assert not BYPASS_THROTTLER.get()
+        """The priority applies within the block and is reset after it."""
+        with request_priority(RequestPriority.LOW):
+            assert current_priority() is RequestPriority.LOW
+            with request_priority(RequestPriority.HIGH):
+                assert current_priority() is RequestPriority.HIGH
+            assert current_priority() is RequestPriority.LOW
+        assert REQUEST_PRIORITY.get() is RequestPriority.NORMAL
 
     def test_request_priority_resets_after_an_exception(self) -> None:
-        """Both contextvars are reset when the block raises."""
-        with pytest.raises(ValueError, match="boom"), request_priority(Priority.HIGH):
+        """The priority is reset when the block raises."""
+        with pytest.raises(ValueError, match="boom"), request_priority(RequestPriority.HIGH):
             raise ValueError("boom")
-        assert REQUEST_PRIORITY.get() is Priority.NORMAL
-        assert not BYPASS_THROTTLER.get()
-
-    def test_legacy_bypass_flag_means_high(self) -> None:
-        """A context with the legacy bypass flag set makes its requests with high priority."""
-        token = BYPASS_THROTTLER.set(True)
-        try:
-            assert current_priority() is Priority.HIGH
-        finally:
-            BYPASS_THROTTLER.reset(token)
+        assert REQUEST_PRIORITY.get() is RequestPriority.NORMAL
 
     async def test_with_request_priority_applies_during_the_call_only(self) -> None:
         """The decorated function runs with the priority, its caller keeps its own."""
 
-        @with_request_priority(Priority.HIGH)
-        async def playback_call(value: str) -> tuple[str, Priority]:
+        @with_request_priority(RequestPriority.HIGH)
+        async def playback_call(value: str) -> tuple[str, RequestPriority]:
             return value, current_priority()
 
-        assert await playback_call("a") == ("a", Priority.HIGH)
-        assert current_priority() is Priority.NORMAL
+        assert await playback_call("a") == ("a", RequestPriority.HIGH)
+        assert current_priority() is RequestPriority.NORMAL
 
-    async def test_set_request_priority_never_raises_the_legacy_flag(self) -> None:
-        """A task entry sets the priority and clears the legacy flag, whatever it inherited."""
+    async def test_set_request_priority_overrides_the_inherited_priority(self) -> None:
+        """A task entry sets its priority, whatever it inherited from its caller."""
 
-        async def task_entry(priority: Priority) -> tuple[Priority, bool]:
+        async def task_entry(priority: RequestPriority) -> RequestPriority:
             set_request_priority(priority)
-            return current_priority(), BYPASS_THROTTLER.get()
+            return current_priority()
 
-        assert await asyncio.create_task(task_entry(Priority.HIGH)) == (Priority.HIGH, False)
-        with request_priority(Priority.HIGH):
-            low_task = asyncio.create_task(task_entry(Priority.LOW))
-        assert await low_task == (Priority.LOW, False)
+        assert await asyncio.create_task(task_entry(RequestPriority.HIGH)) is RequestPriority.HIGH
+        with request_priority(RequestPriority.HIGH):
+            low_task = asyncio.create_task(task_entry(RequestPriority.LOW))
+            assert current_priority() is RequestPriority.HIGH
+        assert await low_task is RequestPriority.LOW
 
 
 class TestThrottlerOrder:
@@ -723,9 +708,9 @@ class TestThrottlerOrder:
     async def test_higher_priority_is_served_first(self) -> None:
         """Waiters that queued as low, normal and high are served high, normal, low."""
         throttler = Throttler(rate_limit=1, period=0.1)
-        await throttler.acquire(Priority.NORMAL)
+        await throttler.acquire(RequestPriority.NORMAL)
         served, tasks = await _acquire_in_order(
-            throttler, [Priority.LOW, Priority.NORMAL, Priority.HIGH]
+            throttler, [RequestPriority.LOW, RequestPriority.NORMAL, RequestPriority.HIGH]
         )
         async with asyncio.timeout(5):
             await asyncio.gather(*tasks)
@@ -734,8 +719,8 @@ class TestThrottlerOrder:
     async def test_same_priority_is_served_in_order_of_arrival(self) -> None:
         """Waiters of the same priority are served in the order they arrived."""
         throttler = Throttler(rate_limit=1, period=0.1)
-        await throttler.acquire(Priority.NORMAL)
-        served, tasks = await _acquire_in_order(throttler, [Priority.NORMAL] * 3)
+        await throttler.acquire(RequestPriority.NORMAL)
+        served, tasks = await _acquire_in_order(throttler, [RequestPriority.NORMAL] * 3)
         async with asyncio.timeout(5):
             await asyncio.gather(*tasks)
         assert served == [0, 1, 2]
@@ -743,11 +728,11 @@ class TestThrottlerOrder:
     async def test_later_caller_does_not_overtake_a_queued_one(self) -> None:
         """A caller queues behind a waiter of the same priority, even when a slot is free."""
         throttler = Throttler(rate_limit=1, period=0.2)
-        await throttler.acquire(Priority.NORMAL)
-        served, tasks = await _acquire_in_order(throttler, [Priority.NORMAL])
+        await throttler.acquire(RequestPriority.NORMAL)
+        served, tasks = await _acquire_in_order(throttler, [RequestPriority.NORMAL])
         # a slot is free now, but the first waiter is still asleep until the window moves on
         throttler.rate_limit = 2
-        late_served, late_tasks = await _acquire_in_order(throttler, [Priority.NORMAL])
+        late_served, late_tasks = await _acquire_in_order(throttler, [RequestPriority.NORMAL])
         await asyncio.sleep(0.05)
         assert not late_tasks[0].done()
         async with asyncio.timeout(5):
@@ -759,8 +744,8 @@ class TestThrottlerOrder:
     async def test_cancelled_waiter_does_not_block_the_next_one(self) -> None:
         """A waiter that is cancelled leaves the line and the waiter behind it is served."""
         throttler = Throttler(rate_limit=1, period=0.1)
-        await throttler.acquire(Priority.NORMAL)
-        served, tasks = await _acquire_in_order(throttler, [Priority.NORMAL] * 2)
+        await throttler.acquire(RequestPriority.NORMAL)
+        served, tasks = await _acquire_in_order(throttler, [RequestPriority.NORMAL] * 2)
         tasks[0].cancel()
         async with asyncio.timeout(5):
             await tasks[1]
@@ -774,33 +759,33 @@ class TestThrottlerPriorities:
     async def test_low_priority_leaves_headroom(self, fake_clock: FakeClock) -> None:
         """Low priority gets at most half of the window while normal requests still pass."""
         throttler = Throttler(rate_limit=4, period=100)
-        assert await throttler.acquire(Priority.LOW) == 0
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(50)
-        assert await throttler.acquire(Priority.NORMAL) == 0
-        assert await throttler.acquire(Priority.NORMAL) == 0
+        assert await throttler.acquire(RequestPriority.LOW) == 0
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(50)
+        assert await throttler.acquire(RequestPriority.NORMAL) == 0
+        assert await throttler.acquire(RequestPriority.NORMAL) == 0
         # the pacer alone would allow it at 100, the window holds it until two slots expire
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(100)
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(100)
 
     async def test_low_priority_yields_to_normal_requests(self, fake_clock: FakeClock) -> None:
         """Once normal requests hold half of the window, a low priority request waits."""
         throttler = Throttler(rate_limit=4, period=100)
-        await throttler.acquire(Priority.NORMAL)
-        await throttler.acquire(Priority.NORMAL)
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(100)
+        await throttler.acquire(RequestPriority.NORMAL)
+        await throttler.acquire(RequestPriority.NORMAL)
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(100)
         assert fake_clock.sleeps == [pytest.approx(100)]
 
     async def test_low_priority_is_paced(self, fake_clock: FakeClock) -> None:
         """Two low priority requests in a row are spread over the low priority share."""
         throttler = Throttler(rate_limit=30, period=30)
-        assert await throttler.acquire(Priority.LOW) == 0
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(2)
+        assert await throttler.acquire(RequestPriority.LOW) == 0
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(2)
         assert fake_clock.now == pytest.approx(2)
 
     async def test_normal_burst_is_not_paced(self, fake_clock: FakeClock) -> None:
         """A burst of normal requests up to the rate limit passes without delay."""
         throttler = Throttler(rate_limit=30, period=30)
         for _ in range(30):
-            assert await throttler.acquire(Priority.NORMAL) == 0
+            assert await throttler.acquire(RequestPriority.NORMAL) == 0
         assert fake_clock.sleeps == []
 
     async def test_low_priority_gets_half_of_a_rate_limit_of_one(
@@ -808,24 +793,24 @@ class TestThrottlerPriorities:
     ) -> None:
         """At a rate limit of one, low priority takes every other period and leaves the rest."""
         throttler = Throttler(rate_limit=1, period=10)
-        assert await throttler.acquire(Priority.LOW) == 0
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(20)
+        assert await throttler.acquire(RequestPriority.LOW) == 0
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(20)
         # the period in between is free for a user action
-        assert await throttler.acquire(Priority.NORMAL) == pytest.approx(10)
+        assert await throttler.acquire(RequestPriority.NORMAL) == pytest.approx(10)
 
     async def test_every_granted_slot_counts(self, fake_clock: FakeClock) -> None:
         """A high priority request takes a slot of the window like any other request."""
         throttler = Throttler(rate_limit=2, period=100)
-        await throttler.acquire(Priority.HIGH)
-        assert await throttler.acquire(Priority.NORMAL) == 0
-        assert await throttler.acquire(Priority.NORMAL) == pytest.approx(100)
+        await throttler.acquire(RequestPriority.HIGH)
+        assert await throttler.acquire(RequestPriority.NORMAL) == 0
+        assert await throttler.acquire(RequestPriority.NORMAL) == pytest.approx(100)
 
     async def test_priority_defaults_to_the_current_context(self, fake_clock: FakeClock) -> None:
         """Without an explicit priority the throttler uses the priority of the context."""
         throttler = Throttler(rate_limit=30, period=30)
         await throttler.acquire()
         # a second low priority request would be paced
-        with request_priority(Priority.NORMAL):
+        with request_priority(RequestPriority.NORMAL):
             assert await throttler.acquire() == 0
 
 
@@ -836,17 +821,17 @@ class TestThrottlerVirtualClock:
         """A normal caller behind a full window sleeps once, until the oldest slot expires."""
         fake_clock.now = 0.7
         throttler = Throttler(rate_limit=2, period=0.1)
-        await throttler.acquire(Priority.NORMAL)
-        await throttler.acquire(Priority.NORMAL)
-        assert await throttler.acquire(Priority.NORMAL) == pytest.approx(0.1)
+        await throttler.acquire(RequestPriority.NORMAL)
+        await throttler.acquire(RequestPriority.NORMAL)
+        assert await throttler.acquire(RequestPriority.NORMAL) == pytest.approx(0.1)
         assert fake_clock.sleeps == [pytest.approx(0.1)]
 
     async def test_low_caller_held_by_the_pacer(self, fake_clock: FakeClock) -> None:
         """A low priority caller held by the pacer sleeps once, for the pacing interval."""
         fake_clock.now = 0.7
         throttler = Throttler(rate_limit=30, period=0.3)
-        await throttler.acquire(Priority.LOW)
-        assert await throttler.acquire(Priority.LOW) == pytest.approx(0.02)
+        await throttler.acquire(RequestPriority.LOW)
+        assert await throttler.acquire(RequestPriority.LOW) == pytest.approx(0.02)
         assert fake_clock.sleeps == [pytest.approx(0.02)]
 
 
@@ -860,7 +845,7 @@ class TestThrottlerManagerPriority:
         """A high priority request neither waits out nor fails on an armed cooldown."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
         throttler.set_cooldown(cooldown)
-        with request_priority(Priority.HIGH):
+        with request_priority(RequestPriority.HIGH):
             async with throttler.acquire() as delay:
                 assert delay == 0
         assert fake_clock.now == 0
@@ -870,7 +855,7 @@ class TestThrottlerManagerPriority:
         """A high priority request still waits for a free slot when the window is full."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
         throttler.set_cooldown(3600)
-        with request_priority(Priority.HIGH):
+        with request_priority(RequestPriority.HIGH):
             async with throttler.acquire():
                 pass
             async with throttler.acquire() as delay:
@@ -880,7 +865,7 @@ class TestThrottlerManagerPriority:
         """A raised rate limit raises the share of low priority requests along with it."""
         throttler = ThrottlerManager(rate_limit=2, period=100)
         throttler.set_rate_limit(rate_limit=4, period=100)
-        with request_priority(Priority.LOW):
+        with request_priority(RequestPriority.LOW):
             async with throttler.acquire():
                 pass
             # low limit 2 of 4: only the pacer holds the second one, not the window

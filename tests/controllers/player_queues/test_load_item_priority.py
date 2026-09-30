@@ -12,8 +12,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.helpers.throttle_retry import (
-    BYPASS_THROTTLER,
-    Priority,
+    RequestPriority,
     current_priority,
     request_priority,
 )
@@ -44,7 +43,7 @@ def _queue_item() -> QueueItem:
     )
 
 
-def _controller(item: QueueItem, seen: list[Priority]) -> PlayerQueuesController:
+def _controller(item: QueueItem, seen: list[RequestPriority]) -> PlayerQueuesController:
     """
     Build a bare controller whose queue holds the item.
 
@@ -81,12 +80,11 @@ def _controller(item: QueueItem, seen: list[Priority]) -> PlayerQueuesController
 async def test_load_item_requests_with_playback_priority() -> None:
     """Loading an item makes its requests with playback priority, the caller keeps its own."""
     item = _queue_item()
-    seen: list[Priority] = []
+    seen: list[RequestPriority] = []
     controller = _controller(item, seen)
 
-    with request_priority(Priority.NORMAL):
+    with request_priority(RequestPriority.NORMAL):
         await controller._load_item(item)
-        assert current_priority() is Priority.NORMAL
-        assert not BYPASS_THROTTLER.get()
+        assert current_priority() is RequestPriority.NORMAL
 
-    assert seen == [Priority.HIGH]
+    assert seen == [RequestPriority.HIGH]

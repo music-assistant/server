@@ -70,7 +70,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
-from music_assistant.helpers.throttle_retry import Priority, with_request_priority
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    request_priority,
+    with_request_priority,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -296,7 +300,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         self.signal_update(queue_id)
 
     # playback has priority over other requests that may be happening in the background
-    @with_request_priority(Priority.HIGH)
+    @with_request_priority(RequestPriority.HIGH)
     async def _load_item(
         self,
         queue_item: QueueItem,
@@ -722,7 +726,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     @handle_play_action
     # playback has priority over other requests that may be happening in the background
-    @with_request_priority(Priority.HIGH)
+    @with_request_priority(RequestPriority.HIGH)
     async def _handle_play_media(
         self,
         queue_id: str,
@@ -898,14 +902,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # a dynamic playlist/station supplies its own tracks on demand; just mark it
                     # played. The queue goes dynamic below and the bounded pool seeds its batch from
                     # all sources, so there is no need to fetch a batch here.
-                    self.mass.create_task(
-                        self.mass.music.mark_item_played(
-                            media_item,
-                            userid=playback_userid,
-                            queue_id=queue_id,
-                            user_initiated=True,
+                    # a play report is background work
+                    with request_priority(RequestPriority.LOW):
+                        self.mass.create_task(
+                            self.mass.music.mark_item_played(
+                                media_item,
+                                userid=playback_userid,
+                                queue_id=queue_id,
+                                user_initiated=True,
+                            )
                         )
-                    )
                 elif already_dynamic and not plays_next_track:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):

@@ -154,7 +154,7 @@ from music_assistant.helpers.playlists import (
     read_playlist_body,
 )
 from music_assistant.helpers.provider_access import playback_sources
-from music_assistant.helpers.throttle_retry import Priority, request_priority
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
@@ -3170,7 +3170,7 @@ class StreamsAudio:
             return
         music_prov = cast("MusicProvider", provider)
         # a listening report is background work, whoever streamed
-        with request_priority(Priority.LOW):
+        with request_priority(RequestPriority.LOW):
             self.mass.create_task(music_prov.on_streamed(streamdetails))
 
     def _get_volume_normalization_preference(
@@ -3854,7 +3854,7 @@ class StreamsAudio:
             # music and plugin providers share this signature, so either type can own the item
             try:
                 stream_prov = cast("MusicProvider | PluginProvider", provider)
-                with request_priority(Priority.HIGH):
+                with request_priority(RequestPriority.HIGH):
                     return await stream_prov.get_stream_details(mapping.item_id, media_type)
             except AudioError as err:
                 # remember the last one so its (actionable) message can be re-raised
@@ -5012,7 +5012,7 @@ class StreamsAudio:
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
             stream_prov = cast("MusicProvider | PluginProvider", provider)
-            with request_priority(Priority.HIGH):
+            with request_priority(RequestPriority.HIGH):
                 streamdetails = await stream_prov.get_stream_details(
                     mapping.item_id, MediaType.SOUND_EFFECT
                 )

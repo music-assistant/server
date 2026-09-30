@@ -28,7 +28,7 @@ from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedE
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
+from music_assistant.helpers.throttle_retry import Throttler
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -153,8 +153,7 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         try:
             return await func(client)
@@ -184,8 +183,7 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         return await func(client)
 
