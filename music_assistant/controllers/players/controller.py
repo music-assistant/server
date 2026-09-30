@@ -24,7 +24,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import (
@@ -1552,9 +1552,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         mass_queue = self.get_active_queue(player)
-        # a favorite set from a player belongs to the user the playback is for
+        # a favorite set from a player belongs to the user the playback is for; a service
+        # account (such as the Home Assistant integration) acts for that user as well
+        session_user = get_current_user()
         if (
-            get_current_user() is None
+            (session_user is None or session_user.role == UserRole.SERVICE)
             and mass_queue
             and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
         ):
