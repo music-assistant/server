@@ -1,4 +1,4 @@
-"""Position-first assembly of listings belonging to one library album."""
+"""Assembly of the listings belonging to one library album: identifiers first, positions second."""
 
 from __future__ import annotations
 
@@ -14,45 +14,68 @@ if TYPE_CHECKING:
 
 
 def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Track]:
-    """Select provider additions without replacing existing library rows."""
+    """
+    Select the provider entries to list next to the library rows of an album.
+
+    A library row always keeps its slot. A provider entry joins an existing slot by
+    provider ID, then by ISRC, then by position; a source's own listing is never
+    collapsed, and an ISRC that one source lists more than once identifies nothing.
+
+    :param library: The album's library rows.
+    :param providers: The album's tracklists as the providers list them.
+    """
     occupied = {_position(track) for track in library if track.track_number}
     library_ids = {key for track in library for key in _ids(track)}
-    slots: dict[tuple[int, int], Track] = {}
+    usable_isrcs = _unique_isrcs_per_source(library + providers)
+    library_isrcs = {isrc for track in library for isrc in usable_isrcs[id(track)]}
     titles: dict[tuple[int, str, str], list[Track]] = defaultdict(list)
+    title_of: dict[int, tuple[int, str, str]] = {}
     for track in library + providers:
-        titles[_title(track)].append(track)
+        title_of[id(track)] = title = _title(track)
+        titles[title].append(track)
+    slots: list[Track] = []
+    slot_sources: list[set[str]] = []
+    slot_by_isrc: dict[str, int] = {}
+    slot_by_position: dict[tuple[int, int], int] = {}
     unknown: list[Track] = []
     for track in providers:
         if library_ids.intersection(_ids(track)):
+            continue
+        isrcs = usable_isrcs[id(track)]
+        if isrcs.intersection(library_isrcs):
+            # the library row is this recording's slot, wherever the provider lists it
             continue
         if not track.track_number:
             unknown.append(track)
             continue
         position = _position(track)
-        if position in occupied:
-            continue
-        if position not in slots or _preference(track) < _preference(slots[position]):
-            slots[position] = track
+        slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
+        if slot is None:
+            if position in occupied:
+                continue
+            slot = slot_by_position.get(position)
+            if slot is not None and _different_recording(
+                slots[slot], track, usable_isrcs, title_of
+            ):
+                # two editions disagree about this position: list both rather than
+                # let one hide the other
+                slot = None
+        if slot is not None and track.provider in slot_sources[slot]:
+            # a source's own listing is authoritative: two of its entries stay two
+            slot = None
+        if slot is None:
+            slot = len(slots)
+            slots.append(track)
+            slot_sources.append(set())
+        elif _preference(track) < _preference(slots[slot]):
+            slots[slot] = track
+        slot_sources[slot].add(track.provider)
+        slot_by_position.setdefault(position, slot)
+        for isrc in isrcs:
+            slot_by_isrc.setdefault(isrc, slot)
 
-    # Title fallback is only safe when each source supplies a single entry and
-    # there is at most one known position. Repeated movements remain separate.
-    additions = list(slots.values())
-    suppressed_unknown: set[int] = set()
-    for entries in titles.values():
-        missing = [track for track in entries if not track.track_number]
-        if not missing:
-            continue
-        sources = Counter(track.provider for track in entries)
-        positions = {_position(track) for track in entries if track.track_number}
-        if max(sources.values()) > 1 or len(positions) > 1:
-            continue
-        if not any(track.provider == "library" or track.track_number for track in entries):
-            winner = min(missing, key=_preference)
-            missing = [track for track in missing if track is not winner]
-        # Distinct listing rows may compare equal as media items.
-        suppressed_unknown.update(id(track) for track in missing)
-    additions.extend(track for track in unknown if id(track) not in suppressed_unknown)
-    return additions
+    slots.extend(_unplaced_additions(titles, unknown))
+    return slots
 
 
 def album_track_backfills(
@@ -139,3 +162,53 @@ def _title(track: Track) -> tuple[int, str, str]:
 
 def _preference(track: Track) -> tuple[bool, str, str]:
     return not track.available, track.provider, track.item_id
+
+
+def _unplaced_additions(
+    titles: dict[tuple[int, str, str], list[Track]], unknown: list[Track]
+) -> list[Track]:
+    """Return the entries without a position that no other listing evidently already holds."""
+    # Title fallback is only safe when each source supplies a single entry and
+    # there is at most one known position. Repeated movements remain separate.
+    suppressed: set[int] = set()
+    for entries in titles.values():
+        missing = [track for track in entries if not track.track_number]
+        if not missing:
+            continue
+        sources = Counter(track.provider for track in entries)
+        positions = {_position(track) for track in entries if track.track_number}
+        if max(sources.values()) > 1 or len(positions) > 1:
+            continue
+        if not any(track.provider == "library" or track.track_number for track in entries):
+            winner = min(missing, key=_preference)
+            missing = [track for track in missing if track is not winner]
+        # Distinct listing rows may compare equal as media items.
+        suppressed.update(id(track) for track in missing)
+    return [track for track in unknown if id(track) not in suppressed]
+
+
+def _unique_isrcs_per_source(tracks: list[Track]) -> dict[int, set[str]]:
+    """Return, per track, the ISRCs its own source lists exactly once."""
+    isrcs_of = {id(track): _isrcs(track) for track in tracks}
+    seen: dict[str, Counter[str]] = defaultdict(Counter)
+    for track in tracks:
+        seen[track.provider].update(isrcs_of[id(track)])
+    return {
+        id(track): {isrc for isrc in isrcs_of[id(track)] if seen[track.provider][isrc] == 1}
+        for track in tracks
+    }
+
+
+def _different_recording(
+    holder: Track,
+    candidate: Track,
+    usable_isrcs: dict[int, set[str]],
+    title_of: dict[int, tuple[int, str, str]],
+) -> bool:
+    """Return whether two entries at one position are evidently different recordings."""
+    holder_isrcs, candidate_isrcs = usable_isrcs[id(holder)], usable_isrcs[id(candidate)]
+    if not holder_isrcs or not candidate_isrcs or holder_isrcs.intersection(candidate_isrcs):
+        return False
+    # a recording gets a new ISRC with every re-release, so a mismatch alone is not
+    # a contradiction: only a mismatch on the title as well is
+    return title_of[id(holder)][1:] != title_of[id(candidate)][1:]

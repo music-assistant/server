@@ -1,4 +1,4 @@
-"""Regression coverage for position-first album listings and safe backfill."""
+"""Regression coverage for identifier-first album listings and safe backfill."""
 
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -50,6 +50,29 @@ def test_unknown_title_does_not_choose_repeated_position() -> None:
     """One unknown movement cannot be assigned to either of two positions."""
     tracks = [entry("a", "one", 0), entry("b", "two", 1), entry("c", "three", 2)]
     assert len(album_tracks.select_album_tracks([], tracks)) == 3
+
+
+def test_repeated_isrc_within_a_listing_identifies_nothing() -> None:
+    """A source reusing one ISRC keeps both entries; another source then matches by position."""
+    reused = [entry("a", "one", 1, "GBAYC2100001"), entry("a", "five", 5, "GBAYC2100001")]
+    assert len(album_tracks.select_album_tracks([], reused)) == 2
+    other = entry("b", "two", 1, "GBAYC2100001")
+    assert len(album_tracks.select_album_tracks([], [*reused, other])) == 2
+
+
+@pytest.mark.parametrize("position", [1, 9])
+def test_shared_isrc_matches_across_positions(position: int) -> None:
+    """Another source's entry with the same ISRC is the same recording wherever it lists it."""
+    tracks = [entry("a", "one", 2, "GBAYC2100001"), entry("b", "two", position, "GBAYC2100001")]
+    assert len(album_tracks.select_album_tracks([], tracks)) == 1
+
+
+def test_library_recording_suppresses_its_provider_copy_by_isrc() -> None:
+    """A provider copy of a recording the library holds is not listed again, at any position."""
+    library = entry("library", "42", 0, "GBAYC2100001")
+    library.provider_mappings = set()
+    source = entry("a", "new", 7, "GBAYC2100001")
+    assert album_tracks.select_album_tracks([library], [source]) == []
 
 
 def test_library_slot_preferred_despite_identifier_drift() -> None:
