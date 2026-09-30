@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
@@ -193,7 +193,7 @@ def _streaming_player(
 def _control_player(
     *, player_id: str = "apctl", setup_data: dict[str, Any] | None = None
 ) -> AirPlayControlPlayer:
-    """Create a control-capable Apple player requiring streaming PIN + Companion pairing."""
+    """Create a control-capable Apple TV requiring streaming PIN + Companion/MRP pairing."""
     provider = MagicMock()
     provider.instance_id = "airplay"
     provider.dacp_id = "0123456789ABCDEF"
@@ -505,6 +505,35 @@ async def test_single_offer_pairs_companion_and_mrp_after_streaming() -> None:
     assert len(pin_entries) == 3
     assert all(entry.type is ConfigEntryType.PAIRING_CODE for entry in pin_entries)
     assert all(entry.format == "####" for entry in pin_entries)
+
+
+async def test_control_offer_skipped_without_control_pairing() -> None:
+    """A controlled device without Companion or MRP pairing gets no remote control offer."""
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "apctl"}
+
+    session, mass = _make_session(finish, player_id="apctl")
+    player = _control_player()
+    streaming = AsyncMock()
+    streaming.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
+
+    with (
+        patch(_PAIRING_TARGET, return_value=streaming),
+        patch.object(
+            AirPlayControlPlayer, "companion_pairing_supported", new_callable=PropertyMock
+        ) as companion_supported,
+        patch.object(
+            AirPlayControlPlayer, "mrp_pairing_supported", new_callable=PropertyMock
+        ) as mrp_supported,
+    ):
+        companion_supported.return_value = False
+        mrp_supported.return_value = False
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PIN: "1234"})
+
+    step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert step_ids == ["pair_pin"]
 
 
 async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> None:
