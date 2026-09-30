@@ -40,10 +40,7 @@ class ProviderModuleType(Protocol):
         """
         Initialize provider(instance) with given configuration.
 
-        auto_setup: True when this is the automatic first-boot setup of a default provider
-        (see DEFAULT_PROVIDERS); it is only passed in that case, so only default providers
-        need to accept it. A provider may raise UnsupportedSystemError to refuse an
-        automatic setup on hardware it would still accept when enabled by hand.
+        auto_setup: only passed (True) for the first-boot setup of a default provider.
         """
         raise NotImplementedError
 

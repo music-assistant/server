@@ -1035,8 +1035,7 @@ class MusicAssistant:
 
         :param instance_id: Instance ID of the provider to load.
         :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
-        :param auto_setup: This is the automatic first-boot setup of a default provider; the config
-            is dropped again if the host can not run it.
+        :param auto_setup: First-boot setup of a default provider; drop the config if refused.
         :param retry_attempt: How many retries of this load already failed, which decides
             how long the next one waits.
         """
