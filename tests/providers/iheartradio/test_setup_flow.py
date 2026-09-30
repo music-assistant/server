@@ -92,7 +92,8 @@ async def test_run_setup_retries_form_on_failure() -> None:
     )
 
     error_form = await _wait_for_form(session, with_errors=True)
-    assert error_form.errors == {"base": "login_failed"}
+    assert error_form.errors == {"base": "Authentication failed"}
+    assert error_form.error_translations["base"].key == "login_failed"
     entries = {entry.key: entry for entry in error_form.entries}
     assert entries[CONF_COUNTRY].value == "nz"
     assert entries[CONF_USERNAME].value == "gav@example.com"
