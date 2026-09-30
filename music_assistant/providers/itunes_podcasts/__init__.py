@@ -124,6 +124,8 @@ class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+    # feed url -> mapping details of the latest search results
+    _search_result_details: dict[str, str]
     _migrate_task: asyncio.Task[None] | None = None
 
     @property
@@ -175,6 +177,7 @@ class ITunesPodcastsProvider(MusicProvider):
         self.max_episodes = int(str(self.config.get_value(CONF_NUM_EPISODES)))
         # 20 requests per minute, be a bit below
         self.throttler = ThrottlerManager(rate_limit=18, period=60)
+        self._search_result_details = {}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -191,7 +194,6 @@ class ITunesPodcastsProvider(MusicProvider):
             with suppress(asyncio.CancelledError):
                 await self._migrate_task
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -204,21 +206,8 @@ class ITunesPodcastsProvider(MusicProvider):
             limit = 1
         elif limit > 200:
             limit = 200
-        country = str(self.config.get_value(CONF_LOCALE))
-        explicit = "Yes" if bool(self.config.get_value(CONF_EXPLICIT)) else "No"
-        params: dict[str, str | int] = {
-            "media": "podcast",
-            "entity": "podcast",
-            "country": country,
-            "attribute": "titleTerm",
-            "explicit": explicit,
-            "limit": limit,
-            "term": search_query,
-        }
-        url = "https://itunes.apple.com/search?"
-        results = await self._perform_search(url, params) or []
-        result.podcasts = self._get_podcast_list(results)
-
+        # built outside the cache, so get_podcast learns the details of every search result
+        result.podcasts = self._get_podcast_list(await self._search_podcasts(search_query, limit))
         return result
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
@@ -270,6 +259,22 @@ class ITunesPodcastsProvider(MusicProvider):
             ),
         )
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    async def _search_podcasts(self, search_query: str, limit: int) -> list[PodcastSearchResult]:
+        country = str(self.config.get_value(CONF_LOCALE))
+        explicit = "Yes" if bool(self.config.get_value(CONF_EXPLICIT)) else "No"
+        params: dict[str, str | int] = {
+            "media": "podcast",
+            "entity": "podcast",
+            "country": country,
+            "attribute": "titleTerm",
+            "explicit": explicit,
+            "limit": limit,
+            "term": search_query,
+        }
+        url = "https://itunes.apple.com/search?"
+        return await self._perform_search(url, params) or []
+
     @throttle_with_retries
     async def _perform_search(
         self, url: str, params: dict[str, str | int]
@@ -293,6 +298,10 @@ class ITunesPodcastsProvider(MusicProvider):
                     result.track_name,
                 )
                 continue
+            details = json.dumps(
+                MappingDetails(itunes_id=result.collection_id, genre_ids=result.genre_ids).to_dict()
+            )
+            self._search_result_details[result.feed_url] = details
             podcast = Podcast(
                 name=result.track_name,
                 item_id=result.feed_url,
@@ -303,11 +312,7 @@ class ITunesPodcastsProvider(MusicProvider):
                         item_id=result.feed_url,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
-                        details=json.dumps(
-                            MappingDetails(
-                                itunes_id=result.collection_id, genre_ids=result.genre_ids
-                            ).to_dict()
-                        ),
+                        details=details,
                     )
                 },
             )
@@ -394,10 +399,13 @@ class ITunesPodcastsProvider(MusicProvider):
         library_item = await self.mass.music.podcasts.get_library_item_by_prov_id(
             prov_podcast_id, self.instance_id
         )
-        if library_item is not None:
-            for mapping in library_item.provider_mappings:
-                if mapping.provider_instance == self.instance_id:
-                    self._set_mapping_details(podcast, mapping.details)
+        if library_item is None:
+            # adding a search result to the library fetches it again
+            self._set_mapping_details(podcast, self._search_result_details.get(prov_podcast_id))
+            return podcast
+        for mapping in library_item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                self._set_mapping_details(podcast, mapping.details)
         return podcast
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:

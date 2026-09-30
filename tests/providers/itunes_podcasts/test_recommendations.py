@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Podcast, ProviderMapping
 
 from music_assistant.providers.itunes_podcasts import (
@@ -308,13 +309,24 @@ async def test_search_results_carry_itunes_details(provider: ITunesPodcastsProvi
     assert _details(mapping) == MappingDetails(itunes_id=1, genre_ids=["1488", "26"])
 
 
+@pytest.mark.parametrize("in_library", [True, False])
 async def test_get_podcast_keeps_stored_details(
-    provider: ITunesPodcastsProvider, mass_mock: Mock
+    provider: ITunesPodcastsProvider, mass_mock: Mock, in_library: bool
 ) -> None:
-    """A podcast fetched from its feed carries the details stored on its library mapping."""
-    stored = _library_podcast(
-        "Podcast 1", "https://example.com/1.xml", MappingDetails(itunes_id=1, genre_ids=["1488"])
-    )
+    """A podcast fetched from its feed carries the details of its library mapping or search."""
+    stored = None
+    if in_library:
+        stored = _library_podcast(
+            "Podcast 1",
+            "https://example.com/1.xml",
+            MappingDetails(itunes_id=1, genre_ids=["1488"]),
+        )
+    else:
+        # adding a search result to the library fetches the podcast again, the search
+        # itself may come from the cache
+        search = AsyncMock(return_value=[_result(1, ["1488"])])
+        with patch.object(provider, "_search_podcasts", search):
+            await provider.search("Podcast 1", [MediaType.PODCAST])
     mass_mock.music.podcasts.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     feed = {"title": "Podcast 1", "episodes": []}
     with patch.object(provider, "_cache_get_podcast", AsyncMock(return_value=feed)):
