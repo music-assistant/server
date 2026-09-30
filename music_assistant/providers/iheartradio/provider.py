@@ -19,8 +19,6 @@ from .browse import IHeartRadioBrowseManager
 from .constants import (
     CONF_COUNTRY,
     DEFAULT_COUNTRY,
-    REPORT_STATUS_DONE,
-    REPORT_STATUS_SKIP,
 )
 from .library import IHeartRadioLibraryManager
 from .parsers import (
@@ -378,8 +376,7 @@ class IHeartRadioProvider(MusicProvider):
         if not fully_played and position == 0:
             # the user marked the item as unplayed; nothing was heard
             return
-        status = REPORT_STATUS_DONE if fully_played else REPORT_STATUS_SKIP
-        await self.stations.report_play(prov_item_id, status, position)
+        await self.stations.report_stopped(prov_item_id, fully_played, position)
 
     async def _episode_position(self, podcast_id: str, episode_id: str) -> int:
         """

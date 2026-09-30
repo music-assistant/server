@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
@@ -39,9 +39,18 @@ async def run_setup(session: SetupSession) -> None:
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
         ]
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
+        if not submitted.get(CONF_PASSWORD) and _same_account(setup_data, submitted):
+            # a password is never prefilled, so a blank one keeps the saved password
+            submitted = {key: value for key, value in submitted.items() if key != CONF_PASSWORD}
         setup_data.update(submitted)
         try:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
             errors = {"base": err}
+
+
+def _same_account(setup_data: dict[str, Any], submitted: dict[str, Any]) -> bool:
+    """Return whether the submitted form keeps the account that is already saved."""
+    saved = str(setup_data.get(CONF_USERNAME) or "").strip()
+    return bool(saved) and saved == str(submitted.get(CONF_USERNAME) or "").strip()

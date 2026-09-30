@@ -23,6 +23,8 @@ from .constants import (
     PATH_PLAYBACK_REPORTING,
     PATH_PLAYBACK_STREAMS,
     PLAYED_FROM,
+    REPORT_STATUS_DONE,
+    REPORT_STATUS_SKIP,
     REPORT_STATUS_START,
     STATION_OUT_OF_SONGS_CODE,
     STATION_TYPE_RADIO,
@@ -94,6 +96,9 @@ class IHeartRadioStationManager:
         self.provider = provider
         self.logger = provider.logger
         self._stations: dict[str, ArtistRadioStation] = {}
+        # a stopped track as (track id, seconds played); a pause and a skip look the same
+        # when they are reported, so the skip is only sent once another track starts
+        self._pending_skip: tuple[str, int] | None = None
 
     async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """
@@ -146,14 +151,40 @@ class IHeartRadioStationManager:
         """
         Report to iHeartRadio that an artist radio track started playing, once per batch.
 
-        Does nothing for a track that is no longer retained.
+        A track held as possibly skipped is reported as skipped once a different track
+        starts, and forgotten when the same track resumes. Does nothing for a track that
+        is no longer retained.
 
         :param track_id: The iHeartRadio track id.
         """
+        if (pending := self._pending_skip) is not None:
+            self._pending_skip = None
+            if pending[0] != track_id:
+                await self.report_play(pending[0], REPORT_STATUS_SKIP, pending[1])
         if (found := self.find(track_id)) is None:
             return
         if found[0].mark_started(track_id):
             await self.report_play(track_id, REPORT_STATUS_START, 0)
+
+    async def report_stopped(self, track_id: str, fully_played: bool, seconds_played: int) -> None:
+        """
+        Report to iHeartRadio that an artist radio track stopped playing.
+
+        A finished track is reported as done right away. A track stopped part way is only
+        reported as skipped once another track starts, since a pause is reported the same.
+
+        :param track_id: The iHeartRadio track id.
+        :param fully_played: Whether the track was played to the end.
+        :param seconds_played: How many seconds of the track were played.
+        """
+        if (pending := self._pending_skip) is not None and pending[0] != track_id:
+            self._pending_skip = None
+            await self.report_play(pending[0], REPORT_STATUS_SKIP, pending[1])
+        if fully_played:
+            self._pending_skip = None
+            await self.report_play(track_id, REPORT_STATUS_DONE, seconds_played)
+        else:
+            self._pending_skip = (track_id, seconds_played)
 
     async def report_play(self, track_id: str, status: str, seconds_played: int) -> None:
         """

@@ -317,21 +317,42 @@ async def test_expired_batch_is_refused(provider: IHeartRadioProvider, api: Fake
 
 
 async def test_on_played_reports_done_or_skip(provider: IHeartRadioProvider, api: FakeApi) -> None:
-    """A finished track is reported as DONE, a stopped one as SKIP with its position."""
+    """A finished track is reported as DONE, a stopped one as SKIP once another track starts."""
+    next_track_id = "607289"
     station = provider.stations.register("1805", ARTIST_STATION["id"], now=1e12)
-    station.add_batch({TRACK_ID: RADIO_ITEM}, now=1e12)
+    station.add_batch({TRACK_ID: RADIO_ITEM, next_track_id: RADIO_ITEM}, now=1e12)
     api.responses[("POST", PATH_PLAYBACK_REPORTING)] = {}
     track = Mock()
     await provider.on_played(MediaType.TRACK, TRACK_ID, True, 176, track)
     await provider.on_played(MediaType.TRACK, TRACK_ID, False, 40, track)
-    # still playing reports the start, "mark as unplayed" is not a play
-    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 40, track, is_playing=True)
+    # a stop could still be a pause, so nothing is reported until another track starts
+    assert [report["status"] for report in await _reports(api)] == ["DONE"]
+    await provider.on_played(MediaType.TRACK, next_track_id, False, 5, track, is_playing=True)
+    # "mark as unplayed" is not a play
     await provider.on_played(MediaType.TRACK, TRACK_ID, False, 0, track)
     reports = await _reports(api)
     assert [(report["status"], report["secondsPlayed"]) for report in reports] == [
         ("DONE", 176),
         ("SKIP", 40),
         ("START", 0),
+    ]
+
+
+async def test_on_played_pause_is_not_a_skip(provider: IHeartRadioProvider, api: FakeApi) -> None:
+    """A track paused and resumed is reported once as started and once as done."""
+    station = provider.stations.register("1805", ARTIST_STATION["id"], now=1e12)
+    station.add_batch({TRACK_ID: RADIO_ITEM}, now=1e12)
+    api.responses[("POST", PATH_PLAYBACK_REPORTING)] = {}
+    track = Mock()
+    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 30, track, is_playing=True)
+    # paused, then resumed
+    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 60, track)
+    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 90, track, is_playing=True)
+    await provider.on_played(MediaType.TRACK, TRACK_ID, True, 176, track)
+    reports = await _reports(api)
+    assert [(report["status"], report["secondsPlayed"]) for report in reports] == [
+        ("START", 0),
+        ("DONE", 176),
     ]
 
 
