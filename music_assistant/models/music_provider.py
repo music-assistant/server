@@ -2046,13 +2046,25 @@ class MusicProvider(Provider):
         prov_types = {img.type for img in prov_images}
         # an image type the provider does not supply is kept, so an empty image list from
         # the provider is not taken as a removed cover
-        own_images = {
+        own_images = [
             img
             for img in library_images
             if img.provider in own_providers and img.type in prov_types
-        }
-        images_changed = own_images != set(prov_images)
-        if prov_item.name == library_item.name and not images_changed:
+        ]
+        images_changed = own_images != prov_images
+        # an empty list of name params is stored as None
+        naming_changed = (
+            prov_item.name,
+            prov_item.sort_name,
+            prov_item.translation_key,
+            prov_item.translation_params or None,
+        ) != (
+            library_item.name,
+            library_item.sort_name,
+            library_item.translation_key,
+            library_item.translation_params or None,
+        )
+        if not naming_changed and not images_changed:
             return None
         library_item.name = prov_item.name
         library_item.sort_name = prov_item.sort_name

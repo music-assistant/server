@@ -165,6 +165,29 @@ async def test_localized_name_follows_the_provider(playlists: PlaylistController
     assert (library_item.name, library_item.translation_params) == ("Liked Songs New", ["New"])
 
 
+async def test_localized_name_reaches_an_unchanged_name(playlists: PlaylistController) -> None:
+    """A localized name the provider adds to a playlist with the same name reaches the library."""
+    item_id = uuid4().hex
+    await _sync(playlists, _playlist(item_id, "Liked Songs"))
+
+    library_item = await _sync(
+        playlists,
+        _playlist(item_id, "Liked Songs", translation_key="liked_songs", translation_params=["x"]),
+    )
+
+    assert (library_item.translation_key, library_item.translation_params) == ("liked_songs", ["x"])
+
+
+async def test_reordered_images_follow_the_provider(playlists: PlaylistController) -> None:
+    """The provider's preferred image becomes the one shown when it reorders its images."""
+    item_id = uuid4().hex
+    await _sync(playlists, _playlist(item_id, "Name", "first.jpg", "second.jpg"))
+
+    library_item = await _sync(playlists, _playlist(item_id, "Name", "second.jpg", "first.jpg"))
+
+    assert library_item.metadata.images == [_thumb("second.jpg"), _thumb("first.jpg")]
+
+
 async def test_localized_name_is_dropped_with_the_provider(playlists: PlaylistController) -> None:
     """A playlist renamed without a localized name no longer carries the old one."""
     item_id = uuid4().hex
