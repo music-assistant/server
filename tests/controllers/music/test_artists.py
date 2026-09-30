@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import ExternalID, ImageType
+import pytest
+from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
 from music_assistant_models.media_items import (
     Artist,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
 )
+
+from music_assistant.controllers.music.media.artists import ArtistsController
 
 from .helpers import create_track
 
@@ -109,3 +115,70 @@ async def test_overwrite_update_replaces_artist_details(mass: MusicAssistant) ->
     }
     assert refreshed.metadata.description == "A better biography"
     assert [image.path for image in refreshed.metadata.images or []] == ["http://images/new.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("feature", "library_method", "provider_method"),
+    [
+        (
+            ProviderFeature.ARTIST_TOPTRACKS,
+            "get_library_artist_toptracks",
+            "get_provider_artist_toptracks",
+        ),
+        (
+            ProviderFeature.ARTIST_TOPALBUMS,
+            "get_library_artist_topalbums",
+            "get_provider_artist_topalbums",
+        ),
+        (
+            ProviderFeature.SIMILAR_ARTISTS,
+            "get_library_artist_similar_artists",
+            "get_provider_artist_similar_artists",
+        ),
+    ],
+)
+async def test_library_artist_listings_query_one_instance_per_streaming_domain(
+    feature: ProviderFeature, library_method: str, provider_method: str
+) -> None:
+    """Instances of one streaming provider return the same catalog, so only one is queried."""
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id=f"artist_{instance}", provider_domain=domain, provider_instance=instance
+            )
+            for domain, instance in (
+                ("spotify", "spotify_1"),
+                ("spotify", "spotify_2"),
+                ("filesystem_local", "filesystem_local_1"),
+                ("filesystem_local", "filesystem_local_2"),
+            )
+        },
+    )
+    providers = {
+        instance: SimpleNamespace(
+            domain=instance.rsplit("_", maxsplit=1)[0],
+            is_streaming_provider=instance.startswith("spotify"),
+            supported_features={feature},
+        )
+        for instance in ("spotify_1", "spotify_2", "filesystem_local_1", "filesystem_local_2")
+    }
+    mass = MagicMock()
+    mass.get_provider = MagicMock(side_effect=lambda instance, **_kwargs: providers[instance])
+    mass.get_providers_supporting_feature = MagicMock(return_value=[])
+    ctrl = ArtistsController.__new__(ArtistsController)
+    ctrl.mass = mass
+    ctrl.logger = logging.getLogger("test.artists.listings")
+    provider_listing = AsyncMock(return_value=[])
+    with patch.multiple(
+        ctrl,
+        get_library_item=AsyncMock(return_value=artist),
+        **{provider_method: provider_listing},
+    ):
+        await getattr(ctrl, library_method)("1")
+
+    queried = {call.args[1] for call in provider_listing.await_args_list}
+    # one Spotify instance, and both (non-streaming) filesystem instances
+    assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
