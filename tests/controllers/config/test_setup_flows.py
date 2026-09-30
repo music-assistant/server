@@ -95,6 +95,7 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
         unregister_dynamic_route=lambda path, _method="*": routes.pop(path, None),
         routes=routes,
     )
+    mass_minimal.streams = SimpleNamespace(publish_ip="127.0.0.1")  # type: ignore[assignment]
     mass_minimal.music = MagicMock()
     # awaited at the tail of the real provider load path
     mass_minimal.music.on_provider_loaded = AsyncMock()
