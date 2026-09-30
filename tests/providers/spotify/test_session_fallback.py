@@ -144,6 +144,63 @@ async def test_short_dev_cooldown_keeps_the_dev_session() -> None:
     assert _fallback_logs(provider) == 0
 
 
+def _stub_http_per_token(provider: SpotifyProvider, statuses: dict[str, int]) -> MagicMock:
+    """
+    Answer requests with a status per access token, return the request mock.
+
+    :param provider: The provider whose requests to answer.
+    :param statuses: HTTP status per access token, 429 answers carry an hour long Retry-After.
+    """
+
+    def _respond(_method: str, _url: str, headers: dict[str, str], **_kwargs: Any) -> MagicMock:
+        status = statuses[headers["Authorization"].split()[1]]
+        response = MagicMock(
+            status=status, headers={"Retry-After": "3600"} if status == 429 else {}
+        )
+        response.json = AsyncMock(return_value={})
+        return MagicMock(
+            __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=None)
+        )
+
+    request = MagicMock(side_effect=_respond)
+    provider.mass.http_session.request = request  # type: ignore[method-assign]
+    return request
+
+
+@pytest.mark.parametrize("priority", [RequestPriority.NORMAL, RequestPriority.HIGH])
+async def test_request_that_runs_into_a_long_limit_falls_back(priority: RequestPriority) -> None:
+    """The user action that meets the ban of the custom Client ID is served by the shared client."""
+    provider = await _make_provider()
+    request = _stub_http_per_token(provider, {"dev": 429, "global": 200})
+
+    with request_priority(priority):
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev", "global"]
+    assert provider._dev_session.throttler.cooldown_remaining > 0
+    assert _fallback_logs(provider) == 1
+
+
+async def test_background_work_that_runs_into_a_long_limit_fails() -> None:
+    """Background work that meets the ban fails, the shared client is not for it."""
+    provider = await _make_provider()
+    request = _stub_http_per_token(provider, {"dev": 429, "global": 200})
+
+    with request_priority(RequestPriority.LOW), pytest.raises(RetriesExhausted):
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev"]
+
+
+async def test_playback_leaves_a_limited_dev_session_at_once() -> None:
+    """Playback takes the shared client during any limit of the custom Client ID, however short."""
+    provider = await _make_provider()
+    provider._dev_session.throttler.set_cooldown(30)
+    request = _stub_http(provider, {})
+
+    with request_priority(RequestPriority.HIGH):
+        await provider._get_data("tracks/abc")
+    assert _tokens_used(request) == ["global"]
+
+
 async def test_failed_dev_login_falls_back_to_global() -> None:
     """A request whose dev login fails is served by the global session instead."""
     provider = await _make_provider()

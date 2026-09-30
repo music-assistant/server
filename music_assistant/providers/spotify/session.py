@@ -112,34 +112,58 @@ class SpotifySession:
             return result
 
     @throttle_with_retries
-    async def delete(self, endpoint: str, data: Any = None, **params: Any) -> None:
+    async def delete(
+        self,
+        endpoint: str,
+        data: Any = None,
+        *,
+        auth_info: dict[str, Any] | None = None,
+        **params: Any,
+    ) -> None:
         """
         Delete data from the api.
 
         :param endpoint: API endpoint to call.
         :param data: JSON body of the request.
+        :param auth_info: Token to use, the session's own token when omitted.
         :param params: Query parameters of the request.
         """
         async with self._request(
-            "DELETE", endpoint, params=params, json=data, ssl=True
+            "DELETE", endpoint, auth_info=auth_info, params=params, json=data, ssl=True
         ) as response:
             response.raise_for_status()
 
     @throttle_with_retries
-    async def put(self, endpoint: str, data: Any = None, **params: Any) -> None:
+    async def put(
+        self,
+        endpoint: str,
+        data: Any = None,
+        *,
+        auth_info: dict[str, Any] | None = None,
+        **params: Any,
+    ) -> None:
         """
         Put data on the api.
 
         :param endpoint: API endpoint to call.
         :param data: JSON body of the request.
+        :param auth_info: Token to use, the session's own token when omitted.
         :param params: Query parameters of the request.
         """
-        async with self._request("PUT", endpoint, params=params, json=data, ssl=True) as response:
+        async with self._request(
+            "PUT", endpoint, auth_info=auth_info, params=params, json=data, ssl=True
+        ) as response:
             response.raise_for_status()
 
     @throttle_with_retries
     async def post(
-        self, endpoint: str, data: Any = None, want_result: bool = True, **params: Any
+        self,
+        endpoint: str,
+        data: Any = None,
+        want_result: bool = True,
+        *,
+        auth_info: dict[str, Any] | None = None,
+        **params: Any,
     ) -> dict[str, Any]:
         """
         Post data on the api.
@@ -147,9 +171,12 @@ class SpotifySession:
         :param endpoint: API endpoint to call.
         :param data: JSON body of the request.
         :param want_result: Return the response body, an empty dict when False.
+        :param auth_info: Token to use, the session's own token when omitted.
         :param params: Query parameters of the request.
         """
-        async with self._request("POST", endpoint, params=params, json=data, ssl=True) as response:
+        async with self._request(
+            "POST", endpoint, auth_info=auth_info, params=params, json=data, ssl=True
+        ) as response:
             response.raise_for_status()
             if not want_result:
                 return {}

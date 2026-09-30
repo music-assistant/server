@@ -31,6 +31,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
@@ -1693,6 +1694,14 @@ class SpotifyProvider(MusicProvider):
             # Fall back to global session
             self.logger.debug("Falling back to global session after dev session failure")
             return await request(self._global_session)
+        except RetriesExhausted:
+            # the request that runs into a limit of the custom Client ID is served by
+            # the shared client as well, when the limit is one that moves requests there
+            if session is not self._dev_session or (
+                self._session_for(use_global_session) is not self._global_session
+            ):
+                raise
+            return await request(self._global_session)
 
     def _session_for(self, use_global_session: bool) -> SpotifySession:
         """
@@ -1703,9 +1712,13 @@ class SpotifyProvider(MusicProvider):
         if use_global_session or not self.dev_session_active:
             return self._global_session
         cooldown = self._dev_session.throttler.cooldown_remaining
-        if cooldown <= MAX_WAIT_TIME or current_priority() is RequestPriority.LOW:
-            # background work stays on the custom Client ID, so it never
-            # eats into the budget of the shared client
+        priority = current_priority()
+        # background work stays on the custom Client ID, so it never eats into the budget
+        # of the shared client. A user action waits out a short limit, playback does not
+        # wait for a limit at all and takes the shared client as soon as there is one.
+        if priority is RequestPriority.LOW or cooldown <= (
+            0 if priority is RequestPriority.HIGH else MAX_WAIT_TIME
+        ):
             return self._dev_session
         if (now := time.monotonic()) >= self._dev_fallback_logged_until:
             self._dev_fallback_logged_until = now + cooldown
