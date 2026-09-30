@@ -144,11 +144,13 @@ class Body:
     def __init__(self, payload: bytes) -> None:
         """Initialize the synthetic fixture."""
         self.payload = payload
+        self.total_raw_bytes = 0
 
     async def read(self, size: int) -> bytes:
         # Deliberately return short chunks to emulate TCP fragmentation.
         """Return a short chunk from the synthetic response."""
         part, self.payload = self.payload[: min(size, 7)], self.payload[min(size, 7) :]
+        self.total_raw_bytes += len(part)
         return part
 
     async def iter_chunked(self, size: int) -> AsyncIterator[bytes]:

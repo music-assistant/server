@@ -423,17 +423,25 @@ class FeiNiuClient:
                         "webp",
                     }:
                         raise ProtocolError("Stream returned empty or non-audio data")
-                    received = len(prefix)
-                    if expected_size is not None and received > expected_size:
+                    # Range headers count the encoded representation, before HTTP decompression.
+                    if (
+                        expected_size is not None
+                        and response.content.total_raw_bytes > expected_size
+                    ):
                         raise ProtocolError("Stream exceeds its complete range")
                     yield bytes(prefix)
                     async for chunk in response.content.iter_chunked(65536):
                         self._check_open()
-                        received += len(chunk)
-                        if expected_size is not None and received > expected_size:
+                        if (
+                            expected_size is not None
+                            and response.content.total_raw_bytes > expected_size
+                        ):
                             raise ProtocolError("Stream exceeds its complete range")
                         yield chunk
-                    if expected_size is not None and received != expected_size:
+                    if (
+                        expected_size is not None
+                        and response.content.total_raw_bytes != expected_size
+                    ):
                         raise ProtocolError("Stream ended before its complete range")
                 finally:
                     self._responses.discard(response)

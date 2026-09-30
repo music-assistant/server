@@ -1,7 +1,11 @@
 """Public behavior regressions for bounded lyrics, cached listings and full streams."""
 
 import asyncio
+import gzip
+import io
 import time
+import wave
+import zlib
 from collections.abc import AsyncGenerator
 from copy import copy
 from pathlib import Path
@@ -9,7 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
@@ -18,9 +25,9 @@ from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.cache import controller as cache_module
 from music_assistant.providers.feiniu_music import lyrics as lyrics_module
-from music_assistant.providers.feiniu_music.client import NetworkError, ProtocolError
+from music_assistant.providers.feiniu_music.client import FeiNiuClient, NetworkError, ProtocolError
 
-from .test_client import Response, client_with
+from .test_client import PROFILE, Response, client_with
 from .test_provider import provider as provider  # noqa: PLC0414
 from .test_provider import track_data
 
@@ -334,6 +341,49 @@ async def test_206_stream_checks_actual_bytes_without_content_length(actual_size
             await collect()
         assert sum(map(len, chunks)) <= 9000
     assert not client._responses
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+@pytest.mark.parametrize("length_delta", [-1, 0, 1])
+@pytest.mark.parametrize("content_length", [False, True])
+async def test_encoded_206_checks_wire_length_and_delivers_decoded_audio(
+    encoding: str, length_delta: int, content_length: bool
+) -> None:
+    """Real HTTP content decoding must not mix range sizes with decoded audio sizes."""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+        wav.writeframes(bytes(16000))
+    payload = output.getvalue()
+    encoded = gzip.compress(payload) if encoding == "gzip" else zlib.compress(payload)
+    total = len(encoded) + length_delta
+
+    async def stream(request: web.Request) -> web.StreamResponse:
+        assert "Range" not in request.headers
+        headers = {
+            "Content-Encoding": encoding,
+            "Content-Range": f"bytes 0-{total - 1}/{total}",
+        }
+        if content_length:
+            headers["Content-Length"] = str(len(encoded))
+        response = web.StreamResponse(status=206, headers=headers)
+        await response.prepare(request)
+        await response.write(encoded)
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/music/api/v1/track/stream", stream)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        async with FeiNiuClient(str(server.make_url("")), PROFILE, session=session) as client:
+            client._token = "synthetic-token"
+            if length_delta:
+                with pytest.raises(ProtocolError):
+                    _ = [chunk async for chunk in client.audio_stream("track")]
+            else:
+                assert b"".join([chunk async for chunk in client.audio_stream("track")]) == payload
+            assert not client._responses
+        assert not session.closed
 
 
 @pytest.mark.parametrize("source", ["library", "search", "artist"])
