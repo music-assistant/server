@@ -53,6 +53,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -397,6 +402,22 @@ async def test_task_runs_without_the_user_context_of_its_caller(
 
     assert seen_users == [None]
     assert tasks_controller.get_task(task.id).user_id == "user-123"
+
+
+async def test_task_runs_with_low_priority_whatever_its_caller_had(
+    tasks_controller: TasksController,
+) -> None:
+    """A managed task queued during playback makes its requests as background work."""
+    seen: list[RequestPriority] = []
+
+    async def handler() -> None:
+        seen.append(current_priority())
+
+    with request_priority(RequestPriority.HIGH):
+        task = tasks_controller.run_background_task(name="Sync library", handler=handler)
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+
+    assert seen == [RequestPriority.LOW]
 
 
 async def test_user_scoped_task_visibility(tasks_controller: TasksController) -> None:

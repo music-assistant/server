@@ -33,6 +33,11 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -534,6 +539,40 @@ async def test_a_play_report_moves_to_the_own_account_of_an_own_service() -> Non
     own.on_played.assert_called_once()
     assert own.on_played.call_args.kwargs["prov_item_id"] == "t1"
     housemate.on_played.assert_not_called()
+
+
+async def test_a_play_report_runs_with_low_priority() -> None:
+    """A play report made during playback reaches the provider as background work."""
+    instance = "tidal--mine"
+    prov = _music_source_prov(instance, available=True)
+    controller = _controller_with_sources({instance: _private(USER_A)}, providers=[prov])
+    mass: Any = controller.mass
+    mass.get_provider = Mock(return_value=prov)
+    mass.get_provider_instances = Mock(return_value=[prov])
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(USER_A))
+    seen: list[RequestPriority] = []
+
+    def create_task(coro: Any) -> None:
+        # a task runs in a copy of the context it is created in
+        seen.append(current_priority())
+        coro.close()
+
+    mass.create_task = Mock(side_effect=create_task)
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="tidal", provider_instance=instance)
+        },
+    )
+    controller._resolve_playlog_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+    with request_priority(RequestPriority.HIGH):
+        await controller.mark_item_played(track, is_playing=True, userid=USER_A)
+        assert current_priority() is RequestPriority.HIGH
+
+    assert seen == [RequestPriority.LOW]
 
 
 async def test_a_play_report_never_reaches_another_members_account() -> None:
