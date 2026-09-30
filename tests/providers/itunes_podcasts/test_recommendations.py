@@ -294,6 +294,42 @@ async def test_search_results_carry_itunes_details(provider: ITunesPodcastsProvi
     assert _details(mapping) == MappingDetails(itunes_id=1, genre_ids=["1488", "26"])
 
 
+async def test_get_podcast_keeps_stored_details(
+    provider: ITunesPodcastsProvider, mass_mock: Mock
+) -> None:
+    """A podcast fetched from its feed carries the details stored on its library mapping."""
+    stored = _library_podcast(
+        "Podcast 1", "https://example.com/1.xml", MappingDetails(itunes_id=1, genre_ids=["1488"])
+    )
+    mass_mock.music.podcasts.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    feed = {"title": "Podcast 1", "episodes": []}
+    with patch.object(provider, "_cache_get_podcast", AsyncMock(return_value=feed)):
+        podcast = await provider.get_podcast("https://example.com/1.xml")
+
+    (mapping,) = podcast.provider_mappings
+    assert _details(mapping) == MappingDetails(itunes_id=1, genre_ids=["1488"])
+
+
+async def test_library_sync_keeps_stored_details(
+    provider: ITunesPodcastsProvider, mass_mock: Mock
+) -> None:
+    """A synced library podcast carries the details stored on its mapping."""
+    stored = _library_podcast(
+        "Podcast 1", "https://example.com/1.xml", MappingDetails(itunes_id=1, genre_ids=["1488"])
+    )
+    mass_mock.music.podcasts.get_library_items_by_prov_id = AsyncMock(return_value=[stored])
+    mass_mock.music.get_provider_sync_schedule = Mock(return_value=None)
+    feed = {"title": "Podcast 1", "episodes": []}
+    with patch(
+        "music_assistant.providers.itunes_podcasts.refresh_cached_podcast",
+        AsyncMock(return_value=feed),
+    ):
+        (podcast,) = [p async for p in provider.get_library_podcasts()]
+
+    (mapping,) = podcast.provider_mappings
+    assert _details(mapping) == MappingDetails(itunes_id=1, genre_ids=["1488"])
+
+
 async def test_loaded_in_mass_starts_migration(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:

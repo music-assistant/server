@@ -370,23 +370,34 @@ class ITunesPodcastsProvider(MusicProvider):
                 yield podcast
                 continue
 
-            yield parse_podcast(
+            synced_podcast = parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
                 instance_id=self.instance_id,
                 domain=self.domain,
             )
+            self._set_mapping_details(synced_podcast, our_provider_mapping.details)
+            yield synced_podcast
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
         parsed = await self._cache_get_podcast(prov_podcast_id)
 
-        return parse_podcast(
+        podcast = parse_podcast(
             feed_url=prov_podcast_id,
             parsed_feed=parsed,
             instance_id=self.instance_id,
             domain=self.domain,
         )
+        # keep the stored iTunes id and genres, a refresh replaces the library mappings
+        library_item = await self.mass.music.podcasts.get_library_item_by_prov_id(
+            prov_podcast_id, self.instance_id
+        )
+        if library_item is not None:
+            for mapping in library_item.provider_mappings:
+                if mapping.provider_instance == self.instance_id:
+                    self._set_mapping_details(podcast, mapping.details)
+        return podcast
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
@@ -599,6 +610,11 @@ class ITunesPodcastsProvider(MusicProvider):
                 details = MappingDetails(itunes_id=match.collection_id, genre_ids=match.genre_ids)
             mapping.details = json.dumps(details.to_dict())
             await self.mass.music.podcasts.set_provider_mappings(podcast.item_id, [mapping])
+
+    def _set_mapping_details(self, podcast: Podcast, details: str | None) -> None:
+        for mapping in podcast.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                mapping.details = details
 
     @staticmethod
     def _normalize_feed_url(url: str) -> str:
