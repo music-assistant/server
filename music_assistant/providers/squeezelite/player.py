@@ -345,6 +345,7 @@ class SqueezelitePlayer(Player):
                         media=media,
                         send_flush=True,
                         auto_play=False,
+                        is_group_playback=True,
                         mime_type=get_mime_type(member_codec),
                     )
                 )
@@ -486,6 +487,7 @@ class SqueezelitePlayer(Player):
         enqueue: bool = False,
         send_flush: bool = True,
         auto_play: bool = False,
+        is_group_playback: bool = False,
         mime_type: str | None = None,
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
@@ -523,6 +525,11 @@ class SqueezelitePlayer(Player):
             stream_threshold=stream_threshold,
             output_threshold=output_threshold,
         )
+        # Secondary-protocol devices (WiiM/LinkPlay and the AirPlay/Cast/UPnP
+        # bridges) ignore the no-autostart flag and start before the coordinated
+        # group instant; hold them until the group start.
+        if is_group_playback and is_protocol_only_device(slimplayer.device_model):
+            await slimplayer.pause()
         # if queue is set to single track repeat,
         # immediately set this track as the next
         # this prevents race conditions with super short audio clips (on single repeat)
