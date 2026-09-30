@@ -226,6 +226,18 @@ async def test_a_paused_player_that_cannot_be_reached_still_hands_over_its_slot(
     await buffer.clear()
 
 
+async def test_a_stop_that_ended_no_session_reports_no_freed_slot(rig: _Rig) -> None:
+    """Only a paused queue whose session really ended counts as a handed over slot."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    rig.queues._handle_stop = AsyncMock(side_effect=RuntimeError("broken"))  # type: ignore[method-assign]
+
+    assert not await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+
+    assert rig.queues._queue_data[PAUSED_QUEUE].session_id is not None
+    await paused_buffer.clear()
+
+
 async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:
     """Only a paused queue gives up its slot; a start elsewhere waits for it as before."""
     playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING)

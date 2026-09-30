@@ -186,7 +186,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot, which is never stopped itself.
-        :return: Whether a paused queue was stopped, which frees its slot shortly.
+        :return: Whether a paused queue's session was ended, which frees its slot shortly.
         """
         if (holder_id := self._paused_stream_slot_holder(provider_instance, queue_id)) is None:
             return False
@@ -194,20 +194,23 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # the lock can have been held by the very action that resumed the queue
             if not self._is_paused(holder_id):
                 return False
-            display_name = self._queue_data[holder_id].queue.display_name
+            holder = self._queue_data[holder_id]
             self.logger.info(
                 "Stopping paused queue %s, another queue needs its %s stream slot",
-                display_name,
+                holder.queue.display_name,
                 provider_instance,
             )
             try:
                 await self._handle_stop(holder_id)
             except Exception as err:
-                # deliberately broad: the stop reaches a device the requesting playback has
-                # nothing to do with, and a failed device stop still tears the session down
-                # so its slot comes free. CancelledError is a BaseException and propagates.
-                self.logger.warning("Stopping paused queue %s failed: %s", display_name, err)
-        return True
+                # deliberately broad: the device stop is a raw provider call that can surface
+                # anything its client library raises, on a player the requesting playback has
+                # nothing to do with. CancelledError is a BaseException and still propagates.
+                self.logger.warning(
+                    "Stopping paused queue %s failed: %s", holder.queue.display_name, err
+                )
+            # a failed device stop still ends the session, and ending it is what frees the slot
+            return holder.session_id is None
 
     def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
         """
