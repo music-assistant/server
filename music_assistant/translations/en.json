@@ -1155,7 +1155,6 @@
   "provider.audiobookshelf.media.folder.collections.name": "Collections",
   "provider.audiobookshelf.media.folder.narrators.name": "Narrators",
   "provider.audiobookshelf.media.folder.podcasts_library.name": "{} (Podcasts library)",
-  "provider.audiobookshelf.media.folder.series_entry.name": "{} (Series)",
   "provider.audiobookshelf.media.folder.series_plural.name": "Series",
   "provider.audiobookshelf.media.folder.series_singular.name": "Series",
   "provider.audiobookshelf.media.recommendations.discover.name": "Discover",
