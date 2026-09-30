@@ -1911,12 +1911,7 @@ async def test_a_source_converts_on_the_first_start_before_the_providers_load(
 async def test_a_source_converts_and_mounts_in_a_start_under_a_supervisor(
     tmp_path: Path,
 ) -> None:
-    """
-    Under a Supervisor a start converts a source and mounts its share through the Supervisor.
-
-    The conversion asks the Supervisor for its mounts through the http session of the server,
-    which the server can create only once its discovery controller is set up.
-    """
+    """Under a Supervisor a start converts a source and mounts its share through the Supervisor."""
     storage_path = tmp_path / "data"
     storage_path.mkdir(parents=True)
     (storage_path / "settings.json").write_text(

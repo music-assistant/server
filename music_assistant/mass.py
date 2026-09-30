@@ -277,6 +277,9 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         self.discovery = DiscoveryController(self)
+        # the shared http sessions resolve .local names through this zeroconf instance,
+        # so it must exist before anything can send a request
+        await self.discovery.start_zeroconf()
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup/migrate storage
