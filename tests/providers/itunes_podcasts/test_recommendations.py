@@ -267,13 +267,15 @@ async def test_top_podcasts_page_filters_library_and_explicit(
             _library_podcast("Whatever", "http://www.EXAMPLE.com/1.xml/"),
             # different feed, the path is case-sensitive
             _library_podcast("Other", "https://example.com/4.XML"),
+            # moved feed, the itunes id still matches
+            _library_podcast("Moved", "https://new.example.com/5.xml", MappingDetails(itunes_id=5)),
         ],
     )
     config_mock.get_value.side_effect = lambda key, default=None: {
         "locale": "us",
         "explicit": False,
     }.get(key, default)
-    top_podcasts = [_result(1), _result(2), _result(3, explicit=True), _result(4)]
+    top_podcasts = [_result(1), _result(2), _result(3, explicit=True), _result(4), _result(5)]
     with (
         patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=top_podcasts)),
         patch("music_assistant.providers.itunes_podcasts.TOP_PODCASTS_NUM_PAGES", 1),
@@ -409,7 +411,17 @@ async def test_migrate_provider_mappings(provider: ITunesPodcastsProvider, mass_
     }
 
 
-async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mock: Mock) -> None:
+@pytest.mark.parametrize(
+    ("failed_genre", "expected"),
+    [(None, [10, 20, 11]), ("1526", [10, 11])],
+    ids=["all-genres", "genre-failed"],
+)
+async def test_library_recommendations(
+    provider: ITunesPodcastsProvider,
+    mass_mock: Mock,
+    failed_genre: str | None,
+    expected: list[int],
+) -> None:
     """Top podcasts of the library's primary genres are merged, library podcasts dropped."""
     _set_library(
         mass_mock,
@@ -429,7 +441,11 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
         ],
     )
     top_podcasts = {"1488": [1, 10, 11], "1526": [20, 2, 10]}
-    genre_top_podcasts = AsyncMock(side_effect=lambda _country, genre_id: top_podcasts[genre_id])
+    genre_top_podcasts = AsyncMock(
+        side_effect=lambda _country, genre_id: (
+            None if genre_id == failed_genre else top_podcasts[genre_id]
+        )
+    )
     with (
         patch.object(provider, "_get_genre_top_podcast_ids", genre_top_podcasts),
         patch.object(
@@ -445,12 +461,16 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
         results = await provider._get_library_recommendations()
 
     # 10 ranks in both genres, so it comes first; library podcasts 1 and 2 are gone
-    assert [r.collection_id for r in results] == [10, 20, 11]
+    assert [r.collection_id for r in results] == expected
     # only primary genres are used, parent genre 1489 (News) is not fetched
     assert sorted(call.args[1] for call in genre_top_podcasts.await_args_list) == ["1488", "1526"]
-    assert mass_mock.cache.set.await_args.kwargs["expiration"] == (
-        LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION
-    )
+    if failed_genre:
+        # a partial result is not cached, so the next request retries the failed genre
+        mass_mock.cache.set.assert_not_called()
+    else:
+        assert mass_mock.cache.set.await_args.kwargs["expiration"] == (
+            LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION
+        )
 
 
 @pytest.mark.parametrize(

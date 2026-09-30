@@ -563,15 +563,14 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def _get_top_podcasts_page(self) -> list[PodcastSearchResult]:
         """Get the current page of the top podcasts, without podcasts of the library."""
-        library_feeds = {
-            self._normalize_feed_url(mapping.item_id)
-            async for _, mapping in self._iter_library_mappings()
-        }
+        library_feeds, library_itunes_ids = self._get_library_feeds_and_itunes_ids(
+            [mapping async for _, mapping in self._iter_library_mappings()]
+        )
         include_explicit = bool(self.config.get_value(CONF_EXPLICIT))
         top_podcasts = [
             podcast
             for podcast in await self._cache_get_top_podcasts()
-            if self._is_recommendable(podcast, library_feeds, include_explicit)
+            if self._is_recommendable(podcast, library_feeds, library_itunes_ids, include_explicit)
         ]
         # clock based, so every client shows the same page and a restart does not reset it
         page = int(time.time() // TOP_PODCASTS_ROTATION) % TOP_PODCASTS_NUM_PAGES
@@ -632,10 +631,29 @@ class ITunesPodcastsProvider(MusicProvider):
         normalized = parts.netloc.lower().removeprefix("www.") + parts.path.rstrip("/")
         return f"{normalized}?{parts.query}" if parts.query else normalized
 
+    def _get_library_feeds_and_itunes_ids(
+        self, mappings: list[ProviderMapping]
+    ) -> tuple[set[str], set[int]]:
+        feeds = {self._normalize_feed_url(m.item_id) for m in mappings}
+        itunes_ids = {
+            itunes_id
+            for m in mappings
+            if m.details
+            and (itunes_id := MappingDetails.from_dict(json.loads(m.details)).itunes_id)
+        }
+        return feeds, itunes_ids
+
     def _is_recommendable(
-        self, podcast: PodcastSearchResult, library_feeds: set[str], include_explicit: bool
+        self,
+        podcast: PodcastSearchResult,
+        library_feeds: set[str],
+        library_itunes_ids: set[int],
+        include_explicit: bool,
     ) -> bool:
         if podcast.feed_url is None:
+            return False
+        # the itunes id also catches a library podcast whose feed has moved
+        if podcast.collection_id in library_itunes_ids:
             return False
         if self._normalize_feed_url(podcast.feed_url) in library_feeds:
             return False
@@ -724,8 +742,12 @@ class ITunesPodcastsProvider(MusicProvider):
 
         # score by genre weight and rank, shows ranking in several genres win
         scores: dict[int, float] = defaultdict(float)
+        genre_request_failed = False
         for genre_id, weight in genre_weights.most_common(MAX_RECOMMENDATION_GENRES):
-            top_podcast_ids = await self._get_genre_top_podcast_ids(country, genre_id) or []
+            top_podcast_ids = await self._get_genre_top_podcast_ids(country, genre_id)
+            if top_podcast_ids is None:
+                genre_request_failed = True
+                continue
             for rank, itunes_id in enumerate(top_podcast_ids):
                 scores[itunes_id] += weight * (1 - rank / GENRE_TOP_PODCASTS_LIMIT)
         if not scores:
@@ -738,12 +760,17 @@ class ITunesPodcastsProvider(MusicProvider):
         )
         if candidates is None:
             return []
-        library_feeds = {self._normalize_feed_url(m.item_id) for m in mappings}
+        library_feeds, library_itunes_ids = self._get_library_feeds_and_itunes_ids(mappings)
         recommendations = [
             candidate
             for candidate in candidates
-            if self._is_recommendable(candidate, library_feeds, include_explicit)
+            if self._is_recommendable(
+                candidate, library_feeds, library_itunes_ids, include_explicit
+            )
         ][:RECOMMENDATION_ROW_SIZE]
+        if genre_request_failed:
+            # partial result, not cached so the next request retries the failed genres
+            return recommendations
         await self.mass.cache.set(
             key=CACHE_KEY_LIBRARY_RECOMMENDATIONS,
             provider=self.instance_id,
