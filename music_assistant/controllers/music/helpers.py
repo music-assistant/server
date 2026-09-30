@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import ExternalID
@@ -172,6 +172,34 @@ def provider_mappings_for_update(
         *update,
         *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
     }
+
+
+def sibling_instance_mappings(
+    mass: MusicAssistant, mappings: Iterable[ProviderMapping], mapped: Iterable[ProviderMapping]
+) -> list[ProviderMapping]:
+    """
+    Return copies of the mappings for the other instances of the same streaming provider.
+
+    :param mappings: Provider mappings to copy.
+    :param mapped: Provider mappings the item already has; their instances get no copy.
+    """
+    mappings = list(mappings)
+    mapped_instances = {x.provider_instance for x in (*mapped, *mappings)}
+    copies: list[ProviderMapping] = []
+    for mapping in mappings:
+        if mapping.is_unique:
+            continue
+        # unavailable instances count too: a mapping they hold must not be taken over
+        # once they are back
+        for instance in mass.music.get_provider_instances(
+            mapping.provider_domain, return_unavailable=True
+        ):
+            if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
+                continue
+            # whether the other instance holds the item in its library is unknown
+            copies.append(replace(mapping, provider_instance=instance.instance_id, in_library=None))
+            mapped_instances.add(instance.instance_id)
+    return copies
 
 
 async def provider_mappings_from_urls(

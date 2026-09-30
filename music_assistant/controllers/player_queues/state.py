@@ -79,6 +79,8 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
+    next_item_id_preparing: str | None = None
     # queue_item_id whose audio the player last started fetching. Unlike index_in_buffer,
     # which the crossfade preload raises to a track the player was never given, this only
     # moves when audio actually goes out

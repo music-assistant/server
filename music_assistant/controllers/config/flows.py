@@ -203,12 +203,17 @@ class SetupFlowMixin:
                 result={"instance_id": config.instance_id},
             )
         target_key = f"provider_setup:{provider_domain}"
-        user, _ = self._access_caller()
+        user, manages_all_sources = self._access_caller()
         if manifest.multi_instance and user is not None:
             # users add their own account of a multi-account service side by side,
             # so each user's add flow is its own target
             target_key = f"{target_key}:{user.user_id}"
-        context = SetupFlowContext(kind="setup", reason="user", domain=provider_domain)
+        context = SetupFlowContext(
+            kind="setup",
+            reason="user",
+            domain=provider_domain,
+            manages_all_sources=manages_all_sources,
+        )
         return await self._start_flow(
             flow_coro=flow_module.run_setup,
             context=context,
@@ -243,6 +248,7 @@ class SetupFlowMixin:
             # flow-less providers have nothing to reconfigure;
             # their failures are environmental (reload/retry covers them)
             return self._synthesized_step(FlowStepType.ABORT, owner, reason="nothing_to_configure")
+        _, manages_all_sources = self._access_caller()
         context = SetupFlowContext(
             kind="reconfigure",
             reason=self._reconfigure_reason(raw_conf.get("last_error")),
@@ -250,6 +256,7 @@ class SetupFlowMixin:
             instance_id=instance_id,
             setup_data=self._decrypt_values(raw_conf.get("setup_data") or {}),
             values=self._decrypt_values(raw_conf.get("values") or {}),
+            manages_all_sources=manages_all_sources,
         )
         return await self._start_flow(
             flow_coro=flow_module.run_setup,

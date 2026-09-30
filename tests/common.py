@@ -23,8 +23,10 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
+from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
@@ -90,6 +92,50 @@ def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
         loop.set_exception_handler(previous)
 
 
+class _RecordCollector(logging.Handler):
+    """Log handler that keeps every record it gets."""
+
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        """
+        Initialize the handler at the lowest level.
+
+        :param records: The list the records are appended to.
+        """
+        super().__init__(level=1)
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep a record."""
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def capture_log_records(logger: logging.Logger) -> Iterator[list[logging.LogRecord]]:
+    """
+    Capture every record of a logger, whatever other tests did to the logging setup.
+
+    Yields the (initially empty) list of records. The logger gets a handler of its own and
+    the lowest level, so neither the level an ancestor was given, nor its propagation or the
+    handlers of the root logger, decide what is captured; all of it is restored on exit.
+
+    :param logger: The logger the code under test writes to.
+    """
+    records: list[logging.LogRecord] = []
+    handler = _RecordCollector(records)
+    level, disabled, disabled_below = logger.level, logger.disabled, logging.root.manager.disable
+    logger.addHandler(handler)
+    logger.setLevel(1)
+    logger.disabled = False
+    logging.disable(logging.NOTSET)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        logger.disabled = disabled
+        logging.disable(disabled_below)
+
+
 @contextlib.asynccontextmanager
 async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]:
     """Wait for a sync to finish."""
@@ -118,10 +164,12 @@ LOOPBACK_IP = "127.0.0.1"
 @contextlib.contextmanager
 def use_ephemeral_server_ports() -> Iterator[None]:
     """
-    Bind a full-server test fixture's web and stream servers to a free loopback port.
+    Bind a full-server test fixture's web, stream and Sendspin servers to a free loopback port.
 
     Port 0 has the kernel pick the port during the bind itself, so nothing else can
-    claim it in the meantime.
+    claim it in the meantime. The server also hands the Sendspin port out in the URLs it
+    builds for its own Sendspin clients, so once the provider has bound its listener the
+    fixture must call ``adopt_bound_sendspin_port`` to point those URLs at that port.
 
     Binding loopback keeps a test run off the host's other interfaces and gives each
     server a single socket, so it has one assigned port: asyncio binds a wildcard
@@ -130,6 +178,10 @@ def use_ephemeral_server_ports() -> Iterator[None]:
     with (
         patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
+        # the Sendspin provider binds its own listener; on a fixed port, parallel test
+        # workers collide and the provider unloads itself mid-test
+        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
+        patch("music_assistant.controllers.webserver.controller.SENDSPIN_SERVER_PORT", 0),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
         # keep address detection off the host's real interfaces
@@ -151,6 +203,36 @@ def use_ephemeral_server_ports() -> Iterator[None]:
         ),
     ):
         yield
+
+
+def bound_sendspin_port(mass: MusicAssistant) -> int | None:
+    """
+    Return the port the Sendspin provider's listener is bound to, if it is listening.
+
+    :param mass: The booted server to inspect.
+    """
+    provider = mass.get_provider("sendspin")
+    if not isinstance(provider, SendspinProvider):
+        return None
+    # aiosendspin keeps its aiohttp runner to itself; the runner's addresses are
+    # the bound sockets' names, which is the only place the kernel-picked port lives
+    runner = provider.server_api._app_runner
+    if runner is None:
+        return None
+    return next((address[1] for address in runner.addresses if address), None)
+
+
+def adopt_bound_sendspin_port(mass: MusicAssistant) -> None:
+    """
+    Point the server's own Sendspin clients at the port its listener actually bound.
+
+    Only meaningful inside ``use_ephemeral_server_ports``, whose patch of the URL
+    builder's port this replaces for the rest of the fixture's lifetime.
+
+    :param mass: The booted server whose Sendspin listener is up.
+    """
+    if (port := bound_sendspin_port(mass)) is not None:
+        setattr(webserver_controller, "SENDSPIN_SERVER_PORT", port)  # noqa: B010
 
 
 @contextlib.contextmanager

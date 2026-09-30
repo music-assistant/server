@@ -12,8 +12,6 @@ music_assistant/providers/digitally_incorporated/icon_monochrome.svg	1
 music_assistant/providers/fanarttv/icon.svg	1
 music_assistant/providers/fanarttv/icon_monochrome.svg	1
 music_assistant/providers/filesystem_local/icon_monochrome.svg	1
-music_assistant/providers/filesystem_nfs/icon_monochrome.svg	1
-music_assistant/providers/filesystem_smb/icon_monochrome.svg	1
 music_assistant/providers/fully_kiosk/icon_monochrome.svg	1
 music_assistant/providers/gpodder/icon.svg	1
 music_assistant/providers/internet_archive/icon.svg	1

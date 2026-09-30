@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import gettext
 import importlib
 import logging
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
+from functools import lru_cache
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
+import ytmusicapi
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.enums import (
@@ -979,15 +984,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 ]
             )
         if "type" in album_obj:
-            if album_obj["type"] == "Single":
-                album_type = AlbumType.SINGLE
-            elif album_obj["type"] == "EP":
-                album_type = AlbumType.EP
-            elif album_obj["type"] == "Album":
-                album_type = AlbumType.ALBUM
-            else:
-                album_type = AlbumType.UNKNOWN
-            album.album_type = album_type
+            album.album_type = _album_type_labels(self.language).get(
+                album_obj["type"].casefold(), AlbumType.UNKNOWN
+            )
 
         # Try inference - override if it finds something more specific
         inferred_type = infer_album_type(name, version)
@@ -1286,8 +1285,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
             url_base = url.split("=w", maxsplit=1)[0]
-            width: int = img["width"]
-            height: int = img["height"]
+            width: int = img.get("width") or 0
+            height: int = img.get("height") or 0
+            if not width or not height:
+                continue
             image_ratio: float = width / height
             image_type = (
                 ImageType.LANDSCAPE
@@ -1335,3 +1336,23 @@ def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
         case "DISLIKE":
             return False
     return None
+
+
+@lru_cache
+def _album_type_labels(language: str) -> dict[str, AlbumType]:
+    """
+    Return the (casefolded) album type labels YouTube Music uses for the given language.
+
+    :param language: The YouTube Music language code.
+    """
+    translation = gettext.translation(
+        "base",
+        localedir=Path(ytmusicapi.__file__).parent / "locales",
+        languages=[language],
+        fallback=True,
+    )
+    labels = {"album": AlbumType.ALBUM, "ep": AlbumType.EP, "single": AlbumType.SINGLE}
+    translated = {label: translation.gettext(label).casefold() for label in labels}
+    # a label shared by several types (e.g. Spanish) can't tell them apart, so it stays unknown
+    counts = Counter(translated.values())
+    return labels | {text: labels[label] for label, text in translated.items() if counts[text] == 1}
