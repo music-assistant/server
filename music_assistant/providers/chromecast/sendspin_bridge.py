@@ -865,9 +865,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
             if parent_player and parent_player.get_output_protocol_by_domain("airplay"):
                 return False
-        # Same deny before the AirPlay link exists: AirPlay's bridge registers its client
-        # under the locally-administered form of the device MAC.
-        return not self._has_airplay_bridge_client(bridge_client_id)
+        # Same deny before the AirPlay link exists: another bridge (AirPlay) already
+        # registered a client for this device.
+        return not self._has_foreign_bridge_client(cast_player.player_id, bridge_client_id)
 
     async def _try_claim_existing(self, player: Player) -> bool:
         """
@@ -885,10 +885,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         sendspin_provider = self.sendspin_provider
         if bridge_client_id is None or sendspin_server is None or sendspin_provider is None:
             return False
-        if not sendspin_server.get_client(bridge_client_id) or sendspin_server.is_external_player(
-            bridge_client_id
-        ):
-            # only a receiver that connected on its own is adoptable, never a bridge's client
+        if not sendspin_server.get_client(bridge_client_id):
             return False
 
         self.logger.info(
@@ -921,15 +918,22 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         self._subscribe_rebridge_on_disconnect(cast_player, bridge_client_id)
         return True
 
-    def _has_airplay_bridge_client(self, bridge_client_id: str) -> bool:
-        """Return whether a Sendspin client is registered under the AirPlay form of the MAC."""
-        if not (sendspin_server := self.sendspin_server):
+    def _has_foreign_bridge_client(self, player_id: str, bridge_client_id: str) -> bool:
+        """
+        Return whether another bridge registered a Sendspin client for this device.
+
+        :param player_id: The Chromecast player being evaluated.
+        :param bridge_client_id: The Sendspin client_id the Cast bridge would use.
+        """
+        if player_id in self._bridges or not (sendspin_server := self.sendspin_server):
             return False
-        la_variant_mac = _toggle_locally_administered_bit(bridge_client_id[len(BRIDGE_PREFIX) :])
-        return bool(
-            la_variant_mac
-            and sendspin_server.is_external_player(f"{BRIDGE_PREFIX}{la_variant_mac}")
-        )
+        client_ids = [bridge_client_id]
+        # AirPlay usually registers under the locally-administered form of the MAC
+        if la_variant_mac := _toggle_locally_administered_bit(
+            bridge_client_id[len(BRIDGE_PREFIX) :]
+        ):
+            client_ids.append(f"{BRIDGE_PREFIX}{la_variant_mac}")
+        return any(sendspin_server.is_external_player(client_id) for client_id in client_ids)
 
     def _subscribe_rebridge_on_disconnect(
         self, cast_player: ChromecastPlayer, client_id: str

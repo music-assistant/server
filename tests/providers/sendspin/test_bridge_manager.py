@@ -345,15 +345,36 @@ class TestCastBridgePolicy:
         assert manager._should_have_bridge(cast_player) is False
 
     @pytest.mark.asyncio
-    async def test_bridge_client_is_not_claimed(self) -> None:
-        """Test a client registered by a bridge is never adopted as a Cast receiver."""
+    async def test_bridge_client_under_the_same_mac_is_left_alone(self) -> None:
+        """Test a client another bridge registered under the same id is neither claimed nor replaced."""
         manager, mass, cast_player = self._make_cast_environment()
+        parent = MagicMock()
+        parent.get_output_protocol_by_domain = MagicMock(return_value=None)
+        mass.players.get_player = MagicMock(
+            side_effect=lambda player_id, *_: parent if player_id == "parent_1" else cast_player
+        )
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         mass.external_clients.add(client_id)
 
-        assert await manager._try_claim_existing(cast_player) is False
+        with patch.object(manager, "_create_bridge", return_value=AsyncMock()) as create_bridge:
+            await manager.setup_bridge(cast_player)
+
+        create_bridge.assert_not_called()
         assert not manager._claimed_clients
+
+    def test_own_bridge_is_not_denied(self) -> None:
+        """Test the Cast bridge's own registered client does not deny the bridge."""
+        manager, mass, cast_player = self._make_cast_environment()
+        parent = MagicMock()
+        parent.get_output_protocol_by_domain = MagicMock(return_value=None)
+        mass.players.get_player = MagicMock(return_value=parent)
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        mass.external_clients.add(client_id)
+        manager._bridges[cast_player.player_id] = MagicMock()
+
+        assert manager._should_have_bridge(cast_player) is True
 
     @pytest.mark.asyncio
     async def test_self_connected_receiver_is_claimed(self) -> None:
