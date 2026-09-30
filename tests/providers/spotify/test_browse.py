@@ -1,7 +1,7 @@
 """Unit tests for the Spotify provider's curated browse implementation."""
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -176,13 +176,12 @@ async def test_get_categories_handles_not_found(
 
 
 @pytest.mark.asyncio
-async def test_browse_cache_drops_dev_session_results(
+async def test_browse_cache_uses_global_session_checksum(
     provider: SpotifyProvider, get_data: AsyncMock
 ) -> None:
     """New releases and categories only reuse cache entries written by the global session."""
     get_data.return_value = {}
-    cache_get = AsyncMock(return_value=(None, False, False))
-    provider.mass.cache.get_with_freshness = cache_get  # type: ignore[method-assign]
+    cache_get = cast("AsyncMock", provider.mass.cache.get_with_freshness)
 
     await provider._get_new_releases()
     await provider._get_categories("de_DE")
