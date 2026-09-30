@@ -1359,9 +1359,11 @@ class MusicAssistant:
                         break
                 else:
                     continue
-            await self.config.create_builtin_provider_config(manifest.domain)
+            # A config the user created by hand before this became a default provider is
+            # not an automatic setup, so it must not be refused (and dropped) as one.
+            if await self.config.create_builtin_provider_config(manifest.domain):
+                newly_created_defaults.add(manifest.domain)
             changes_made = True
-            newly_created_defaults.add(manifest.domain)
             # TEMP: migration - to be removed after 2.8 release
             # enable all existing players of the default providers if they are not already enabled
             # due to the linked protocol feature we introduced
