@@ -14,6 +14,10 @@ from music_assistant_models.favorite_update import FavoriteUpdate
 
 from music_assistant.constants import DB_TABLE_FAVORITES
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    impersonated_user,
+)
 from tests.common import set_music_source_access
 
 from .helpers import create_track
@@ -102,6 +106,27 @@ async def test_favorites_are_personal(favorites_mass: MusicAssistant) -> None:
         # the summary listing carries the same state as the full item
         summary = await mass.music.tracks.library_items(search="Personal Liked", summary=True)
         assert [x.favorite for x in summary] == [None]
+
+
+async def test_favorites_follow_the_impersonated_user(favorites_mass: MusicAssistant) -> None:
+    """A listing on behalf of another user serves that user's favorites, not the session's."""
+    mass = favorites_mass
+    liked_by_a = await _add_track(mass, "Impersonation Liked By A")
+    liked_by_b = await _add_track(mass, "Impersonation Liked By B")
+    await mass.music.tracks.set_favorite(liked_by_a.item_id, True, [USER_A])
+    await mass.music.tracks.set_favorite(liked_by_b.item_id, True, [USER_B])
+    # a dislike of the session user, so the favorite field tells whose state it carries
+    await mass.music.tracks.set_favorite(liked_by_b.item_id, False, [USER_A])
+
+    session_token = current_user.set(_user(USER_A))
+    impersonation_token = impersonated_user.set(_user(USER_B))
+    try:
+        items = await mass.music.tracks.library_items(favorite=True, search="Impersonation")
+    finally:
+        impersonated_user.reset(impersonation_token)
+        current_user.reset(session_token)
+
+    assert [(x.item_id, x.favorite) for x in items] == [(liked_by_b.item_id, True)]
 
 
 async def test_unset_favorite_keeps_a_row_and_announces_it(
