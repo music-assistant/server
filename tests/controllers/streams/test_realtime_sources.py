@@ -1890,7 +1890,9 @@ def _flow_handler(
     )
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
-    mass.player_queues.queue_data.return_value = SimpleNamespace(session_id="session-1")
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_raw_player_config_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
@@ -1956,6 +1958,20 @@ async def test_flow_is_always_paced_close_to_playback(
         await controller.serve_queue_flow_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+
+
+async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flow producer sees its player as gone once the connection closed, without a write."""
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    flow_kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
+    consumer_connected = flow_kwargs["consumer_connected"]
+    assert consumer_connected() is True
+    request.transport = None
+    assert consumer_connected() is False
 
 
 def test_the_reported_cause_skips_an_empty_link_in_the_chain() -> None:
