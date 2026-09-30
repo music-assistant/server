@@ -162,7 +162,7 @@ LOOPBACK_IP = "127.0.0.1"
 @contextlib.contextmanager
 def use_ephemeral_server_ports() -> Iterator[None]:
     """
-    Bind a full-server test fixture's web and stream servers to a free loopback port.
+    Bind a full-server test fixture's web, stream and Sendspin servers to a free loopback port.
 
     Port 0 has the kernel pick the port during the bind itself, so nothing else can
     claim it in the meantime.
@@ -174,6 +174,9 @@ def use_ephemeral_server_ports() -> Iterator[None]:
     with (
         patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
+        # the Sendspin provider binds its own listener; on a fixed port, parallel test
+        # workers collide and the provider unloads itself mid-test
+        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
         # keep address detection off the host's real interfaces

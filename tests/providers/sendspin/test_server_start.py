@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import pathlib
+import socket
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, SENDSPIN_SERVER_PORT
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from tests.conftest import full_mass_context
 
 
 def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock, MagicMock]:
@@ -66,3 +70,28 @@ async def test_server_start_success_connects_manual_clients() -> None:
     mass.call_later.assert_not_called()
     server_api.connect_to_client.assert_called_once()
     server_api.close.assert_awaited_once()
+
+
+async def test_full_boot_does_not_depend_on_the_default_sendspin_port(
+    tmp_path: pathlib.Path,
+) -> None:
+    """
+    A booted test server keeps its Sendspin provider even when the default port is taken.
+
+    Parallel test workers each boot a server; if they all bound the default port, the
+    losers' Sendspin providers would unload themselves mid-test and take their players
+    (and queues) with them.
+    """
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # a port already held by something else is the very condition under test
+        with contextlib.suppress(OSError):
+            blocker.bind(("127.0.0.1", SENDSPIN_SERVER_PORT))
+            blocker.listen()
+        async with full_mass_context(tmp_path) as mass:
+            sendspin = mass.get_provider("sendspin")
+            assert sendspin is not None
+            assert isinstance(sendspin, SendspinProvider)
+            assert not sendspin._server_start_failed
+    finally:
+        blocker.close()
