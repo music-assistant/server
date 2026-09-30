@@ -671,6 +671,12 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert "--auto" in enqueue
     assert "--squash" not in enqueue
 
+    discover = workflow["jobs"]["discover-stale"]["steps"][0]["run"]
+    assert "--json mergeable" in discover
+    assert '[ "$MERGEABLE" != "UNKNOWN" ] && break' in discover
+    assert 'if [ "$MERGEABLE" != "CONFLICTING" ]; then' in discover
+    assert "behind_by" not in discover
+
     refresh_steps = {step["name"]: step for step in workflow["jobs"]["refresh-stale"]["steps"]}
     identity_check = refresh_steps["Verify GitHub App identity"]["run"]
     assert '[ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] ||' in identity_check
