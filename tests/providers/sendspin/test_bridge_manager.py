@@ -275,6 +275,10 @@ class TestCastBridgePolicy:
         mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
         mass.create_task = MagicMock()
         mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        external_clients: set[str] = set()
+        sendspin_server = mass.get_provider.return_value.server_api
+        sendspin_server.is_external_player = MagicMock(side_effect=external_clients.__contains__)
+        mass.external_clients = external_clients
         provider = MagicMock()
         provider.mass = mass
         provider.logger = logging.getLogger("test.cast_bridge_manager")
@@ -328,6 +332,39 @@ class TestCastBridgePolicy:
         mass.players.get_player = MagicMock(return_value=parent)
 
         assert manager._should_have_bridge(cast_player) is True
+
+    def test_denied_while_airplay_bridge_holds_the_other_mac_form(self) -> None:
+        """Test the deny also holds before AirPlay discovery has linked the device."""
+        manager, mass, cast_player = self._make_cast_environment()
+        parent = MagicMock()
+        parent.get_output_protocol_by_domain = MagicMock(return_value=None)
+        mass.players.get_player = MagicMock(return_value=parent)
+        # AirPlay's bridge registers under the locally-administered form (0xAA ^ 0x02)
+        mass.external_clients.add("spb_a8bbccddeeff")
+
+        assert manager._should_have_bridge(cast_player) is False
+
+    @pytest.mark.asyncio
+    async def test_bridge_client_is_not_claimed(self) -> None:
+        """Test a client registered by a bridge is never adopted as a Cast receiver."""
+        manager, mass, cast_player = self._make_cast_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        mass.external_clients.add(client_id)
+
+        assert await manager._try_claim_existing(cast_player) is False
+        assert not manager._claimed_clients
+
+    @pytest.mark.asyncio
+    async def test_self_connected_receiver_is_claimed(self) -> None:
+        """Test a Cast receiver that reconnected on its own is adopted."""
+        manager, mass, cast_player = self._make_cast_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        mass.get_provider.return_value.apply_bridge_claim = AsyncMock(return_value=True)
+
+        assert await manager._try_claim_existing(cast_player) is True
+        assert manager._claimed_clients == {cast_player.player_id: client_id}
 
     def test_denied_after_the_device_reported_it_cannot_run_sendspin(self) -> None:
         """Test a device that failed once is not offered the bridge again at all."""
@@ -647,23 +684,6 @@ class TestCastBridgeOptIn:
         assert not player_configs[f"players/{cast_player.player_id}"]["values"][
             CONF_SENDSPIN_OPT_OUT_PENDING
         ]
-
-    @pytest.mark.asyncio
-    async def test_a_client_claimed_under_the_other_mac_variant_is_left_alone(self) -> None:
-        """Test the Cast warning is not put on a client that belongs to the AirPlay bridge."""
-        manager, _, cast_player, player_configs, scheduled, _ = self._make_environment()
-        client_id = manager._bridge_client_id(cast_player)
-        assert client_id is not None
-        player_configs[f"players/{cast_player.player_id}"] = {"enabled": True}
-
-        async def fake_super(player: Any) -> None:
-            """Claim a client under the locally-administered MAC, as the real one can."""
-            manager._claimed_clients[player.player_id] = "spb_5678c9e60da0"
-
-        with patch.object(SendspinBridgeManagerBase, "evaluate_bridge", side_effect=fake_super):
-            await manager.evaluate_bridge(cast_player)
-
-        assert not scheduled
 
     @pytest.mark.asyncio
     async def test_the_wait_gives_up_as_soon_as_the_bridge_is_taken_away(self) -> None:
