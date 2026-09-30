@@ -6,7 +6,7 @@ Only what is needed.
 
 from dataclasses import dataclass, field
 
-from mashumaro import field_options
+from mashumaro import DataClassDictMixin, field_options
 from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 
@@ -132,3 +132,12 @@ class TopPodcastsHelper(_BaseModel):
     """
 
     top_podcasts: list[PodcastSearchResult] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class MappingDetails(DataClassDictMixin):
+    """iTunes data stored in the details of a library podcast's provider mapping."""
+
+    # None: the podcast is not listed in iTunes
+    itunes_id: int | None = None
+    genre_ids: list[str] = field(default_factory=list)

@@ -1,8 +1,8 @@
 """Test the iTunes Podcasts recommendations."""
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -13,15 +13,17 @@ from music_assistant.providers.itunes_podcasts import (
     ITunesPodcastsProvider,
 )
 from music_assistant.providers.itunes_podcasts.constants import (
-    CACHE_CATEGORY_FEED_LOOKUP,
     LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION,
-    MAX_INLINE_RESOLVES,
     RECOMMENDATION_ROW_FOR_YOU,
     RECOMMENDATION_ROW_TOP_PODCASTS,
     TOP_PODCASTS_NUM_PAGES,
     TOP_PODCASTS_ROTATION,
 )
-from music_assistant.providers.itunes_podcasts.schema import PodcastSearchResult, TopPodcastsHelper
+from music_assistant.providers.itunes_podcasts.schema import (
+    MappingDetails,
+    PodcastSearchResult,
+    TopPodcastsHelper,
+)
 
 TIME = "music_assistant.providers.itunes_podcasts.time.time"
 
@@ -45,9 +47,9 @@ def _set_library(mass: Mock, podcasts: list[Podcast]) -> None:
     mass.music.podcasts.iter_library_items_by_prov_id = _iter_library_items
 
 
-def _library_podcast(name: str, feed_url: str) -> Podcast:
+def _library_podcast(name: str, feed_url: str, details: MappingDetails | None = None) -> Podcast:
     return Podcast(
-        item_id="1",
+        item_id=name,
         provider="library",
         name=name,
         provider_mappings={
@@ -55,9 +57,15 @@ def _library_podcast(name: str, feed_url: str) -> Podcast:
                 item_id=feed_url,
                 provider_domain="itunes_podcasts",
                 provider_instance="itunes_podcasts_test",
+                details=json.dumps(details.to_dict()) if details else None,
             )
         },
     )
+
+
+def _details(mapping: ProviderMapping) -> MappingDetails:
+    assert mapping.details is not None
+    return MappingDetails.from_dict(json.loads(mapping.details))
 
 
 def _result(
@@ -278,67 +286,98 @@ async def test_top_podcasts_page_filters_library_and_explicit(
     assert [r.collection_id for r in page] == [2, 4]
 
 
-async def test_resolve_library_podcast_matches_feed_url(
+async def test_search_results_carry_itunes_details(provider: ITunesPodcastsProvider) -> None:
+    """Podcasts from a search store the iTunes id and genres in their provider mapping."""
+    (podcast,) = provider._get_podcast_list([_result(1, ["1488", "26"])])
+
+    (mapping,) = podcast.provider_mappings
+    assert _details(mapping) == MappingDetails(itunes_id=1, genre_ids=["1488", "26"])
+
+
+async def test_loaded_in_mass_starts_migration(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
-    """The search result with the matching (normalized) feed url wins and is cached."""
-    with patch.object(
-        provider, "_perform_search", AsyncMock(return_value=[_result(1), _result(2)])
-    ):
-        resolved, entry = await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2")
+    """The mapping migration runs as a background task once the provider is loaded."""
+    await provider.loaded_in_mass()
 
-    assert resolved
-    assert entry is not None
-    assert entry.collection_id == 2
-    assert mass_mock.cache.set.await_args.kwargs["category"] == CACHE_CATEGORY_FEED_LOOKUP
+    mass_mock.create_task.assert_called_once()
+    mass_mock.create_task.call_args.args[0].close()  # the mocked task never runs it
+    assert provider._migrate_task is mass_mock.create_task.return_value
 
 
-async def test_resolve_library_podcast_failure_not_cached(
+async def test_unload_cancels_migrate_task(provider: ITunesPodcastsProvider) -> None:
+    """Unloading the provider cancels a running mapping migration."""
+    started = asyncio.Event()
+
+    async def _migrate() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    provider._migrate_task = asyncio.create_task(_migrate())
+    await started.wait()
+
+    await provider.unload()
+
+    assert provider._migrate_task.cancelled()
+
+
+async def test_migrate_provider_mappings(provider: ITunesPodcastsProvider, mass_mock: Mock) -> None:
+    """Mappings without details get them from a title search, hits and misses alike."""
+    _set_library(
+        mass_mock,
+        [
+            _library_podcast("Done", "https://example.com/9.xml", MappingDetails(itunes_id=9)),
+            # same feed, different scheme/host spelling
+            _library_podcast("Podcast 2", "http://www.example.com/2.xml/"),
+            _library_podcast("Unknown", "https://example.com/unknown.xml"),
+        ],
+    )
+    mass_mock.music.podcasts.set_provider_mappings = AsyncMock()
+    search = AsyncMock(return_value=[_result(1), _result(2, ["1488", "26"])])
+    with patch.object(provider, "_perform_search", search):
+        await provider._migrate_provider_mappings()
+
+    assert [call.args[1]["term"] for call in search.await_args_list] == ["Podcast 2", "Unknown"]
+    stored = {
+        call.args[0]: _details(call.args[1][0])
+        for call in mass_mock.music.podcasts.set_provider_mappings.await_args_list
+    }
+    assert stored == {
+        "Podcast 2": MappingDetails(itunes_id=2, genre_ids=["1488", "26"]),
+        "Unknown": MappingDetails(),
+    }
+
+
+async def test_migrate_provider_mappings_failure_not_stored(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
-    """A failed search is not cached as a miss."""
+    """A failed search stores nothing, so the podcast is retried on the next load."""
+    _set_library(mass_mock, [_library_podcast("Podcast 2", "https://example.com/2.xml")])
+    mass_mock.music.podcasts.set_provider_mappings = AsyncMock()
     with patch.object(provider, "_perform_search", AsyncMock(return_value=None)):
-        assert await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2") == (
-            False,
-            None,
-        )
-    mass_mock.cache.set.assert_not_called()
+        await provider._migrate_provider_mappings()
 
-
-async def test_resolve_library_podcast_miss_cached(
-    provider: ITunesPodcastsProvider, mass_mock: Mock
-) -> None:
-    """A podcast not listed in iTunes is cached as a known miss (empty dict)."""
-    with patch.object(provider, "_perform_search", AsyncMock(return_value=[_result(1)])):
-        assert await provider._resolve_library_podcast("example.com/unknown.xml", "Unknown") == (
-            True,
-            None,
-        )
-    assert mass_mock.cache.set.await_args.kwargs["data"] == {}
-
-
-def _seed_cache(mass: Mock, seeds: dict[str, PodcastSearchResult]) -> None:
-    async def _get(key: str, **kwargs: Any) -> Any:
-        if kwargs.get("category") == CACHE_CATEGORY_FEED_LOOKUP and key in seeds:
-            return seeds[key].to_dict()
-        return None
-
-    mass.cache.get = AsyncMock(side_effect=_get)
+    mass_mock.music.podcasts.set_provider_mappings.assert_not_called()
 
 
 async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mock: Mock) -> None:
     """Top podcasts of the library's primary genres are merged, library podcasts dropped."""
-    library = [
-        _library_podcast("Podcast 1", "https://example.com/1.xml"),
-        _library_podcast("Podcast 2", "https://example.com/2.xml"),
-    ]
-    _set_library(mass_mock, library)
-    _seed_cache(
+    _set_library(
         mass_mock,
-        {
-            "example.com/1.xml": _result(1, ["1488", "26"]),
-            "example.com/2.xml": _result(2, ["1526", "26", "1489"]),
-        },
+        [
+            _library_podcast(
+                "Podcast 1",
+                "https://example.com/1.xml",
+                MappingDetails(itunes_id=1, genre_ids=["1488", "26"]),
+            ),
+            _library_podcast(
+                "Podcast 2",
+                "https://example.com/2.xml",
+                MappingDetails(itunes_id=2, genre_ids=["1526", "26", "1489"]),
+            ),
+            # not migrated yet, contributes nothing
+            _library_podcast("Podcast 3", "https://example.com/3.xml"),
+        ],
     )
     top_podcasts = {"1488": [1, 10, 11], "1526": [20, 2, 10]}
     genre_top_podcasts = AsyncMock(side_effect=lambda _country, genre_id: top_podcasts[genre_id])
@@ -365,49 +404,13 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
     )
 
 
-async def test_library_recommendations_resolve_in_background(
+async def test_library_recommendations_without_genres(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
-    """Only a few podcasts are resolved inline, the rest in the background."""
-    library = [
-        _library_podcast(f"Podcast {i}", f"https://example.com/{i}.xml")
-        for i in range(MAX_INLINE_RESOLVES + 3)
-    ]
-    _set_library(mass_mock, library)
-    resolve = AsyncMock(
-        side_effect=lambda _feed_url, _name, cached_only=False: (
-            (False, None) if cached_only else (True, _result(1, ["1488"]))
-        )
-    )
-    with (
-        patch.object(provider, "_resolve_library_podcast", resolve),
-        patch.object(provider, "_get_genre_top_podcast_ids", AsyncMock(return_value=[50])),
-        patch.object(provider, "_perform_search", AsyncMock(return_value=[_result(50)])),
-    ):
-        results = await provider._get_library_recommendations()
-
-    assert [r.collection_id for r in results] == [50]
-    inline = [c for c in resolve.await_args_list if not c.kwargs.get("cached_only")]
-    assert len(inline) == MAX_INLINE_RESOLVES
-    mass_mock.create_task.assert_called_once()
-    mass_mock.create_task.call_args.args[0].close()  # the mocked task never runs it
-    assert provider._resolve_task is mass_mock.create_task.return_value
-
-
-async def test_unload_cancels_resolve_task(provider: ITunesPodcastsProvider) -> None:
-    """Unloading the provider cancels a running background resolve."""
-    started = asyncio.Event()
-
-    async def _resolve() -> None:
-        started.set()
-        await asyncio.sleep(3600)
-
-    provider._resolve_task = asyncio.create_task(_resolve())
-    await started.wait()
-
-    await provider.unload()
-
-    assert provider._resolve_task.cancelled()
+    """Without genres of library podcasts there is nothing to recommend and no request is sent."""
+    _set_library(mass_mock, [_library_podcast("Podcast 3", "https://example.com/3.xml")])
+    assert await provider._get_library_recommendations() == []
+    mass_mock.http_session.get.assert_not_called()
 
 
 async def test_library_recommendations_empty_library(

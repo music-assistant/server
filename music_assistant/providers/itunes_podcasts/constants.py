@@ -11,7 +11,6 @@ DEFAULT_LOCALE = "us"
 
 # category 0 holds the parsed podcast feeds, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_RECOMMENDATIONS = 1
-CACHE_CATEGORY_FEED_LOOKUP = 2
 CACHE_KEY_TOP_PODCASTS = "top-podcasts-full"
 CACHE_KEY_LIBRARY_RECOMMENDATIONS = "library-recommendations"
 RECOMMENDATION_ROW_TOP_PODCASTS = "itunes-top-podcasts"
@@ -23,13 +22,8 @@ ROOT_GENRE_ID = "26"
 # one request per genre
 MAX_SEED_GENRES = 4
 GENRE_TOP_PODCASTS_LIMIT = 100
-# resolving a library podcast costs one search request (no lookup by feed url exists).
-# Only this many run while the row is requested, the rest fill the cache in a
-# background task: a large library would otherwise hit the throttle and the row's
-# timeout. Only matters when the resolve cache is empty (upgrade, cache clear).
-MAX_INLINE_RESOLVES = 5
-# short, so podcasts resolved in the background are picked up soon
-LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION = 60 * 60
+# the row is recomputed earlier when the library or the config changes
+LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION = 60 * 60 * 24
 # the v2 feed returns at most 100 entries
 TOP_PODCASTS_LIMIT = 100
 TOP_PODCASTS_CACHE_EXPIRATION = 60 * 60 * 24
