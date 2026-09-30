@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, ProviderMapping, Track
 
 from music_assistant.models.music_provider import MusicProvider
@@ -25,9 +26,9 @@ def _album(name: str) -> Album:
     return Album(item_id=name, provider=_PROVIDER, name=name, provider_mappings=set())
 
 
-def _track(name: str) -> Track:
+def _track(name: str, *, available: bool = True) -> Track:
     mapping = ProviderMapping(
-        item_id=name, provider_domain="streaming", provider_instance=_PROVIDER
+        item_id=name, provider_domain="streaming", provider_instance=_PROVIDER, available=available
     )
     return Track(item_id=name, provider=_PROVIDER, name=name, provider_mappings={mapping})
 
@@ -59,6 +60,8 @@ async def test_provider_artist_tracks_skip_failing_album(
     mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """One album whose tracks cannot be fetched is skipped (and logged); the others are kept."""
+    # the provider is loaded and available; only one of its album tracklists errors
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
     with (
         patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
         patch.object(
@@ -87,6 +90,31 @@ async def test_provider_artist_tracks_raise_when_every_album_fails(mass: MusicAs
             "tracks",
             side_effect=_failing_album_tracks({"Broken", "Also Broken"}),
         ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+
+
+async def test_provider_artist_tracks_raise_when_remaining_tracks_unavailable(
+    mass: MusicAssistant,
+) -> None:
+    """Tracks a provider lists as unavailable do not count as playable: the error still surfaces."""
+    # the provider itself is available: it is the tracks it lists that are not
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
+
+    async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
+        if item_id == "Broken":
+            raise MediaNotFoundError("Failed to get album tracks for Broken")
+        return [_track("Trashed track", available=False)]
+
+    with (
+        patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
+        patch.object(
+            mass.music.artists,
+            "get_provider_artist_albums",
+            return_value=[_album("Broken"), _album("Trashed")],
+        ),
+        patch.object(mass.music.albums, "tracks", side_effect=_album_tracks),
         pytest.raises(MediaNotFoundError),
     ):
         await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)

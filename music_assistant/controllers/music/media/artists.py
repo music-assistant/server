@@ -859,8 +859,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 unique_ids.add(unique_id)
                 result.append(track)
-        if provider_error is not None and not result:
-            # nothing could be listed at all, so surface the reason instead of an empty list
+        if provider_error is not None and not any(track.available for track in result):
+            # nothing could be played at all, so surface the reason instead of an empty list
             raise provider_error
         return result
 

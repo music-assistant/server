@@ -245,19 +245,22 @@ class MediaResolver:
 
         for artist in artists:
             try:
-                artist_tracks = await self.mass.music.artists.top_tracks(
+                top_tracks = await self.mass.music.artists.top_tracks(
                     artist.item_id, artist.provider
                 )
+                # a provider can list top tracks that are all unplayable here, which must
+                # not stand in for the artist's playable tracks
+                artist_tracks = [track for track in top_tracks if track.available]
                 if not artist_tracks:
                     # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
-                    artist_tracks = await self.mass.music.artists.tracks(
+                    all_tracks = await self.mass.music.artists.tracks(
                         artist.item_id, artist.provider
                     )
+                    artist_tracks = [track for track in all_tracks if track.available]
             except PROVIDER_FETCH_ERRORS as err:
                 provider_error = err
                 self.logger.warning("Unable to fetch tracks for artist %s: %s", artist.name, err)
                 continue
-            artist_tracks = [track for track in artist_tracks if track.available]
             random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
         if provider_error is not None and not result:

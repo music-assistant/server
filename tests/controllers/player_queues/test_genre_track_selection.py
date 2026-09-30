@@ -12,9 +12,11 @@ from music_assistant_models.media_items import Album, Artist, Genre, ProviderMap
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
 
-def _track(name: str) -> Track:
+def _track(name: str, *, available: bool = True) -> Track:
     # a mapping is needed for the track to count as available
-    mapping = ProviderMapping(item_id=name, provider_domain="test", provider_instance="test")
+    mapping = ProviderMapping(
+        item_id=name, provider_domain="test", provider_instance="test", available=available
+    )
     return Track(item_id=name, provider="test", name=name, provider_mappings={mapping})
 
 
@@ -52,6 +54,19 @@ async def test_genre_tracks_skip_failing_artist() -> None:
 
     assert [track.name for track in result] == ["Song"]
     fake.logger.warning.assert_called_once()
+
+
+async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
+    """Top tracks that are all unavailable do not stand in for the artist's playable tracks."""
+    fake = _fake_resolver([], [_artist("Artist")])
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track("Gone", available=False)])
+    fake.mass.music.artists.tracks = AsyncMock(return_value=[_track("Song")])
+
+    result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
+
+    assert [track.name for track in result] == ["Song"]
+    fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test")
+    fake.logger.warning.assert_not_called()
 
 
 async def test_genre_tracks_skip_failing_album() -> None:
