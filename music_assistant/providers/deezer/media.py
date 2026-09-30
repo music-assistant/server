@@ -642,7 +642,7 @@ class DeezerMediaManager:
             ep.fully_played = False
             ep.resume_position_ms = 0
             if ep.item_id in bookmarks:
-                ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
+                ep.fully_played, ep.resume_position_ms, _ = bookmarks[ep.item_id]
             yield ep
 
     @use_cache(3600)
