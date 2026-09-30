@@ -10,6 +10,7 @@ from functools import cache
 from ssl import SSLContext
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
+from urllib.request import getproxies
 
 import aiohttp
 from aiohttp import web
@@ -55,8 +56,9 @@ def create_clientsession(
     """Create a new ClientSession with kwargs, i.e. for cookies."""
     clientsession = aiohttp.ClientSession(
         connector=_get_connector(mass, verify_ssl, socks_url),
-        # honour the (NO_|HTTP_|HTTPS_)PROXY env vars, unless an explicit socks proxy is set
-        trust_env=not socks_url,
+        # honour the (NO_|HTTP_|HTTPS_)PROXY env vars, unless an explicit socks proxy is set;
+        # gated on a proxy being configured as trust_env adds a per-request netrc lookup
+        trust_env=not socks_url and bool(getproxies()),
         json_serialize=json_dumps,
         response_class=MassClientResponse,
         **kwargs,

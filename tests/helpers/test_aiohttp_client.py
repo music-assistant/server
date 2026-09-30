@@ -49,3 +49,14 @@ async def test_clientsession_honors_proxy_env(
             assert await response.text() == "via proxy"
         await session.close()
     assert requested == ["http://origin.invalid/hello"]
+
+
+async def test_clientsession_ignores_env_without_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test the environment is not trusted when no proxy is configured."""
+    monkeypatch.setattr(aiohttp_client, "getproxies", dict)
+    mass = MagicMock()
+    mass.version = "test"
+    with patch.object(aiohttp_client, "_get_resolver", return_value=None):
+        session = aiohttp_client.create_clientsession(mass)
+        assert session.trust_env is False
+        await session.close()
