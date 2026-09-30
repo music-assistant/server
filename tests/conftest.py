@@ -21,6 +21,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
 from tests.common import (
+    adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -169,6 +170,7 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
         try:
             await mass_instance.start()
             await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot: pytest holds on to the setup traceback,
