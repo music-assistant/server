@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import shutil
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,7 +30,6 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
-    RateLimited,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -51,7 +51,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
-from orjson import JSONDecodeError
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
@@ -62,11 +61,12 @@ from music_assistant.helpers.external_ids import (
     is_valid_isrc,
     normalize_external_id,
 )
-from music_assistant.helpers.json import SerializableType, json_loads
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.throttle_retry import (
+    MAX_WAIT_TIME,
+    RequestPriority,
     ThrottlerManager,
-    parse_retry_after,
-    throttle_with_retries,
+    current_priority,
 )
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -106,12 +106,14 @@ from .parsers import (
     parse_podcast_episode,
     parse_track,
 )
+from .session import SpotifySession
 
 _PLAYLIST_PAGINATION_STATE_LIMIT = 32
 
-# the throttler of an instance outlives the provider object, so a (re)load of the
+# the throttlers of an instance outlive the provider object, so a (re)load of the
 # provider does not lift a rate limit the service imposed
-_THROTTLERS: dict[str, ThrottlerManager] = {}
+_THROTTLERS: dict[tuple[str, str], ThrottlerManager] = {}
+_SESSION_NAMES = ("global", "dev")
 
 
 class NotModifiedError(Exception):
@@ -138,7 +140,10 @@ class SpotifyProvider(MusicProvider):
     _playlist_pagination_states: OrderedDict[tuple[str, bool], _PlaylistPaginationState]
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
-    throttler: ThrottlerManager
+    _global_session: SpotifySession
+    _dev_session: SpotifySession
+    # monotonic time until which the fallback to the global session is not logged again
+    _dev_fallback_logged_until: float = 0.0
     backend: SpotifyPlaybackBackend
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -190,11 +195,13 @@ class SpotifyProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._playlist_pagination_states = OrderedDict()
-        # Default throttler for global session (heavy rate limited)
-        self.throttler = _THROTTLERS.setdefault(
-            self.instance_id, ThrottlerManager(rate_limit=1, period=2)
+        # global session (heavy rate limited) and developer session (custom client id)
+        self._global_session = self._create_session(
+            "global", self.login, self._clear_auth_info_global, rate_limit=1, period=2
         )
-        self.throttler.set_rate_limit(rate_limit=1, period=2)
+        self._dev_session = self._create_session(
+            "dev", self.login_dev, self._clear_auth_info_dev, rate_limit=30, period=30
+        )
 
         # playback authorization is independent of the Web API tokens
         self.backend = self._create_backend()
@@ -215,8 +222,6 @@ class SpotifyProvider(MusicProvider):
                     raise LoginFailed(
                         "Developer session must use the same Spotify account as the main session."
                     )
-                # loosen the throttler when a custom client id is used
-                self.throttler.set_rate_limit(rate_limit=30, period=30)
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
 
@@ -246,7 +251,8 @@ class SpotifyProvider(MusicProvider):
                 await backend.unload()
         finally:
             if is_removed:
-                _THROTTLERS.pop(self.instance_id, None)
+                for name in _SESSION_NAMES:
+                    _THROTTLERS.pop((self.instance_id, name), None)
                 # Both hold reusable login material - the soloist session in the
                 # storage dir, librespot's credential in the cache - so a removed
                 # instance keeps neither, even if the teardown above failed.
@@ -1347,23 +1353,6 @@ class SpotifyProvider(MusicProvider):
         album_obj = result["albums"]["items"][0]
         return parse_album(album_obj, self)
 
-    async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
-        """
-        Get auth info for API requests, preferring dev session if available.
-
-        :param use_global_session: Force use of global session (for features not available on dev).
-        """
-        if use_global_session or not self.dev_session_active:
-            return await self.login()
-
-        # Try dev session first
-        try:
-            return await self.login_dev()
-        except LoginFailed:
-            # Fall back to global session
-            self.logger.debug("Falling back to global session after dev session failure")
-            return await self.login()
-
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
 
@@ -1650,7 +1639,6 @@ class SpotifyProvider(MusicProvider):
         _res = await self._get_data(endpoint, **kwargs)
         return {"etag": _res.get("etag"), "total": _res.get("total", 0)}
 
-    @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """
         Get data from api.
@@ -1658,155 +1646,106 @@ class SpotifyProvider(MusicProvider):
         :param endpoint: API endpoint to call.
         :param use_global_session: Force use of global session (for features not available on dev).
         """
-        url = f"https://api.spotify.com/v1/{endpoint}"
-        kwargs["market"] = "from_token"
-        kwargs["country"] = "from_token"
         use_global_session = kwargs.pop("use_global_session", False)
-        if not (auth_info := kwargs.pop("auth_info", None)):
-            auth_info = await self._get_auth_info(use_global_session=use_global_session)
-        headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
-        locale = self.mass.metadata.locale.replace("_", "-")
-        language = locale.split("-")[0]
-        headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
-        self.logger.debug("handling get data %s with kwargs %s", url, kwargs)
-        async with (
-            self.mass.http_session.get(
-                url,
-                headers=headers,
-                params=kwargs,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as response,
-        ):
-            # handle spotify rate limiter
-            if response.status == 429:
-                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
-                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
-            # handle temporary server error
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
+        return await self._request_on_session(
+            use_global_session, lambda session: session.get(endpoint, **kwargs)
+        )
 
-            # handle token expired, raise ResourceTemporarilyUnavailable
-            # so it will be retried (and the token refreshed)
-            if response.status == 401:
-                if use_global_session or not self.dev_session_active:
-                    self._auth_info_global = None
-                else:
-                    self._auth_info_dev = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
-
-            if response.status in (400, 403, 404):
-                try:
-                    error = await response.json(loads=json_loads)
-                    message = error.get("error", {}).get("message") or response.reason
-                except aiohttp.ContentTypeError, JSONDecodeError:
-                    message = (await response.text()) or response.reason
-
-                self.logger.debug(
-                    "Spotify API error: endpoint=%s, status=%s, reason=%s, message=%s",
-                    endpoint,
-                    response.status,
-                    response.reason,
-                    message,
-                )
-
-                raise MediaNotFoundError(f"{endpoint} not found")
-
-            response.raise_for_status()
-            result: dict[str, Any] = await response.json(loads=json_loads)
-            if etag := response.headers.get("ETag"):
-                result["etag"] = etag
-            return result
-
-    @throttle_with_retries
     async def _delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
         """Delete data from api."""
-        url = f"https://api.spotify.com/v1/{endpoint}"
         use_global_session = kwargs.pop("use_global_session", False)
-        if not (auth_info := kwargs.pop("auth_info", None)):
-            auth_info = await self._get_auth_info(use_global_session=use_global_session)
-        headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
-        async with self.mass.http_session.delete(
-            url, headers=headers, params=kwargs, json=data, ssl=True
-        ) as response:
-            # handle spotify rate limiter
-            if response.status == 429:
-                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
-                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
-            # handle token expired, raise ResourceTemporarilyUnavailable
-            # so it will be retried (and the token refreshed)
-            if response.status == 401:
-                if use_global_session or not self.dev_session_active:
-                    self._auth_info_global = None
-                else:
-                    self._auth_info_dev = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
-            # handle temporary server error
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
-            response.raise_for_status()
+        await self._request_on_session(
+            use_global_session, lambda session: session.delete(endpoint, data, **kwargs)
+        )
 
-    @throttle_with_retries
     async def _put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
         """Put data on api."""
-        url = f"https://api.spotify.com/v1/{endpoint}"
         use_global_session = kwargs.pop("use_global_session", False)
-        if not (auth_info := kwargs.pop("auth_info", None)):
-            auth_info = await self._get_auth_info(use_global_session=use_global_session)
-        headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
-        async with self.mass.http_session.put(
-            url, headers=headers, params=kwargs, json=data, ssl=True
-        ) as response:
-            # handle spotify rate limiter
-            if response.status == 429:
-                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
-                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
-            # handle token expired, raise ResourceTemporarilyUnavailable
-            # so it will be retried (and the token refreshed)
-            if response.status == 401:
-                if use_global_session or not self.dev_session_active:
-                    self._auth_info_global = None
-                else:
-                    self._auth_info_dev = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+        await self._request_on_session(
+            use_global_session, lambda session: session.put(endpoint, data, **kwargs)
+        )
 
-            # handle temporary server error
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
-            response.raise_for_status()
-
-    @throttle_with_retries
     async def _post_data(
         self, endpoint: str, data: Any = None, want_result: bool = True, **kwargs: Any
     ) -> dict[str, Any]:
         """Post data on api."""
-        url = f"https://api.spotify.com/v1/{endpoint}"
         use_global_session = kwargs.pop("use_global_session", False)
-        if not (auth_info := kwargs.pop("auth_info", None)):
-            auth_info = await self._get_auth_info(use_global_session=use_global_session)
-        headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
-        async with self.mass.http_session.post(
-            url, headers=headers, params=kwargs, json=data, ssl=True
-        ) as response:
-            # handle spotify rate limiter
-            if response.status == 429:
-                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
-                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
-            # handle token expired, raise ResourceTemporarilyUnavailable
-            # so it will be retried (and the token refreshed)
-            if response.status == 401:
-                if use_global_session or not self.dev_session_active:
-                    self._auth_info_global = None
-                else:
-                    self._auth_info_dev = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
-            # handle temporary server error
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
-            response.raise_for_status()
-            if not want_result:
-                return {}
-            result: dict[str, Any] = await response.json(loads=json_loads)
-            return result
+        return await self._request_on_session(
+            use_global_session,
+            lambda session: session.post(endpoint, data, want_result, **kwargs),
+        )
+
+    async def _request_on_session[T](
+        self, use_global_session: bool, request: Callable[[SpotifySession], Awaitable[T]]
+    ) -> T:
+        """
+        Run an api request on the session that should serve it.
+
+        :param use_global_session: Force use of global session (for features not available on dev).
+        :param request: Sends the request on the given session.
+        """
+        session = self._session_for(use_global_session)
+        try:
+            return await request(session)
+        except LoginFailed:
+            if session is not self._dev_session:
+                raise
+            # Fall back to global session
+            self.logger.debug("Falling back to global session after dev session failure")
+            return await request(self._global_session)
+
+    def _session_for(self, use_global_session: bool) -> SpotifySession:
+        """
+        Return the session a request should use, preferring the dev session if available.
+
+        :param use_global_session: Force use of global session (for features not available on dev).
+        """
+        if use_global_session or not self.dev_session_active:
+            return self._global_session
+        cooldown = self._dev_session.throttler.cooldown_remaining
+        if cooldown <= MAX_WAIT_TIME or current_priority() is RequestPriority.LOW:
+            # background work stays on the custom Client ID, so it never
+            # eats into the budget of the shared client
+            return self._dev_session
+        if (now := time.monotonic()) >= self._dev_fallback_logged_until:
+            self._dev_fallback_logged_until = now + cooldown
+            self.logger.info(
+                "Spotify limits the custom Client ID for another %d minutes, "
+                "user actions use the shared client meanwhile",
+                math.ceil(cooldown / 60),
+            )
+        return self._global_session
+
+    def _create_session(
+        self,
+        name: str,
+        get_auth: Callable[[], Awaitable[dict[str, Any]]],
+        on_unauthorized: Callable[[], None],
+        rate_limit: int,
+        period: float,
+    ) -> SpotifySession:
+        """
+        Return a session of this instance on its stored throttler, created on first use.
+
+        :param name: Name of the session.
+        :param get_auth: Returns a valid access token of the session.
+        :param on_unauthorized: Drops the cached access token of the session.
+        :param rate_limit: Number of requests the session may make per period.
+        :param period: Length of the period in seconds.
+        """
+        throttler = _THROTTLERS.setdefault(
+            (self.instance_id, name), ThrottlerManager(rate_limit=rate_limit, period=period)
+        )
+        throttler.set_rate_limit(rate_limit=rate_limit, period=period)
+        return SpotifySession(self.mass, self.logger, name, throttler, get_auth, on_unauthorized)
+
+    def _clear_auth_info_global(self) -> None:
+        """Drop the cached access token of the global session."""
+        self._auth_info_global = None
+
+    def _clear_auth_info_dev(self) -> None:
+        """Drop the cached access token of the developer session."""
+        self._auth_info_dev = None
 
     def _fix_create_playlist_api_bug(self, playlist_obj: dict[str, Any]) -> None:
         """Fix spotify API bug where incorrect owner id is returned from Create Playlist."""
