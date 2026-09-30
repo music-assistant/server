@@ -468,6 +468,9 @@ class FakeSupervisor:
         self.stuck: set[str] = set()
         # how long the Supervisor takes to list its mounts, in seconds
         self.list_delay = 0.0
+        # the Supervisor holds its answer to a listing of its mounts until this is set
+        self.list_released = asyncio.Event()
+        self.list_released.set()
         # the state of each mount, None while it is not armed
         self.states: dict[str, str | None] = {}
         self.app = web.Application(middlewares=[self._security])
@@ -516,6 +519,7 @@ class FakeSupervisor:
 
     async def _list(self, _request: web.Request) -> web.Response:
         """List the mounts without their credentials."""
+        await self.list_released.wait()
         await asyncio.sleep(self.list_delay)
         mounts = [
             {key: value for key, value in mount.items() if key not in ("username", "password")}
@@ -667,8 +671,6 @@ async def supervisor(
     await server.start_server()
     session = ClientSession()
     storage.mass._http_session_no_ssl = session
-    # the server creates its http session only once its discovery controller is set up
-    storage.mass.discovery.initialized.set()
     storage.mass.running_as_hass_addon = True
     monkeypatch.setattr(hassio, "SUPERVISOR_URL", str(server.make_url("")).rstrip("/"))
     monkeypatch.setenv("SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
