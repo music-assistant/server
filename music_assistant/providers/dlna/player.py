@@ -430,11 +430,10 @@ class DLNAPlayer(Player):
                 # using the IP address extracted below.
                 # Try to extract just the IP from the URL for matching
                 # presentationURL may be relative (e.g. "/"), resolve it against the description URL
-                ip_address = urljoin(
-                    self.description_url, self.device.device.presentation_url or ""
-                )
                 with suppress(ValueError):
-                    parsed = urlparse(ip_address)
+                    parsed = urlparse(
+                        urljoin(self.description_url, self.device.device.presentation_url or "")
+                    )
                     if parsed.hostname:
                         self._attr_device_info.add_identifier(
                             IdentifierType.IP_ADDRESS, parsed.hostname
