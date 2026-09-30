@@ -203,7 +203,7 @@ async def test_top_podcasts_single_batched_lookup(
         patch.object(provider, "_get_top_chart_ids", AsyncMock(return_value=chart)),
         patch.object(
             provider,
-            "_get_itunes_results",
+            "_perform_search",
             AsyncMock(return_value=[_result(1), _result(2), _result(3)]),
         ) as lookup,
     ):
@@ -231,7 +231,7 @@ async def test_top_podcasts_failure_not_cached(
     """A failed request returns nothing and is not cached, so the next call retries."""
     with (
         patch.object(provider, "_get_top_chart_ids", AsyncMock(return_value=chart)),
-        patch.object(provider, "_get_itunes_results", AsyncMock(return_value=lookup)),
+        patch.object(provider, "_perform_search", AsyncMock(return_value=lookup)),
     ):
         assert await provider._cache_get_top_podcasts() == []
     mass_mock.cache.set.assert_not_called()
@@ -280,7 +280,7 @@ async def test_resolve_library_podcast_matches_feed_url(
 ) -> None:
     """The search result with the matching (normalized) feed url wins and is cached."""
     with patch.object(
-        provider, "_get_itunes_results", AsyncMock(return_value=[_result(1), _result(2)])
+        provider, "_perform_search", AsyncMock(return_value=[_result(1), _result(2)])
     ):
         resolved, entry = await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2")
 
@@ -294,7 +294,7 @@ async def test_resolve_library_podcast_failure_not_cached(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
     """A failed search is not cached as a miss."""
-    with patch.object(provider, "_get_itunes_results", AsyncMock(return_value=None)):
+    with patch.object(provider, "_perform_search", AsyncMock(return_value=None)):
         assert await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2") == (
             False,
             None,
@@ -306,7 +306,7 @@ async def test_resolve_library_podcast_miss_cached(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
     """A podcast not listed in iTunes is cached as a known miss (empty dict)."""
-    with patch.object(provider, "_get_itunes_results", AsyncMock(return_value=[_result(1)])):
+    with patch.object(provider, "_perform_search", AsyncMock(return_value=[_result(1)])):
         assert await provider._resolve_library_podcast("example.com/unknown.xml", "Unknown") == (
             True,
             None,
@@ -343,7 +343,7 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
         patch.object(provider, "_get_genre_chart", genre_chart),
         patch.object(
             provider,
-            "_get_itunes_results",
+            "_perform_search",
             AsyncMock(
                 side_effect=lambda _url, params: [
                     _result(int(i)) for i in str(params["id"]).split(",")
@@ -379,7 +379,7 @@ async def test_library_recommendations_resolve_in_background(
     with (
         patch.object(provider, "_resolve_library_podcast", resolve),
         patch.object(provider, "_get_genre_chart", AsyncMock(return_value=[50])),
-        patch.object(provider, "_get_itunes_results", AsyncMock(return_value=[_result(50)])),
+        patch.object(provider, "_perform_search", AsyncMock(return_value=[_result(50)])),
     ):
         results = await provider._get_library_recommendations()
 

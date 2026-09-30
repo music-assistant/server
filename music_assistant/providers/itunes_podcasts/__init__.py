@@ -211,7 +211,7 @@ class ITunesPodcastsProvider(MusicProvider):
             "term": search_query,
         }
         url = "https://itunes.apple.com/search?"
-        results = await self._get_itunes_results(url, params) or []
+        results = await self._perform_search(url, params) or []
         result.podcasts = self._get_podcast_list(results)
 
         return result
@@ -266,7 +266,7 @@ class ITunesPodcastsProvider(MusicProvider):
         )
 
     @throttle_with_retries
-    async def _get_itunes_results(
+    async def _perform_search(
         self, url: str, params: dict[str, str | int]
     ) -> list[PodcastSearchResult] | None:
         """Run an iTunes search/lookup request, None on failure (so it is not cached)."""
@@ -475,27 +475,37 @@ class ITunesPodcastsProvider(MusicProvider):
             return schedule.every * 24 * 60 * 60 + 600
         return 60 * 60 * 12  # 12h
 
+    async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
+        await self.mass.cache.set(
+            key=f"{CACHE_KEY_TOP_PODCASTS}-{self.config.get_value(CONF_LOCALE)}",
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            data=top_podcast_helper.to_dict(),
+            expiration=TOP_PODCASTS_CACHE_EXPIRATION,
+        )
+
     async def _cache_get_top_podcasts(self) -> list[PodcastSearchResult]:
         # cached unfiltered, so the library and explicit filters take effect right away
-        cache_key = f"{CACHE_KEY_TOP_PODCASTS}-{self.config.get_value(CONF_LOCALE)}"
-        cached = await self.mass.cache.get(
-            key=cache_key, provider=self.instance_id, category=CACHE_CATEGORY_RECOMMENDATIONS
+        parsed_top_podcasts = await self.mass.cache.get(
+            key=f"{CACHE_KEY_TOP_PODCASTS}-{self.config.get_value(CONF_LOCALE)}",
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
         )
-        if cached is not None:
-            return TopPodcastsHelper.from_dict(cached).top_podcasts
-        itunes_ids = await self._get_top_chart_ids(str(self.config.get_value(CONF_LOCALE)))
-        top_podcasts = None if itunes_ids is None else await self._lookup_itunes_ids(itunes_ids)
+        if parsed_top_podcasts is not None:
+            helper = TopPodcastsHelper.from_dict(parsed_top_podcasts)
+            return helper.top_podcasts
+
+        country = str(self.config.get_value(CONF_LOCALE))
+        itunes_ids = await self._get_top_chart_ids(country)
+        if itunes_ids is None:
+            return []
+        top_podcasts = await self._get_podcast_search_results_from_itunes_ids(itunes_ids)
         if top_podcasts is None:
             # failed, not cached so the next request retries
             return []
-        await self.mass.cache.set(
-            key=cache_key,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_RECOMMENDATIONS,
-            data=TopPodcastsHelper(top_podcasts=top_podcasts).to_dict(),
-            expiration=TOP_PODCASTS_CACHE_EXPIRATION,
-        )
-        return top_podcasts
+        helper = TopPodcastsHelper(top_podcasts=top_podcasts)
+        await self._cache_set_top_podcasts(top_podcast_helper=helper)
+        return helper.top_podcasts
 
     @throttle_with_retries
     async def _get_top_chart_ids(self, country: str) -> list[int] | None:
@@ -590,7 +600,7 @@ class ITunesPodcastsProvider(MusicProvider):
             "limit": 25,
             "term": name,
         }
-        results = await self._get_itunes_results("https://itunes.apple.com/search?", params)
+        results = await self._perform_search("https://itunes.apple.com/search?", params)
         if results is None:
             return False, None
         match = next(
@@ -645,14 +655,16 @@ class ITunesPodcastsProvider(MusicProvider):
                 continue
         return ids
 
-    async def _lookup_itunes_ids(self, itunes_ids: list[int]) -> list[PodcastSearchResult] | None:
+    async def _get_podcast_search_results_from_itunes_ids(
+        self, itunes_ids: list[int]
+    ) -> list[PodcastSearchResult] | None:
         """Lookup up to 100 iTunes ids in one request, keeping their order. None on failure."""
         params: dict[str, str | int] = {
             "id": ",".join(str(i) for i in itunes_ids),
             "entity": "podcast",
             "country": str(self.config.get_value(CONF_LOCALE)),
         }
-        results = await self._get_itunes_results("https://itunes.apple.com/lookup?", params)
+        results = await self._perform_search("https://itunes.apple.com/lookup?", params)
         if results is None:
             return None
         by_id = {r.collection_id: r for r in results}
@@ -720,7 +732,9 @@ class ITunesPodcastsProvider(MusicProvider):
 
         # some headroom for items dropped by the filters below
         ranked = sorted(scores, key=scores.__getitem__, reverse=True)
-        candidates = await self._lookup_itunes_ids(ranked[: RECOMMENDATION_ROW_SIZE * 2])
+        candidates = await self._get_podcast_search_results_from_itunes_ids(
+            ranked[: RECOMMENDATION_ROW_SIZE * 2]
+        )
         if candidates is None:
             return []
         recommendations = [
