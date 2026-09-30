@@ -117,10 +117,6 @@ _PLAYLIST_PAGINATION_STATE_LIMIT = 32
 _THROTTLERS: dict[tuple[str, str, str], ThrottlerManager] = {}
 
 
-class NotModifiedError(Exception):
-    """Exception raised when a resource has not been modified."""
-
-
 @dataclass(slots=True)
 class _PlaylistPaginationState:
     """Hold the synchronization and metadata snapshot for one playlist."""
