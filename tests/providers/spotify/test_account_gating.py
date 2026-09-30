@@ -3,7 +3,8 @@ Tests for the Spotify setup flow's account checks.
 
 Right after the sign-in the flow refuses accounts that cannot work: one without
 Spotify Premium (librespot refuses to stream for a free account) and one that is
-already set up on another provider instance.
+already set up on another provider instance. A developer key has to be authorized
+with the same account as the main sign-in.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from aiohttp import ClientError
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.spotify import setup_flow as spotify_flow
+from music_assistant.providers.spotify.constants import CONF_ACCOUNT_ID, CONF_CLIENT_ID
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 
@@ -162,3 +164,60 @@ async def test_a_malformed_account_response_does_not_block_the_setup(payload: An
     _stub_me(session, payload=payload)
 
     assert await spotify_flow._verify_account(session, "at-test") is None
+
+
+async def _authorize_developer_key(
+    session: SetupSession, monkeypatch: pytest.MonkeyPatch
+) -> mock.AsyncMock:
+    """Run the developer key step for the main sign-in u1 and return the finish mock."""
+    monkeypatch.setattr(session, "form", mock.AsyncMock(return_value={CONF_CLIENT_ID: "my-client"}))
+    finish = mock.AsyncMock(return_value={"instance_id": "spotify--test"})
+    monkeypatch.setattr(session, "finish", finish)
+    monkeypatch.setattr(
+        spotify_flow,
+        "_pkce_authenticate",
+        mock.AsyncMock(return_value={"refresh_token": "rt-dev", "access_token": "at-dev"}),
+    )
+    setup_data: dict[str, Any] = {CONF_ACCOUNT_ID: "u1"}
+    await spotify_flow._authorize_developer_key(session, setup_data, "")
+    return finish
+
+
+async def test_a_developer_key_of_another_account_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Client ID authorized with a different account than the main sign-in aborts the setup."""
+    session = _make_session()
+    _stub_me(session, payload={"id": "u2", "product": "premium"})
+
+    with pytest.raises(AbortFlow, match="developer_account_mismatch"):
+        await _authorize_developer_key(session, monkeypatch)
+
+
+async def test_a_developer_key_of_the_same_account_finishes_the_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Client ID authorized with the account of the main sign-in completes the setup."""
+    session = _make_session()
+    _stub_me(session, payload={"id": "u1", "product": "premium"})
+
+    finish = await _authorize_developer_key(session, monkeypatch)
+
+    finish.assert_awaited_once()
+    # the lookup is made with the token of the developer key
+    headers = session.mass.http_session.get.call_args.kwargs["headers"]  # type: ignore[attr-defined]
+    assert headers["Authorization"] == "Bearer at-dev"
+
+
+async def test_a_failing_developer_account_lookup_does_not_block_the_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A developer account lookup Spotify does not answer lets the setup finish."""
+    session = _make_session()
+    _stub_me(session, status=429)
+
+    with mock.patch.object(spotify_flow.LOGGER, "warning") as warning:
+        finish = await _authorize_developer_key(session, monkeypatch)
+
+    finish.assert_awaited_once()
+    warning.assert_called_once()

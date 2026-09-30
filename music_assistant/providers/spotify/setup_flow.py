@@ -203,6 +203,9 @@ async def _authorize_developer_key(
                 session, client_id, step_id="authenticate_dev"
             )
             setup_data[CONF_REFRESH_TOKEN_DEV] = str(dev_token_result["refresh_token"])
+            await _verify_developer_account(
+                session, str(dev_token_result["access_token"]), setup_data.get(CONF_ACCOUNT_ID)
+            )
         else:
             # opted in but left the field empty: keep using the shared key
             setup_data[CONF_CLIENT_ID] = None
@@ -228,6 +231,45 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
         revokes the one just stored as setup data.
     :raises AbortFlow: When the account is non-Premium or already configured.
     """
+    if (userinfo := await _get_profile(session, access_token)) is None:
+        return None
+    product = str(userinfo.get("product") or "")
+    if product and product != "premium":
+        raise AbortFlow("premium_required")
+    if not (account_id := str(userinfo.get("id") or "")):
+        return None
+    if await _account_in_use(session, account_id):
+        raise AbortFlow("account_already_configured")
+    return account_id
+
+
+async def _verify_developer_account(
+    session: SetupSession, access_token: str, account_id: str | None
+) -> None:
+    """
+    Turn the user away when the developer key was authorized with another Spotify account.
+
+    Nothing is compared when the account of the main sign-in is unknown, and a lookup
+    Spotify does not answer is not held against the user.
+
+    :param session: The setup session driving the flow.
+    :param access_token: The access token from the developer key sign-in.
+    :param account_id: The Spotify user id of the main sign-in, when known.
+    :raises AbortFlow: When the developer key signed in with a different account.
+    """
+    if not account_id or (userinfo := await _get_profile(session, access_token)) is None:
+        return
+    if (dev_account_id := str(userinfo.get("id") or "")) and dev_account_id != account_id:
+        raise AbortFlow("developer_account_mismatch")
+
+
+async def _get_profile(session: SetupSession, access_token: str) -> dict[str, Any] | None:
+    """
+    Return the Spotify profile of the signed-in account, or None when Spotify does not answer.
+
+    :param session: The setup session driving the flow.
+    :param access_token: The access token of the account to look up.
+    """
     try:
         async with session.mass.http_session.get(
             "https://api.spotify.com/v1/me",
@@ -246,14 +288,7 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
     if not isinstance(userinfo, dict):
         LOGGER.warning("Account check skipped: Spotify returned an unexpected profile")
         return None
-    product = str(userinfo.get("product") or "")
-    if product and product != "premium":
-        raise AbortFlow("premium_required")
-    if not (account_id := str(userinfo.get("id") or "")):
-        return None
-    if await _account_in_use(session, account_id):
-        raise AbortFlow("account_already_configured")
-    return account_id
+    return userinfo
 
 
 async def _account_in_use(session: SetupSession, account_id: str) -> bool:

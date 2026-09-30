@@ -14,10 +14,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import (
+    LoginFailed,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.helpers.throttle_retry import parse_retry_after
 from music_assistant.providers.spotify_connect.soloist import SoloistBinaryManager
 
 from .constants import (
@@ -279,41 +284,46 @@ async def get_spotify_token(
     :param refresh_token: Spotify refresh token.
     :param session_name: Name for logging purposes.
     :return: Auth info dict with access_token, refresh_token, expires_at.
-    :raises LoginFailed: If token refresh fails.
+    :raises RateLimited: When Spotify rate limits the token refresh.
+    :raises ResourceTemporarilyUnavailable: When Spotify fails with a server error.
+    :raises LoginFailed: When Spotify rejects the token refresh.
     """
     params = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
     }
-    err = "Unknown error"
-    for _ in range(2):
-        async with http_session.post(
-            "https://accounts.spotify.com/api/token", data=params
-        ) as response:
-            if response.status != 200:
-                err = await response.text()
-                # invalid_grant means the refresh token is revoked or expired (Spotify
-                # enforces a 6-month lifetime); retrying won't recover it, so fail now and
-                # let the caller clear the stored token and prompt re-authentication.
-                if "invalid_grant" in err or "revoked" in err:
-                    raise LoginFailed(
-                        f"Refresh token no longer valid for {session_name}: {err}",
-                        translation_key="refresh_token_invalid",
-                        translation_owner="provider.spotify",
-                    )
-                # the token failed to refresh, we allow one retry
-                await asyncio.sleep(2)
-                continue
-            # if we reached this point, the token has been successfully refreshed
-            auth_info: dict[str, Any] = await response.json()
-            auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
-            # Spotify only returns a refresh_token when it rotates one; when the response
-            # omits it, keep using the existing token (per Spotify's refresh-token docs).
-            auth_info.setdefault("refresh_token", refresh_token)
-            return auth_info
-
-    raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+    async with http_session.post("https://accounts.spotify.com/api/token", data=params) as response:
+        if response.status == 429:
+            raise RateLimited(
+                f"Spotify rate limits the {session_name} token refresh",
+                backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+            )
+        if response.status >= 500:
+            raise ResourceTemporarilyUnavailable(
+                f"Spotify failed to refresh the {session_name} access token: "
+                f"HTTP {response.status}",
+                backoff_time=30,
+            )
+        if response.status != 200:
+            err = await response.text()
+            # invalid_grant means the refresh token is revoked or expired (Spotify
+            # enforces a 6-month lifetime); retrying won't recover it, so fail now and
+            # let the caller clear the stored token and prompt re-authentication.
+            if "invalid_grant" in err or "revoked" in err:
+                raise LoginFailed(
+                    f"Refresh token no longer valid for {session_name}: {err}",
+                    translation_key="refresh_token_invalid",
+                    translation_owner="provider.spotify",
+                )
+            raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+        # if we reached this point, the token has been successfully refreshed
+        auth_info: dict[str, Any] = await response.json()
+    auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+    # Spotify only returns a refresh_token when it rotates one; when the response
+    # omits it, keep using the existing token (per Spotify's refresh-token docs).
+    auth_info.setdefault("refresh_token", refresh_token)
+    return auth_info
 
 
 async def _log_soloist_pairing_output(pair_proc: AsyncProcess, api_key: str) -> None:

@@ -47,7 +47,6 @@ async def _make_provider() -> SpotifyProvider:
     provider._test_audiobook_support = AsyncMock(return_value=True)  # type: ignore[method-assign]
     provider._remove_unused_playback_credentials = MagicMock()  # type: ignore[method-assign]
     provider._sp_user = {"id": "user"}
-    _stub_http(provider, {"id": "user"})
     await provider.handle_async_init()
     assert provider.dev_session_active
     # lift the rate limits, so the tests do not wait for a free slot
@@ -90,6 +89,14 @@ def _fallback_logs(provider: SpotifyProvider) -> int:
     """Return how often the fallback to the global session was logged."""
     info = provider.logger.info
     return sum("custom Client ID" in call.args[0] for call in info.call_args_list)  # type: ignore[attr-defined]
+
+
+async def test_dev_session_is_active_without_an_account_lookup() -> None:
+    """The load activates the dev session without an api request to verify the account."""
+    provider = await _make_provider()
+
+    provider.login_dev.assert_awaited_once()  # type: ignore[attr-defined]
+    provider.mass.http_session.request.assert_not_called()  # type: ignore[attr-defined]
 
 
 async def test_request_uses_the_dev_session() -> None:

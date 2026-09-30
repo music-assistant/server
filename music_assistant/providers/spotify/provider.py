@@ -84,8 +84,11 @@ from .backends import (
 )
 from .constants import (
     BACKEND_SOLOIST,
+    CONF_ACCOUNT_COUNTRY,
     CONF_ACCOUNT_ID,
+    CONF_ACCOUNT_NAME,
     CONF_AUDIO_QUALITY,
+    CONF_AUDIOBOOKS_SUPPORTED,
     CONF_CLIENT_ID,
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
@@ -228,12 +231,6 @@ class SpotifyProvider(MusicProvider):
 
             if client_id and dev_token and self._sp_user:
                 await self.login_dev()
-                # Verify user matches
-                userinfo = await self._get_data("me", use_global_session=False)
-                if userinfo["id"] != self._sp_user["id"]:
-                    raise LoginFailed(
-                        "Developer session must use the same Spotify account as the main session."
-                    )
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
 
@@ -1132,16 +1129,38 @@ class SpotifyProvider(MusicProvider):
 
         # get logged-in user info
         if not self._sp_user:
-            self._sp_user = userinfo = await self._get_data(
-                "me", auth_info=auth_info, use_global_session=True
-            )
+            try:
+                userinfo = await self._get_data("me", auth_info=auth_info, use_global_session=True)
+            except RetriesExhausted, ResourceTemporarilyUnavailable:
+                if not (account_id := self.get_setup_value(CONF_ACCOUNT_ID)):
+                    raise
+                userinfo = {
+                    "id": account_id,
+                    "display_name": self.get_setup_value(CONF_ACCOUNT_NAME) or account_id,
+                    "country": self.get_setup_value(CONF_ACCOUNT_COUNTRY),
+                }
+                self.logger.info(
+                    "Spotify did not answer the account lookup, loaded with the stored "
+                    "account details of %s",
+                    userinfo["display_name"],
+                )
+            else:
+                # instances configured before the account was recorded fill it in here,
+                # so the setup flow can spot a duplicate account without loading them;
+                # the stored details also let a later load go ahead while Spotify does not answer
+                for key, value in (
+                    (CONF_ACCOUNT_ID, userinfo["id"]),
+                    (CONF_ACCOUNT_NAME, userinfo.get("display_name")),
+                    (CONF_ACCOUNT_COUNTRY, userinfo.get("country")),
+                ):
+                    if self.get_setup_value(key) != value:
+                        self._update_setup_data(key, value)
+                self.logger.info(
+                    "Successfully logged in to Spotify as %s", userinfo["display_name"]
+                )
+            self._sp_user = userinfo
             if country := userinfo.get("country"):
                 self.mass.metadata.set_default_preferred_language(country)
-            if self.get_setup_value(CONF_ACCOUNT_ID) != userinfo["id"]:
-                # instances configured before the account was recorded fill it in here,
-                # so the setup flow can spot a duplicate account without loading them
-                self._update_setup_data(CONF_ACCOUNT_ID, userinfo["id"])
-            self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
         return auth_info
 
     @lock
@@ -1844,13 +1863,19 @@ class SpotifyProvider(MusicProvider):
         """Test if audiobooks are supported in user's region."""
         try:
             await self._get_data("me/audiobooks", limit=1)
-            return True
+            supported = True
         except aiohttp.ClientResponseError as e:
-            if e.status == 403:
-                return False  # Not available
-            raise  # Re-raise other HTTP errors
+            if e.status != 403:
+                raise  # Re-raise other HTTP errors
+            supported = False  # Not available
         except MediaNotFoundError, ProviderUnavailableError:
-            return False
+            supported = False
+        except RetriesExhausted, ResourceTemporarilyUnavailable:
+            # Spotify did not answer: go with the answer of an earlier load
+            return bool(self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED, False))
+        if self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED) != supported:
+            self._update_setup_data(CONF_AUDIOBOOKS_SUPPORTED, supported)
+        return supported
 
     def _stored_refresh_token(self, key: str) -> str | None:
         """
