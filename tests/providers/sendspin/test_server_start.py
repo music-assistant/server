@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import pathlib
 import socket
@@ -84,10 +83,14 @@ async def test_full_boot_does_not_depend_on_the_default_sendspin_port(
     """
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        # a port already held by something else is the very condition under test
-        with contextlib.suppress(OSError):
+        try:
             blocker.bind(("127.0.0.1", SENDSPIN_SERVER_PORT))
             blocker.listen()
+        except OSError as err:
+            # a port already held by something else is the very condition under test;
+            # any other failure to set up the blocker must not pass as that condition
+            if err.errno != errno.EADDRINUSE:
+                raise
         async with full_mass_context(tmp_path) as mass:
             sendspin = mass.get_provider("sendspin")
             assert sendspin is not None
