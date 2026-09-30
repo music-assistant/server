@@ -305,7 +305,10 @@ class BuiltinProvider(MusicProvider):
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
         metadata = MediaItemMetadata()
-        if image_url := parse_m3u_playlist_image(m3u_data):
+        image_url = parse_m3u_playlist_image(m3u_data)
+        # a local path is artwork written back from the library (such as a generated
+        # collage), which is not ours to serve
+        if image_url and image_url.startswith(REMOTE_IMAGE_PREFIXES):
             metadata.images = UniqueList(
                 [
                     MediaItemImage(

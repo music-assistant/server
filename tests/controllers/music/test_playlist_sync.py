@@ -163,6 +163,11 @@ async def test_localized_name_follows_the_provider(playlists: PlaylistController
     library_item = await _sync(playlists, liked_songs("New"))
 
     assert (library_item.name, library_item.translation_params) == ("Liked Songs New", ["New"])
+    with patch.object(
+        playlists, "update_item_in_library", wraps=playlists.update_item_in_library
+    ) as update_item_in_library:
+        await _sync(playlists, liked_songs("New"))
+    update_item_in_library.assert_not_called()
 
 
 async def test_localized_name_reaches_an_unchanged_name(playlists: PlaylistController) -> None:
