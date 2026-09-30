@@ -130,9 +130,9 @@ async def test_relationships_and_playlist_pages_do_not_read_membership(provider:
         assert len(await provider.get_artist_albums("artist-test")) == 1
         first = await provider.get_playlist_tracks("playlist-test", 0)
         last = await provider.get_playlist_tracks("playlist-test", 1)
-        assert len(first) == 100
-        assert len(last) == 2
-        assert last[-1].position == 102
+        assert len(first) == 102
+        assert last == []
+        assert first[-1].position == 102
         await asyncio.sleep(0)
         clock[0] += 31
     assert provider._client.related.await_count == 8

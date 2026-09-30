@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItem,
     Playlist,
     SearchResults,
@@ -134,39 +135,33 @@ class FeiNiuProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Read all pages of the album relationship."""
-        # Music 1.0.1 (0.8.41) album track rows omit accessStatus, unlike playlist rows.
-        # Inaccessible tracks are filtered from the album relationship server-side.
-        return [
-            cast("Track", self._bind_images(parse_track(item, self.instance_id)))
-            async for item in self._pages(
-                lambda page: self._client.related("album", prov_album_id, page)
-            )
-        ]
+        self._check_open()
+        items = await self._relation_items("album", prov_album_id, self._cache_id)
+        self._check_open()
+        return [Track.from_dict(item) for item in items]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Read all pages of the artist's album relationship."""
         if prov_artist_id == UNKNOWN_ARTIST:
             return []
-        # Music 1.0.1 (0.8.41) artist relations filter inaccessible albums server-side
-        # and omit accessStatus, unlike playlist track rows.
-        return [
-            cast("Album", self._bind_images(parse_album(item, self.instance_id)))
-            async for item in self._pages(
-                lambda page: self._client.related("artist", prov_artist_id, page, albums=True)
-            )
-        ]
+        self._check_open()
+        items = await self._relation_items("artist", prov_artist_id, self._cache_id)
+        self._check_open()
+        return [Album.from_dict(item) for item in items]
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Read a playlist page, retaining server order and duplicate track positions."""
+        """Return the complete playlist on page zero, preserving duplicate positions."""
         self._check_open()
+        if page > 0:
+            return []
         # Filtering a single page could turn an intermediate page into an empty
         # result, which MA treats as the end. Retain order and duplicate positions.
         items = await self._playlist_items(prov_playlist_id, self._cache_id)
         self._check_open()
         tracks = []
-        for index, item in enumerate(items[page * 100 : (page + 1) * 100]):
+        for index, item in enumerate(items):
             track = Track.from_dict(item)
-            track.position = page * 100 + index + 1
+            track.position = index + 1
             tracks.append(track)
         return tracks
 
@@ -177,11 +172,11 @@ class FeiNiuProvider(MusicProvider):
         results = SearchResults()
         if limit <= 0:
             return results
-        for kind, attribute, parser in (
-            (MediaType.TRACK, "tracks", parse_track),
-            (MediaType.ALBUM, "albums", parse_album),
-            (MediaType.ARTIST, "artists", parse_artist),
-            (MediaType.PLAYLIST, "playlists", parse_playlist),
+        for kind, attribute in (
+            (MediaType.TRACK, "tracks"),
+            (MediaType.ALBUM, "albums"),
+            (MediaType.ARTIST, "artists"),
+            (MediaType.PLAYLIST, "playlists"),
         ):
             if kind not in media_types:
                 continue
@@ -194,7 +189,7 @@ class FeiNiuProvider(MusicProvider):
                 async for item in pages:
                     # Music 1.0.1 (0.8.41) track search rows omit accessStatus;
                     # inaccessible tracks are filtered server-side.
-                    found.append(self._bind_images(parser(item, self.instance_id)))
+                    found.append(self._parse_item(kind.value, item, compact=True))
                     if len(found) >= limit:
                         break
             setattr(results, attribute, found)
@@ -316,7 +311,7 @@ class FeiNiuProvider(MusicProvider):
         items: dict[str, MediaItem] = {}
 
         def store(row: dict[str, Any]) -> None:
-            item = self._parse_item(kind, row)
+            item = self._parse_item(kind, row, compact=True)
             if item.item_id in items:
                 raise InvalidDataError("FeiNiu returned duplicate collection identifiers")
             items[item.item_id] = item
@@ -345,14 +340,20 @@ class FeiNiuProvider(MusicProvider):
         }
         return models[kind].from_dict(detail["item"])
 
-    def _parse_item(self, kind: str, row: dict[str, Any]) -> MediaItem:
+    def _parse_item(self, kind: str, row: dict[str, Any], *, compact: bool = False) -> MediaItem:
         parser = {
             "track": parse_track,
             "album": parse_album,
             "artist": parse_artist,
             "playlist": parse_playlist,
         }[kind]
-        return self._bind_images(parser(row, self.instance_id))
+        item = self._bind_images(parser(row, self.instance_id))
+        if compact:
+            if isinstance(item, Track) and item.album:
+                item.album = ItemMapping.from_item(item.album)
+            if isinstance(item, Track | Album):
+                item.artists = UniqueList(ItemMapping.from_item(artist) for artist in item.artists)
+        return item
 
     def _bind_images(self, item: MediaItem) -> MediaItem:
         prefix = (
@@ -380,6 +381,26 @@ class FeiNiuProvider(MusicProvider):
             image.path for media in self._image_items(item) for image in media.metadata.images or []
         }
 
+    async def _relation_items(self, kind: str, item_id: str, cache_id: str) -> list[dict[str, Any]]:
+        # Direct MA caching preserves caller-owned cancellation for relation requests.
+        key = f"relation.{kind}.{item_id}.{cache_id}"
+        cached = await self.mass.cache.get(key, provider=self.instance_id, allow_bypass=True)
+        if cached is not None:
+            return cast("list[dict[str, Any]]", cached)
+        # Music 1.0.1 (0.8.41) filters inaccessible album/artist relations server-side
+        # and omits accessStatus, unlike playlist track rows.
+        fetch = partial(self._client.related, kind, item_id)
+        if kind == "artist":
+            fetch = partial(fetch, albums=True)
+        item_kind = "album" if kind == "artist" else "track"
+        items = [
+            self._parse_item(item_kind, row, compact=True).to_dict()
+            async for row in self._pages(fetch)
+        ]
+        self._check_open()
+        await self.mass.cache.set(key, items, provider=self.instance_id, expiration=30)
+        return items
+
     @use_cache(expiration=30)
     async def _playlist_items(self, item_id: str, cache_id: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -398,8 +419,12 @@ class FeiNiuProvider(MusicProvider):
                 if not isinstance(row.get("guid"), str) or not row["guid"]:
                     raise InvalidDataError("FeiNiu playlist has a missing track ID")
                 status = row.get("accessStatus")
-                if type(status) is int and status == 0:
-                    items.append(self._parse_item("track", row).to_dict())
+                # Only 2 is verified as denied on this endpoint; metadata's 3
+                # must not be assumed to have the same meaning here.
+                if type(status) is not int or status not in {0, 2}:
+                    raise InvalidDataError("FeiNiu playlist has an invalid track access status")
+                if status == 0:
+                    items.append(self._parse_item("track", row, compact=True).to_dict())
             received += len(rows)
             if received == total:
                 return items

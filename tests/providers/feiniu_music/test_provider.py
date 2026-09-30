@@ -73,6 +73,11 @@ class MemoryCache:
         """Save a serialized value."""
         self.entries[provider, key] = json_dumps(data)
 
+    async def get(self, key: str, *, provider: str, **kwargs: Any) -> Any:
+        """Support the direct MA cache interface with the same serialized entries."""
+        data, _, found = await self.get_with_freshness(key, provider=provider, **kwargs)
+        return data if found else None
+
 
 def track_data() -> dict[str, Any]:
     """Return a synthetic native track with deliberately private transport fields."""
@@ -382,8 +387,8 @@ async def test_collection_parse_failure_closes_pages_without_partial_yield(provi
         await collect()
     assert raised.value is error
     assert provider._parse_item.call_args_list == [
-        call("track", {"guid": "valid"}),
-        call("track", {"guid": "invalid"}),
+        call("track", {"guid": "valid"}, compact=True),
+        call("track", {"guid": "invalid"}, compact=True),
     ]
     assert closed
     assert delivered == []
@@ -401,8 +406,14 @@ async def test_playlist_collection_rejects_duplicate_ids(provider: Any) -> None:
     ("second_page", "message"),
     [
         ({"list": [], "total": 2}, "incomplete"),
-        ({"list": [{"guid": "two"}], "total": 3}, "changed"),
-        ({"list": [{"guid": "two"}, {"guid": "three"}], "total": 2}, "incomplete"),
+        ({"list": [{"guid": "two", "accessStatus": 0}], "total": 3}, "changed"),
+        (
+            {
+                "list": [{"guid": "two", "accessStatus": 0}, {"guid": "three", "accessStatus": 0}],
+                "total": 2,
+            },
+            "incomplete",
+        ),
         ({"list": [{}], "total": 2}, "missing"),
         ({"list": [], "total": True}, "invalid page"),
         ({"list": [], "total": -1}, "invalid page"),
@@ -542,9 +553,10 @@ async def test_playlist_page_preserves_duplicates_and_absolute_positions(provide
             {"list": [track_data(), track_data()], "total": 102},
         ]
     )
-    tracks = await provider.get_playlist_tracks("playlist-test", page=1)
-    assert [track.item_id for track in tracks] == ["track-test", "track-test"]
-    assert [track.position for track in tracks] == [101, 102]
+    tracks = await provider.get_playlist_tracks("playlist-test", page=0)
+    assert [track.item_id for track in tracks] == ["track-test"] * 102
+    assert [track.position for track in tracks] == list(range(1, 103))
+    assert await provider.get_playlist_tracks("playlist-test", page=1) == []
     assert provider._client.related.await_count == 2
     provider._client.related.assert_any_await("playlist", "playlist-test", 2)
 

@@ -12,6 +12,7 @@ from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyr
 _OFFSET = re.compile(r"^\[offset:\s*([+-]?\d+)\s*\]$", re.IGNORECASE)
 _TIMESTAMP = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 _PREFIX = re.compile(r"^((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]\s*)+)(.*)$")
+_MAX_EXPANDED_CHARS = 1_000_000
 
 
 def parse_lyrics(data: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -35,9 +36,31 @@ def parse_lyrics(data: dict[str, Any]) -> tuple[str | None, str | None]:
     offset = selected.get("offset")
     if offset is not None and type(offset) is not int:
         raise InvalidDataError("FeiNiu returned an invalid lyric offset")
+    _check_expansion_budget(content, offset)
     normalized = normalize_lrc_lyrics(content) or ""
     plain = "\n".join(_PREFIX.sub(r"\2", line).strip() for line in normalized.splitlines())
-    return plain.strip() or None, normalize_lrc_lyrics(_shift_timestamps(content, offset))
+    shifted = _shift_timestamps(content, offset)
+    _check_expansion_budget(shifted)
+    return plain.strip() or None, normalize_lrc_lyrics(shifted)
+
+
+def _check_expansion_budget(content: str, api_offset: int | None = None) -> int:
+    """Bound each expanding stage before allocating repeated lyric bodies."""
+    lines = content.splitlines()
+    offset_digits = max(
+        [len(str(api_offset or 0))]
+        + [len(match[1]) for line in lines if (match := _OFFSET.fullmatch(line.strip()))]
+    )
+    estimate = 0
+    for line in lines:
+        # Count even nonleading tags: removing word timing may expose another block.
+        # Keeping the original prefix in the estimate conservatively bounds both
+        # normalization and shifting, including wider timestamps after offsets.
+        count = max(1, sum(1 for _ in _TIMESTAMP.finditer(line)))
+        estimate += count * (len(line) + 13 + offset_digits + 1)
+        if estimate > _MAX_EXPANDED_CHARS:
+            raise InvalidDataError("FeiNiu lyric expansion exceeds size limit")
+    return estimate
 
 
 def _shift_timestamps(content: str, api_offset: int | None) -> str:

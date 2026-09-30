@@ -31,7 +31,7 @@ from music_assistant.providers.feiniu_music import client as client_module
 from music_assistant.providers.feiniu_music import provider as provider_module
 from music_assistant.providers.feiniu_music.provider import FeiNiuProvider
 
-from .test_provider import track_data
+from .test_provider import MemoryCache, track_data
 
 
 def make_mass(tmp_path: Path) -> Any:
@@ -45,7 +45,7 @@ def make_mass(tmp_path: Path) -> Any:
         get=lambda _key, default=None: default,
         get_raw_core_config_value=lambda _domain, _key, default=None: default,
     )
-    mass.cache = SimpleNamespace()
+    mass.cache = MemoryCache()
     mass.music = MusicController(mass)
     mass.tasks = TasksController(mass)
     mass.discovery = DiscoveryController(mass)

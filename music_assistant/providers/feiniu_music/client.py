@@ -406,6 +406,7 @@ class FeiNiuClient:
                 # consumer may suspend indefinitely or resume in a different task.
                 try:
                     self._check_rate_limit(response.status, response.headers)
+                    expected_size = self._full_stream_size(response.status, response.headers)
                     prefix = bytearray()
                     while len(prefix) < 4096:
                         chunk = await response.content.read(4096 - len(prefix))
@@ -422,10 +423,18 @@ class FeiNiuClient:
                         "webp",
                     }:
                         raise ProtocolError("Stream returned empty or non-audio data")
+                    received = len(prefix)
+                    if expected_size is not None and received > expected_size:
+                        raise ProtocolError("Stream exceeds its complete range")
                     yield bytes(prefix)
                     async for chunk in response.content.iter_chunked(65536):
                         self._check_open()
+                        received += len(chunk)
+                        if expected_size is not None and received > expected_size:
+                            raise ProtocolError("Stream exceeds its complete range")
                         yield chunk
+                    if expected_size is not None and received != expected_size:
+                        raise ProtocolError("Stream ended before its complete range")
                 finally:
                     self._responses.discard(response)
         except (TimeoutError, aiohttp.ClientError, OSError) as err:
@@ -485,6 +494,26 @@ class FeiNiuClient:
             "accepts_bytes": headers.get("Accept-Ranges") == "bytes",
             "redirect": 300 <= status < 400,
         }, data
+
+    @staticmethod
+    def _full_stream_size(status: int, headers: Mapping[str, str]) -> int | None:
+        """Require unsolicited 206 responses to describe the entire resource from zero."""
+        if status != 206:
+            return None
+        match = re.fullmatch(
+            r"bytes 0-([0-9]{1,20})/([0-9]{1,20})", headers.get("Content-Range", "")
+        )
+        if match is None:
+            raise ProtocolError("Full stream returned an invalid content range")
+        end, total = int(match[1]), int(match[2])
+        if total <= 0 or end + 1 != total:
+            raise ProtocolError("Full stream returned only a partial range")
+        length = headers.get("Content-Length")
+        if length is not None and (
+            not re.fullmatch(r"[0-9]{1,20}", length) or int(length) != total
+        ):
+            raise ProtocolError("Full stream returned an inconsistent content length")
+        return total
 
     async def _json(
         self,

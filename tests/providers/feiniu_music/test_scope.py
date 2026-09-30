@@ -297,11 +297,16 @@ async def test_playlist_filters_hidden_pages_without_truncating(provider: Any) -
 async def test_playlist_member_status_is_checked_without_metadata(
     provider: Any, fields: dict[str, Any]
 ) -> None:
-    """Only explicit allowed rows survive; unknown/missing states cannot leak into the cache."""
+    """Known denied rows are skipped; unknown states fail without caching a partial result."""
     denied = {"guid": "outside", "title": "Hidden metadata", **fields}
     provider._client.related = AsyncMock(return_value={"list": [denied, track_data()], "total": 2})
-    tracks = await provider.get_playlist_tracks("playlist-test")
-    assert [track.item_id for track in tracks] == ["track-test"]
+    if fields.get("accessStatus") == 2:
+        tracks = await provider.get_playlist_tracks("playlist-test")
+        assert [track.item_id for track in tracks] == ["track-test"]
+    else:
+        with pytest.raises(InvalidDataError):
+            await provider.get_playlist_tracks("playlist-test")
+        assert not provider.mass.cache.entries
     await asyncio.sleep(0)
     assert "Hidden metadata" not in repr(provider.mass.cache.entries)
     provider._client.detail.assert_not_awaited()
