@@ -67,7 +67,7 @@ def _shift_timestamps(content: str, api_offset: int | None) -> str:
     """Account for the native millisecond alignment without mutating remote lyrics."""
     lines = content.splitlines()
     embedded_offsets = [
-        int(match[1]) for line in lines if (match := _OFFSET.fullmatch(line.strip()))
+        _parse_offset(match[1]) for line in lines if (match := _OFFSET.fullmatch(line.strip()))
     ]
     # The web player compares playback time + selected alignment with parsed LRC times.
     # Its LRC parser adds inline offsets; absent API alignment falls back to the LRC tag.
@@ -79,7 +79,7 @@ def _shift_timestamps(content: str, api_offset: int | None) -> str:
     for raw_line in lines:
         line = raw_line.strip()
         if offset_tag := _OFFSET.fullmatch(line):
-            embedded_offset = int(offset_tag[1])
+            embedded_offset = _parse_offset(offset_tag[1])
             continue
         block = _PREFIX.match(line)
         if not block:
@@ -99,3 +99,11 @@ def _shift_timestamps(content: str, api_offset: int | None) -> str:
             seconds, fraction = divmod(remainder, 1000)
             result.append(f"[{minutes:02d}:{seconds:02d}.{fraction:03d}]{block[2]}")
     return "\n".join(result)
+
+
+def _parse_offset(value: str) -> int:
+    """Parse an embedded lyric offset or raise the provider's typed data error."""
+    try:
+        return int(value)
+    except ValueError as err:
+        raise InvalidDataError("FeiNiu returned an invalid lyric offset") from err

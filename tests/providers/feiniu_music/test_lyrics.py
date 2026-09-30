@@ -46,6 +46,13 @@ def test_embedded_offset_and_native_alignment_do_not_double_apply(
     assert synced == expected + "Synthetic"
 
 
+def test_oversized_embedded_offset_raises_invalid_data() -> None:
+    """Reject malformed optional lyrics with the provider's typed data error."""
+    content = "[offset:" + ("9" * 10000) + "]\n[00:01.00]Synthetic"
+    with pytest.raises(InvalidDataError, match="invalid lyric offset"):
+        parse_lyrics({"list": [{"content": content}]})
+
+
 def test_repeated_timestamps_and_negative_times() -> None:
     """Expand repeated lines, strip metadata/word tags and drop negative timestamps."""
     plain, synced = parse_lyrics(
