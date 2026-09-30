@@ -414,15 +414,14 @@ class FeiNiuClient:
                         prefix.extend(chunk)
                     self._check_open()
                     check_media_response(response.status, bytes(prefix), stream=True)
-                    if classify_media(bytes(prefix)) not in {
-                        "id3-tagged-audio",
-                        "mpeg-or-aac-frame",
-                        "flac",
-                        "ogg-container",
-                        "wav",
-                        "mp4-container",
+                    # Leave audio format detection to MA/FFmpeg, not this limited classifier.
+                    if not prefix or classify_media(bytes(prefix)) in {
+                        "html-or-json",
+                        "png",
+                        "jpeg",
+                        "webp",
                     }:
-                        raise ProtocolError("Stream did not start with recognized audio")
+                        raise ProtocolError("Stream returned empty or non-audio data")
                     yield bytes(prefix)
                     async for chunk in response.content.iter_chunked(65536):
                         self._check_open()

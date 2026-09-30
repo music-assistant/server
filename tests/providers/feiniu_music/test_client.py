@@ -4,6 +4,7 @@ import asyncio
 import errno
 import json
 import socket
+import struct
 import traceback
 from collections.abc import AsyncIterator
 from typing import Any, Self
@@ -61,6 +62,7 @@ def test_client_errors_inherit_ma_types(client_error: Any, ma_error: Any) -> Non
     [
         ({"code": 100004, "msg": "synthetic private path"}, StreamRejectedError),
         ({"code": 120001}, AuthenticationError),
+        ({"code": 120002}, AuthenticationError),
         ({"code": 100005}, NotFoundError),
         ({"code": 987654, "msg": "SECRET"}, ProtocolError),
     ],
@@ -239,6 +241,7 @@ async def test_incomplete_playlist_collection_fails(payload: dict[str, Any]) -> 
         (404, NotFoundError),
         (429, RateLimitError),
         (500, NetworkError),
+        (503, NetworkError),
         (302, ProtocolError),
     ],
 )
@@ -251,7 +254,7 @@ async def test_http_errors_never_echo_response(status: Any, error: Any, media: b
     with pytest.raises(error) as raised:
         await operation
     assert "SECRET" not in str(raised.value)
-    if status in {429, 500}:
+    if status in {429, 500, 503}:
         assert raised.value.backoff_time == (60 if status == 429 else 30)
     assert len(client._session.calls) == 1
     assert client._session.calls[0][2]["allow_redirects"] is False
@@ -512,9 +515,99 @@ async def test_stream_authentication_error_before_first_byte(status: int) -> Non
         await anext(client.audio_stream("synthetic-id"))
 
 
-async def test_stream_rejects_html_with_http_200() -> None:
-    """HTTP success alone does not identify playable media."""
-    client = client_with(Response(b"<html>login</html>"))
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<html>login</html>",
+        b" \n<!DOCTYPE html><html>error</html>",
+        b"[]",
+        b"\x89PNG\r\n\x1a\n",
+        b"\xff\xd8\xff\xe0",
+        b"RIFF\x00\x00\x00\x00WEBP",
+        b"",
+    ],
+    ids=["html", "doctype", "json-array", "png", "jpeg", "webp", "empty"],
+)
+async def test_stream_rejects_non_audio_with_http_200(payload: bytes) -> None:
+    """Known error pages, images and empty responses never reach the decoder."""
+    client = client_with(Response(payload))
     client._token = "synthetic-token"
-    with pytest.raises(ProtocolError, match="recognized audio"):
+    with pytest.raises(ProtocolError):
         await anext(client.audio_stream("synthetic-id"))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        b"ID3",
+        b"\xff\xfb\x90",
+        b"fLaC",
+        b"OggS",
+        b"RIFF\x00\x00\x00\x00WAVE",
+        b"\x00\x00\x00\x18ftypM4A ",
+        b"MAC ",
+        b"FORM\x00\x00\x00\x00AIFF",
+        b"FORM\x00\x00\x00\x00AIFC",
+        b"DSD ",
+        b"FRM8\x00\x00\x00\x00\x00\x00\x00\x00DSD ",
+        bytes.fromhex("3026b2758e66cf11a6d900aa0062ce6c"),
+        b"\x7f\xfe\x80\x01",
+        b"\xfe\x7f\x01\x80",
+        b"wvpk",
+        b"\x0b\x77",
+        b"caff",
+    ],
+    ids=[
+        "id3",
+        "mpeg",
+        "flac",
+        "ogg",
+        "wav",
+        "mp4",
+        "ape",
+        "aiff",
+        "aifc",
+        "dsf",
+        "dff",
+        "asf",
+        "dts-be",
+        "dts-le",
+        "wavpack",
+        "ac3",
+        "core-audio-format",
+    ],
+)
+async def test_stream_preserves_prefix_and_continuation(header: bytes) -> None:
+    """Header-only fixtures test byte delivery, not whether a file can decode."""
+    payload = header + bytes(range(256)) * 40
+    response = Response(payload, headers={"Content-Type": "application/octet-stream"})
+    client = client_with(response)
+    client._token = "synthetic-token"
+    chunks = [chunk async for chunk in client.audio_stream("synthetic-id")]
+    assert chunks[0] == payload[:4096]
+    assert len(chunks) > 1
+    assert b"".join(chunks) == payload
+    assert not response.content.payload
+    assert len(client._session.calls) == 1
+
+
+@pytest.fixture
+def dsf_silence() -> bytes:
+    """Build one complete mono DSF block without a binary media fixture."""
+    data = b"\x69" * 4096
+    return (
+        struct.pack("<4sQQQ", b"DSD ", 28, 92 + len(data), 0)
+        + struct.pack("<4sQIIIIIIQII", b"fmt ", 52, 1, 0, 1, 1, 2822400, 1, len(data) * 8, 4096, 0)
+        + struct.pack("<4sQ", b"data", 12 + len(data))
+        + data
+    )
+
+
+async def test_stream_accepts_complete_dsf_sample(dsf_silence: bytes) -> None:
+    """A complete DSF file must pass through even though classification is unknown."""
+    assert classify_media(dsf_silence) == "unknown"
+    client = client_with(Response(dsf_silence, headers={"Content-Type": "audio/dsf"}))
+    client._token = "synthetic-token"
+    chunks = [chunk async for chunk in client.audio_stream("synthetic-id")]
+    assert chunks[0] == dsf_silence[:4096]
+    assert b"".join(chunks) == dsf_silence
