@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, overload
 
 from .audio_analysis_provider import AudioAnalysisProvider
 from .metadata_provider import MetadataProvider
@@ -29,11 +29,39 @@ class ProviderModuleType(Protocol):
     """Return the (base) features supported by this Provider."""
     SUPPORTED_FEATURES: set[ProviderFeature]
 
+    @overload
     @staticmethod
     async def setup(
         mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> ProviderInstanceType: ...
+
+    @overload
+    @staticmethod
+    async def setup(
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        *,
+        auto_setup: bool,
+    ) -> ProviderInstanceType: ...
+
+    @staticmethod
+    async def setup(
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        *,
+        auto_setup: bool = False,
     ) -> ProviderInstanceType:
-        """Initialize provider(instance) with given configuration."""
+        """
+        Initialize provider(instance) with given configuration.
+
+        :param mass: The MusicAssistant instance.
+        :param manifest: Manifest of the provider domain.
+        :param config: Config of the provider instance to create.
+        :param auto_setup: First-boot setup of a default provider, only passed to a setup()
+            that declares it; raise UnsupportedSystemError to refuse it.
+        """
         raise NotImplementedError
 
     @staticmethod

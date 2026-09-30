@@ -1028,8 +1028,8 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("heos", True),
     ("wiim", True),
     ("party", False),
-    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
-    # under-spec host has the auto-created config removed again at load time.
+    # smart_fades refuses an automatic setup below its recommended hardware (see its
+    # setup()); the auto-created config is then removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
