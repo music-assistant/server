@@ -18,7 +18,7 @@ from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image
 
 from music_assistant.helpers import images
@@ -435,6 +435,29 @@ async def test_provider_without_an_image_is_a_quiet_miss(
     records = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
     assert [rec.levelno for rec in records] == [logging.DEBUG]
     assert "not retrying" in records[0].getMessage()
+
+
+async def test_configured_provider_not_loaded_yet_is_not_remembered_as_failed(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image of a configured provider that loads late is served once the provider is loaded."""
+    instance_id = "filesystem_local--late"
+    mass_minimal.config.set(
+        f"providers/{instance_id}", {"domain": "filesystem_local", "instance_id": instance_id}
+    )
+    loaded_provider: MagicMock | None = None
+    monkeypatch.setattr(
+        mass_minimal, "get_provider", lambda _prov, *_args, **_kwargs: loaded_provider
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+
+    loaded_provider = MagicMock(spec=MusicProvider)
+    loaded_provider.resolve_image = AsyncMock(return_value=b"late-provider-image-bytes")
+    image = await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+    assert image == b"late-provider-image-bytes"
 
 
 async def test_failed_source_retried_after_ttl_or_invalidation(
