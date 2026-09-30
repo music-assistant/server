@@ -9,6 +9,7 @@ from music_assistant_models.media_items import Podcast, ProviderMapping
 
 from music_assistant.providers.itunes_podcasts import (
     CACHE_CATEGORY_FEED_LOOKUP,
+    LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION,
     MAX_INLINE_RESOLVES,
     RECOMMENDATION_ROW_FOR_YOU,
     RECOMMENDATION_ROW_TOP_PODCASTS,
@@ -34,21 +35,24 @@ def mass_mock() -> Mock:
 
 
 def _set_library(mass: Mock, podcasts: list[Podcast]) -> None:
-    async def _iter_library_items() -> AsyncGenerator[Podcast]:
+    async def _iter_library_items(_instance_id: str) -> AsyncGenerator[Podcast]:
         for podcast in podcasts:
             yield podcast
 
-    mass.music.podcasts.iter_library_items = _iter_library_items
+    mass.music.podcasts.iter_library_items_by_prov_id = _iter_library_items
 
 
-def _library_podcast(name: str, item_id: str, publisher: str = "Publisher") -> Podcast:
+def _library_podcast(name: str, feed_url: str) -> Podcast:
     return Podcast(
-        item_id=item_id,
+        item_id="1",
         provider="library",
         name=name,
-        publisher=publisher,
         provider_mappings={
-            ProviderMapping(item_id=item_id, provider_domain="x", provider_instance="x")
+            ProviderMapping(
+                item_id=feed_url,
+                provider_domain="itunes_podcasts",
+                provider_instance="itunes_podcasts_test",
+            )
         },
     )
 
@@ -253,16 +257,9 @@ async def test_top_podcasts_page_rotates_and_wraps(provider: ITunesPodcastsProvi
 async def test_top_podcasts_page_filters_library_and_explicit(
     provider: ITunesPodcastsProvider, mass_mock: Mock, config_mock: Mock
 ) -> None:
-    """Library podcasts (by feed url or name) and, if disabled, explicit ones are dropped."""
-    _set_library(
-        mass_mock,
-        [
-            # same feed, different scheme/host spelling
-            _library_podcast("Whatever", "http://www.example.com/1.xml/"),
-            # provider without the feed url as item_id, matched by name
-            _library_podcast("Podcast 2", "some-internal-id"),
-        ],
-    )
+    """Library podcasts and, if disabled, explicit ones are dropped."""
+    # same feed, different scheme/host spelling
+    _set_library(mass_mock, [_library_podcast("Whatever", "http://www.example.com/1.xml/")])
     config_mock.get_value.side_effect = lambda key, default=None: {
         "locale": "us",
         "explicit": False,
@@ -270,22 +267,22 @@ async def test_top_podcasts_page_filters_library_and_explicit(
     chart = [_result(1), _result(2), _result(3, explicit=True), _result(4)]
     with (
         patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=chart)),
+        patch("music_assistant.providers.itunes_podcasts.TOP_PODCASTS_NUM_PAGES", 1),
         patch(TIME, return_value=0),
     ):
         page = await provider._get_top_podcasts_page()
 
-    assert [r.collection_id for r in page] == [4]
+    assert [r.collection_id for r in page] == [2, 4]
 
 
 async def test_resolve_library_podcast_matches_feed_url(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
     """The search result with the matching (normalized) feed url wins and is cached."""
-    podcast = _library_podcast("Podcast 2", "http://example.com/2.xml")
     with patch.object(
         provider, "_get_itunes_results", AsyncMock(return_value=[_result(1), _result(2)])
     ):
-        resolved, entry = await provider._resolve_library_podcast(podcast)
+        resolved, entry = await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2")
 
     assert resolved
     assert entry is not None
@@ -297,9 +294,11 @@ async def test_resolve_library_podcast_failure_not_cached(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
     """A failed search is not cached as a miss."""
-    podcast = _library_podcast("Podcast 2", "https://example.com/2.xml")
     with patch.object(provider, "_get_itunes_results", AsyncMock(return_value=None)):
-        assert await provider._resolve_library_podcast(podcast) == (False, None)
+        assert await provider._resolve_library_podcast("example.com/2.xml", "Podcast 2") == (
+            False,
+            None,
+        )
     mass_mock.cache.set.assert_not_called()
 
 
@@ -307,9 +306,11 @@ async def test_resolve_library_podcast_miss_cached(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
     """A podcast not listed in iTunes is cached as a known miss (empty dict)."""
-    podcast = _library_podcast("Unknown", "https://example.com/unknown.xml")
     with patch.object(provider, "_get_itunes_results", AsyncMock(return_value=[_result(1)])):
-        assert await provider._resolve_library_podcast(podcast) == (True, None)
+        assert await provider._resolve_library_podcast("example.com/unknown.xml", "Unknown") == (
+            True,
+            None,
+        )
     assert mass_mock.cache.set.await_args.kwargs["data"] == {}
 
 
@@ -332,8 +333,8 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
     _seed_cache(
         mass_mock,
         {
-            "https://example.com/1.xml": _result(1, ["1488", "26"]),
-            "https://example.com/2.xml": _result(2, ["1526", "26", "1489"]),
+            "example.com/1.xml": _result(1, ["1488", "26"]),
+            "example.com/2.xml": _result(2, ["1526", "26", "1489"]),
         },
     )
     charts = {"1488": [1, 10, 11], "1526": [20, 2, 10]}
@@ -356,20 +357,22 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
     assert [r.collection_id for r in results] == [10, 20, 11]
     # only primary genres are used, parent genre 1489 (News) is not fetched
     assert sorted(call.args[1] for call in genre_chart.await_args_list) == ["1488", "1526"]
-    assert mass_mock.cache.set.await_args.kwargs["expiration"] == 60 * 60 * 24
+    assert mass_mock.cache.set.await_args.kwargs["expiration"] == (
+        LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION
+    )
 
 
 async def test_library_recommendations_resolve_in_background(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
-    """Only a few podcasts are resolved inline, the rest in the background, cached briefly."""
+    """Only a few podcasts are resolved inline, the rest in the background."""
     library = [
         _library_podcast(f"Podcast {i}", f"https://example.com/{i}.xml")
         for i in range(MAX_INLINE_RESOLVES + 3)
     ]
     _set_library(mass_mock, library)
     resolve = AsyncMock(
-        side_effect=lambda _podcast, cached_only=False: (
+        side_effect=lambda _feed_url, _name, cached_only=False: (
             (False, None) if cached_only else (True, _result(1, ["1488"]))
         )
     )
@@ -385,7 +388,6 @@ async def test_library_recommendations_resolve_in_background(
     assert len(inline) == MAX_INLINE_RESOLVES
     mass_mock.create_task.assert_called_once()
     mass_mock.create_task.call_args.args[0].close()  # the mocked task never runs it
-    assert mass_mock.cache.set.await_args.kwargs["expiration"] == 60 * 10
 
 
 async def test_library_recommendations_empty_library(
