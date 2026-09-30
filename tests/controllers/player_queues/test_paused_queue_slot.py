@@ -296,17 +296,19 @@ async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:
 
 
 @pytest.mark.parametrize(
-    ("asking_queue", "queue_state", "player_state", "announcing"),
+    ("asking_queue", "queue_state", "player_state", "active_source", "announcing"),
     [
-        (PAUSED_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, False),
-        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PLAYING, False),
-        (STARTING_QUEUE, PlaybackState.IDLE, PlaybackState.PAUSED, False),
-        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, True),
+        (PAUSED_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, PAUSED_QUEUE, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PLAYING, PAUSED_QUEUE, False),
+        (STARTING_QUEUE, PlaybackState.IDLE, PlaybackState.PAUSED, "spotify_connect", False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, "spotify_connect", False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, PAUSED_QUEUE, True),
     ],
     ids=[
         "the-asking-queue-itself",
         "player-playing-again",
         "player-paused-on-another-source",
+        "queue-not-updated-yet-after-a-source-switch",
         "announcement-in-progress",
     ],
 )
@@ -315,6 +317,7 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     asking_queue: str,
     queue_state: PlaybackState,
     player_state: PlaybackState,
+    active_source: str,
     announcing: bool,
 ) -> None:
     """A queue that is not paused for sure, or is the one asking, keeps its slot."""
@@ -323,6 +326,7 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     rig.queues._queue_data[PAUSED_QUEUE].queue.state = queue_state
     player = rig.players[PAUSED_QUEUE]
     player.state.playback_state = player_state
+    player.state.active_source = active_source
     player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
 
     assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, asking_queue)

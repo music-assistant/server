@@ -512,7 +512,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         return None
 
     def _is_paused(self, queue_id: str) -> bool:
-        """Return whether the queue is paused and its player confirms it."""
+        """Return whether the queue is paused and its player confirms it is paused on it."""
         queue_data = self._queue_data.get(queue_id)
         player = self.mass.players.get_player(queue_id)
         return (
@@ -520,5 +520,6 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and queue_data.queue.state == PlaybackState.PAUSED
             and player is not None
             and player.state.playback_state == PlaybackState.PAUSED
+            and player.state.active_source == queue_id
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
