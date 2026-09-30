@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -16,6 +17,7 @@ from music_assistant_models.media_items import (
     Artist,
     MediaCollection,
     MediaItemType,
+    RecommendationFolder,
     UniqueList,
 )
 
@@ -37,6 +39,17 @@ def _collection(name: str) -> MediaCollection[Mock]:
         provider="library",
         provider_mappings=set(),
         items=UniqueList(),
+    )
+
+
+def _serve_persisted_payload(provider: Audiobookshelf, folders: list[RecommendationFolder]) -> None:
+    """Serve the folders from the persistent cache, serialized like the cache db stores them."""
+    restored = [RecommendationFolder.from_dict(x.to_dict()) for x in folders]
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(restored, True, True)
+    )
+    provider.mass.create_task = Mock(  # type: ignore[method-assign]
+        side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
     )
 
 
@@ -126,3 +139,45 @@ async def test_browse_series(provider: Audiobookshelf) -> None:
         (MediaCollection, "Discworld"),
         (MediaCollection, "Wheel of Time"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_series_row_from_persisted_payload(provider: Audiobookshelf) -> None:
+    """A series row restored from the persisted payload serves collections, not item mappings."""
+    _stub_library(provider)
+    folder = RecommendationFolder(
+        item_id=AbsShelfId.RECENT_SERIES,
+        provider=provider.instance_id,
+        name="Recent series",
+        items=UniqueList([_collection("Discworld")]),
+    )
+    _serve_persisted_payload(provider, [folder])
+
+    items = await provider.get_recommendation_items(AbsShelfId.RECENT_SERIES)
+
+    assert [(type(x), x.name) for x in items] == [(MediaCollection, "Discworld")]
+
+
+@pytest.mark.parametrize("sync_artists", [True, False])
+@pytest.mark.asyncio
+async def test_authors_and_narrators_need_artist_sync(
+    provider: Audiobookshelf, sync_artists: bool
+) -> None:
+    """Authors and narrators only show in browse and recommendations with artist sync enabled."""
+    provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
+        "library_sync_artists": sync_artists
+    }.get(key, default)
+    folder = RecommendationFolder(
+        item_id=AbsShelfId.NEWEST_AUTHORS,
+        provider=provider.instance_id,
+        name="Newest authors",
+        items=UniqueList([ARTISTS["aut1"]]),
+    )
+    _serve_persisted_payload(provider, [folder])
+
+    folders = await provider.browse(f"{provider.instance_id}://lb lib1")
+    rows = await provider.get_recommendations()
+
+    expected = {"authors", "narrators"} if sync_artists else set()
+    assert {x.item_id for x in folders} & {"authors", "narrators"} == expected
+    assert (AbsShelfId.NEWEST_AUTHORS in [x.item_id for x in rows]) is sync_artists

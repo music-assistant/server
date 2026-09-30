@@ -103,7 +103,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_ARTISTS,
+    PLAYBACK_REPORT_INTERVAL_SECONDS,
+    PlaylistPlayableItem,
+)
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -734,7 +738,11 @@ for more details.
         if len(self.libraries.audiobooks) + len(self.libraries.podcasts) == 0:
             self._log_no_libraries()
             return []
-        rows = await self._recommendation_rows_from_payload()
+        rows = [
+            row
+            for row in await self._recommendation_rows_from_payload()
+            if row.item_id != AbsShelfId.NEWEST_AUTHORS or self._library_sync_artists_enabled()
+        ]
         rows.append(self._browse_recommendation_row())
         return rows
 
@@ -748,7 +756,16 @@ for more details.
         """
         if item_id == "browse":
             return self._browse_recommendation_items()
-        return await self._recommendation_items_from_payload(item_id)
+        items = await self._recommendation_items_from_payload(item_id)
+        # the persisted payload restores series collections as item mappings without books
+        if series_names := [
+            x.name
+            for x in items
+            if isinstance(x, ItemMapping) and x.media_type == MediaType.COLLECTION
+        ]:
+            collections = {x.item_id: x for x in await self._get_series_collections(series_names)}
+            items = UniqueList(collections.get(x.item_id, x) for x in items)
+        return items
 
     @handle_refresh_token
     async def _get_abs_expanded_podcast(
@@ -1449,6 +1466,15 @@ for more details.
         for translation_key in AbsBrowseItemsBookTranslationKey:
             if "library" in translation_key:
                 continue
+            if (
+                translation_key
+                in (
+                    AbsBrowseItemsBookTranslationKey.AUTHORS,
+                    AbsBrowseItemsBookTranslationKey.NARRATORS,
+                )
+                and not self._library_sync_artists_enabled()
+            ):
+                continue
             path = current_path + "/" + ABS_BROWSE_ITEMS_BOOK_TO_PATH[translation_key]
             items.append(
                 BrowseFolder(
@@ -1576,6 +1602,13 @@ for more details.
             if isinstance(item, MediaCollection)
         }
         return [collections[name] for name in series_names if name in collections]
+
+    def _library_sync_artists_enabled(self) -> bool:
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key, CONF_ENTRY_LIBRARY_SYNC_ARTISTS.default_value
+            )
+        )
 
     async def _socket_abs_item_changed(
         self, items: LibraryItemExpanded | list[LibraryItemExpanded]
