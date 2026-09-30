@@ -95,7 +95,10 @@ ROOT_GENRE_ID = "26"
 # one request per genre
 MAX_SEED_GENRES = 4
 GENRE_TOP_PODCASTS_LIMIT = 100
-# library podcasts resolved while the row is requested, the rest in the background
+# resolving a library podcast costs one search request (no lookup by feed url exists).
+# Only this many run while the row is requested, the rest fill the cache in a
+# background task: a large library would otherwise hit the throttle and the row's
+# timeout. Only matters when the resolve cache is empty (upgrade, cache clear).
 MAX_INLINE_RESOLVES = 5
 # short, so podcasts resolved in the background are picked up soon
 LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION = 60 * 60
