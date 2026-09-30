@@ -74,6 +74,9 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
 
+    # an entry without a position still names its recording: one that a slot already
+    # holds must not fall through to the title fallback and be listed twice
+    unknown = [track for track in unknown if not usable_isrcs[id(track)].intersection(slot_by_isrc)]
     slots.extend(_unplaced_additions(titles, unknown))
     return slots
 
