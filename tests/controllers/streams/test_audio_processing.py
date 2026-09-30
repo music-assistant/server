@@ -1506,28 +1506,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
 @pytest.mark.asyncio
 async def test_flow_producer_ends_once_its_consumer_left(produces_audio: bool) -> None:
     """A producer whose consumer left ends before its next item instead of walking the queue."""
-
-    def _flow_item(item_id: str) -> Any:
-        return SimpleNamespace(
-            queue_item_id=item_id,
-            name=item_id,
-            media_type=MediaType.TRACK,
-            duration=300,
-            extra_attributes={},
-            streamdetails=SimpleNamespace(
-                fade_in=False,
-                stream_error=False,
-                uri=f"test://{item_id}",
-                seek_position=0,
-                duration=300,
-                buffer=None,
-                seconds_streamed=None,
-                is_realtime=False,
-                audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
-            ),
-        )
-
-    items = [_flow_item(f"item-{index}") for index in range(1, 9)]
+    items = [_flow_queue_item(f"item-{index}") for index in range(1, 9)]
     mass = MagicMock()
     mass.player_queues.queue_data.return_value = SimpleNamespace(
         session_id="session-1", flow_mode_stream_log=[]
@@ -1574,6 +1553,64 @@ async def test_flow_producer_ends_once_its_consumer_left(produces_audio: bool) -
     assert len(chunks) == (1 if produces_audio else 0)
     assert streamed_item_ids == ["item-1"]
     mass.player_queues.load_next_queue_item.assert_not_awaited()
+    mass.player_queues.queue_buffer_completed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flow_producer_without_a_consumer_leaves_the_play_log_alone() -> None:
+    """A producer whose consumer is gone at its start keeps the session's published play log."""
+    audio, mass, queue, streamed_item_ids = _consumer_flow_context()
+    played_entry = PlayLogEntry("item-1")
+    published_log = [played_entry]
+    queue_data = mass.player_queues.queue_data.return_value
+    queue_data.flow_mode_stream_log = published_log
+    stream = audio.get_queue_flow_stream(
+        queue,
+        _flow_queue_item("item-1"),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: False,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == []
+    assert streamed_item_ids == []
+    assert queue_data.flow_mode_stream_log is published_log
+    assert published_log == [played_entry]
+    mass.player_queues.queue_buffer_completed.assert_not_called()
+
+
+@pytest.mark.parametrize("next_item_loads", [True, False], ids=["next_item", "queue_empty"])
+@pytest.mark.asyncio
+async def test_flow_producer_ends_when_its_consumer_leaves_during_the_next_item_load(
+    next_item_loads: bool,
+) -> None:
+    """A consumer that leaves while the next item loads gets no more items or queue completion."""
+    audio, mass, queue, streamed_item_ids = _consumer_flow_context()
+    connected = True
+
+    async def _load_next(*_args: object) -> Any:
+        nonlocal connected
+        # the player drops the connection while the next item loads
+        connected = False
+        if next_item_loads:
+            return _flow_queue_item("item-2")
+        raise QueueEmpty
+
+    mass.player_queues.load_next_queue_item = _load_next
+    stream = audio.get_queue_flow_stream(
+        queue,
+        _flow_queue_item("item-1"),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: connected,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 1
+    assert streamed_item_ids == ["item-1"]
     mass.player_queues.queue_buffer_completed.assert_not_called()
 
 
@@ -2067,3 +2104,54 @@ def _native_stream_handler_context(
         "fmt": "flac",
     }
     return controller, request, group_members
+
+
+def _flow_queue_item(item_id: str) -> Any:
+    """Return a queue item a flow stream can play."""
+    return SimpleNamespace(
+        queue_item_id=item_id,
+        name=item_id,
+        media_type=MediaType.TRACK,
+        duration=300,
+        extra_attributes={},
+        streamdetails=SimpleNamespace(
+            fade_in=False,
+            stream_error=False,
+            uri=f"test://{item_id}",
+            seek_position=0,
+            duration=300,
+            buffer=None,
+            seconds_streamed=None,
+            is_realtime=False,
+            audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
+        ),
+    )
+
+
+def _consumer_flow_context() -> tuple[StreamsAudio, MagicMock, Any, list[str]]:
+    """Return a flow stream setup whose item streams record the queue items they open."""
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+    streamed_item_ids: list[str] = []
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        streamed_item_ids.append(queue_item.queue_item_id)
+        yield b"\x00" * 16
+
+    audio.get_queue_item_stream = _item_stream  # type: ignore[method-assign]
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    return audio, mass, queue, streamed_item_ids
