@@ -258,7 +258,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 5
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
@@ -280,6 +280,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert "players_synced" in report["sections"]["core.players"]
     assert "by_status" in report["sections"]["core.tasks"]
     assert "db_size_mb" in report["sections"]["core.cache"]
+    assert "mount_backends" in report["sections"]["core.storage"]
     # log tail is opt-in
     assert "log_tail" not in report
     report_with_tail = await mass.diagnostics.get_report(include_log_tail=True)

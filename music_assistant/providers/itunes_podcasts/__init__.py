@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemTranscriptCue,
     MediaItemType,
     Podcast,
     PodcastEpisode,
@@ -38,8 +39,10 @@ from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
+    find_episode_transcripts,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     parse_podcast,
     parse_podcast_episode,
     refresh_cached_podcast,
@@ -209,6 +212,20 @@ class ITunesPodcastsProvider(MusicProvider):
             return UniqueList()
         search_results = await self._cache_get_top_podcasts()
         return UniqueList(self._get_podcast_list(search_results))
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast = await self._cache_get_podcast(podcast_id)
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=find_episode_transcripts(
+                parsed_feed=podcast, guid_or_stream_url=guid_or_stream_url
+            ),
+        )
 
     @throttle_with_retries
     async def _perform_search(self, url: str, params: dict[str, str | int]) -> list[Podcast]:

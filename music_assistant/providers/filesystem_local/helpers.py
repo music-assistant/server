@@ -487,8 +487,9 @@ def get_album_dir(
 
 def get_relative_path(base_path: str, path: str) -> str:
     """Return the relative path string for a path."""
-    if path.startswith(base_path):
-        path = path.split(base_path)[1]
+    base_path = base_path.rstrip("/\\")
+    if path == base_path or path.startswith((f"{base_path}/", f"{base_path}\\")):
+        path = path[len(base_path) :]
     for sep in ("/", "\\"):
         if path.startswith(sep):
             path = path[1:]

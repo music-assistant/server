@@ -61,6 +61,7 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.favorites import with_user_favorites
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
@@ -68,6 +69,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
@@ -553,7 +555,9 @@ class BuiltinProvider(MusicProvider):
         if prov_playlist_id in BUILTIN_PLAYLISTS:
             if page > 0:
                 return []
-            return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+            tracks = list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+            # a cached list carries the favorite state of whoever filled it
+            return list(await with_user_favorites(self.mass, get_current_user(), tracks))
         return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -1549,8 +1553,19 @@ class BuiltinProvider(MusicProvider):
         )
         return media_info
 
-    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
+        # favorites are personal, so the cached playlist is keyed on the user asking
+        user = get_current_user()
+        return await self._random_favorite_tracks(user.user_id if user else None)
+
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _random_favorite_tracks(self, user_id: str | None) -> list[Track]:
+        """
+        Return the calling user's favorite tracks in random order, cached per user.
+
+        :param user_id: Only shapes the cache key: favorites are personal, the query reads
+            the calling user's own.
+        """
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
             favorite=True, limit=250000, order_by="random_play_count", summary=False

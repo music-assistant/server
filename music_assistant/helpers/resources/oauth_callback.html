@@ -15,7 +15,7 @@
             padding: 20px;
         }
 
-        .consent-banner {
+        .ma-consent-banner {
             display: none;
             background: var(--error-bg);
             border: 1px solid var(--error-border);
@@ -28,25 +28,25 @@
             box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
         }
 
-        .consent-banner.show {
+        .ma-consent-banner.show {
             display: block;
         }
 
-        .consent-banner h2 {
+        .ma-consent-banner h2 {
             color: var(--error-text);
             font-size: 16px;
             font-weight: 600;
             margin: 0 0 10px 0;
         }
 
-        .consent-banner p {
+        .ma-consent-banner p {
             color: var(--fg);
             font-size: 14px;
             margin: 0 0 8px 0;
             line-height: 1.5;
         }
 
-        .consent-banner .domain {
+        .ma-consent-banner .domain {
             font-weight: 600;
             font-family: 'Monaco', 'Menlo', monospace;
             background: var(--input-bg);
@@ -54,13 +54,13 @@
             border-radius: 4px;
         }
 
-        .consent-banner .buttons {
+        .ma-consent-banner .buttons {
             margin-top: 16px;
             display: flex;
             gap: 10px;
         }
 
-        .consent-banner button {
+        .ma-consent-banner button {
             flex: 1;
             padding: 10px;
             border: none;
@@ -71,22 +71,22 @@
             transition: all 0.2s ease;
         }
 
-        .consent-banner .btn-approve {
+        .ma-consent-banner .btn-approve {
             background: var(--primary);
             color: white;
         }
 
-        .consent-banner .btn-approve:hover {
+        .ma-consent-banner .btn-approve:hover {
             filter: brightness(1.1);
         }
 
-        .consent-banner .btn-cancel {
+        .ma-consent-banner .btn-cancel {
             background: var(--input-bg);
             color: var(--fg);
             border: 1px solid var(--border);
         }
 
-        .consent-banner .btn-cancel:hover {
+        .ma-consent-banner .btn-cancel:hover {
             background: var(--input-focus-bg);
         }
 
@@ -142,7 +142,7 @@
     </style>
 </head>
 <body>
-    <div class="consent-banner" id="consentBanner">
+    <div class="ma-consent-banner" id="maOauthConsentBanner">
         <h2>⚠️ External Application Authorization</h2>
         <p>The application at <span class="domain" id="redirectDomain"></span> is requesting access to your Music Assistant instance.</p>
         <p>Only authorize if you trust this application.</p>
@@ -304,7 +304,7 @@
         }
 
         function approveRedirect() {
-            document.getElementById('consentBanner').classList.remove('show');
+            document.getElementById('maOauthConsentBanner').classList.remove('show');
             performRedirect();
         }
 
@@ -319,7 +319,7 @@
             } catch {
                 document.getElementById('redirectDomain').textContent = 'unknown';
             }
-            document.getElementById('consentBanner').classList.add('show');
+            document.getElementById('maOauthConsentBanner').classList.add('show');
             statusEl.textContent = 'Authorization Required';
             messageEl.textContent = 'Please review the authorization request above.';
         } else {

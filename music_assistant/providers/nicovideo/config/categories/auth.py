@@ -24,10 +24,10 @@ class AuthConfigCategory(ConfigCategoryBase):
         description="Your NicoNico account password.",
     )
 
-    mfa = _auth.str_config(
+    mfa = _auth.pairing_code_config(
         key="mfa",
         label="MFA Code (One-Time Password)",
-        default=None,
+        code_format="######",
         description="Enter the 6-digit confirmation code from your 2-step verification app.",
     )
 

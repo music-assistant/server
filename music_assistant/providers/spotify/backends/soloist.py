@@ -809,7 +809,7 @@ class _SingleTrackRun:
         self._release_waiters()
         # the teardown runs as its own task: it cancels the very tasks this is
         # called from, and the daemon has to go either way
-        self.mass.create_task(self.backend.discard_run, self)
+        self.mass.create_task(self.backend.discard_run(self))
 
     def _release_waiters(self) -> None:
         """Unblock everything waiting on this run: startup, seek and the consumer."""
@@ -1230,7 +1230,7 @@ class _SingleTrackRun:
             self._item_over = True
             self.logger.debug("Engine wandered to %s; %s has ended", uri, self.spotify_uri)
             self._finish_delivery()
-            self.mass.create_task(self.backend.discard_run, self)
+            self.mass.create_task(self.backend.discard_run(self))
             return
         if duration_ms:
             self._duration_ms = duration_ms

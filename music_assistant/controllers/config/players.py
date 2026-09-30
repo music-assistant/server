@@ -910,20 +910,24 @@ class PlayerConfigMixin:
         if player.supports_feature(PlayerFeature.VOLUME_SET) or auto_option in volume_options:
             mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
+        power_entry = ConfigEntry(
+            key=CONF_POWER_CONTROL,
+            type=ConfigEntryType.STRING,
+            default_value=_first_enabled_control_value(power_options),
+            required=False,
+            options=[
+                *power_options,
+                *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
+            ],
+            category="player_controls",
+        )
+        if is_group:
+            # group volume and mute are always fanned out to the members and use each
+            # member's own control, so a group only gets the (opt-in) power control
+            return [power_entry]
         # return final config entries for all options
         return [
-            # Power control config entry
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                default_value=_first_enabled_control_value(power_options),
-                required=False,
-                options=[
-                    *power_options,
-                    *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
-                ],
-                category="player_controls",
-            ),
+            power_entry,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
@@ -955,7 +959,7 @@ class PlayerConfigMixin:
             # For group players, power on/off is purely a "capture members"
             # toggle (Fake control) and auto-starting playback there causes
             # surprise playback when the user just wanted to pin the group.
-            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
+            CONF_ENTRY_AUTO_PLAY,
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

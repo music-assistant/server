@@ -307,6 +307,18 @@ async def add_remove_playlist_tracks(
     return await _run_ytmusic(_add_playlist_tracks)
 
 
+async def rate_track(
+    headers: dict[str, str], prov_track_id: str, rating: LikeStatus, user: str | None = None
+) -> None:
+    """Async wrapper around the ytmusicapi rate_song function."""
+
+    def _rate_track() -> None:
+        ytm = ytmusicapi.YTMusic(auth=headers, user=user)
+        ytm.rate_song(videoId=prov_track_id, rating=rating)
+
+    await _run_ytmusic(_rate_track)
+
+
 async def get_song_radio_tracks(
     headers: dict[str, str], prov_item_id: str, limit: int = 25, user: str | None = None
 ) -> dict[str, Any]:
@@ -344,10 +356,8 @@ async def search(
     def _search() -> list[dict[str, Any]]:
         # Always search in English: ytmusicapi (1.12.2) matches the result shelf title,
         # which YouTube returns translated, against the English filter name, so a filtered
-        # search silently returns nothing in most other languages. English is what this
-        # provider expects anyway, as it compares result fields such as the album type
-        # against English literals. Revisit once ytmusicapi compares against the
-        # translated title.
+        # search silently returns nothing in most other languages. Revisit once ytmusicapi
+        # compares against the translated title.
         ytm = ytmusicapi.YTMusic(auth=headers, language="en", user=user)
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects

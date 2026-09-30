@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, RepeatMode
@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
+from tests.common import use_real_create_task
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -155,3 +156,88 @@ async def test_live_streams_start_on_a_smaller_buffer(
 def test_is_protocol_only_device(device_model: str, expected: bool) -> None:
     """Test protocol-only device detection based on the reported device model."""
     assert is_protocol_only_device(device_model) is expected
+
+
+@pytest.mark.parametrize(
+    ("url", "mime_type", "expected"),
+    [
+        # sync group member urls carry the codec in the query string, not the path
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
+            "audio/flac",
+            "audio/flac",
+        ),
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=mp3&child_player_id=y",
+            "audio/mpeg",
+            "audio/mpeg",
+        ),
+        # without an explicit mime type it is derived from the url extension
+        ("http://127.0.0.1:8097/stream.flac", None, "audio/flac"),
+    ],
+)
+async def test_play_url_mime_type_is_explicit_for_sync_members(
+    url: str, mime_type: str | None, expected: str
+) -> None:
+    """Sync group member urls pass the member codec mime type instead of deriving it."""
+    player, mass = _player_with_mocked_mass()
+    player._extra_data = {}
+    mass.player_queues.get.return_value = None
+    slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+
+    await player._handle_play_url_for_slimplayer(
+        slimplayer,
+        url=url,
+        media=PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1"),
+        mime_type=mime_type,
+    )
+
+    assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
+
+
+async def test_grouped_play_media_passes_per_member_mime_type() -> None:
+    """Grouped play_media gives each sync member its own codec's mime type, not a derived one."""
+    player, mass = _player_with_mocked_mass()
+    player._extra_data = {}
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member_flac", "member_mp3"]
+    player.multi_client_stream = None
+    use_real_create_task(mass)
+
+    mass.player_queues.get_item.return_value = None
+    mass.player_queues.get.return_value = None
+    mass.streams.audio.select_flow_pcm_format = AsyncMock()
+    mass.streams.base_url = "http://127.0.0.1:8097"
+
+    member_codecs = {"member_flac": "flac", "member_mp3": "mp3"}
+    clients = []
+    for member_id in ("member_flac", "member_mp3"):
+        client = MagicMock()
+        client.player_id = member_id
+        client.play_url = AsyncMock()
+        client.pause = AsyncMock()
+        clients.append(client)
+
+    media = PlayerMedia(
+        uri="fake://x",
+        media_type=MediaType.TRACK,
+        source_id="queue_1",
+        queue_item_id="item_1",
+    )
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch("music_assistant.providers.squeezelite.player.MultiClientStream"),
+        patch.object(player, "_get_sync_clients", return_value=clients),
+        patch.object(
+            player,
+            "_get_member_output_codec",
+            side_effect=lambda member_player_id, _media: member_codecs[member_player_id],
+        ),
+    ):
+        await player.play_media(media)
+
+    flac_client, mp3_client = clients
+    assert flac_client.play_url.call_args.kwargs["mime_type"] == "audio/flac"
+    assert mp3_client.play_url.call_args.kwargs["mime_type"] == "audio/mpeg"
