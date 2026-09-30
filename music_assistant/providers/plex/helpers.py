@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.media_items import MediaItemImage, UniqueList
+from plexapi.exceptions import PlexApiException
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
@@ -143,10 +144,14 @@ def extract_library_name(conf_value: str) -> str:
     return conf_value.strip()
 
 
+class PlexServerAccessError(Exception):
+    """The signed-in Plex account has no verified access token for the Plex server."""
+
+
 def resolve_server_auth_token(
     auth_token: str,
-    local_server_ip: str,
-    local_server_port: str | int,
+    plex_url: str,
+    session: requests.Session,
     myplex_account: MyPlexAccount | None = None,
 ) -> str:
     """
@@ -157,42 +162,55 @@ def resolve_server_auth_token(
     that resource's own access token instead - see
     https://github.com/music-assistant/support/issues/4892.
 
-    Falls back to `auth_token` unchanged if the configured server can't be matched against
-    the account's resources for any reason, so every setup that already works today (an
-    owned server, or plex.tv being unreachable) keeps working exactly as before.
+    The server is matched to the account's resources by the machine identifier it reports
+    itself, so it doesn't matter which address it was configured with. A shared server is
+    never reached with the account token: the server rejects it (401) or, for a request
+    from a network allowed without authentication, treats it as the server owner - so the
+    connection would silently run as another Plex user. Without a verified token this fails.
 
-    :param auth_token: The account-level MyPlex token, also used as the fallback return value.
-    :param local_server_ip: The server address as configured in this provider.
-    :param local_server_port: The server port as configured in this provider.
+    Blocking IO: run in an executor thread.
+
+    :param auth_token: The account-level MyPlex token.
+    :param plex_url: Base URL of the Plex server, e.g. http://192.168.1.77:32400.
+    :param session: The requests session used to reach the server.
     :param myplex_account: An already-authenticated MyPlexAccount to reuse, if available.
+    :raises PlexServerAccessError: No verified token for this server exists for the account.
+    :raises requests.RequestException: The server could not be reached.
     """
+    # /identity is served without authentication
+    response = session.get(
+        f"{plex_url}/identity", headers={"Accept": "application/json"}, timeout=10
+    )
+    response.raise_for_status()
+    try:
+        machine_id = response.json()["MediaContainer"]["machineIdentifier"]
+    except (ValueError, LookupError, TypeError) as err:
+        raise PlexServerAccessError("The Plex server did not report its identity") from err
     try:
         account = myplex_account or MyPlexAccount(token=auth_token)
-        for resource in account.resources():
-            if "server" not in (resource.provides or ""):
-                continue
-            for conn in resource.connections:
-                if conn.address == local_server_ip and int(conn.port) == int(local_server_port):
-                    if resource.owned:
-                        return auth_token
-                    resource_token: str | None = resource.accessToken
-                    if not resource_token:
-                        break
-                    LOGGER.debug(
-                        "Plex server %s:%s is shared with this account (not owned) - "
-                        "using its own access token instead of the account token",
-                        local_server_ip,
-                        local_server_port,
-                    )
-                    return resource_token
-    except Exception:
-        LOGGER.debug(
-            "Could not resolve a per-server Plex token for %s:%s, using the account token",
-            local_server_ip,
-            local_server_port,
-            exc_info=True,
-        )
-    return auth_token
+        resources = account.resources()
+    except PlexApiException as err:
+        raise PlexServerAccessError("plex.tv did not list the servers of this account") from err
+    resource = next(
+        (
+            r
+            for r in resources
+            if r.clientIdentifier == machine_id and "server" in (r.provides or "")
+        ),
+        None,
+    )
+    if resource is None:
+        raise PlexServerAccessError("This Plex account has no access to this Plex server")
+    if resource.owned:
+        return auth_token
+    if not resource.accessToken:
+        raise PlexServerAccessError("plex.tv returned no access token for this Plex server")
+    LOGGER.debug(
+        "Plex server %s is shared with this account (not owned) - "
+        "using its own access token instead of the account token",
+        plex_url,
+    )
+    return str(resource.accessToken)
 
 
 async def get_section_info(
@@ -219,21 +237,34 @@ async def get_section_info(
     """
     cache_key = "plex_section_info"
     cache_provider = instance_id or local_server_ip
+    session = requests.Session()
+    session.verify = local_server_verify_cert
+    local_server_protocol = "https" if local_server_ssl else "http"
+    plex_url = f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
+    server_token = auth_token
+    if auth_token and auth_token != AUTH_TOKEN_UNAUTH:
+        # verify the account's access to this server before trusting a cached result: the
+        # cache is keyed on the verified server token, so it's only reused while it holds
+        try:
+            server_token = await asyncio.to_thread(
+                resolve_server_auth_token, auth_token, plex_url, session
+            )
+        except requests.exceptions.ConnectionError as err:
+            LOGGER.warning(
+                "Could not connect to Plex server at %s:%s: %s",
+                local_server_ip,
+                local_server_port,
+                err,
+            )
+            return []
 
     def _get_section_info() -> list[PlexSectionInfo]:
-        session = requests.Session()
-        session.verify = local_server_verify_cert
-        local_server_protocol = "https" if local_server_ssl else "http"
         plex_server: PlexServer
-        plex_url = f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
         try:
-            if not auth_token or auth_token == AUTH_TOKEN_UNAUTH:
+            if not server_token or server_token == AUTH_TOKEN_UNAUTH:
                 # local (unauthenticated) connection, not via plex.tv
                 plex_server = PlexServer(plex_url, session=session)
             else:
-                server_token = resolve_server_auth_token(
-                    auth_token, local_server_ip, local_server_port
-                )
                 plex_server = PlexServer(plex_url, server_token, session=session)
         except requests.exceptions.ConnectionError as err:
             LOGGER.warning(
@@ -258,7 +289,7 @@ async def get_section_info(
             )
         return results
 
-    if cache := await mass.cache.get(cache_key, checksum=auth_token, provider=cache_provider):
+    if cache := await mass.cache.get(cache_key, checksum=server_token, provider=cache_provider):
         if isinstance(cache, list) and cache and all(isinstance(item, dict) for item in cache):
             try:
                 return [PlexSectionInfo(**item) for item in cache]
@@ -271,7 +302,7 @@ async def get_section_info(
     await mass.cache.set(
         cache_key,
         [dataclasses.asdict(section) for section in result],
-        checksum=auth_token,
+        checksum=server_token,
         expiration=3600,
         provider=cache_provider,
     )

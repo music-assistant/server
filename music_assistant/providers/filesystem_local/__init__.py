@@ -129,6 +129,7 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
+    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -163,11 +164,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 
-isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
-ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
-makedirs = wrap(os.makedirs)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -236,8 +234,8 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
-        # the plain local provider reads its scan directory from the setup data
+        # subclasses (cloud, WebDAV) pass their own base_path; the plain local provider
+        # reads its scan directory from the setup data
         self.base_path: str = (
             base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
         )
@@ -267,6 +265,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
+            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -323,8 +322,17 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await isdir(self.base_path):
-            msg = f"Music Directory {self.base_path} does not exist"
+        if not await self.mass.storage.is_available(self.base_path):
+            location = self.mass.storage.get_location_for_path(self.base_path)
+            if location is not None and not location.available:
+                msg = f"Storage location {location.path} is not available"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="storage_location_unavailable",
+                    translation_owner=self.translation_owner,
+                    translation_args=[location.path],
+                )
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
@@ -977,7 +985,7 @@ class LocalFileSystemProvider(MusicProvider):
         if cached_data is not None:
             return cached_data  # type: ignore[no-any-return]
 
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         try:
             # get playlist file contents
             playlist_data_raw = await self._read_file(prov_playlist_id)
@@ -1115,7 +1123,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
@@ -2353,10 +2361,18 @@ class LocalFileSystemProvider(MusicProvider):
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            elif "." not in file_path:
+            elif not file_path:
+                # an empty id matches no single library item
                 continue
+            elif "." not in file_path:
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    MediaType.AUDIOBOOK
+                    if self.media_content_type == "audiobooks"
+                    else MediaType.TRACK
+                )
             else:
-                _, ext = file_path.rsplit(".", 1)
+                ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
                     controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
                 elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2372,7 +2388,13 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if is_track(library_item):
+                is_last_mapping = all(
+                    x.provider_instance == self.instance_id and x.item_id == file_path
+                    for x in library_item.provider_mappings
+                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping
@@ -2383,7 +2405,11 @@ class LocalFileSystemProvider(MusicProvider):
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
-                await controller.remove_item_from_library(library_item.item_id)
+                # the library item may also be mapped to other providers,
+                # so only drop this file's mapping
+                await controller.remove_provider_mapping(
+                    library_item.item_id, self.instance_id, file_path
+                )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):

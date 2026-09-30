@@ -30,31 +30,32 @@ from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEO
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
 
 class StreamFeederMixin(_PlayerQueuesBase):
     """Feed the player's stream: enqueue the next item, preload/prepare its audio, clean up."""
 
-    def prepare_next_audio_buffer(self, queue_id: str) -> None:
+    def prepare_next_audio_buffer(
+        self, queue_id: str, queue_item_id: str
+    ) -> asyncio.Task[None] | None:
         """
-        Prepare the AudioBuffer for the next track in the queue.
+        Prepare the AudioBuffer of the item that follows the given item in the queue.
 
-        Called ~30-60 seconds before the current track ends to ensure
-        the buffer is warm when the next track starts playing.
+        Call when the stream of the given item nears its end, or when its audio has fully
+        arrived, so the next item's audio is ready by the time it is streamed.
+
+        :param queue_id: The queue the item belongs to.
+        :param queue_item_id: The item whose audio is being streamed or has fully arrived.
+        :return: The preparation of the next item's audio, or None when nothing needs preparing.
         """
-        queue = self.get(queue_id)
-        if not queue or not queue.next_item:
-            return
-        next_item = queue.next_item
+        next_item = self.get_next_item(queue_id, queue_item_id)
+        if next_item is None or next_item.queue_item_id == queue_item_id:
+            return None
+        queue_data = self._queue_data[queue_id]
         # AudioSource items are realtime/live and bypass the AudioBuffer
         if next_item.media_type == MediaType.AUDIO_SOURCE:
-            return
-        # guard against race condition where queue.next_item still points to the
-        # currently playing track because the player state hasn't been updated yet
-        if queue.current_item and next_item.queue_item_id == queue.current_item.queue_item_id:
-            return
+            return None
         # check if buffer already exists and is valid
         if (
             next_item.streamdetails
@@ -63,36 +64,44 @@ class StreamFeederMixin(_PlayerQueuesBase):
         ):
             # reusing audio an earlier session left behind claims it for this one, so its
             # stop releases it and the earlier session's stop no longer can
-            next_item.streamdetails.queue_session_id = self._queue_data[queue_id].session_id
-            return
+            next_item.streamdetails.queue_session_id = queue_data.session_id
+            return None
 
         async def _do_prepare() -> None:
+            prepared_item: QueueItem | None = None
             try:
-                # fetch streamdetails if not yet available
-                if not next_item.streamdetails:
-                    next_item.streamdetails = await self.mass.streams.audio.get_stream_details(
-                        queue_item=next_item
-                    )
-                    # the queue can be replaced while the details are fetched, and audio warmed
-                    # for an item that left it would sit on a buffer no cleanup reaches
-                    if self.get_item(queue_id, next_item.queue_item_id) is None:
-                        return
-                if holder := self._single_source_slot_holder(queue, next_item):
-                    # the playing item frees that slot only when it ends, and the end of its
-                    # stream schedules this preload again, so waiting for it here is pointless
+                try:
+                    prepared_item = await self.load_next_queue_item(queue_id, queue_item_id)
+                except QueueEmpty:
+                    return
+                # unplayable items are skipped, so the prepared item can be a later one
+                queue_data.next_item_id_preparing = prepared_item.queue_item_id
+                # the queue can be replaced while the details are fetched, and audio warmed
+                # for an item that left it would sit on a buffer no cleanup reaches
+                if self.get_item(queue_id, prepared_item.queue_item_id) is None:
+                    return
+                # a stop releases the audio of its session once; what gets attached to a queue
+                # without a session after that stays until its inactivity timeout
+                if queue_data.session_id is None:
+                    return
+                if (streamed_item := self.get_item(queue_id, queue_item_id)) and (
+                    holder := self._single_source_slot_holder(streamed_item, prepared_item)
+                ):
+                    # the streamed item frees that slot only when its source is done, and that
+                    # schedules this preparation again, so waiting for it here is pointless
                     self.logger.debug(
-                        "Not preparing %s yet: the playing item holds the only %s source slot",
-                        next_item.name,
+                        "Not preparing %s yet: the streamed item holds the only %s source slot",
+                        prepared_item.name,
                         holder.name,
                     )
                     return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
-                    next_item.name,
-                    queue.display_name,
+                    prepared_item.name,
+                    queue_data.queue.display_name,
                 )
                 await self.mass.streams.audio.get_audio_buffer(
-                    next_item,
+                    prepared_item,
                     reason="prepare_next",
                     capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
                     # speculative preparation gives up softly, so it must stay cheap:
@@ -102,9 +111,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # removal paths that do not cancel this task (replace_next, delete) can take
                 # the item off the queue while the buffer fills; the stale-buffer sweep walks
                 # only current items, so a buffer left here would sit until its inactivity
-                # timeout. Detached before releasing, as everywhere a buffer is cleared.
-                if self.get_item(queue_id, next_item.queue_item_id) is None:
-                    if (details := next_item.streamdetails) and (orphan := details.buffer):
+                # timeout. The same goes for a queue whose session ended meanwhile. A session
+                # that rotated (a skip) owns the audio, and its stop releases it.
+                # Detached before releasing, as everywhere a buffer is cleared.
+                if (
+                    self.get_item(queue_id, prepared_item.queue_item_id) is None
+                    or queue_data.session_id is None
+                ):
+                    if (details := prepared_item.streamdetails) and (orphan := details.buffer):
                         details.buffer = None
                         await orphan.clear()
             except (AudioError, MediaNotFoundError) as err:
@@ -112,15 +126,45 @@ class StreamFeederMixin(_PlayerQueuesBase):
             except asyncio.CancelledError:
                 # a replacement prepare aborted this one: release the half-filled source
                 # so its slot is not pinned until the inactivity sweep
-                if (sd := next_item.streamdetails) and (buf := sd.buffer) and buf.is_buffering:
+                if (
+                    prepared_item
+                    and (sd := prepared_item.streamdetails)
+                    and (buf := sd.buffer)
+                    and buf.is_buffering
+                ):
                     await asyncio.shield(buf.clear())
                 raise
 
-        self.mass.create_task(
+        # a call for the same item joins the preparation that is already running,
+        # one for another item replaces it
+        target_changed = queue_data.next_item_id_preparing != next_item.queue_item_id
+        queue_data.next_item_id_preparing = next_item.queue_item_id
+        return self.mass.create_task(
             _do_prepare(),
             task_id=f"prepare_next_audio_buffer_{queue_id}",
-            abort_existing=True,
+            abort_existing=target_changed,
         )
+
+    def track_fully_buffered(self, queue_id: str, item_id: str) -> None:
+        """
+        Call when the source of a queue item has delivered all of its audio.
+
+        :param queue_id: The queue the item belongs to.
+        :param item_id: The queue item whose audio has fully arrived.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        item = self.get_item(queue_id, item_id)
+        if queue_data is None or item is None or (streamdetails := item.streamdetails) is None:
+            return
+        # a source that fills ahead of playback is done long before its item ends; its
+        # successor is prepared when the stream of the item nears its end
+        if not streamdetails.is_realtime or streamdetails.media_type != MediaType.TRACK:
+            return
+        # only the item the player is fetching may chain into preparing its successor,
+        # so the fills cannot run ahead of the player on their own
+        if queue_data.last_served_item_id != item_id:
+            return
+        self.prepare_next_audio_buffer(queue_id, item_id)
 
     def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
         """
@@ -360,10 +404,15 @@ class StreamFeederMixin(_PlayerQueuesBase):
             )
 
     def _single_source_slot_holder(
-        self, queue: PlayerQueue, next_item: QueueItem
+        self, streamed_item: QueueItem, next_item: QueueItem
     ) -> MusicProvider | None:
-        """Return the next item's source if the realtime item playing holds its only slot."""
-        playing = queue.current_item.streamdetails if queue.current_item else None
+        """
+        Return the next item's source if the streamed realtime item holds its only slot.
+
+        :param streamed_item: The item whose audio is being streamed ahead of the next item.
+        :param next_item: The item that is about to be prepared.
+        """
+        playing = streamed_item.streamdetails
         upcoming = next_item.streamdetails
         if playing is None or upcoming is None or playing.provider != upcoming.provider:
             return None

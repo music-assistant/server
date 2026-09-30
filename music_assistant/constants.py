@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 83
+API_SCHEMA_VERSION: Final[int] = 84
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -102,6 +102,8 @@ CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
+# the registered folders that were a mountpoint when they were registered
+CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
 CONF_STORAGE_SHARES: Final[str] = "storage_shares"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
@@ -343,11 +345,7 @@ PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
 # not something we do. Keep it that way.
-FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = (
-    "filesystem_local",
-    "filesystem_smb",
-    "filesystem_nfs",
-)
+FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = ("filesystem_local",)
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -1030,8 +1028,8 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("heos", True),
     ("wiim", True),
     ("party", False),
-    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
-    # under-spec host has the auto-created config removed again at load time.
+    # smart_fades refuses an automatic setup below its recommended hardware (see its
+    # setup()); the auto-created config is then removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),

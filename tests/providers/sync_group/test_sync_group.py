@@ -8,13 +8,14 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import OutputProtocol, PlayerSource
 
 from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
@@ -23,9 +24,11 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
     PROTOCOL_PRIORITY,
 )
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
+from tests.common import MockPlayer, MockProvider
 
 
 def _player_lookup(players: dict[str, MagicMock]) -> MagicMock:
@@ -188,6 +191,23 @@ def _make_sync_group(mass: MagicMock, player_id: str = "syncgroup_test") -> Sync
     sgp = SyncGroupPlayer(provider, player_id)
     sgp._cache.clear()
     return sgp
+
+
+def _make_play_media_takeover_case(
+    token: int,
+) -> tuple[MagicMock, SyncGroupPlayer, MagicMock]:
+    """Create the shared SyncGroup playback takeover setup."""
+    mass = _make_mock_mass()
+    sgp = _make_sync_group(mass)
+    leader = _make_mock_player("leader", provider_domain="sendspin")
+    mass.players.get_player = _player_lookup({"leader": leader})
+    sgp.sync_leader = leader
+    sgp._attr_group_members = ["leader"]
+    owner = MagicMock()
+    owner.on_group_content_takeover_aborted = AsyncMock()
+    owner.on_group_content_takeover_finished = AsyncMock()
+    sgp._form_syncgroup = AsyncMock(return_value=(owner, token))  # type: ignore[method-assign]
+    return mass, sgp, owner
 
 
 class TestProtocolAwareLeaderSelection:
@@ -1081,6 +1101,22 @@ class TestPowerLifecycle:
         assert sgp._attr_powered is True
 
     @pytest.mark.asyncio
+    async def test_power_on_does_not_claim_new_content(self) -> None:
+        """Standalone power formation must not suppress a protocol's current media."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp._attr_group_members = ["leader"]
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_form_syncgroup", new=AsyncMock()) as form,
+        ):
+            await sgp.power(True)
+
+        form.assert_awaited_once_with(new_content=False)
+        assert sgp._attr_powered is True
+
+    @pytest.mark.asyncio
     async def test_power_on_with_no_members_stays_unformed(self) -> None:
         """power(True) on an empty group should leave sync_leader as None but mark powered."""
         mass = _make_mock_mass()
@@ -1842,6 +1878,126 @@ class TestPowerlessLifecycle:
         mass.players._handle_play_media.assert_awaited_once()  # type: ignore[unreachable]
 
     @pytest.mark.asyncio
+    async def test_play_media_releases_linked_protocol_takeover_owner(self) -> None:  # noqa: PLR0915
+        """SyncGroup playback releases the protocol owner returned by controller dispatch."""
+        mass = _make_mock_mass()
+        mass.config.get_raw_core_config_value.return_value = "INFO"
+        controller = PlayerController(mass)
+        mass.players = controller
+        wiim_provider = MockProvider("wiim", instance_id="wiim", mass=mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mass)
+        parent = MockPlayer(wiim_provider, "parent", "Parent")
+        child = MockPlayer(sendspin_provider, "child", "Child")
+        protocol = MockPlayer(sendspin_provider, "spb_parent", "Protocol", PlayerType.PROTOCOL)
+        child_protocol = MockPlayer(
+            sendspin_provider, "spb_child", "Child protocol", PlayerType.PROTOCOL
+        )
+        parent.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="spb_parent", protocol_domain="sendspin")]
+        )
+        child.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="spb_child", protocol_domain="sendspin")]
+        )
+        protocol.set_protocol_parent_id("parent")
+        child_protocol.set_protocol_parent_id("child")
+        parent._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        child._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol_any = cast("Any", protocol)
+        protocol_any._content_takeover_pending = False
+        snapshot = object()
+        protocol_any.snapshot = snapshot
+        events: list[str] = []
+
+        async def _takeover() -> int:
+            events.append("clear")
+            protocol_any.snapshot = None
+            return 3
+
+        async def _takeover_finished(_token: object) -> None:
+            events.append("finish")
+            protocol_any._content_takeover_pending = False
+
+        protocol.on_group_content_takeover = AsyncMock(side_effect=_takeover)  # type: ignore[method-assign]
+        protocol.on_group_content_takeover_finished = AsyncMock(side_effect=_takeover_finished)  # type: ignore[method-assign]
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+
+        async def _set_members(**_kwargs: object) -> None:
+            events.append("set_members")
+            assert protocol_any.snapshot is None
+
+        protocol.set_members = AsyncMock(side_effect=_set_members)  # type: ignore[method-assign]
+        protocol.play_media = AsyncMock()  # type: ignore[method-assign]
+        child_protocol.set_members = AsyncMock()  # type: ignore[method-assign]
+        parent.set_active_output_protocol("spb_parent")
+        controller._players = {x.player_id: x for x in (parent, child, protocol, child_protocol)}
+        for player in (parent, child, protocol, child_protocol):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        parent.state.can_group_with = {"child"}
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = parent
+        sgp._attr_group_members = ["parent", "child"]
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(
+                controller,
+                "_translate_members_for_protocols",
+                return_value=(["spb_child"], [], protocol, "sendspin"),
+            ),
+            patch.object(
+                controller,
+                "_translate_members_to_remove_for_protocols",
+                return_value=([], []),
+            ),
+        ):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        protocol.on_group_content_takeover.assert_awaited_once()
+        protocol.on_group_content_takeover_finished.assert_awaited_once_with(3)
+        assert protocol_any._content_takeover_pending is False
+        assert protocol._attr_supported_features >= {PlayerFeature.SET_MEMBERS}
+        assert events == ["clear", "set_members", "finish"]
+
+    @pytest.mark.asyncio
+    async def test_play_preparation_aborts_unconsumed_takeover_on_cancel(self) -> None:
+        """Cancellation between fake power and play aborts the captured generation."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        owner = MagicMock()
+        owner.on_group_content_takeover_aborted = AsyncMock()
+        sgp._pending_content_takeover = (owner, 7)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with sgp.prepare_play_media():
+                raise asyncio.CancelledError
+
+        owner.on_group_content_takeover_aborted.assert_awaited_once_with(7)
+        assert sgp._pending_content_takeover is None
+
+    @pytest.mark.asyncio
+    async def test_play_media_aborts_takeover_when_play_start_fails(self) -> None:
+        """A failed leader play aborts rather than finishing a takeover generation."""
+        mass, sgp, owner = _make_play_media_takeover_case(9)
+        mass.players._handle_play_media = AsyncMock(side_effect=RuntimeError("play failed"))
+
+        with pytest.raises(RuntimeError, match="play failed"):
+            await sgp.play_media(MagicMock(uri="new", source_id="src"))
+
+        owner.on_group_content_takeover_aborted.assert_awaited_once_with(9)
+        owner.on_group_content_takeover_finished.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_play_media_finishes_takeover_after_play_start(self) -> None:
+        """Successful leader playback finishes the captured takeover generation."""
+        _mass, sgp, owner = _make_play_media_takeover_case(9)
+
+        await sgp.play_media(MagicMock(uri="new", source_id="src"))
+
+        owner.on_group_content_takeover_finished.assert_awaited_once_with(9)
+        owner.on_group_content_takeover_aborted.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_stop_dissolves_group_when_powerless(self) -> None:
         """stop() on a group without power control should dissolve the session."""
         mass = _make_mock_mass()
@@ -2322,7 +2478,9 @@ class TestFormReconcilesIncompatibleMembers:
 
         assert sgp._attr_group_members == ["leader", "m2"]
         assert "Removing x from group" in caplog.text
-        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["m2"], new_content=False
+        )
 
     @pytest.mark.asyncio
     async def test_form_keeps_an_unavailable_member(self) -> None:
@@ -2343,7 +2501,7 @@ class TestFormReconcilesIncompatibleMembers:
 
         assert sgp._attr_group_members == ["leader", "m2", "off"]
         mass.players._handle_set_members.assert_awaited_once_with(
-            leader, player_ids_to_add=["m2", "off"]
+            leader, player_ids_to_add=["m2", "off"], new_content=False
         )
 
     @pytest.mark.asyncio
@@ -2362,7 +2520,9 @@ class TestFormReconcilesIncompatibleMembers:
             await sgp._form_syncgroup()
 
         assert sgp._attr_group_members == ["leader", "m2"]
-        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["m2"], new_content=False
+        )
 
 
 class TestWaitMemberUnsynced:
@@ -2461,6 +2621,8 @@ class TestSupportedFeaturesFromActiveMembers:
         mass.config.get_raw_player_config_value = MagicMock(side_effect=_raw_controls_none)
         sgp = _make_sync_group(mass)
         leader = _make_mock_player("display", provider_domain="sendspin")
+        # the live session is what the leader reports, not the configured list
+        leader.state.group_members = ["display", "speaker"]
         member = _make_mock_player("speaker")
         member_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -2592,6 +2754,99 @@ class TestSupportedFeaturesPower:
         assert PlayerFeature.POWER in sgp.supported_features
 
 
+class TestLeaderTransportForwarding:
+    """Transport commands on a formed group are handled by its sync leader."""
+
+    def _make_group_with_leader(self) -> tuple[SyncGroupPlayer, MagicMock, MagicMock]:
+        mass = _make_mock_mass()
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.players._handle_cmd_pause = AsyncMock()
+        mass.players._handle_cmd_play = AsyncMock()
+        mass.players.cmd_resume = AsyncMock()
+        leader = _make_mock_player("leader", playback_state=PlaybackState.PLAYING)
+        leader.state.supported_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.PAUSE,
+            PlayerFeature.SEEK,
+            PlayerFeature.NEXT_PREVIOUS,
+        }
+        for method in ("seek", "next_track", "previous_track", "set_shuffle", "set_repeat"):
+            setattr(leader, method, AsyncMock())
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = leader
+        return sgp, leader, mass
+
+    def test_transport_features_follow_the_leader(self) -> None:
+        """PAUSE, SEEK and NEXT_PREVIOUS are advertised only when the leader has them."""
+        transport = {PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.NEXT_PREVIOUS}
+        sgp, leader, _mass = self._make_group_with_leader()
+        assert transport <= sgp.supported_features
+
+        leader.state.supported_features = {PlayerFeature.PLAY_MEDIA}
+        assert not transport & sgp.supported_features
+
+    def test_transport_features_not_advertised_without_leader(self) -> None:
+        """An unformed group does not borrow transport features from its members."""
+        mass = _make_mock_mass()
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        member = _make_mock_player("member")
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.PAUSE}
+        mass.players.get_player = _player_lookup({"member": member})
+        sgp = _make_sync_group(mass)
+        sgp._attr_group_members = ["member"]
+        assert PlayerFeature.PAUSE not in sgp.supported_features
+
+    async def test_pause_goes_to_the_leader(self) -> None:
+        """Pause runs the controller's internal handler on the leader, keeping the group."""
+        sgp, leader, mass = self._make_group_with_leader()
+        await sgp.pause()
+        mass.players._handle_cmd_pause.assert_awaited_once_with(leader.player_id)
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+    async def test_source_commands_go_to_the_leader(self) -> None:
+        """Seek, next/previous, shuffle and repeat are forwarded to the leader."""
+        sgp, leader, _mass = self._make_group_with_leader()
+        await sgp.seek(42)
+        await sgp.next_track()
+        await sgp.previous_track()
+        await sgp.set_shuffle(True)
+        await sgp.set_repeat(RepeatMode.ALL)
+        leader.seek.assert_awaited_once_with(42)
+        leader.next_track.assert_awaited_once()
+        leader.previous_track.assert_awaited_once()
+        leader.set_shuffle.assert_awaited_once_with(True)
+        leader.set_repeat.assert_awaited_once_with(RepeatMode.ALL)
+
+    async def test_commands_without_leader_fail(self) -> None:
+        """An unformed group refuses transport commands."""
+        sgp = _make_sync_group(_make_mock_mass())
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.pause()
+        with pytest.raises(PlayerCommandFailed):
+            await sgp.seek(10)
+
+    async def test_play_resumes_the_leaders_own_source(self) -> None:
+        """Play on a leader-owned source resumes it on the leader without restreaming."""
+        sgp, leader, mass = self._make_group_with_leader()
+        leader.active_source = "spotify"
+        leader.active_output_protocol = None
+        leader.source_list = [PlayerSource(id="spotify", name="Spotify", passive=False)]
+        await sgp.play()
+        mass.players._handle_cmd_play.assert_awaited_once_with(leader.player_id)
+        mass.players.cmd_resume.assert_not_awaited()
+
+    async def test_play_restreams_group_content(self) -> None:
+        """Play on the group's own content still resumes through the group."""
+        sgp, leader, mass = self._make_group_with_leader()
+        leader.active_source = sgp.player_id
+        leader.active_output_protocol = None
+        leader.source_list = [PlayerSource(id="spotify", name="Spotify", passive=False)]
+        with patch.object(sgp, "_form_syncgroup", AsyncMock()):
+            await sgp.play()
+        mass.players._handle_cmd_play.assert_not_awaited()
+        mass.players.cmd_resume.assert_awaited_once()
+
+
 def _recording_wait(order: list[str]) -> MagicMock:
     """
     Build a wait_for_player_update replacement that records call/enter/exit order.
@@ -2634,7 +2889,7 @@ class TestLeaderPlaybackAwaited:
         mass.players.wait_for_player_update = _recording_wait(order)
         mass.players.cmd_resume = AsyncMock(side_effect=lambda *_a, **_k: order.append("resume"))
 
-        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock(return_value=None)):
             await sgp.play()
 
         # subscribe happens before the resume command, and the wait completes
@@ -2664,7 +2919,7 @@ class TestLeaderPlaybackAwaited:
 
         media = MagicMock()
         media.source_id = "syncgroup_test"
-        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock(return_value=None)):
             await sgp.play_media(media)
 
         assert order == [
@@ -2684,7 +2939,7 @@ class TestLeaderPlaybackAwaited:
 
         mass.players.cmd_resume = AsyncMock()
 
-        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock(return_value=None)):
             await sgp.play()
 
         mass.players.wait_for_player_update.assert_not_called()

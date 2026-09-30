@@ -87,6 +87,12 @@ class DiscoveryController(CoreController):
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
 
+    async def start_zeroconf(self) -> None:
+        """Create the shared zeroconf instance (aiozc) ahead of the setup of this controller."""
+        if self._aiozc is None:
+            config = await self.mass.config.get_core_config(self.domain)
+            self._aiozc = self._create_aiozc(config)
+
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config

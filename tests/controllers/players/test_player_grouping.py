@@ -791,6 +791,23 @@ class TestGroupAndMemberLockOrder:
 
         assert lock_keys[:2] == ["playback_g1", "playback_extra"]
 
+    async def test_redirect_lock_and_set_members_agree_on_the_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Commands, locks and member changes for a captured leader's follower reach its group."""
+        controller, group, member, _ = self._setup(mock_mass)
+        self._add_follower(controller, member)
+        lock_keys = _spy_on_lock_order(controller)
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        assert controller._get_player_with_redirect("extra") is group
+        async with controller.get_group_and_player_lock("extra"):
+            pass
+        await controller.cmd_set_members("member", player_ids_to_remove=["extra"])
+
+        assert lock_keys[:2] == ["playback_g1", "playback_extra"]
+        controller._handle_set_members.assert_awaited_once_with(group, None, ["extra"])
+
     async def test_a_leader_power_off_leaves_its_followers_powered(
         self, mock_mass: MagicMock
     ) -> None:
@@ -1238,7 +1255,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # the dissolve removes the visualizer from the group and ends the leader's queue
         controller._handle_set_members_with_protocols.assert_awaited_once_with(
-            leader, [], ["visualizer"]
+            leader, [], ["visualizer"], new_content=False
         )
         queue_stop.assert_awaited_once_with("leader")
         controller._handle_cmd_stop.assert_not_awaited()
@@ -1314,7 +1331,8 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         protocol_set_members = cast("AsyncMock", controller._handle_set_members_with_protocols)
-        protocol_set_members.assert_awaited_once_with(leader, [], ["member"])
+        # dissolving what is left publishes no new content, so no takeover is opened
+        protocol_set_members.assert_awaited_once_with(leader, [], ["member"], new_content=False)
         # the group's queue is not the leader's to end, so only the device is stopped
         device_stop.assert_awaited_once_with("leader")
         queue_stop.assert_not_awaited()

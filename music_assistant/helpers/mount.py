@@ -43,7 +43,6 @@ def build_cifs_mount_cmd(
     password: str | None = None,
     version: str | None = None,
     read_only: bool = False,
-    cache_mode: str = "loose",
 ) -> tuple[list[str], dict[str, str]]:
     """
     Return the command that mounts a CIFS (SMB) share, and the environment variables it needs.
@@ -53,13 +52,12 @@ def build_cifs_mount_cmd(
 
     :param system: The operating system, as ``platform.system()`` names it.
     :param server: The hostname or IP address of the server.
-    :param share: The share name, optionally followed by a subfolder (``music/albums``).
+    :param share: The share name.
     :param mountpoint: The local folder to mount the share on.
     :param username: The user to log in as, None or ``guest`` for guest access.
     :param password: The password of the user.
     :param version: The SMB protocol version, None to let the client negotiate it.
     :param read_only: Whether to mount the share read-only.
-    :param cache_mode: The CIFS cache mode (Linux only).
     :raises UnsupportedSystemError: When the system can not mount a CIFS share.
     """
     is_guest = not username or username.lower() == "guest"
@@ -89,7 +87,7 @@ def build_cifs_mount_cmd(
     # SMB version for better compatibility and performance
     if version:
         options.append(f"vers={version}")
-    options.append(f"cache={cache_mode}")
+    options.append("cache=loose")
     # Case insensitive by default (standard for SMB) and other performance options.
     # Note: emoji and other 4-byte UTF-8 characters (U+10000+) in folder/file names
     # are NOT supported due to a Linux kernel limitation in the CIFS client's NLS layer.

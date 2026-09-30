@@ -32,15 +32,23 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemTranscriptCue,
+    MediaItemType,
+    Podcast,
+    PodcastEpisode,
+)
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
+    find_episode_transcripts,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -439,6 +447,20 @@ class GPodder(MusicProvider):
         except RuntimeError as exc:
             self.logger.debug(exc)
             self.logger.debug("Failed to update progress.")
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast = await self._cache_get_podcast(podcast_id)
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=find_episode_transcripts(
+                parsed_feed=podcast, guid_or_stream_url=guid_or_stream_url
+            ),
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""

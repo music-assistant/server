@@ -298,6 +298,94 @@ class TestCacheInvalidationAfterGrouping:
         # In a real scenario, this would clear all players' caches
 
 
+def _make_takeover_players(
+    mock_mass: MagicMock, token: int
+) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+    """Create the shared native parent and protocol takeover players."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+    protocol_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+    parent = MockPlayer(provider, "parent", "Parent")
+    parent.set_active_output_protocol("protocol")
+    protocol = MockPlayer(protocol_provider, "protocol", "Protocol", PlayerType.PROTOCOL)
+    protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+    protocol.on_group_content_takeover = AsyncMock(return_value=token)  # type: ignore[method-assign]
+    protocol.on_group_content_takeover_finished = AsyncMock()  # type: ignore[method-assign]
+    controller._players = {x.player_id: x for x in (parent, protocol)}
+    mock_mass.players = controller
+    return controller, parent, protocol
+
+
+class TestContentTakeover:
+    """Test protocol content ownership around group membership changes."""
+
+    async def test_native_unsupported_keeps_protocol_takeover_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An unsupported native leg must not bypass an active protocol transaction."""
+        controller, parent, protocol = _make_takeover_players(mock_mass, 7)
+        provider = cast("MockProvider", parent.provider)
+        parent._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        parent.set_members = AsyncMock()  # type: ignore[method-assign]
+        native_child = MockPlayer(provider, "native_child", "Native child")
+        controller._players[native_child.player_id] = native_child
+        parent.state.supported_features = set()
+        protocol.state.supported_features = {PlayerFeature.SET_MEMBERS}
+        native_child.state.type = PlayerType.PLAYER
+
+        with (
+            patch.object(
+                controller,
+                "_translate_members_for_protocols",
+                return_value=(["protocol_child"], ["native_child"], protocol, "sendspin"),
+            ),
+            patch.object(
+                controller,
+                "_translate_members_to_remove_for_protocols",
+                return_value=([], []),
+            ),
+        ):
+            takeover = await controller._handle_set_members_with_protocols(
+                parent, [], ["native_child"], new_content=True
+            )
+
+        assert takeover == (protocol, 7)
+        parent.set_members.assert_not_awaited()
+        cast("AsyncMock", protocol.on_group_content_takeover_finished).assert_not_awaited()
+
+    async def test_protocol_takeover_failure_finishes_captured_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol forwarding failure releases the owner that started the token."""
+        controller, parent, protocol = _make_takeover_players(mock_mass, 11)
+        protocol.on_group_content_takeover_aborted = AsyncMock()  # type: ignore[method-assign]
+
+        with (
+            patch.object(
+                controller,
+                "_translate_members_for_protocols",
+                return_value=(["protocol_child"], [], protocol, "sendspin"),
+            ),
+            patch.object(
+                controller,
+                "_translate_members_to_remove_for_protocols",
+                return_value=([], []),
+            ),
+            patch.object(
+                controller,
+                "_forward_protocol_set_members",
+                side_effect=RuntimeError("forward failed"),
+            ),
+            pytest.raises(RuntimeError, match="forward failed"),
+        ):
+            await controller._handle_set_members_with_protocols(
+                parent, ["protocol_child"], [], new_content=True
+            )
+
+        protocol.on_group_content_takeover_aborted.assert_awaited_once_with(11)
+        cast("AsyncMock", protocol.on_group_content_takeover_finished).assert_not_awaited()
+
+
 class TestNativeSetMembersGuard:
     """Test the SET_MEMBERS feature guard on native set_members forwarding."""
 
@@ -2913,6 +3001,7 @@ class TestProtocolOutputPlayPause:
         # a non-empty queue, so the MA queue source advertises play/pause support
         queue = MagicMock()
         queue.items = [MagicMock()]
+        queue.queue_id = "player_1"
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
@@ -2929,21 +3018,27 @@ class TestProtocolOutputPlayPause:
         player.refresh_state(signal_event=False)
         return player
 
-    async def test_pause_on_protocol_without_pause_falls_back_to_stop(
+    async def test_pause_on_protocol_without_pause_ends_the_queue(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
-        """The native transport has no session to pause while a protocol renders the audio."""
+        """
+        The native transport has no session to pause while a protocol renders the audio.
+
+        The pause falls back to a stop of the player's own queue, which stops the player.
+        """
         player = self._make_player_on_protocol(
             mock_mass, controller, playback_state=PlaybackState.PLAYING
         )
         player.pause = AsyncMock()  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
 
         await controller._handle_cmd_pause("player_1")
 
         player.pause.assert_not_called()
-        # STOP goes to the visible player, not the protocol player
-        controller._handle_cmd_stop.assert_awaited_once_with("player_1")
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        # the queue stop issues the player stop itself
+        controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_play_on_protocol_without_pause_does_not_unpause_natively(
         self, mock_mass: MagicMock, controller: PlayerController
@@ -2960,6 +3055,53 @@ class TestProtocolOutputPlayPause:
         player.play.assert_not_called()
         # the MA queue source is restarted, not some other source
         controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
+
+
+class TestPauseWithoutPauseSupport:
+    """
+    Pause on a player that plays its own queue and can not pause.
+
+    The pause falls back to a stop of the queue, which releases the queue's audio and the
+    music source right away. A later play resumes the queue at the paused position.
+    """
+
+    @staticmethod
+    def _player_on_own_queue(
+        mock_mass: MagicMock, player_type: PlayerType = PlayerType.PLAYER
+    ) -> tuple[PlayerController, MockPlayer]:
+        """
+        Build a playing player without pause support that plays its own queue.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param player_type: The type to register the player as.
+        :return: The controller and the player, with the player and queue stop stubbed.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1", player_type=player_type)
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        queue = _stub_queue("player_1")
+        # a queue with items advertises play/pause on its source
+        queue.items = 1
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: queue if queue_id == "player_1" else None
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
+        return controller, player
+
+    async def test_pause_on_a_group_player_ends_its_queue(self, mock_mass: MagicMock) -> None:
+        """A group player (sync or universal group) can not pause either."""
+        controller, _player = self._player_on_own_queue(mock_mass, PlayerType.GROUP)
+
+        await controller._handle_cmd_pause("player_1")
+
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
 
 
 class TestMirrorsParentMedia:

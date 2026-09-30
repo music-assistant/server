@@ -171,7 +171,7 @@ async def test_add_cifs(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) 
 
 
 async def test_add_nfs(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An NFS export is mounted with the options of today's NFS source."""
+    """An NFS export is mounted soft and without locking, read-only and pinned as asked."""
     check_output = AsyncMock(return_value=(0, b""))
     monkeypatch.setattr(local_mount, "check_output", check_output)
     spec = _spec(mounter, ShareType.NFS)

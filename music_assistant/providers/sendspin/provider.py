@@ -367,6 +367,7 @@ class SendspinProvider(PlayerProvider):
     _virtual_players: dict[str, str]
     _unloading: bool
     _hass_available: bool
+    _server_start_failed: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -397,6 +398,7 @@ class SendspinProvider(PlayerProvider):
         ] = {}
         self._unloading = False
         self._hass_available = False
+        self._server_start_failed = False
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -1061,11 +1063,22 @@ class SendspinProvider(PlayerProvider):
         self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
-        await self.server_api.start_server(
-            port=SENDSPIN_SERVER_PORT,
-            host=self.mass.streams.bind_ip,
-            advertise_addresses=[self.mass.streams.publish_ip],
-        )
+        try:
+            await self.server_api.start_server(
+                port=SENDSPIN_SERVER_PORT,
+                host=self.mass.streams.bind_ip,
+                advertise_addresses=[self.mass.streams.publish_ip],
+            )
+        except OSError as err:
+            self._server_start_failed = True
+            # without its listener every Sendspin player fails silently,
+            # so surface this as a provider error the user can see
+            self.unload_with_error(
+                SetupFailedError(
+                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: {err}"
+                )
+            )
+            return
         for address in self._manual_ip_config:
             try:
                 url = _manual_client_url(address)
@@ -1106,8 +1119,10 @@ class SendspinProvider(PlayerProvider):
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
-        # Stop the Sendspin server
-        await self.server_api.close()
+        # Stop the Sendspin server. A failed start already cleaned up after itself,
+        # and closing it then raises (aiosendspin keeps a stale site reference).
+        if not self._server_start_failed:
+            await self.server_api.close()
 
         for cb in self.unregister_cbs:
             cb()

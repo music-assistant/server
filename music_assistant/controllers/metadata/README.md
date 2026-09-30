@@ -7,7 +7,7 @@ This package owns Music Assistant's metadata management: enriching library items
 The `MetaDataController` is composed from a set of mixins, each in its own module, mirroring the Player Controller (`controllers/players/`). All behaviour is reachable on the single controller instance; the split is purely for organising a large surface.
 
 - `controller.py` — the `MetaDataController` itself: lifecycle, config entries, preferred-language handling, the public enrichment entrypoint and the scheduled maintenance tasks. Combines the mixins below with `CoreController`.
-- `images.py` (`ImageProxyMixin`) — image resolution, the opaque image-id system, thumbnail rendering/caching, the `/imageproxy` endpoint, palette extraction and playlist collages.
+- `images.py` (`ImageProxyMixin`) — image resolution, the opaque image-id system, thumbnail rendering/caching, the `/imageproxy` endpoint, palette extraction and serving previously generated playlist collages.
 - `radio.py` (`RadioArtworkMixin`) — resolving radio-stream artwork by matching the station's now-playing metadata against the library and MusicBrainz/online providers.
 - `enrichment.py` (`MetadataEnrichmentMixin`) — the per-mediatype routines that merge provider metadata into library items.
 - `helpers.py` — pure functions that don't need the controller instance.

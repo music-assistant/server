@@ -71,6 +71,7 @@ RECOMMENDATIONS_HUB_PARAMS = (
 # error messages (templates use str.format)
 ERR_INVALID_CREDENTIALS = "Invalid login credentials"
 ERR_AUTH_FAILED = "Authentication failed"
+ERR_SERVER_ACCESS_DENIED = "No verified access to the Plex server for this Plex account: {reason}"
 ERR_MYPLEX_AUTH_FAILED = "Authentication to MyPlex failed"
 ERR_MYPLEX_TOKEN_NOT_RECEIVED = "Authentication to MyPlex failed: token not received"
 ERR_NO_LIBRARIES = "Unable to retrieve Servers and/or Music Libraries"

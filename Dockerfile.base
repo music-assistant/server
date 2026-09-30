@@ -193,7 +193,7 @@ RUN set -x \
         libjemalloc2 \
         tzdata \
         wget \
-        # cifs utils and libnfs are needed for smb and nfs support (file provider)
+        # cifs utils and libnfs are needed to mount smb and nfs network shares
         cifs-utils \
         libnfs14 \
         nfs-common \

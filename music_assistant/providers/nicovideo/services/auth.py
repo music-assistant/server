@@ -41,68 +41,67 @@ class NicovideoAuthService(NicovideoBaseService):
         user_session = config.auth.user_session
         max_retries = 3
         retry_delay_seconds = 1
-        async with self.service_manager.niconico_api_throttler.bypass():
-            for attempt in range(max_retries):
-                try:
-                    self.logger.debug(
-                        "Trying to log in... (Number of attempts: %d/%d)",
-                        attempt + 1,
-                        max_retries,
+        for attempt in range(max_retries):
+            try:
+                self.logger.debug(
+                    "Trying to log in... (Number of attempts: %d/%d)",
+                    attempt + 1,
+                    max_retries,
+                )
+                if user_session:
+                    self.logger.debug("Using user_session for login.")
+                    await asyncio.to_thread(
+                        self.niconico_py_client.login_with_session,
+                        str(user_session),
                     )
-                    if user_session:
-                        self.logger.debug("Using user_session for login.")
-                        await asyncio.to_thread(
-                            self.niconico_py_client.login_with_session,
-                            str(user_session),
+                else:
+                    self.logger.debug("Using mail and password for login.")
+                    if not username or not password:
+                        self.logger.debug(
+                            "Username and password are not set in the configuration.",
                         )
-                    else:
-                        self.logger.debug("Using mail and password for login.")
-                        if not username or not password:
-                            self.logger.debug(
-                                "Username and password are not set in the configuration.",
-                            )
-                            return False
-                        await asyncio.to_thread(
-                            self.niconico_py_client.login_with_mail,
-                            str(username),
-                            str(password),
-                            str(mfa) if mfa else None,
-                        )
-                    self.logger.info("Successfully authenticated with Nicovideo!")
-                    # Clear MFA code after successful use (one-time password should not be reused)
-                    if mfa:
-                        config.auth.clear_mfa_code()
-                    session = self.niconico_py_client.get_user_session()
-                    if session:
-                        config.auth.save_user_session(session)
-                        log_verbose(
-                            self.logger,
-                            "Saved user session for future logins (length: %d chars)",
-                            len(session),
-                        )
-                    return True
-                except LoginFailureError as err:
-                    if user_session:
-                        user_session = None  # Clear session on failure
-                        self.logger.warning("Login with user_session failed: %s", err)
-                    else:
-                        self.logger.error("Login with mail and password failed: %s", err)
                         return False
-                except Exception as e:
-                    if (
-                        "Name or service not known" in str(e)
-                        or "Max retries exceeded" in str(e)
-                        or "ConnectionError" in str(e)
-                    ):
-                        self.logger.warning(
-                            "Network or DNS error occurred: %s. Retrying in %d seconds...",
-                            e,
-                            retry_delay_seconds,
-                        )
-                        await asyncio.sleep(retry_delay_seconds)
-                    else:
-                        self.logger.error("An unexpected error has occurred.: %s", e)
-                        return False
+                    await asyncio.to_thread(
+                        self.niconico_py_client.login_with_mail,
+                        str(username),
+                        str(password),
+                        str(mfa) if mfa else None,
+                    )
+                self.logger.info("Successfully authenticated with Nicovideo!")
+                # Clear MFA code after successful use (one-time password should not be reused)
+                if mfa:
+                    config.auth.clear_mfa_code()
+                session = self.niconico_py_client.get_user_session()
+                if session:
+                    config.auth.save_user_session(session)
+                    log_verbose(
+                        self.logger,
+                        "Saved user session for future logins (length: %d chars)",
+                        len(session),
+                    )
+                return True
+            except LoginFailureError as err:
+                if user_session:
+                    user_session = None  # Clear session on failure
+                    self.logger.warning("Login with user_session failed: %s", err)
+                else:
+                    self.logger.error("Login with mail and password failed: %s", err)
+                    return False
+            except Exception as e:
+                if (
+                    "Name or service not known" in str(e)
+                    or "Max retries exceeded" in str(e)
+                    or "ConnectionError" in str(e)
+                ):
+                    self.logger.warning(
+                        "Network or DNS error occurred: %s. Retrying in %d seconds...",
+                        e,
+                        retry_delay_seconds,
+                    )
+                    await asyncio.sleep(retry_delay_seconds)
+                else:
+                    self.logger.error("An unexpected error has occurred.: %s", e)
+                    return False
         self.logger.error(
             "Could not login after exceeding the maximum number of retries (%d).",
             max_retries,

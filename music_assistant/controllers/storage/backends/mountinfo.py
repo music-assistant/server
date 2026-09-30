@@ -58,8 +58,8 @@ NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
 )
-# system paths never hold a media location; /tmp is where the SMB and NFS music sources mount
-# their share for their own use
+# system paths never hold a media location; /tmp holds the network shares the server mounts
+# itself, which are listed as managed shares
 SYSTEM_PATHS: Final[tuple[str, ...]] = (
     "/proc",
     "/sys",
@@ -151,20 +151,22 @@ def parse_mountpoints(text: str) -> set[str]:
     }
 
 
-def find_share_mount(text: str, mountpoint: str) -> MediaMount | None:
+def find_mount(text: str, mountpoint: str, kind: StorageKind) -> MediaMount | None:
     """
-    Return the network share mounted on a mountpoint, None when nothing is mounted there.
+    Return the mount on a mountpoint, None when nothing is mounted there.
 
-    Unlike discovery this also finds a mount below a system path such as /tmp. A share that is
-    only behind its dormant automount trigger is returned with fstype autofs.
+    Unlike discovery this also finds a mount below a system path such as /tmp, and a mount of
+    any filesystem type. A mount that is only behind its dormant automount trigger is returned
+    with fstype autofs.
 
     :param text: Contents of a mountinfo file.
-    :param mountpoint: Where the share is mounted.
+    :param mountpoint: Where the filesystem is mounted.
+    :param kind: Where the location on the mount comes from.
     """
     if (mount := _parse_table(text).get(mountpoint)) is None:
         return None
     fstype, read_only = mount
-    return MediaMount(mountpoint, fstype, read_only, StorageKind.NETWORK_SHARE)
+    return MediaMount(mountpoint, fstype, read_only, kind)
 
 
 def is_mounted(path: str, text: str) -> bool:

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError, SetupFailedError
 
-from music_assistant.constants import CONF_STORAGE_SHARES
+from music_assistant.constants import CONF_STORAGE_SHARES, MASS_LOGGER_NAME
 from music_assistant.controllers.storage import StorageController, StorageKind
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
+from music_assistant.controllers.storage.constants import RECONCILE_TASK_ID, SHARES_SETUP_TASK_ID
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.common import capture_log_records
@@ -75,6 +78,23 @@ def _store(
 def _mutations(supervisor: FakeSupervisor) -> list[tuple[str, str]]:
     """Return the requests that changed a mount at the fake Supervisor."""
     return [request[:2] for request in supervisor.requests if request[0] != "GET"]
+
+
+def _hold_the_listing(supervisor: FakeSupervisor) -> Callable[[], None]:
+    """
+    Hold the answer of the Supervisor to a listing of its mounts, as a slow Supervisor does.
+
+    Returns what releases the answer.
+
+    :param supervisor: The fake Supervisor.
+    """
+    supervisor.list_released.clear()
+    return supervisor.list_released.set
+
+
+def _problems(records: list[logging.LogRecord]) -> list[str]:
+    """Return the captured messages of level warning and up."""
+    return [record.getMessage() for record in records if record.levelno >= logging.WARNING]
 
 
 async def test_backend_found(storage: StorageController, supervisor: FakeSupervisor) -> None:
@@ -505,6 +525,122 @@ async def test_supervisor_found_later(
     info = await storage.get_info()
 
     assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+
+
+async def test_start_mounts_the_stored_shares_once_the_supervisor_answers(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """At start the stored shares mount in the background, once the Supervisor answers."""
+    _store(storage, supervisor, "music")
+    release = _hold_the_listing(supervisor)
+
+    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
+        await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+        shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
+        await wait_until(lambda: supervisor.requests != [])
+
+        assert not shares_setup.done()
+
+        release()
+        await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+
+    # the probe of the backends, then the reconcile, which mounts the share
+    assert [request[:2] for request in supervisor.requests] == [
+        ("GET", "/mounts"),
+        ("GET", "/mounts"),
+        ("POST", "/mounts"),
+    ]
+    location = storage.get_location_for_path(supervisor.path("music"))
+    assert location is not None
+    assert location.available
+    assert _problems(records) == []
+
+
+async def test_reconcile_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """
+    A reconcile asked for while the start still looks for the Supervisor waits for the answer.
+
+    Its share is mounted once, although the start mounts the shares as well.
+    """
+    release = _hold_the_listing(supervisor)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    # a share stored at start, e.g. by a conversion of a music source
+    _store(storage, supervisor, "music")
+    await storage.refresh()
+
+    reconcile = asyncio.create_task(storage.reconcile())
+    await asyncio.sleep(0.1)
+    assert not reconcile.done()
+    release()
+    await reconcile
+
+    location = storage.get_location_for_path(supervisor.path("music"))
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    # both probed and looked at the mounts, only the start added the share
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 4,
+        ("POST", "/mounts"),
+    ]
+
+
+async def test_info_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The info asked for while the start still looks for the Supervisor probes once more.
+
+    It starts no reconcile of its own: the start mounts the shares.
+    """
+    _store(storage, supervisor, "music")
+    release = _hold_the_listing(supervisor)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    probe_backends = storage._probe_backends
+    asked = 0
+
+    async def _probe_backends() -> set[MountBackend]:
+        nonlocal asked
+        asked += 1
+        return await probe_backends()
+
+    monkeypatch.setattr(storage, "_probe_backends", _probe_backends)
+    info_task = asyncio.create_task(storage.get_info())
+    await wait_until(lambda: asked == 1)
+    release()
+    info = await info_task
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    await wait_until(lambda: RECONCILE_TASK_ID not in storage.mass._tracked_tasks)
+
+    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+    # the probe of the start and of the info, and the one reconcile, of the start
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 3,
+        ("POST", "/mounts"),
+    ]
+
+
+async def test_stop_while_the_start_waits_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """A server that stops while the start waits for the Supervisor stops the start, quietly."""
+    _store(storage, supervisor, "music")
+    _hold_the_listing(supervisor)
+
+    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
+        await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+        shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
+        await wait_until(lambda: supervisor.requests != [])
+
+        await storage.close()
+        await wait_until(shares_setup.done)
+
+    assert shares_setup.cancelled()
+    # only the probe of the start, which got no answer
+    assert [request[:2] for request in supervisor.requests] == [("GET", "/mounts")]
+    assert _problems(records) == []
 
 
 async def test_remove(storage: StorageController, ready: FakeSupervisor) -> None:
