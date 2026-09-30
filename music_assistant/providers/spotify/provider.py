@@ -112,9 +112,9 @@ from .session import SpotifySession
 _PLAYLIST_PAGINATION_STATE_LIMIT = 32
 
 # the throttlers of an instance outlive the provider object, so a (re)load of the
-# provider does not lift a rate limit the service imposed
-_THROTTLERS: dict[tuple[str, str], ThrottlerManager] = {}
-_SESSION_NAMES = ("global", "dev")
+# provider does not lift a rate limit the service imposed. Spotify limits per app, so
+# the key carries the client id: a changed custom Client ID starts with a clean slate
+_THROTTLERS: dict[tuple[str, str, str], ThrottlerManager] = {}
 
 
 class NotModifiedError(Exception):
@@ -198,10 +198,20 @@ class SpotifyProvider(MusicProvider):
         self._playlist_pagination_states = OrderedDict()
         # global session (heavy rate limited) and developer session (custom client id)
         self._global_session = self._create_session(
-            "global", self.login, self._clear_auth_info_global, rate_limit=1, period=2
+            "global",
+            app_var("spotify_client_id"),
+            self.login,
+            self._clear_auth_info_global,
+            rate_limit=1,
+            period=2,
         )
         self._dev_session = self._create_session(
-            "dev", self.login_dev, self._clear_auth_info_dev, rate_limit=30, period=30
+            "dev",
+            str(self.get_setup_value(CONF_CLIENT_ID) or ""),
+            self.login_dev,
+            self._clear_auth_info_dev,
+            rate_limit=30,
+            period=30,
         )
 
         # playback authorization is independent of the Web API tokens
@@ -252,8 +262,8 @@ class SpotifyProvider(MusicProvider):
                 await backend.unload()
         finally:
             if is_removed:
-                for name in _SESSION_NAMES:
-                    _THROTTLERS.pop((self.instance_id, name), None)
+                for key in [key for key in _THROTTLERS if key[0] == self.instance_id]:
+                    del _THROTTLERS[key]
                 # Both hold reusable login material - the soloist session in the
                 # storage dir, librespot's credential in the cache - so a removed
                 # instance keeps neither, even if the teardown above failed.
@@ -1732,6 +1742,7 @@ class SpotifyProvider(MusicProvider):
     def _create_session(
         self,
         name: str,
+        client_id: str,
         get_auth: Callable[[], Awaitable[dict[str, Any]]],
         on_unauthorized: Callable[[], None],
         rate_limit: int,
@@ -1741,13 +1752,18 @@ class SpotifyProvider(MusicProvider):
         Return a session of this instance on its stored throttler, created on first use.
 
         :param name: Name of the session.
+        :param client_id: The Spotify app the session speaks for.
         :param get_auth: Returns a valid access token of the session.
         :param on_unauthorized: Drops the cached access token of the session.
         :param rate_limit: Number of requests the session may make per period.
         :param period: Length of the period in seconds.
         """
+        key = (self.instance_id, name, client_id)
+        # a throttler of another app the session spoke for before is of no use anymore
+        for stale in [k for k in _THROTTLERS if k[:2] == key[:2] and k != key]:
+            del _THROTTLERS[stale]
         throttler = _THROTTLERS.setdefault(
-            (self.instance_id, name), ThrottlerManager(rate_limit=rate_limit, period=period)
+            key, ThrottlerManager(rate_limit=rate_limit, period=period)
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
         return SpotifySession(self.mass, self.logger, name, throttler, get_auth, on_unauthorized)

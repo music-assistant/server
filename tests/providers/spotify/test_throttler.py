@@ -2,7 +2,7 @@
 
 from collections.abc import Generator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import RetriesExhausted
@@ -13,6 +13,7 @@ from music_assistant.providers.spotify.constants import CONF_CLIENT_ID, CONF_REF
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 INSTANCE_ID = "spotify--test"
+SHARED_CLIENT_ID = "shared-app"
 
 
 def _make_provider(setup_values: dict[str, Any] | None = None) -> SpotifyProvider:
@@ -42,14 +43,17 @@ def _make_provider(setup_values: dict[str, Any] | None = None) -> SpotifyProvide
     return provider
 
 
-def _stored_throttler(session: str = "global") -> ThrottlerManager:
+def _stored_throttler(
+    session: str = "global", client_id: str = SHARED_CLIENT_ID
+) -> ThrottlerManager:
     """
     Return the throttler kept for a session of the test instance, created on first use.
 
     :param session: Name of the session, global or dev.
+    :param client_id: The Spotify app of the session.
     """
     return provider_module._THROTTLERS.setdefault(
-        (INSTANCE_ID, session), ThrottlerManager(rate_limit=1, period=2)
+        (INSTANCE_ID, session, client_id), ThrottlerManager(rate_limit=1, period=2)
     )
 
 
@@ -60,9 +64,10 @@ def _throttlers(provider: SpotifyProvider) -> tuple[ThrottlerManager, ThrottlerM
 
 @pytest.fixture(autouse=True)
 def clear_throttlers() -> Generator[None]:
-    """Start and end every test without a stored throttler."""
+    """Start and end every test without a stored throttler, on a known shared client id."""
     provider_module._THROTTLERS.clear()
-    yield
+    with patch.object(provider_module, "app_var", return_value=SHARED_CLIENT_ID):
+        yield
     provider_module._THROTTLERS.clear()
 
 
@@ -124,6 +129,28 @@ async def test_load_during_a_long_cooldown_fails_without_a_request() -> None:
     provider.backend.unload.assert_awaited_once()  # type: ignore[attr-defined]
 
 
+async def test_changed_client_id_starts_without_the_old_cooldown() -> None:
+    """A new custom Client ID is another Spotify app, so it does not inherit the old app's limit."""
+    provider = _make_provider({CONF_CLIENT_ID: "client-a", CONF_REFRESH_TOKEN_DEV: "token"})
+    provider._sp_user = {"id": "user"}
+    provider._get_data = AsyncMock(return_value={"id": "user"})  # type: ignore[method-assign]
+    await provider.handle_async_init()
+    global_throttler, old_dev_throttler = _throttlers(provider)
+    global_throttler.set_cooldown(3600)
+    old_dev_throttler.set_cooldown(3600)
+
+    reconfigured = _make_provider({CONF_CLIENT_ID: "client-b", CONF_REFRESH_TOKEN_DEV: "token"})
+    reconfigured._sp_user = {"id": "user"}
+    reconfigured._get_data = AsyncMock(return_value={"id": "user"})  # type: ignore[method-assign]
+    await reconfigured.handle_async_init()
+    new_global_throttler, new_dev_throttler = _throttlers(reconfigured)
+
+    assert new_global_throttler is global_throttler
+    assert new_dev_throttler is not old_dev_throttler
+    assert new_dev_throttler.cooldown_remaining == 0
+    assert (INSTANCE_ID, "dev", "client-a") not in provider_module._THROTTLERS
+
+
 async def test_removed_instance_drops_its_throttlers() -> None:
     """Removing an instance drops both throttlers, so a new one starts without a cooldown."""
     provider = _make_provider()
@@ -148,8 +175,10 @@ async def test_unloaded_instance_keeps_its_throttlers() -> None:
         throttler.set_cooldown(3600)
 
     await provider.unload(is_removed=False)
-    assert provider_module._THROTTLERS[(INSTANCE_ID, "global")] is global_throttler
-    assert provider_module._THROTTLERS[(INSTANCE_ID, "dev")] is dev_throttler
+    assert (
+        provider_module._THROTTLERS[(INSTANCE_ID, "global", SHARED_CLIENT_ID)] is global_throttler
+    )
+    assert provider_module._THROTTLERS[(INSTANCE_ID, "dev", "")] is dev_throttler
 
     new_provider = _make_provider()
     await new_provider.handle_async_init()

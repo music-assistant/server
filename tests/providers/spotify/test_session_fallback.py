@@ -2,7 +2,7 @@
 
 from collections.abc import Generator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import LoginFailed, RetriesExhausted
@@ -19,9 +19,10 @@ DEV_TOKEN = {"access_token": "dev"}
 
 @pytest.fixture(autouse=True)
 def clear_throttlers() -> Generator[None]:
-    """Start and end every test without a stored throttler."""
+    """Start and end every test without a stored throttler, on a known shared client id."""
     provider_module._THROTTLERS.clear()
-    yield
+    with patch.object(provider_module, "app_var", return_value="shared-app"):
+        yield
     provider_module._THROTTLERS.clear()
 
 
