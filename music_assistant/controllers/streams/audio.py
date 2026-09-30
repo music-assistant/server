@@ -3603,8 +3603,8 @@ class StreamsAudio:
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
-                if paused_holder and await self.mass.player_queues.release_paused_stream_slot(
-                    err.provider_instance, queue_item.queue_id
+                if paused_holder and await self._take_paused_stream_slot(
+                    err.provider_instance, queue_item.queue_id, deadline
                 ):
                     # the paused queue stopped and its slot comes free: wait for it here
                     final_pass = True
@@ -3646,6 +3646,30 @@ class StreamsAudio:
                 # failure: restore the blocked details and spend the rest of the budget there
                 queue_item.streamdetails = last_failed_streamdetails
                 final_pass = True
+
+    async def _take_paused_stream_slot(
+        self, provider_instance: str, queue_id: str, deadline: float
+    ) -> bool:
+        """
+        Stop a paused queue that holds a slot of the given provider, within the capacity budget.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :param deadline: Event loop time by which the handover has to be done.
+        :return: Whether a paused queue's session was ended, which frees its slot shortly.
+        """
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        try:
+            # the paused queue's lock and its device stop can both take longer than the
+            # budget of the playback waiting for them
+            async with asyncio.timeout(remaining):
+                return await self.mass.player_queues.release_paused_stream_slot(
+                    provider_instance, queue_id
+                )
+        except TimeoutError:
+            return False
 
     def _get_streamdetail_candidates(
         self,

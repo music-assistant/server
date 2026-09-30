@@ -318,6 +318,31 @@ async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig
     await paused_buffer.clear()
 
 
+async def test_a_holder_whose_source_finished_meanwhile_is_left_alone(rig: _Rig) -> None:
+    """A paused queue that gave up its slot while its lock was held elsewhere keeps its pause."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    lock_taken = asyncio.Event()
+    source_done = asyncio.Event()
+
+    async def _hold_the_lock() -> None:
+        async with rig.playback_lock(PAUSED_QUEUE):
+            lock_taken.set()
+            await source_done.wait()
+
+    holder = asyncio.ensure_future(_hold_the_lock())
+    await lock_taken.wait()
+    release = asyncio.ensure_future(rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE))
+    await asyncio.sleep(0)
+    await paused_buffer.clear()
+    source_done.set()
+
+    assert not await release
+    await holder
+    rig.stop_device.assert_not_awaited()
+    assert rig.queues._queue_data[PAUSED_QUEUE].session_id is not None
+
+
 async def test_a_member_starting_from_its_paused_group_takes_the_groups_slot(rig: _Rig) -> None:
     """
     A player that starts its own queue while its group is paused holds the group's lock.

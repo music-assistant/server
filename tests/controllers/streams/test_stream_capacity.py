@@ -343,6 +343,28 @@ async def test_a_paused_queue_that_resumed_leaves_the_budget_to_other_sources(
     assert queue_item.streamdetails is fallback_details
 
 
+async def test_a_handover_that_hangs_ends_within_the_capacity_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paused player that never answers its stop can not hold the playback past its budget."""
+    audio, mass, queue_item = _single_source_audio()
+
+    async def _never_stops(*_args: object) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    mass.player_queues.release_paused_stream_slot = AsyncMock(side_effect=_never_stops)
+    monkeypatch.setattr(
+        AudioBuffer, "get_buffer", AsyncMock(side_effect=_limit_error(BUSY_INSTANCE))
+    )
+
+    with pytest.raises(ProviderStreamLimitError):
+        await asyncio.wait_for(
+            audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=0.2),
+            timeout=5,
+        )
+
+
 async def test_a_speculative_preparation_never_stops_a_paused_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

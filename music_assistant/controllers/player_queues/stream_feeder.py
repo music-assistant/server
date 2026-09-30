@@ -191,8 +191,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         if (holder_id := self._paused_stream_slot_holder(provider_instance, queue_id)) is None:
             return False
         async with self.mass.players.get_group_and_player_lock(holder_id):
-            # the lock can have been held by the very action that resumed the queue
-            if not self._is_paused(holder_id):
+            # while the lock was held elsewhere the queue can have resumed, or its source
+            # can have finished and handed the slot to someone else
+            if self._paused_stream_slot_holder(provider_instance, queue_id) != holder_id:
                 return False
             holder = self._queue_data[holder_id]
             self.logger.info(
