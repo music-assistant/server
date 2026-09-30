@@ -171,7 +171,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
     def has_paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> bool:
         """
-        Return whether another queue that is paused holds a slot the given provider has none of.
+        Return whether a paused queue other than the given one holds a slot of a full provider.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
@@ -180,7 +180,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
     async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
         """
-        Stop another queue that is paused while it holds a slot the given provider has none of.
+        Stop a paused queue other than the given one that holds a slot of a full provider.
 
         The stopped queue resumes from where it was paused, with a new source stream.
 
@@ -475,7 +475,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
     def _paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> str | None:
         """
-        Return another queue that is paused while it holds a slot the given provider has none of.
+        Return a paused queue other than the given one that holds a slot of a full provider.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.

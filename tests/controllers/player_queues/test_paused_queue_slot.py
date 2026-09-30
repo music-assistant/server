@@ -111,12 +111,9 @@ class _Rig:
         mass.players.get_player.side_effect = self.players.get
         self.stop_device = AsyncMock(side_effect=self._device_stopped)
         mass.players._handle_cmd_stop = self.stop_device
-
-        @contextlib.asynccontextmanager
-        async def _no_lock(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
-            yield
-
-        mass.players.get_group_and_player_lock = _no_lock
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._lock_owners: dict[str, asyncio.Task[Any] | None] = {}
+        mass.players.get_group_and_player_lock = self.playback_lock
         self.mass = mass
         self.queues = PlayerQueuesController.__new__(PlayerQueuesController)
         self.queues.mass = mass
@@ -159,6 +156,20 @@ class _Rig:
         return await AudioBuffer.get_buffer(
             self.mass, item.streamdetails, wait_ready=True, source_wait_timeout=0
         )
+
+    @contextlib.asynccontextmanager
+    async def playback_lock(self, player_id: str) -> AsyncIterator[None]:
+        """Hold a player's playback lock, re-entrant within one task like the real one."""
+        task = asyncio.current_task()
+        if self._lock_owners.get(player_id) is task:
+            yield
+            return
+        async with self._locks.setdefault(player_id, asyncio.Lock()):
+            self._lock_owners[player_id] = task
+            try:
+                yield
+            finally:
+                self._lock_owners[player_id] = None
 
     def _create_task(self, target: Awaitable[Any], **_kwargs: Any) -> asyncio.Future[Any]:
         """Run a task the controller schedules, keeping it so a test can wait for it."""
@@ -230,20 +241,31 @@ async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:
 
 
 @pytest.mark.parametrize(
-    ("asking_queue", "player_state", "announcing"),
+    ("asking_queue", "queue_state", "player_state", "announcing"),
     [
-        (PAUSED_QUEUE, PlaybackState.PAUSED, False),
-        (STARTING_QUEUE, PlaybackState.PLAYING, False),
-        (STARTING_QUEUE, PlaybackState.PAUSED, True),
+        (PAUSED_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PLAYING, False),
+        (STARTING_QUEUE, PlaybackState.IDLE, PlaybackState.PAUSED, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, PlaybackState.PAUSED, True),
     ],
-    ids=["the-asking-queue-itself", "player-playing-again", "announcement-in-progress"],
+    ids=[
+        "the-asking-queue-itself",
+        "player-playing-again",
+        "player-paused-on-another-source",
+        "announcement-in-progress",
+    ],
 )
 async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
-    rig: _Rig, asking_queue: str, player_state: PlaybackState, announcing: bool
+    rig: _Rig,
+    asking_queue: str,
+    queue_state: PlaybackState,
+    player_state: PlaybackState,
+    announcing: bool,
 ) -> None:
     """A queue that is not paused for sure, or is the one asking, keeps its slot."""
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     paused_buffer = await rig.fill(paused_item)
+    rig.queues._queue_data[PAUSED_QUEUE].queue.state = queue_state
     player = rig.players[PAUSED_QUEUE]
     player.state.playback_state = player_state
     player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
@@ -261,41 +283,45 @@ async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig
     """The stop waits for the queue's playback lock, and a resume holding it wins."""
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     paused_buffer = await rig.fill(paused_item)
-    lock_free = asyncio.Event()
+    lock_taken = asyncio.Event()
+    resumed = asyncio.Event()
 
-    @contextlib.asynccontextmanager
-    async def _held_by_a_resume(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
-        await lock_free.wait()
-        yield
+    async def _resume() -> None:
+        async with rig.playback_lock(PAUSED_QUEUE):
+            lock_taken.set()
+            await resumed.wait()
+            rig.players[PAUSED_QUEUE].state.playback_state = PlaybackState.PLAYING
+            rig.queues._queue_data[PAUSED_QUEUE].queue.state = PlaybackState.PLAYING
 
-    rig.mass.players.get_group_and_player_lock = _held_by_a_resume
-
+    resume = asyncio.ensure_future(_resume())
+    await lock_taken.wait()
     release = asyncio.ensure_future(rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE))
     await asyncio.sleep(0)
-    rig.players[PAUSED_QUEUE].state.playback_state = PlaybackState.PLAYING
-    rig.queues._queue_data[PAUSED_QUEUE].queue.state = PlaybackState.PLAYING
-    lock_free.set()
+    resumed.set()
 
     assert not await release
+    await resume
     rig.stop_device.assert_not_awaited()
     assert paused_buffer.is_buffering
     await paused_buffer.clear()
 
 
-async def test_preparing_the_next_track_leaves_a_paused_queue_alone(rig: _Rig) -> None:
-    """A prewarm of the next track is speculative, so the paused queue keeps its slot."""
+async def test_a_member_starting_from_its_paused_group_takes_the_groups_slot(rig: _Rig) -> None:
+    """
+    A player that starts its own queue while its group is paused holds the group's lock.
+
+    The group's stop runs within that start, so it gets the lock right away.
+    """
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     paused_buffer = await rig.fill(paused_item)
-    next_item = rig.add_queue(STARTING_QUEUE, PlaybackState.PLAYING)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
 
-    with pytest.raises(ProviderStreamLimitError):
-        await rig.audio.get_audio_buffer(
-            next_item,
-            reason="prepare_next",
-            capacity_wait_timeout=0.2,
-            stop_paused_queues=False,
+    async with rig.playback_lock(PAUSED_QUEUE):
+        buffer = await rig.audio.get_audio_buffer(
+            starting_item, reason="prepare", capacity_wait_timeout=2
         )
 
-    rig.stop_device.assert_not_awaited()
-    assert paused_buffer.is_buffering
-    await paused_buffer.clear()
+    assert buffer.is_buffering
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
