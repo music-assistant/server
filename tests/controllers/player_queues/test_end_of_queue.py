@@ -108,6 +108,7 @@ def test_mark_ended_on_an_itemless_queue_clears_it() -> None:
 def test_clear_still_empties_the_queue() -> None:
     """An explicit clear keeps emptying the queue, and an emptied queue is not "ended"."""
     ctrl, queue = _controller()
+    queue.next_item = ctrl._queue_data[QUEUE_ID].items[0]
 
     ctrl.clear(QUEUE_ID)
 
@@ -115,6 +116,7 @@ def test_clear_still_empties_the_queue() -> None:
     assert ctrl._queue_data[QUEUE_ID].items == []
     assert queue.current_index is None
     assert queue.current_item is None
+    assert queue.next_item is None
     assert queue.ended is False
 
 
