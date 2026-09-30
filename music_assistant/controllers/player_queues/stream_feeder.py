@@ -146,9 +146,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
         # one for another item replaces it
         target_changed = queue_data.next_item_id_preparing != next_item.queue_item_id
         queue_data.next_item_id_preparing = next_item.queue_item_id
+        task_id = f"prepare_next_audio_buffer_{queue_id}"
         return self.mass.create_task(
             _do_prepare(),
-            task_id=f"prepare_next_audio_buffer_{queue_id}",
+            task_id=task_id,
+            task_name=task_id,
             abort_existing=target_changed,
         )
 
@@ -359,6 +361,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         self.mass.create_task(
             _preload_streamdetails(item_id_in_buffer),
             task_id=task_id,
+            task_name=task_id,
             abort_existing=True,
         )
 

@@ -776,7 +776,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             and (queue_player := self.mass.players.get_player(queue_id))
             and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
-            self.mass.create_task(_watch_pause(queue_player))
+            self.mass.create_task(
+                _watch_pause(queue_player),
+                task_name=f"watch_pause_{queue_player.player_id}",
+            )
 
     @api_command("player_queues/play_pause", required_scope=Scope.QUEUES_CONTROL)
     async def play_pause(self, queue_id: str) -> None:
@@ -1526,7 +1529,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     await self.play_index(queue_id, next_index)
 
         task_id = f"queue_buffer_completed_{queue_id}"
-        self.mass.create_task(_resume_on_idle(), task_id=task_id)
+        self.mass.create_task(_resume_on_idle(), task_id=task_id, task_name=task_id)
 
     def flow_stream_finished(self, queue_id: str) -> bool:
         """

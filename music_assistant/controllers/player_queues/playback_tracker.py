@@ -552,7 +552,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     queue.queue_id, queue.current_index
                 ):
                     return
-                self.mass.create_task(_settle_or_resume_delayed())
+                self.mass.create_task(
+                    _settle_or_resume_delayed(),
+                    task_name=f"settle_or_resume_{queue.queue_id}",
+                )
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -562,7 +565,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -571,7 +577,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
 
     def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
         """

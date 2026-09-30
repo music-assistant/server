@@ -1074,7 +1074,9 @@ class SonosPlayer(Player):
                         self.update_state()
                         self.reconnect(5)
 
-            self._listen_task = self.mass.create_task(_listener())
+            self._listen_task = self.mass.create_task(
+                _listener(), task_name=f"sonos_listener_{self.player_id}"
+            )
             listen_task = self._listen_task
         # wait for the initial state fetch outside the lock: a listener that dies mid-init
         # never sets init_ready, and the reconnect it schedules needs the lock again

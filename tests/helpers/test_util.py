@@ -21,6 +21,7 @@ from music_assistant_models.media_items import Album, ItemMapping, ProviderMappi
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
+    TaskManager,
     detect_charset,
     get_folder_size,
     get_source_ip_for_target,
@@ -648,6 +649,47 @@ class TestJoinTask:
 
         release.set()
         assert await task == "done"
+
+
+class TestTaskManager:
+    """TaskManager hands its tasks the name the caller gave, so its work is identifiable."""
+
+    @pytest.mark.asyncio
+    async def test_task_is_named_when_a_name_is_given(self, mass_minimal: MusicAssistant) -> None:
+        """A name reaches the task, which is what the slow-callback warning reports."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work(), "sync_provider_somewhere")
+            assert task.get_name() == "sync_provider_somewhere"
+
+    @pytest.mark.asyncio
+    async def test_limited_task_is_named_too(self, mass_minimal: MusicAssistant) -> None:
+        """The semaphore-limited entry point names its task the same way."""
+        started = asyncio.Event()
+
+        async def _work() -> None:
+            started.set()
+
+        async with TaskManager(mass_minimal, limit=1) as manager:
+            await manager.create_task_with_limit(_work(), "sync_provider_elsewhere")
+            await started.wait()
+            assert [t.get_name() for t in manager._tasks] == ["sync_provider_elsewhere"]
+
+    @pytest.mark.asyncio
+    async def test_task_without_a_name_is_left_to_asyncio(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Without a name asyncio numbers the task, rather than a task id standing in."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work())
+            assert task.get_name().startswith("Task-")
 
 
 class TestGetFolderSize:
