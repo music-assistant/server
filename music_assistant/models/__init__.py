@@ -40,7 +40,10 @@ class ProviderModuleType(Protocol):
         """
         Initialize provider(instance) with given configuration.
 
-        auto_setup: only passed (True) for the first-boot setup of a default provider.
+        :param mass: The MusicAssistant instance.
+        :param manifest: Manifest of the provider domain.
+        :param config: Config of the provider instance to create.
+        :param auto_setup: Only passed (True) for the first-boot setup of a default provider.
         """
         raise NotImplementedError
 
