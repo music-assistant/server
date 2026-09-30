@@ -144,7 +144,7 @@ class _Rig:
         )
         self.players[queue_id] = SimpleNamespace(
             player_id=queue_id,
-            state=SimpleNamespace(playback_state=state),
+            state=SimpleNamespace(playback_state=state, active_source=queue_id),
             extra_data={},
         )
         return item
@@ -236,6 +236,46 @@ async def test_a_stop_that_ended_no_session_reports_no_freed_slot(rig: _Rig) -> 
 
     assert rig.queues._queue_data[PAUSED_QUEUE].session_id is not None
     await paused_buffer.clear()
+
+
+async def test_play_after_a_failed_stop_starts_the_queue_again(rig: _Rig) -> None:
+    """A player still paused on the stream the handover ended is resumed, not unpaused."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    await rig.fill(paused_item)
+    rig.stop_device.side_effect = PlayerUnavailableError("gone")
+    assert await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    assert rig.players[PAUSED_QUEUE].state.playback_state == PlaybackState.PAUSED
+    rig.queues.resume = AsyncMock()  # type: ignore[method-assign]
+
+    await rig.queues._handle_play(PAUSED_QUEUE)
+
+    rig.queues.resume.assert_awaited_once_with(PAUSED_QUEUE)
+
+
+@pytest.mark.parametrize(
+    ("session_id", "player_state", "active_source", "expected"),
+    [
+        (None, PlaybackState.PAUSED, PAUSED_QUEUE, True),
+        ("session-living_room", PlaybackState.PAUSED, PAUSED_QUEUE, False),
+        (None, PlaybackState.PAUSED, "spotify_connect", False),
+        (None, PlaybackState.IDLE, PAUSED_QUEUE, False),
+    ],
+    ids=["stream-ended", "stream-still-there", "paused-on-another-source", "player-idle"],
+)
+def test_only_a_player_paused_on_an_ended_stream_has_lost_it(
+    rig: _Rig,
+    session_id: str | None,
+    player_state: PlaybackState,
+    active_source: str,
+    expected: bool,
+) -> None:
+    """Only the queue's own stream, paused on the player after the queue ended it, is lost."""
+    rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    rig.queues._queue_data[PAUSED_QUEUE].session_id = session_id
+    rig.players[PAUSED_QUEUE].state.playback_state = player_state
+    rig.players[PAUSED_QUEUE].state.active_source = active_source
+
+    assert rig.queues.has_lost_paused_stream(PAUSED_QUEUE) is expected
 
 
 async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:

@@ -2973,6 +2973,49 @@ class TestExternalSourcePlayPause:
         player.pause.assert_not_called()
 
 
+class TestPlayOnAPausedQueue:
+    """Play on a player that is paused on its own queue."""
+
+    @staticmethod
+    def _paused_on_own_queue(
+        mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> MockPlayer:
+        """Build a player that supports pause and is paused on its own queue."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_supported_features = {PlayerFeature.PAUSE}
+        player._attr_playback_state = PlaybackState.PAUSED
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="player_1"))
+        mock_mass.player_queues.resume = AsyncMock()
+        player.set_active_mass_source("player_1")
+        player.update_state(signal_event=False)
+        controller._handle_cmd_play = AsyncMock()  # type: ignore[method-assign]
+        return player
+
+    @pytest.mark.parametrize("stream_lost", [False, True], ids=["stream-kept", "stream-lost"])
+    async def test_play_unpauses_unless_the_queue_ended_the_stream(
+        self,
+        mock_mass: MagicMock,
+        controller: PlayerController,
+        provider: MockProvider,
+        stream_lost: bool,
+    ) -> None:
+        """A stream the queue ended while the player stayed paused is started again."""
+        self._paused_on_own_queue(mock_mass, controller, provider)
+        mock_mass.player_queues.has_lost_paused_stream = MagicMock(return_value=stream_lost)
+
+        await controller.cmd_play("player_1")
+
+        if stream_lost:
+            mock_mass.player_queues.resume.assert_awaited_once_with("player_1")
+            cast("AsyncMock", controller._handle_cmd_play).assert_not_awaited()
+        else:
+            cast("AsyncMock", controller._handle_cmd_play).assert_awaited_once_with("player_1")
+            mock_mass.player_queues.resume.assert_not_awaited()
+
+
 class TestProtocolOutputPlayPause:
     """Play/pause on a player rendering through a linked output protocol."""
 

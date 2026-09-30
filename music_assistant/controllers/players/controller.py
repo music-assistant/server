@@ -675,12 +675,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     player.state.name,
                 )
                 return
-            # player is not paused: check for queue redirect, then delegate to internal handler
-            if player.state.playback_state != PlaybackState.PAUSED:
-                source = player.state.active_source
-                if active_queue := self.mass.player_queues.get(source or player_id):
-                    await self.mass.player_queues.resume(active_queue.queue_id)
-                    return
+            # a player that is not paused resumes its queue, and so does one paused on a
+            # stream its queue has since ended; any other paused player is unpaused
+            source = player.state.active_source
+            if (active_queue := self.mass.player_queues.get(source or player_id)) and (
+                player.state.playback_state != PlaybackState.PAUSED
+                or self.mass.player_queues.has_lost_paused_stream(active_queue.queue_id)
+            ):
+                await self.mass.player_queues.resume(active_queue.queue_id)
+                return
             # Delegate to internal handler for actual implementation
             await self._handle_cmd_play(player.player_id)
 
