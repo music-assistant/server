@@ -648,13 +648,11 @@ class ITunesPodcastsProvider(MusicProvider):
                 return None
             body = await response.read()
         try:
-            # served as text/javascript, so parse the body ourselves
             data = json.loads(body)
         except ValueError:
             return None
         entries = data.get("feed", {}).get("entry", [])
         if isinstance(entries, dict):
-            # a single entry is not wrapped in a list
             entries = [entries]
         ids: list[int] = []
         for entry in entries:
@@ -726,7 +724,7 @@ class ITunesPodcastsProvider(MusicProvider):
             return []
 
         # some headroom for items dropped by the filters below
-        ranked = sorted(scores, key=scores.__getitem__, reverse=True)
+        ranked = sorted(scores, key=lambda itunes_id: scores[itunes_id], reverse=True)
         candidates = await self._get_podcast_search_results_from_itunes_ids(
             ranked[: RECOMMENDATION_ROW_SIZE * 2]
         )

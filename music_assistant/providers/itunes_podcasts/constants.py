@@ -9,7 +9,6 @@ CONF_NUM_EPISODES = "num_episodes"
 # store to search when the server's language has no matching iTunes storefront
 DEFAULT_LOCALE = "us"
 
-# category 0 holds the parsed podcast feeds, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts-full"
 CACHE_KEY_LIBRARY_RECOMMENDATIONS = "library-recommendations"
