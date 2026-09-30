@@ -46,7 +46,7 @@ def _make_provider(tmp_path: Any) -> PlaylistMetadataProvider:
     return provider
 
 
-def _make_playlist() -> Playlist:
+def _make_playlist(provider_domain: str = "test_provider") -> Playlist:
     """Create a test playlist with tracks."""
     return Playlist(
         item_id="test_playlist_1",
@@ -55,7 +55,7 @@ def _make_playlist() -> Playlist:
         provider_mappings={
             ProviderMapping(
                 item_id="test_playlist_1",
-                provider_domain="test_provider",
+                provider_domain=provider_domain,
                 provider_instance="test",
             )
         },
@@ -185,6 +185,81 @@ async def test_get_playlist_metadata_returns_metadata_when_sufficient_images(
         assert fanart_image.provider == "playlist_metadata"
         assert Path(fanart_image.path).exists()
         assert "_fanart.jpg" in fanart_image.path
+
+
+@pytest.mark.parametrize(
+    ("provider_domain", "skip_provider_playlists", "service_image_types", "expected_types"),
+    [
+        # our own previously generated cover does not count as the service's cover
+        ("test_provider", True, set(), {ImageType.THUMB, ImageType.FANART}),
+        ("test_provider", True, {ImageType.THUMB}, set()),
+        ("test_provider", False, {ImageType.THUMB}, {ImageType.FANART}),
+        ("test_provider", False, {ImageType.THUMB, ImageType.FANART}, set()),
+        ("builtin", True, {ImageType.THUMB, ImageType.FANART}, {ImageType.THUMB, ImageType.FANART}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_playlist_metadata_keeps_service_artwork(
+    tmp_path: Any,
+    provider_domain: str,
+    skip_provider_playlists: bool,
+    service_image_types: set[ImageType],
+    expected_types: set[ImageType],
+) -> None:
+    """Provider playlists should only get the image types their service does not supply."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            "template": "album_grid",
+            "skip_provider_playlists": skip_provider_playlists,
+        }.get(key)
+    )
+
+    playlist = _make_playlist(provider_domain)
+    service_images = [
+        MediaItemImage(
+            type=img_type,
+            path=f"https://example.com/{img_type.value}.jpg",
+            provider="test_provider",
+            remotely_accessible=True,
+        )
+        for img_type in service_image_types
+    ]
+    old_generated_thumb = MediaItemImage(
+        type=ImageType.THUMB,
+        path=os.path.join(provider._images_dir, f"{playlist.item_id}_1234567890_thumb.jpg"),
+        provider="playlist_metadata",
+    )
+    playlist.metadata.images = UniqueList([*service_images, old_generated_thumb])
+
+    tracks = [
+        _make_track_with_image(f"track{i}", f"http://example.com/img{i}.jpg") for i in range(10)
+    ]
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks:
+            yield track
+
+    with (
+        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
+    ):
+        mock_render.return_value = b"fake_image_data"
+
+        result = await provider.get_playlist_metadata(playlist)
+
+    generated_types = {img.type for img in result.images or []} if result else set()
+    assert generated_types == expected_types
+    assert all(img in playlist.metadata.images for img in service_images)
+    # our previous images are only replaced when new artwork was written
+    assert (old_generated_thumb in playlist.metadata.images) == (not expected_types)
 
 
 @pytest.mark.asyncio

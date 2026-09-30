@@ -185,26 +185,32 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         :param playlist: The playlist to generate metadata for.
         """
-        skip_provider = self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS)
-        if skip_provider:
-            has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
-            has_smart_playlist = any(
-                pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
-            )
-            if not has_builtin and not has_smart_playlist:
-                # Only skip if playlist has a provider-supplied image (not our generated one)
-                if playlist.metadata.images:
-                    for img in playlist.metadata.images:
-                        if img.type == ImageType.THUMB and not self._is_our_image(img):
-                            return None
+        is_provider_playlist = not any(
+            pm.provider_domain in ("builtin", "smart_playlist") for pm in playlist.provider_mappings
+        )
+        # A provider playlist keeps the artwork its service supplies, so only the image types
+        # it lacks are generated.
+        service_image_types = (
+            {img.type for img in playlist.metadata.images or [] if not self._is_our_image(img)}
+            if is_provider_playlist
+            else set()
+        )
+        if ImageType.THUMB in service_image_types and self.config.get_value(
+            CONF_SKIP_PROVIDER_PLAYLISTS
+        ):
+            return None
 
         generated_images: list[MediaItemImage] = []
         detected_genres: set[str] | None = None
 
-        if thumb_image := await self._generate_and_write(playlist, fanart=False):
+        if ImageType.THUMB not in service_image_types and (
+            thumb_image := await self._generate_and_write(playlist, fanart=False)
+        ):
             generated_images.append(thumb_image)
 
-        if fanart_image := await self._generate_and_write(playlist, fanart=True):
+        if ImageType.FANART not in service_image_types and (
+            fanart_image := await self._generate_and_write(playlist, fanart=True)
+        ):
             generated_images.append(fanart_image)
 
         # Aggregate genres from playlist tracks if enabled
