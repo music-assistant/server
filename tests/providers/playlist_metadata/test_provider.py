@@ -227,12 +227,17 @@ async def test_get_playlist_metadata_keeps_service_artwork(
         )
         for img_type in service_image_types
     ]
-    old_generated_thumb = MediaItemImage(
-        type=ImageType.THUMB,
-        path=os.path.join(provider._images_dir, f"{playlist.item_id}_1234567890_thumb.jpg"),
-        provider="playlist_metadata",
-    )
-    playlist.metadata.images = UniqueList([*service_images, old_generated_thumb])
+    old_generated_images = [
+        MediaItemImage(
+            type=img_type,
+            path=os.path.join(
+                provider._images_dir, f"{playlist.item_id}_1234567890_{img_type.value}.jpg"
+            ),
+            provider="playlist_metadata",
+        )
+        for img_type in (ImageType.THUMB, ImageType.FANART)
+    ]
+    playlist.metadata.images = UniqueList([*service_images, *old_generated_images])
 
     tracks = [
         _make_track_with_image(f"track{i}", f"http://example.com/img{i}.jpg") for i in range(10)
@@ -258,8 +263,10 @@ async def test_get_playlist_metadata_keeps_service_artwork(
     generated_types = {img.type for img in result.images or []} if result else set()
     assert generated_types == expected_types
     assert all(img in playlist.metadata.images for img in service_images)
-    # our previous images are only replaced when new artwork was written
-    assert (old_generated_thumb in playlist.metadata.images) == (not expected_types)
+    # our previous images go once they are regenerated or the service supplies that type
+    for old_image in old_generated_images:
+        replaced = old_image.type in expected_types | service_image_types
+        assert (old_image in playlist.metadata.images) != replaced
 
 
 @pytest.mark.asyncio
