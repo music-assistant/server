@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import (
@@ -93,6 +94,10 @@ def _failing_provider_fetch(
         MediaNotFoundError("Failed to get album tracks"),
         InvalidDataError("Bandcamp returned a response that is not usable JSON"),
         ProviderPermissionDenied("Not available in your region"),
+        # the transport error a provider's HTTP client raises on an HTML error page
+        aiohttp.ContentTypeError(
+            MagicMock(), (), message="Attempt to decode JSON with unexpected mimetype: text/html"
+        ),
     ],
 )
 async def test_album_tracks_skip_failing_provider(
