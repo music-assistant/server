@@ -69,7 +69,7 @@ from music_assistant.providers.itunes_podcasts.constants import (
     DEFAULT_LOCALE,
     GENRE_TOP_PODCASTS_LIMIT,
     LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION,
-    MAX_SEED_GENRES,
+    MAX_RECOMMENDATION_GENRES,
     RECOMMENDATION_ROW_FOR_YOU,
     RECOMMENDATION_ROW_SIZE,
     RECOMMENDATION_ROW_TOP_PODCASTS,
@@ -716,7 +716,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
         # score by genre weight and rank, shows ranking in several genres win
         scores: dict[int, float] = defaultdict(float)
-        for genre_id, weight in genre_weights.most_common(MAX_SEED_GENRES):
+        for genre_id, weight in genre_weights.most_common(MAX_RECOMMENDATION_GENRES):
             top_podcast_ids = await self._get_genre_top_podcast_ids(country, genre_id) or []
             for rank, itunes_id in enumerate(top_podcast_ids):
                 scores[itunes_id] += weight * (1 - rank / GENRE_TOP_PODCASTS_LIMIT)

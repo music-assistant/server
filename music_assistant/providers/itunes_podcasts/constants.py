@@ -19,7 +19,7 @@ RECOMMENDATION_ROW_SIZE = 15
 # iTunes root genre "Podcasts", present on every show and useless for similarity
 ROOT_GENRE_ID = "26"
 # one request per genre
-MAX_SEED_GENRES = 4
+MAX_RECOMMENDATION_GENRES = 5
 GENRE_TOP_PODCASTS_LIMIT = 100
 # the row is recomputed earlier when the library or the config changes
 LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION = 60 * 60 * 24
