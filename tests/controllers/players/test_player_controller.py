@@ -48,6 +48,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
@@ -3001,6 +3002,7 @@ class TestProtocolOutputPlayPause:
         # a non-empty queue, so the MA queue source advertises play/pause support
         queue = MagicMock()
         queue.items = [MagicMock()]
+        queue.queue_id = "player_1"
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
@@ -3017,21 +3019,27 @@ class TestProtocolOutputPlayPause:
         player.refresh_state(signal_event=False)
         return player
 
-    async def test_pause_on_protocol_without_pause_falls_back_to_stop(
+    async def test_pause_on_protocol_without_pause_ends_the_queue(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
-        """The native transport has no session to pause while a protocol renders the audio."""
+        """
+        The native transport has no session to pause while a protocol renders the audio.
+
+        The pause falls back to a stop of the player's own queue, which stops the player.
+        """
         player = self._make_player_on_protocol(
             mock_mass, controller, playback_state=PlaybackState.PLAYING
         )
         player.pause = AsyncMock()  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
 
         await controller._handle_cmd_pause("player_1")
 
         player.pause.assert_not_called()
-        # STOP goes to the visible player, not the protocol player
-        controller._handle_cmd_stop.assert_awaited_once_with("player_1")
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        # the queue stop issues the player stop itself
+        controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_play_on_protocol_without_pause_does_not_unpause_natively(
         self, mock_mass: MagicMock, controller: PlayerController
@@ -3048,6 +3056,65 @@ class TestProtocolOutputPlayPause:
         player.play.assert_not_called()
         # the MA queue source is restarted, not some other source
         controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
+
+
+class TestPauseWithoutPauseSupport:
+    """
+    Pause on a player that plays its own queue and can not pause.
+
+    The pause falls back to a stop of the queue, which releases the queue's audio and the
+    music source right away. A later play resumes the queue at the paused position.
+    """
+
+    @staticmethod
+    def _player_on_own_queue(
+        mock_mass: MagicMock, player_type: PlayerType = PlayerType.PLAYER
+    ) -> tuple[PlayerController, MockPlayer]:
+        """
+        Build a playing player without pause support that plays its own queue.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param player_type: The type to register the player as.
+        :return: The controller and the player, with the player and queue stop stubbed.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1", player_type=player_type)
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        queue = _stub_queue("player_1")
+        # a queue with items advertises play/pause on its source
+        queue.items = 1
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: queue if queue_id == "player_1" else None
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
+        return controller, player
+
+    async def test_pause_on_a_group_player_ends_its_queue(self, mock_mass: MagicMock) -> None:
+        """A group player (sync or universal group) can not pause either."""
+        controller, _player = self._player_on_own_queue(mock_mass, PlayerType.GROUP)
+
+        await controller._handle_cmd_pause("player_1")
+
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
+
+    async def test_pause_during_an_announcement_ends_the_queue_alike(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement in progress makes no difference to how the pause is handled."""
+        controller, player = self._player_on_own_queue(mock_mass)
+        player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+
+        await controller._handle_cmd_pause("player_1")
+
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
 
 
 class TestMirrorsParentMedia:
