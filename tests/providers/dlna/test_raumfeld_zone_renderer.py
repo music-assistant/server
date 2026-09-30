@@ -75,19 +75,6 @@ async def test_setup_ignores_a_zone_renderer() -> None:
     delete_config.assert_called_once_with("uuid:dlna-player")
 
 
-async def test_setup_survives_a_failing_config_removal() -> None:
-    """Removing the config is best effort and never breaks discovery."""
-    player = _player(TEUFEL, AV_TRANSPORT)
-    with (
-        patch.object(player, "_device_connect", AsyncMock()),
-        patch.object(player, "_device_disconnect", AsyncMock()),
-        patch.object(
-            player.mass.players, "delete_player_config", MagicMock(side_effect=KeyError("x"))
-        ),
-    ):
-        assert await player.setup() is False
-
-
 async def test_setup_keeps_a_speaker_renderer_config() -> None:
     """A speaker's own renderer is set up as usual and its config is left alone."""
     player = _player(TEUFEL, AV_TRANSPORT, RAUMFELD_GENERATOR)

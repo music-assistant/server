@@ -133,10 +133,7 @@ class DLNAPlayer(Player):
             # Creating this player already stored a config for it, and an install from
             # before zone renderers were ignored may still link it to a player that keeps
             # being restored. Deleting the config drops those links as well.
-            try:
-                self.mass.players.delete_player_config(self.player_id)
-            except Exception as err:
-                self.logger.debug("Could not remove config of %s: %r", self.player_id, err)
+            self.mass.players.delete_player_config(self.player_id)
             return False
 
         self.set_static_attributes()
