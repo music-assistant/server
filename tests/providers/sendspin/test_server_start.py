@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, SENDSPIN_SERVER_PORT
-from music_assistant.providers.sendspin import provider as sendspin_provider
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from tests.common import bound_sendspin_port
 from tests.conftest import full_mass_context
 
 
@@ -97,10 +97,10 @@ async def test_full_boot_does_not_depend_on_the_default_sendspin_port(
             assert sendspin is not None
             assert isinstance(sendspin, SendspinProvider)
             assert not sendspin._server_start_failed
-            # the URL the server hands its own Sendspin clients names the port it listens on
-            # (the fixture patches the provider module's copy of the constant)
-            bound_port = getattr(sendspin_provider, "SENDSPIN_SERVER_PORT")  # noqa: B009
-            assert bound_port != SENDSPIN_SERVER_PORT
+            # the listener took a kernel-picked port, and the URL the server hands its own
+            # Sendspin clients names that port rather than the default
+            bound_port = bound_sendspin_port(mass)
+            assert bound_port not in (None, 0, SENDSPIN_SERVER_PORT)
             assert mass.webserver.internal_sendspin_url.endswith(f":{bound_port}/sendspin")
     finally:
         blocker.close()
