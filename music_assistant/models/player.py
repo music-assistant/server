@@ -16,7 +16,8 @@ import asyncio
 import builtins
 import time
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
@@ -826,6 +827,11 @@ class Player(ABC):
         """
         return self._attr_supported_sample_rates
 
+    @asynccontextmanager
+    async def prepare_play_media(self) -> AsyncIterator[None]:
+        """Scope provider preparation across auto-power and the ensuing playback."""
+        yield
+
     async def power(self, powered: bool) -> None:
         """
         Handle POWER command on the player.
@@ -975,6 +981,18 @@ class Player(ABC):
         :param output_protocol: The OutputProtocol object containing protocol details.
         """
         return  # Optional callback - no-op by default
+
+    async def on_group_content_takeover(self) -> object | None:
+        """Prepare a protocol group before a new content owner joins it."""
+        return None
+
+    async def on_group_content_takeover_finished(self, token: object) -> None:
+        """Finish a protocol-group content takeover transaction."""
+        return
+
+    async def on_group_content_takeover_aborted(self, token: object) -> None:
+        """Abort a protocol-group content takeover without publishing old content."""
+        return
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
