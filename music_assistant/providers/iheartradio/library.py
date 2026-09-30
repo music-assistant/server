@@ -136,15 +136,16 @@ class IHeartRadioLibraryManager:
         :param path: The follow list to page through.
         """
         entries: list[dict[str, Any]] = []
+        offset = 0
         while True:
             try:
                 payload = await self.provider.api.request(
-                    "GET", path, params={"limit": FOLLOWS_PAGE_LIMIT, "offset": len(entries)}
+                    "GET", path, params={"limit": FOLLOWS_PAGE_LIMIT, "offset": offset}
                 )
             except MediaNotFoundError:
                 # the API answers an empty follow list with a 404; a failure part way
                 # through must not pass as a shorter list
-                if entries:
+                if offset:
                     raise
                 return entries
             page = payload.get("data") if isinstance(payload, dict) else None
@@ -153,6 +154,7 @@ class IHeartRadioLibraryManager:
                 # would unfollow everything it did not get to see
                 raise InvalidDataError(f"iHeartRadio returned an invalid follow list for {path}")
             entries.extend(entry for entry in page if isinstance(entry, dict))
+            offset += len(page)
             if len(page) < FOLLOWS_PAGE_LIMIT:
                 return entries
 
