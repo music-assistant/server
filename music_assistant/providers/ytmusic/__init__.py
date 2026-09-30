@@ -550,14 +550,16 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         albums = []
+        album_artists = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
+
         for album_obj in artist_obj.get("albums", {}).get("results", []):
             if not album_obj.get("artists"):
-                album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
+                album_obj["artists"] = album_artists
             albums.append(self._parse_album(album_obj, album_obj["browseId"]))
         for album_obj in artist_obj.get("singles", {}).get("results", []):
             # I've found that singles/EPs never have an artist key
             if not album_obj.get("artists"):
-                album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
+                album_obj["artists"] = album_artists
             albums.append(self._parse_album(album_obj, album_obj["browseId"]))
         return albums
 
