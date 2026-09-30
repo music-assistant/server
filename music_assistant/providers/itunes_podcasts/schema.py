@@ -63,11 +63,15 @@ class PodcastSearchResult(_BaseModel):
     @property
     def is_explicit(self) -> bool:
         """Return whether the podcast is explicit."""
-        # collectionExplicitness is "notExplicit" even for explicit podcasts
-        return "explicit" in (
-            self.collection_explicitness,
-            self.track_explicitness,
-            (self.content_advisory_rating or "").lower(),
+        # collectionExplicitness is "notExplicit" even for explicit podcasts,
+        # and the API also spells it "Explict"
+        return any(
+            (value or "").lower() in ("explicit", "explict")
+            for value in (
+                self.collection_explicitness,
+                self.track_explicitness,
+                self.content_advisory_rating,
+            )
         )
 
 

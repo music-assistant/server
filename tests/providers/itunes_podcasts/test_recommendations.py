@@ -283,6 +283,23 @@ async def test_top_podcasts_page_filters_library_and_explicit(
     assert [r.collection_id for r in page] == [2, 4]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "explicit"),
+    [
+        ("track_explicitness", "explicit", True),
+        ("content_advisory_rating", "Explicit", True),
+        ("content_advisory_rating", "Explict", True),
+        ("content_advisory_rating", "explict", True),
+        ("content_advisory_rating", "Clean", False),
+    ],
+)
+def test_is_explicit(field: str, value: str, explicit: bool) -> None:
+    """Every explicit marker counts, including Apple's "Explict" spelling."""
+    result = _result(1)
+    setattr(result, field, value)
+    assert result.is_explicit is explicit
+
+
 async def test_search_results_carry_itunes_details(provider: ITunesPodcastsProvider) -> None:
     """Podcasts from a search store the iTunes id and genres in their provider mapping."""
     (podcast,) = provider._get_podcast_list([_result(1, ["1488", "26"])])
