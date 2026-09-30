@@ -1314,7 +1314,8 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         protocol_set_members = cast("AsyncMock", controller._handle_set_members_with_protocols)
-        protocol_set_members.assert_awaited_once_with(leader, [], ["member"])
+        # dissolving what is left publishes no new content, so no takeover is opened
+        protocol_set_members.assert_awaited_once_with(leader, [], ["member"], new_content=False)
         # the group's queue is not the leader's to end, so only the device is stopped
         device_stop.assert_awaited_once_with("leader")
         queue_stop.assert_not_awaited()
