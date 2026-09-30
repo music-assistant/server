@@ -2271,6 +2271,7 @@ class StreamsAudio:
         pcm_format: AudioFormat,
         session_id: str | None = None,
         protocol_player: Player | None = None,
+        consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2285,6 +2286,8 @@ class StreamsAudio:
             Must be the same player that was used to select ``pcm_format`` so
             restart decisions are made against the correct supported sample rates
             and flow mode configuration. Falls back to the queue's player when omitted.
+        :param consumer_connected: Reports whether the consumer of this stream is still
+            connected; once it reports False, the stream ends before its next item.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2364,6 +2367,15 @@ class StreamsAudio:
                         queue.display_name,
                         flow_session_id,
                         pq_data.session_id,
+                    )
+                    return
+                # a consumer that left is only noticed when audio is written to it, which never
+                # happens while items produce no audio: end here, without walking the rest of
+                # the queue or reporting it completed
+                if consumer_connected is not None and not consumer_connected():
+                    self.logger.debug(
+                        "Flow stream for queue %s lost its consumer - exiting before next track",
+                        queue.display_name,
                     )
                     return
                 # get (next) queue item to stream

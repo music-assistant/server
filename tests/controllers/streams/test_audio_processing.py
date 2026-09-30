@@ -35,6 +35,8 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -1241,6 +1243,62 @@ async def test_flow_stream_handler_shares_native_group_members(
     )
 
 
+@pytest.mark.parametrize(
+    ("flow_log", "current_item_id", "expected_item_id"),
+    [
+        ([], "item-2", "item-1"),
+        ([PlayLogEntry("item-1")], "item-2", "item-2"),
+        ([PlayLogEntry("item-1")], None, "item-1"),
+    ],
+    ids=["first_request", "repeat_request", "repeat_request_without_current_item"],
+)
+@pytest.mark.asyncio
+async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_item(
+    monkeypatch: pytest.MonkeyPatch,
+    flow_log: list[PlayLogEntry],
+    current_item_id: str | None,
+    expected_item_id: str,
+) -> None:
+    """A repeat flow request starts at the item that plays now instead of the url item."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.get.return_value.current_item = (
+        SimpleNamespace(queue_item_id=current_item_id) if current_item_id else None
+    )
+    controller.mass.player_queues.queue_data.return_value.flow_mode_stream_log = flow_log
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_flow_stream(request)
+
+    controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
+
+
+def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeat raw flow stream of a session starts at the item that plays now."""
+    controller, _, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.get.return_value.current_item = SimpleNamespace(
+        queue_item_id="item-2"
+    )
+    controller.mass.player_queues.queue_data.return_value.flow_mode_stream_log = [
+        PlayLogEntry("item-1")
+    ]
+
+    controller.get_stream(
+        PlayerMedia(
+            uri="library://track/1",
+            media_type=MediaType.TRACK,
+            source_id="queue-1",
+            queue_item_id="item-1",
+            queue_session_id="session-1",
+        ),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        force_flow_mode=True,
+    )
+
+    controller.mass.player_queues.get_item.assert_called_once_with("queue-1", "item-2")
+
+
 def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Protocol output details use the user-facing parent configuration."""
     mass = MagicMock()
@@ -1442,6 +1500,81 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
 
     await first.aclose()
     await second.aclose()
+
+
+@pytest.mark.parametrize("produces_audio", [True, False], ids=["audio", "no_audio"])
+@pytest.mark.asyncio
+async def test_flow_producer_ends_once_its_consumer_left(produces_audio: bool) -> None:
+    """A producer whose consumer left ends before its next item instead of walking the queue."""
+
+    def _flow_item(item_id: str) -> Any:
+        return SimpleNamespace(
+            queue_item_id=item_id,
+            name=item_id,
+            media_type=MediaType.TRACK,
+            duration=300,
+            extra_attributes={},
+            streamdetails=SimpleNamespace(
+                fade_in=False,
+                stream_error=False,
+                uri=f"test://{item_id}",
+                seek_position=0,
+                duration=300,
+                buffer=None,
+                seconds_streamed=None,
+                is_realtime=False,
+                audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
+            ),
+        )
+
+    items = [_flow_item(f"item-{index}") for index in range(1, 9)]
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[*items[1:], QueueEmpty])
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+    connected = True
+    streamed_item_ids: list[str] = []
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        nonlocal connected
+        streamed_item_ids.append(queue_item.queue_item_id)
+        if produces_audio:
+            yield b"\x00" * 16
+        # the player drops the connection while this item plays
+        connected = False
+
+    audio.get_queue_item_stream = _item_stream  # type: ignore[method-assign]
+    queue = cast(
+        "Any",
+        SimpleNamespace(
+            queue_id="queue-1",
+            display_name="Queue",
+            flow_mode=False,
+            overlay_enabled=False,
+            overlay_source=None,
+        ),
+    )
+    stream = audio.get_queue_flow_stream(
+        queue,
+        items[0],
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: connected,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == (1 if produces_audio else 0)
+    assert streamed_item_ids == ["item-1"]
+    mass.player_queues.load_next_queue_item.assert_not_awaited()
+    mass.player_queues.queue_buffer_completed.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1885,7 +2018,7 @@ def _native_stream_handler_context(
         overlay_enabled=False,
         overlay_source=None,
     )
-    queue_data = SimpleNamespace(session_id="session-1")
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data
     mass.player_queues.get_item.return_value = queue_item
