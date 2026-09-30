@@ -554,6 +554,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if not album_obj.get("artists"):
                 album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
             albums.append(self._parse_album(album_obj, album_obj["browseId"]))
+        for album_obj in artist_obj.get("singles", {}).get("results", []):
+            # I've found that singles/EPs never have an artist key
+            if not album_obj.get("artists"):
+                album_obj["artists"] = [{"id": artist_obj["channelId"], "name": artist_obj["name"]}]
+            albums.append(self._parse_album(album_obj, album_obj["browseId"]))
         return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
