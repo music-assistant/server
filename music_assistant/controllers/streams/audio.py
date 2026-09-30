@@ -642,7 +642,8 @@ class StreamsAudio:
         Return a ready AudioBuffer for the given queue item.
 
         Compatible provider mappings are reselected while the owning provider has no free
-        source-stream slot. Other AudioErrors propagate as on a direct buffer request.
+        source-stream slot. A paused queue holding that slot is stopped to hand it over.
+        Other AudioErrors propagate as on a direct buffer request.
 
         :param queue_item: Queue item whose source should be buffered.
         :param seek_position_ms: Position in milliseconds to start from.
@@ -3539,6 +3540,12 @@ class StreamsAudio:
                         queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
+            if not final_pass and self.mass.player_queues.release_paused_stream_slot(
+                streamdetails.provider, queue_item.queue_id
+            ):
+                # a paused queue is being stopped to free its slot: spend the budget waiting
+                # for that one rather than probing for another source
+                final_pass = True
             remaining = max(deadline - loop.time(), 0)
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}

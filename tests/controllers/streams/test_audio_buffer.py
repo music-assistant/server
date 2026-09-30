@@ -1323,6 +1323,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
         prepare_next_audio_buffer=lambda _queue_id, _item_id: None,
         track_fully_buffered=lambda _queue_id, _item_id: None,
         queue_data_or_none=lambda _queue_id: None,
+        release_paused_stream_slot=lambda _provider_instance, _queue_id: False,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal

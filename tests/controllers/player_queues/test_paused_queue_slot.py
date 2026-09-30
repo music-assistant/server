@@ -1,0 +1,260 @@
+"""
+Tests for a paused queue handing its provider stream slot to another queue.
+
+A queue paused on a player that really pauses keeps its session and its source buffers, and
+with them a provider's stream slot, until the pause watcher stops it. A provider that allows
+one stream would make a play on any other player fail in that window.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.streamdetails import StreamDetails
+
+import music_assistant.controllers.streams.audio as audio_mod
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+
+INSTANCE = "spotify--one"
+PAUSED_QUEUE = "living_room"
+STARTING_QUEUE = "kitchen"
+PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
+
+
+class _SingleStreamProvider(MusicProvider):
+    """Streaming provider with one source slot."""
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Return one source slot."""
+        return 1
+
+
+def _provider() -> _SingleStreamProvider:
+    """Construct a provider that lets one source stream run at a time."""
+    manifest = MagicMock(domain="spotify")
+    manifest.name = "Spotify"
+    config = MagicMock(instance_id=INSTANCE)
+    config.name = "Spotify"
+    config.get_value.return_value = "GLOBAL"
+    return _SingleStreamProvider(MagicMock(), manifest, config)
+
+
+def _queue_item(queue_id: str) -> QueueItem:
+    """Build a queue item of the provider, with its stream details resolved."""
+    mapping = ProviderMapping(
+        item_id=f"track-{queue_id}",
+        provider_domain="spotify",
+        provider_instance=INSTANCE,
+        audio_format=PCM_FORMAT,
+    )
+    item = QueueItem(
+        queue_id=queue_id,
+        queue_item_id=f"item-{queue_id}",
+        name=f"Track on {queue_id}",
+        duration=600,
+        media_item=SoundEffect(
+            item_id=mapping.item_id,
+            provider=INSTANCE,
+            name=f"Track on {queue_id}",
+            provider_mappings={mapping},
+        ),
+    )
+    item.streamdetails = StreamDetails(
+        provider=INSTANCE,
+        item_id=mapping.item_id,
+        audio_format=PCM_FORMAT,
+        media_type=MediaType.SOUND_EFFECT,
+        stream_type=StreamType.CUSTOM,
+        duration=600,
+        queue_id=queue_id,
+    )
+    return item
+
+
+async def _endless_source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+    """Deliver a few seconds of audio, then keep the source open like a track far from its end."""
+    for _ in range(3):
+        yield b"\x00" * PCM_FORMAT.pcm_sample_size
+    await asyncio.Event().wait()
+
+
+class _Rig:
+    """A queue controller and the streams side of it, sharing one single-slot provider."""
+
+    def __init__(self) -> None:
+        self.provider = _provider()
+        self.players: dict[str, SimpleNamespace] = {}
+        self.tasks: list[asyncio.Future[Any]] = []
+        mass = MagicMock()
+        mass.get_provider.side_effect = lambda instance, **_kwargs: (
+            self.provider if instance == INSTANCE else None
+        )
+        mass.config.get_raw_core_config_value.side_effect = lambda _core, _key, default: default
+        mass.create_task.side_effect = self._create_task
+        mass.players.get_player.side_effect = self.players.get
+        self.stop_device = AsyncMock(side_effect=self._device_stopped)
+        mass.players._handle_cmd_stop = self.stop_device
+
+        @contextlib.asynccontextmanager
+        async def _no_lock(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+            yield
+
+        mass.players.get_group_and_player_lock = _no_lock
+        self.mass = mass
+        self.queues = PlayerQueuesController.__new__(PlayerQueuesController)
+        self.queues.mass = mass
+        self.queues.logger = MagicMock()
+        self.queues._queue_data = {}
+        self.queues.signal_update = MagicMock()  # type: ignore[method-assign]
+        self.queues.on_player_update = MagicMock()  # type: ignore[method-assign]
+        mass.player_queues = self.queues
+        self.audio = StreamsAudio(mass)
+        self.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+        mass.streams.audio = self.audio
+
+    def add_queue(self, queue_id: str, state: PlaybackState) -> QueueItem:
+        """Register a queue and its player in the given state, holding one item."""
+        item = _queue_item(queue_id)
+        queue = PlayerQueue(
+            queue_id=queue_id,
+            active=state != PlaybackState.IDLE,
+            display_name=queue_id,
+            available=True,
+            items=1,
+            state=state,
+            current_index=0,
+            current_item=item,
+        )
+        self.queues._queue_data[queue_id] = PlayerQueueData(
+            queue=queue, items=[item], session_id=f"session-{queue_id}"
+        )
+        self.players[queue_id] = SimpleNamespace(
+            player_id=queue_id,
+            state=SimpleNamespace(playback_state=state),
+            extra_data={},
+        )
+        return item
+
+    async def fill(self, item: QueueItem) -> AudioBuffer:
+        """Start the item's source buffer, which takes the provider's slot."""
+        assert item.streamdetails is not None
+        item.streamdetails.queue_session_id = self.queues._queue_data[item.queue_id].session_id
+        return await AudioBuffer.get_buffer(
+            self.mass, item.streamdetails, wait_ready=True, source_wait_timeout=0
+        )
+
+    def _create_task(self, target: Awaitable[Any], **_kwargs: Any) -> asyncio.Future[Any]:
+        """Run a task the controller schedules, keeping it so a test can wait for it."""
+        task = asyncio.ensure_future(target)
+        self.tasks.append(task)
+        return task
+
+    async def _device_stopped(self, queue_id: str) -> None:
+        """Let the player report idle once it was told to stop."""
+        self.players[queue_id].state.playback_state = PlaybackState.IDLE
+
+
+@pytest.fixture
+def rig(monkeypatch: pytest.MonkeyPatch) -> _Rig:
+    """Build the rig with every music source open to the queues' playback."""
+    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
+    return _Rig()
+
+
+async def test_a_paused_queue_hands_its_slot_to_a_start_on_another_queue(rig: _Rig) -> None:
+    """The paused queue is stopped for real, and the other queue takes the only slot."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    assert not rig.provider.has_available_stream_slot
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    buffer = await rig.audio.get_audio_buffer(
+        starting_item, reason="prepare", capacity_wait_timeout=2
+    )
+
+    assert buffer.is_buffering
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert rig.queues._queue_data[PAUSED_QUEUE].session_id is None
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
+async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:
+    """Only a paused queue gives up its slot; a start elsewhere waits for it as before."""
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING)
+    playing_buffer = await rig.fill(playing_item)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=0.2)
+
+    rig.stop_device.assert_not_awaited()
+    assert playing_buffer.is_buffering
+    await playing_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("asking_queue", "player_state", "announcing"),
+    [
+        (PAUSED_QUEUE, PlaybackState.PAUSED, False),
+        (STARTING_QUEUE, PlaybackState.PLAYING, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, True),
+    ],
+    ids=["the-asking-queue-itself", "player-playing-again", "announcement-in-progress"],
+)
+async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
+    rig: _Rig, asking_queue: str, player_state: PlaybackState, announcing: bool
+) -> None:
+    """A queue that is not paused for sure, or is the one asking, keeps its slot."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    player = rig.players[PAUSED_QUEUE]
+    player.state.playback_state = player_state
+    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
+
+    assert not rig.queues.release_paused_stream_slot(INSTANCE, asking_queue)
+
+    await asyncio.gather(*rig.tasks)
+    rig.stop_device.assert_not_awaited()
+    assert paused_buffer.is_buffering
+    await paused_buffer.clear()
+
+
+async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig) -> None:
+    """The stop waits for the queue's playback lock, and a resume holding it wins."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    lock_free = asyncio.Event()
+
+    @contextlib.asynccontextmanager
+    async def _held_by_a_resume(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+        await lock_free.wait()
+        yield
+
+    rig.mass.players.get_group_and_player_lock = _held_by_a_resume
+
+    assert rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    rig.players[PAUSED_QUEUE].state.playback_state = PlaybackState.PLAYING
+    rig.queues._queue_data[PAUSED_QUEUE].queue.state = PlaybackState.PLAYING
+    lock_free.set()
+
+    await asyncio.gather(*rig.tasks)
+    rig.stop_device.assert_not_awaited()
+    assert paused_buffer.is_buffering
+    await paused_buffer.clear()

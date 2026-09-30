@@ -195,6 +195,10 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
+A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+When another queue needs a provider stream slot one of those buffers holds, the paused queue is
+stopped right away. It resumes later from where it was paused, with a new source stream.
+
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the
 streamed item.)

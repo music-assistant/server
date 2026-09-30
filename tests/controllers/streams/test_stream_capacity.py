@@ -118,6 +118,7 @@ def _mass(
         mass.providers = list(providers.values())
         mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
+    mass.player_queues.release_paused_stream_slot.return_value = False
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -267,6 +268,34 @@ async def test_a_shared_account_stands_in_without_an_own_account_of_the_service(
     assert queue_item.streamdetails is not None
     assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
     shared.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
+
+
+async def test_a_slot_a_paused_queue_gives_up_is_waited_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paused queue handing over the chosen source's slot beats probing for another source."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    mass = _mass()
+    mass.player_queues.release_paused_stream_slot.return_value = True
+    audio = StreamsAudio(mass)
+    audio.get_stream_details = AsyncMock()  # type: ignore[method-assign]
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(return_value=expected_buffer)
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    mass.player_queues.release_paused_stream_slot.assert_called_once_with(
+        BUSY_INSTANCE, queue_item.queue_id
+    )
+    assert get_buffer.await_args is not None
+    assert get_buffer.await_args.kwargs["source_wait_timeout"] > 0
+    audio.get_stream_details.assert_not_awaited()
 
 
 async def test_all_candidates_busy_ends_in_one_blocking_pass_on_the_best_one(
