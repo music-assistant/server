@@ -21,7 +21,11 @@ SUPPORTED_FEATURES = {
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant,
+    manifest: ProviderManifest,
+    config: ProviderConfig,
+    *,
+    auto_setup: bool = False,  # noqa: ARG001
 ) -> ProviderInstanceType:
     """Initialize HEOS instance with given configuration."""
     return HeosPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)

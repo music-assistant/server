@@ -137,7 +137,11 @@ class PartyConfig(DataClassDictMixin):
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant,
+    manifest: ProviderManifest,
+    config: ProviderConfig,
+    *,
+    auto_setup: bool = False,  # noqa: ARG001
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return PartyPlugin(mass, manifest, config, SUPPORTED_FEATURES)

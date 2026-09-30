@@ -82,7 +82,11 @@ _IMAGES_DIR: Final[str] = "playlist_metadata_images"
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant,
+    manifest: ProviderManifest,
+    config: ProviderConfig,
+    *,
+    auto_setup: bool = False,  # noqa: ARG001
 ) -> ProviderInstanceType:
     """Initialize the provider instance."""
     return PlaylistMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)

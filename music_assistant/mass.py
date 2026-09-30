@@ -956,6 +956,8 @@ class MusicAssistant:
     async def load_provider_config(
         self,
         prov_conf: ProviderConfig,
+        *,
+        auto_setup: bool = False,
     ) -> None:
         """Load (or reload) a provider from its config, recording any load failure."""
         # cancel existing (re)load timer if needed
@@ -964,7 +966,7 @@ class MusicAssistant:
             existing.cancel()
 
         try:
-            await self._load_provider(prov_conf)
+            await self._load_provider(prov_conf, auto_setup=auto_setup)
         except Exception as exc:
             # persist the failure so the provider surfaces a clear status (e.g. auth_required)
             # to the UI instead of appearing stuck loading, then propagate to the caller
@@ -1025,7 +1027,7 @@ class MusicAssistant:
         self,
         instance_id: str,
         allow_retry: bool = False,
-        remove_if_unsupported: bool = False,
+        auto_setup: bool = False,
         retry_attempt: int = 0,
     ) -> None:
         """
@@ -1033,7 +1035,8 @@ class MusicAssistant:
 
         :param instance_id: Instance ID of the provider to load.
         :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
-        :param remove_if_unsupported: Drop the config if the host can not run this provider.
+        :param auto_setup: This is the automatic first-boot setup of a default provider; the config
+            is dropped again if the host can not run it.
         :param retry_attempt: How many retries of this load already failed, which decides
             how long the next one waits.
         """
@@ -1053,13 +1056,13 @@ class MusicAssistant:
             existing.cancel()
 
         try:
-            await self.load_provider_config(prov_conf)
+            await self.load_provider_config(prov_conf, auto_setup=auto_setup)
         except UnsupportedSystemError as exc:
             # The host does not meet this provider's hardware requirements. This is a
             # permanent condition, so we never retry. For a provider that was just
             # auto-set-up as a default, drop the config again so it does not linger as a
             # broken provider (it stays marked done so it is not auto-created again).
-            if remove_if_unsupported:
+            if auto_setup:
                 LOGGER.info(
                     "Not enabling default provider %s: %s",
                     prov_conf.name or prov_conf.instance_id,
@@ -1397,11 +1400,11 @@ class MusicAssistant:
                     self.load_provider(
                         prov_conf.instance_id,
                         allow_retry=True,
-                        remove_if_unsupported=prov_conf.domain in newly_created_defaults,
+                        auto_setup=prov_conf.domain in newly_created_defaults,
                     )
                 )
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:
+    async def _load_provider(self, conf: ProviderConfig, *, auto_setup: bool = False) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -1442,7 +1445,9 @@ class MusicAssistant:
         async with _provider_load_step(domain, "import its module"):
             prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
-            provider = await prov_mod.setup(self, prov_manifest, conf)
+            # Only passed when set: only default providers declare the parameter.
+            setup_kwargs = {"auto_setup": True} if auto_setup else {}
+            provider = await prov_mod.setup(self, prov_manifest, conf, **setup_kwargs)
 
         # The instance now exists, so its full (options) config entries can be resolved
         # (get_config_entries is an instance method). Rehydrate the config values from

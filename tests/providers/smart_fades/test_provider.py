@@ -17,7 +17,7 @@ import pytest
 import torch
 from beat_this.inference import Spect2Frames
 from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 from music_assistant_models.media_items import AudioFormat
 from torchaudio.transforms import SpectralCentroid
 
@@ -958,3 +958,55 @@ async def test_beat_windows_are_paced_only_while_a_player_streams(
     assert bool(delays) is expect_paced
     if expect_paced:
         assert delays == [0.4 * BEAT_WINDOW_PACE_RATIO]
+
+
+@pytest.mark.parametrize(
+    ("memory_gb", "cpu_cores"),
+    [(3.8, 4), (7.6, 2)],
+    ids=["below_recommended_ram", "below_recommended_cores"],
+)
+async def test_auto_setup_refused_below_recommended_hardware(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock, memory_gb: float, cpu_cores: int
+) -> None:
+    """An automatic default setup is refused below the recommended tier, before the minimum gate."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=memory_gb),
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch(
+            "music_assistant.providers.smart_fades.verify_system_meets_requirements"
+        ) as verify_minimum,
+        pytest.raises(UnsupportedSystemError),
+    ):
+        await smart_fades.setup(mass_mock, manifest_mock, config_mock, auto_setup=True)
+    verify_minimum.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("auto_setup", "memory_gb", "cpu_cores"),
+    [(False, 3.8, 4), (True, 7.6, 4)],
+    ids=["manual_below_recommended", "auto_on_recommended"],
+)
+async def test_setup_reaches_minimum_gate(
+    mass_mock: Mock,
+    manifest_mock: Mock,
+    config_mock: Mock,
+    auto_setup: bool,
+    memory_gb: float,
+    cpu_cores: int,
+) -> None:
+    """A manual enable below recommended, or an auto setup on recommended hardware, proceeds."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=memory_gb),
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch(
+            "music_assistant.providers.smart_fades.verify_system_meets_requirements"
+        ) as verify_minimum,
+        patch("music_assistant.providers.smart_fades.import_module_in_thread") as import_module,
+    ):
+        await smart_fades.setup(mass_mock, manifest_mock, config_mock, auto_setup=auto_setup)
+    verify_minimum.assert_awaited_once()
+    import_module.assert_awaited_once()

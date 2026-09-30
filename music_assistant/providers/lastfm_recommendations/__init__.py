@@ -63,7 +63,11 @@ SUPPORTED_FEATURES = {
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant,
+    manifest: ProviderManifest,
+    config: ProviderConfig,
+    *,
+    auto_setup: bool = False,  # noqa: ARG001
 ) -> LastFMRecommendationsProvider:
     """Initialize provider(instance) with given configuration."""
     return LastFMRecommendationsProvider(mass, manifest, config, SUPPORTED_FEATURES)

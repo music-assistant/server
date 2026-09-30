@@ -31,9 +31,20 @@ class ProviderModuleType(Protocol):
 
     @staticmethod
     async def setup(
-        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        *,
+        auto_setup: bool = False,
     ) -> ProviderInstanceType:
-        """Initialize provider(instance) with given configuration."""
+        """
+        Initialize provider(instance) with given configuration.
+
+        auto_setup: True when this is the automatic first-boot setup of a default provider
+        (see DEFAULT_PROVIDERS); it is only passed in that case, so only default providers
+        need to accept it. A provider may raise UnsupportedSystemError to refuse an
+        automatic setup on hardware it would still accept when enabled by hand.
+        """
         raise NotImplementedError
 
     @staticmethod
