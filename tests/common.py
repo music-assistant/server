@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import logging
 import pathlib
+import socket
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
@@ -165,18 +166,25 @@ def use_ephemeral_server_ports() -> Iterator[None]:
     Bind a full-server test fixture's web, stream and Sendspin servers to a free loopback port.
 
     Port 0 has the kernel pick the port during the bind itself, so nothing else can
-    claim it in the meantime.
+    claim it in the meantime. The Sendspin port is chosen up front instead, since the
+    server also hands that port out in the URLs it builds for its own Sendspin clients.
 
     Binding loopback keeps a test run off the host's other interfaces and gives each
     server a single socket, so it has one assigned port: asyncio binds a wildcard
     address once per address family, each with its own port.
     """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind((LOOPBACK_IP, 0))
+        sendspin_port = probe.getsockname()[1]
     with (
         patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
         # the Sendspin provider binds its own listener; on a fixed port, parallel test
         # workers collide and the provider unloads itself mid-test
-        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
+        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", sendspin_port),
+        patch(
+            "music_assistant.controllers.webserver.controller.SENDSPIN_SERVER_PORT", sendspin_port
+        ),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
         # keep address detection off the host's real interfaces
