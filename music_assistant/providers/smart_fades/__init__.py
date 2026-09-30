@@ -29,8 +29,8 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 # reports ~3.8GB after the kernel/firmware reservation) still passes.
 MIN_RAM_GB = 4.0
 MIN_CPU_CORES = 2
-# Below the recommended thresholds the provider still runs when enabled by hand (with a
-# resource notice in its settings), but it is not enabled automatically as a default.
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
 RECOMMENDED_RAM_GB = 6.0
 RECOMMENDED_CPU_CORES = 4
 
