@@ -33,15 +33,15 @@ _ENTRIES = (
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow to pick the country and optionally sign in."""
     errors: dict[str, str | SetupFlowError] | None = None
-    setup_data = dict(session.context.setup_data)
+    saved_setup_data = dict(session.context.setup_data)
+    setup_data = dict(saved_setup_data)
     while True:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
         ]
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
-        if not submitted.get(CONF_PASSWORD) and _same_account(setup_data, submitted):
-            # a password is never prefilled, so a blank one keeps the saved password
-            submitted = {key: value for key, value in submitted.items() if key != CONF_PASSWORD}
+        if not submitted.get(CONF_PASSWORD) and _same_account(saved_setup_data, submitted):
+            submitted[CONF_PASSWORD] = saved_setup_data.get(CONF_PASSWORD)
         setup_data.update(submitted)
         try:
             await session.finish(setup_data)
