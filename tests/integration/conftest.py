@@ -23,6 +23,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
 from tests.common import (
+    adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -144,6 +145,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             )
             await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
             await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot, or the half-started server's open database
