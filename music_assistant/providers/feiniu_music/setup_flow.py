@@ -24,6 +24,7 @@ _ENTRIES = (
 async def run_setup(session: SetupSession) -> None:
     """Save a stable, unique device ID for each configured provider instance."""
     data = dict(session.context.setup_data)
+    original_password = data.get("password")
     saved_identity = (
         {key: data.get(key) for key in ("url", "username")}
         if session.context.kind == "reconfigure"
@@ -57,4 +58,6 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(data)
             return
         except SetupFlowError as err:
+            if session.context.kind == "reconfigure":
+                data["password"] = original_password
             errors = {"base": err.translation_key or str(err)}

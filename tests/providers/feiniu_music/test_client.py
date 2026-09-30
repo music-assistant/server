@@ -8,7 +8,7 @@ import struct
 import traceback
 from collections.abc import AsyncIterator
 from typing import Any, Self
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import aiohttp
 import pytest
@@ -216,7 +216,7 @@ def envelope(value: Any, code: int = 0) -> Response:
 async def test_playlist_collection_is_not_remotely_paginated(items: list[dict[str, str]]) -> None:
     """An all-at-once playlist response must not be rejected or fetched repeatedly."""
     client = client_with(envelope({"list": items, "total": len(items)}))
-    found = [item async for item in client.items("playlist", size=1)]
+    found = await client.playlists()
     assert found == items
     assert len(client._session.calls) == 1
     assert client._session.calls[0][1].endswith("/playlist/list")
@@ -405,36 +405,9 @@ async def test_instance_authentication_uses_request_cookies() -> None:
     assert second._session.calls[0][2]["cookies"] == {"music-token": ""}
 
 
-async def test_full_pagination_and_empty_library() -> None:
-    """Full pagination and empty library."""
-    client = client_with()
-    client.page = AsyncMock(
-        side_effect=[
-            {"list": [{"guid": "a"}], "total": 2},
-            {"list": [{"guid": "b"}], "total": 2},
-        ]
-    )
-    assert [item["guid"] async for item in client.items("track", 1)] == ["a", "b"]
-    assert client.page.await_args_list[1].args == ("track", 2, 1)
-    client.page = AsyncMock(return_value={"list": [], "total": 0})
-    assert [item async for item in client.items("track")] == []
-
-
-@pytest.mark.parametrize(
-    "second_page",
-    [
-        {"list": [{"guid": "a"}], "total": 2},
-        {"list": [], "total": 2},
-        {"list": [{"title": "missing ID"}], "total": 2},
-        {"list": [{"guid": "b"}], "total": 3},
-    ],
-)
-async def test_pagination_refuses_silent_incomplete_sync(second_page: Any) -> None:
-    """Pagination refuses silent incomplete sync."""
-    client = client_with()
-    client.page = AsyncMock(side_effect=[{"list": [{"guid": "a"}], "total": 2}, second_page])
-    with pytest.raises(ProtocolError):
-        _ = [item async for item in client.items("track", 1)]
+def test_client_has_no_duplicate_paginator() -> None:
+    """Collection iteration belongs to the provider's validated paginators."""
+    assert not hasattr(FeiNiuClient, "items")
 
 
 @pytest.mark.parametrize("data", [{}, {"list": [], "total": -1}, {"list": [None], "total": 1}])

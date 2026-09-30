@@ -58,6 +58,58 @@ async def test_reconfigure_blank_password_preserves_secret_and_device(
     assert session.finish.call_args.args[0]["device_id"] == "a" * 32
 
 
+async def test_reconfigure_failed_replacement_password_restores_saved_secret() -> None:
+    """A blank retry uses the saved secret without exposing either password."""
+    saved = {
+        "url": "http://test.invalid/music/",
+        "username": "synthetic",
+        "password": "old-secret",
+        "device_id": "a" * 32,
+    }
+    submissions = iter([{"password": "wrong-replacement"}, {"password": ""}])
+    finished: list[dict[str, Any]] = []
+    forms = 0
+
+    async def form(entries: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal forms
+        forms += 1
+        password = next(entry for entry in entries if entry.key == "password")
+        assert password.value is None
+        assert not password.required
+        for key in ("url", "username"):
+            assert next(entry for entry in entries if entry.key == key).value == saved[key]
+        assert session.context.setup_data == saved
+        if forms == 2:
+            assert kwargs["errors"]
+            assert all(
+                secret not in str(kwargs["errors"])
+                for secret in ("old-secret", "wrong-replacement")
+            )
+        return next(submissions)
+
+    async def finish(data: dict[str, Any]) -> None:
+        finished.append(dict(data))
+        assert session.context.setup_data == saved
+        if len(finished) == 1:
+            raise SetupFlowError("Login failed")
+
+    session: Any = SimpleNamespace(
+        context=SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="feiniu_music",
+            instance_id="saved-instance",
+            setup_data=dict(saved),
+        ),
+        form=form,
+        finish=finish,
+    )
+    await run_setup(session)
+    assert forms == 2
+    assert finished == [{**saved, "password": "wrong-replacement"}, saved]
+    assert session.context.setup_data == saved
+
+
 @pytest.mark.parametrize(
     "identity", [{"url": "http://other.invalid/music/"}, {"username": "other"}]
 )

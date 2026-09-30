@@ -281,32 +281,6 @@ class FeiNiuClient:
             raise ProtocolError("Invalid page items")
         return result
 
-    async def items(self, kind: str, size: int = 100) -> AsyncIterator[dict[str, Any]]:
-        """Iterate complete pages, failing visibly if pagination stops progressing."""
-        if kind == "playlist":
-            for item in await self.playlists():
-                yield item
-            return
-        seen: set[str] = set()
-        expected_total = None
-        for number in range(1, 10001):
-            data = await self.page(kind, number, size)
-            if expected_total is None:
-                expected_total = data["total"]
-            elif data["total"] != expected_total:
-                raise ProtocolError("Library changed during pagination; restart the sync")
-            for item in data["list"]:
-                guid = item.get("guid")
-                if not isinstance(guid, str) or not guid or guid in seen:
-                    raise ProtocolError("Missing or repeated stable item ID")
-                seen.add(guid)
-                yield item
-            if len(seen) == expected_total:
-                return
-            if len(seen) > expected_total or not data["list"]:
-                raise ProtocolError("Pagination ended before the reported total")
-        raise ProtocolError("Pagination safety limit reached")
-
     async def playlists(self) -> list[dict[str, Any]]:
         """Read the complete non-paginated native playlist collection."""
         data = await self._json("GET", "/playlist/list")
