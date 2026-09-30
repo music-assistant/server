@@ -2,8 +2,8 @@
 Tests for a queue paused on a player that can not pause.
 
 The pause falls back to a stop of the queue, so its session, its item buffers and the
-stream of the music source are released right away. A later play resumes the queue at
-the paused position.
+stream of the music source are released right away. A later play starts the queue again
+at the paused position.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -123,3 +123,20 @@ async def test_pause_ends_the_queue_and_releases_its_session() -> None:
         await _take_pause_watcher(ctrl)
     cast("AsyncMock", player.stop).assert_awaited_once()
     mass.streams.audio_processing.clear.assert_called_once()
+
+
+async def test_play_after_the_pause_starts_the_queue_at_the_paused_position() -> None:
+    """Play on the stopped queue restarts its current item where the pause left it."""
+    ctrl, _player, queue_data = _setup()
+    item = MagicMock(queue_item_id="item-1", media_type=MediaType.TRACK)
+    queue_data.items = [item]
+    queue_data.queue.current_item = item
+    await ctrl.pause(QUEUE_ID)
+    _take_pause_watcher(ctrl).close()
+    # the queue follows its player to idle (the tracker is stubbed out here)
+    queue_data.queue.state = PlaybackState.IDLE
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl._handle_play(QUEUE_ID)
+
+    ctrl.play_index.assert_awaited_once_with(QUEUE_ID, "item-1", 42, False)

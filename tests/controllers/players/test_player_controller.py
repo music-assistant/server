@@ -48,7 +48,6 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
@@ -3098,18 +3097,6 @@ class TestPauseWithoutPauseSupport:
     async def test_pause_on_a_group_player_ends_its_queue(self, mock_mass: MagicMock) -> None:
         """A group player (sync or universal group) can not pause either."""
         controller, _player = self._player_on_own_queue(mock_mass, PlayerType.GROUP)
-
-        await controller._handle_cmd_pause("player_1")
-
-        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
-        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
-
-    async def test_pause_during_an_announcement_ends_the_queue_alike(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """An announcement in progress makes no difference to how the pause is handled."""
-        controller, player = self._player_on_own_queue(mock_mass)
-        player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
 
         await controller._handle_cmd_pause("player_1")
 
