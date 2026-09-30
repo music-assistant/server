@@ -247,7 +247,7 @@ async def _verify_developer_account(
     session: SetupSession, access_token: str, account_id: str | None
 ) -> None:
     """
-    Turn the user away when the developer key was authorized with another Spotify account.
+    Refuse a developer key that was authorized with another Spotify account.
 
     Nothing is compared when the account of the main sign-in is unknown, and a lookup
     Spotify does not answer is not held against the user.
@@ -255,12 +255,16 @@ async def _verify_developer_account(
     :param session: The setup session driving the flow.
     :param access_token: The access token from the developer key sign-in.
     :param account_id: The Spotify user id of the main sign-in, when known.
-    :raises AbortFlow: When the developer key signed in with a different account.
+    :raises SetupFlowError: When the developer key signed in with a different account, so
+        the step is shown again with that message.
     """
     if not account_id or (userinfo := await _get_profile(session, access_token)) is None:
         return
     if (dev_account_id := str(userinfo.get("id") or "")) and dev_account_id != account_id:
-        raise AbortFlow("developer_account_mismatch")
+        raise SetupFlowError(
+            "The developer key was authorized with another Spotify account",
+            translation_key="developer_account_mismatch",
+        )
 
 
 async def _get_profile(session: SetupSession, access_token: str) -> dict[str, Any] | None:

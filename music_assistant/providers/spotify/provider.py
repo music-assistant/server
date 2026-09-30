@@ -230,7 +230,14 @@ class SpotifyProvider(MusicProvider):
             dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
             if client_id and dev_token and self._sp_user:
-                await self.login_dev()
+                try:
+                    await self.login_dev()
+                except ResourceTemporarilyUnavailable:
+                    # Spotify does not answer for the custom Client ID right now: the first
+                    # request on it retries the login, the shared session carries the rest
+                    self.logger.info(
+                        "Spotify did not answer the login of the custom Client ID, retrying later"
+                    )
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
 
@@ -1154,7 +1161,7 @@ class SpotifyProvider(MusicProvider):
                     (CONF_ACCOUNT_COUNTRY, userinfo.get("country")),
                 ):
                     if self.get_setup_value(key) != value:
-                        self._update_setup_data(key, value)
+                        self._update_setup_data(key, value, immediate=False)
                 self.logger.info(
                     "Successfully logged in to Spotify as %s", userinfo["display_name"]
                 )
@@ -1874,7 +1881,7 @@ class SpotifyProvider(MusicProvider):
             # Spotify did not answer: go with the answer of an earlier load
             return bool(self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED, False))
         if self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED) != supported:
-            self._update_setup_data(CONF_AUDIOBOOKS_SUPPORTED, supported)
+            self._update_setup_data(CONF_AUDIOBOOKS_SUPPORTED, supported, immediate=False)
         return supported
 
     def _stored_refresh_token(self, key: str) -> str | None:

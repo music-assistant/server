@@ -168,8 +168,8 @@ async def test_a_malformed_account_response_does_not_block_the_setup(payload: An
 
 async def _authorize_developer_key(
     session: SetupSession, monkeypatch: pytest.MonkeyPatch
-) -> mock.AsyncMock:
-    """Run the developer key step for the main sign-in u1 and return the finish mock."""
+) -> tuple[mock.AsyncMock, dict[str, Any] | None]:
+    """Run the developer key step for the main sign-in u1, return the finish mock and the errors."""
     monkeypatch.setattr(session, "form", mock.AsyncMock(return_value={CONF_CLIENT_ID: "my-client"}))
     finish = mock.AsyncMock(return_value={"instance_id": "spotify--test"})
     monkeypatch.setattr(session, "finish", finish)
@@ -179,19 +179,22 @@ async def _authorize_developer_key(
         mock.AsyncMock(return_value={"refresh_token": "rt-dev", "access_token": "at-dev"}),
     )
     setup_data: dict[str, Any] = {CONF_ACCOUNT_ID: "u1"}
-    await spotify_flow._authorize_developer_key(session, setup_data, "")
-    return finish
+    _, errors = await spotify_flow._authorize_developer_key(session, setup_data, "")
+    return finish, errors
 
 
 async def test_a_developer_key_of_another_account_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Client ID authorized with a different account than the main sign-in aborts the setup."""
+    """A Client ID authorized with a different account than the main sign-in is shown again."""
     session = _make_session()
     _stub_me(session, payload={"id": "u2", "product": "premium"})
 
-    with pytest.raises(AbortFlow, match="developer_account_mismatch"):
-        await _authorize_developer_key(session, monkeypatch)
+    finish, errors = await _authorize_developer_key(session, monkeypatch)
+
+    finish.assert_not_awaited()
+    assert errors is not None
+    assert errors["base"].translation_key == "developer_account_mismatch"
 
 
 async def test_a_developer_key_of_the_same_account_finishes_the_setup(
@@ -201,8 +204,9 @@ async def test_a_developer_key_of_the_same_account_finishes_the_setup(
     session = _make_session()
     _stub_me(session, payload={"id": "u1", "product": "premium"})
 
-    finish = await _authorize_developer_key(session, monkeypatch)
+    finish, errors = await _authorize_developer_key(session, monkeypatch)
 
+    assert errors is None
     finish.assert_awaited_once()
     # the lookup is made with the token of the developer key
     headers = session.mass.http_session.get.call_args.kwargs["headers"]  # type: ignore[attr-defined]
@@ -217,7 +221,8 @@ async def test_a_failing_developer_account_lookup_does_not_block_the_setup(
     _stub_me(session, status=429)
 
     with mock.patch.object(spotify_flow.LOGGER, "warning") as warning:
-        finish = await _authorize_developer_key(session, monkeypatch)
+        finish, errors = await _authorize_developer_key(session, monkeypatch)
 
+    assert errors is None
     finish.assert_awaited_once()
     warning.assert_called_once()

@@ -419,7 +419,7 @@ async def test_audiobook_support_stores_the_answer(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(prov, "_update_setup_data", update)
 
     assert await prov._test_audiobook_support() is True
-    update.assert_called_once_with(CONF_AUDIOBOOKS_SUPPORTED, True)
+    update.assert_called_once_with(CONF_AUDIOBOOKS_SUPPORTED, True, immediate=False)
 
 
 async def test_token_endpoint_rate_limit_is_temporary() -> None:

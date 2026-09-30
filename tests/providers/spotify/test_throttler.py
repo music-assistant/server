@@ -117,8 +117,8 @@ async def test_loose_rate_limit_with_custom_client_id() -> None:
     assert provider.dev_session_active
 
 
-async def test_load_during_a_long_cooldown_uses_the_stored_answers() -> None:
-    """A load during a long cooldown goes ahead on the stored answers without a request."""
+async def test_load_during_a_long_cooldown_uses_the_stored_audiobook_answer() -> None:
+    """A load during a long cooldown takes the stored audiobook answer without a request."""
     _stored_throttler().set_cooldown(3600)
     provider = _make_provider({CONF_AUDIOBOOKS_SUPPORTED: True})
     # drop the stub, so the load goes through the real audiobook check and api call
