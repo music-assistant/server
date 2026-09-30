@@ -1061,11 +1061,22 @@ class SendspinProvider(PlayerProvider):
         self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
-        await self.server_api.start_server(
-            port=SENDSPIN_SERVER_PORT,
-            host=self.mass.streams.bind_ip,
-            advertise_addresses=[self.mass.streams.publish_ip],
-        )
+        try:
+            await self.server_api.start_server(
+                port=SENDSPIN_SERVER_PORT,
+                host=self.mass.streams.bind_ip,
+                advertise_addresses=[self.mass.streams.publish_ip],
+            )
+        except OSError as err:
+            # without its listener every Sendspin player fails silently,
+            # so surface this as a provider error the user can see
+            self.unload_with_error(
+                SetupFailedError(
+                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: "
+                    f"{err}. Make sure no other application uses this port, then reload."
+                )
+            )
+            return
         for address in self._manual_ip_config:
             try:
                 url = _manual_client_url(address)
