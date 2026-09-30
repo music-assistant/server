@@ -523,14 +523,16 @@ class TuneInProvider(MusicProvider):
             )
         return radio
 
-    async def _get_stream_info(self, preset_id: str, refresh: bool = False) -> list[dict[str, Any]]:
+    async def _get_stream_info(
+        self, preset_id: str, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
         """Get stream info for a radio station, optionally bypassing the cache."""
         cached_data = await self.mass.cache.get(
             preset_id, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
         )
+        # We know from cache this is the right type
+        assert cached_data is None or isinstance(cached_data, list)
         if cached_data and not refresh:
-            # We know from cache this is the right type
-            assert isinstance(cached_data, list)
             return cached_data
 
         data = await self.__get_data("Tune.ashx", id=preset_id)
