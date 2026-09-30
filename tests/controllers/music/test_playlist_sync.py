@@ -165,6 +165,20 @@ async def test_localized_name_follows_the_provider(playlists: PlaylistController
     assert (library_item.name, library_item.translation_params) == ("Liked Songs New", ["New"])
 
 
+async def test_localized_name_is_dropped_with_the_provider(playlists: PlaylistController) -> None:
+    """A playlist renamed without a localized name no longer carries the old one."""
+    item_id = uuid4().hex
+    await _sync(
+        playlists,
+        _playlist(item_id, "Liked Songs", translation_key="liked_songs", translation_params=["x"]),
+    )
+
+    library_item = await _sync(playlists, _playlist(item_id, "My playlist"))
+
+    assert (library_item.name, library_item.translation_key) == ("My playlist", None)
+    assert library_item.translation_params is None
+
+
 async def test_image_tagged_with_the_domain_is_replaced(playlists: PlaylistController) -> None:
     """An image stored under the provider domain is dropped when the provider's images change."""
     item_id = uuid4().hex

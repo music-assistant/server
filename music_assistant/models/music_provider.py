@@ -2056,9 +2056,8 @@ class MusicProvider(Provider):
             return None
         library_item.name = prov_item.name
         library_item.sort_name = prov_item.sort_name
-        if prov_item.translation_key is not None:
-            library_item.translation_key = prov_item.translation_key
-            library_item.translation_params = prov_item.translation_params
+        library_item.translation_key = prov_item.translation_key
+        library_item.translation_params = prov_item.translation_params
         if images_changed:
             # the provider's images go first so its cover is the one shown
             library_item.metadata.images = UniqueList(
