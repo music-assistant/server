@@ -46,6 +46,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -231,21 +232,40 @@ class MediaResolver:
                 continue
             result.append(genre_track)
 
+        provider_error: Exception | None = None
         for album in albums:
-            album_tracks = await self.get_album_tracks(album, None)
+            try:
+                album_tracks = await self.get_album_tracks(album, None)
+            except PROVIDER_FETCH_ERRORS as err:
+                # the genre is sampled best-effort: one failing album must not abort it
+                provider_error = err
+                self.logger.warning("Unable to fetch tracks for album %s: %s", album.name, err)
+                continue
             result.extend(album_tracks[:5])
 
         for artist in artists:
-            artist_tracks = await self.mass.music.artists.top_tracks(
-                artist.item_id, artist.provider
-            )
-            if not artist_tracks:
-                # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
-                artist_tracks = await self.mass.music.artists.tracks(
+            try:
+                top_tracks = await self.mass.music.artists.top_tracks(
                     artist.item_id, artist.provider
                 )
+                # a provider can list top tracks that are all unplayable here, which must
+                # not stand in for the artist's playable tracks
+                artist_tracks = [track for track in top_tracks if track.available]
+                if not artist_tracks:
+                    # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
+                    all_tracks = await self.mass.music.artists.tracks(
+                        artist.item_id, artist.provider
+                    )
+                    artist_tracks = [track for track in all_tracks if track.available]
+            except PROVIDER_FETCH_ERRORS as err:
+                provider_error = err
+                self.logger.warning("Unable to fetch tracks for artist %s: %s", artist.name, err)
+                continue
             random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
+        if provider_error is not None and not result:
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
@@ -665,9 +685,18 @@ class MediaResolver:
         for mapping in artist.provider_mappings:
             if mapping.provider_instance not in unique_providers:
                 continue
-            tracks.extend(
-                await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
-            )
+            try:
+                tracks.extend(
+                    await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not drop the tracks of the artist's other providers
+                self.logger.warning(
+                    "Unable to fetch tracks for artist %s from provider %s: %s",
+                    artist.name,
+                    mapping.provider_instance,
+                    err,
+                )
         return tracks
 
     async def _resolve_media_items(
