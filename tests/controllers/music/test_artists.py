@@ -5,16 +5,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ExternalID, ImageType
+from music_assistant_models.enums import AlbumType, ExternalID, ImageType
 from music_assistant_models.media_items import (
+    Album,
+    AlbumSummary,
     Artist,
     ItemMapping,
     MediaItemImage,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
-from .helpers import create_track
+from .helpers import create_album, create_track
 
 if TYPE_CHECKING:
     import pytest
@@ -39,6 +42,33 @@ def _artist_stub() -> Artist:
             )
         },
     )
+
+
+def _track_on_album(
+    item_id: str, artist_item_id: str, artist_name: str, album: Album, in_library: bool = True
+) -> Track:
+    """Return a provider track on the given album, credited to a single artist."""
+    track = create_track("spotify_1", item_id, name=item_id, isrc=f"ISRC{item_id}")
+    for mapping in track.provider_mappings:
+        mapping.in_library = in_library
+    track.artists = UniqueList(
+        [
+            Artist(
+                item_id=artist_item_id,
+                provider="spotify_1",
+                name=artist_name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=artist_item_id,
+                        provider_domain="spotify",
+                        provider_instance="spotify_1",
+                    )
+                },
+            )
+        ]
+    )
+    track.album = album
+    return track
 
 
 def _detailed_artist() -> Artist:
@@ -142,3 +172,50 @@ def test_artist_from_provider_item_mapping_keeps_mapping(
     assert artist.provider_mappings == {
         ProviderMapping(item_id="abc", provider_domain="spotify", provider_instance="spotify_1")
     }
+
+
+async def test_appears_on_lists_albums_of_library_tracks(mass: MusicAssistant) -> None:
+    """An artist appears on the albums of its library tracks, newest first, but not its own."""
+    compilation = create_album(
+        "spotify_1", "compilation", "Compilation", "Various Artists", "various"
+    )
+    compilation.album_type = AlbumType.COMPILATION
+    compilation.year = 2001
+    for mapping in compilation.provider_mappings:
+        mapping.in_library = True
+    await mass.music.albums.add_item_to_library(compilation)
+    # an album only known through a library track still counts
+    soundtrack = create_album("spotify_1", "soundtrack", "Soundtrack", "Host Artist", "host")
+    soundtrack.year = 2010
+    own = create_album("spotify_1", "own", "Own Album", "Guest Artist", "guest")
+    for index, album in enumerate((compilation, soundtrack, own)):
+        await mass.music.tracks.add_item_to_library(
+            _track_on_album(f"track{index}", "guest", "Guest Artist", album)
+        )
+    # a track that is not in the library does not count
+    unliked = create_album("spotify_1", "unliked", "Unliked Album", "Host Artist", "host")
+    await mass.music.tracks.add_item_to_library(
+        _track_on_album("track3", "guest", "Guest Artist", unliked, in_library=False)
+    )
+    guest = await mass.music.artists.get_library_item_by_prov_id("guest", "spotify_1")
+    host = await mass.music.artists.get_library_item_by_prov_id("host", "spotify_1")
+    assert guest is not None
+    assert host is not None
+
+    albums = await mass.music.artists.appears_on(guest.item_id, "library")
+
+    assert [album.name for album in albums] == ["Soundtrack", "Compilation"]
+    assert all(isinstance(album, AlbumSummary) for album in albums)
+    assert albums[1].album_type == AlbumType.COMPILATION
+    assert [artist.name for artist in albums[1].artists] == ["Various Artists"]
+    # the provider filter applies to the tracks
+    filtered = await mass.music.artists.appears_on(guest.item_id, "library", "spotify_1")
+    assert [album.name for album in filtered] == ["Soundtrack", "Compilation"]
+    assert await mass.music.artists.appears_on(guest.item_id, "library", "tidal_1") == []
+    # an album artist without any track credits appears on nothing
+    assert await mass.music.artists.appears_on(host.item_id, "library") == []
+
+
+async def test_appears_on_provider_artist_is_empty(mass: MusicAssistant) -> None:
+    """Appears on is only derived from the library, so a provider artist has none."""
+    assert await mass.music.artists.appears_on("guest", "spotify_1") == []

@@ -2361,8 +2361,16 @@ class LocalFileSystemProvider(MusicProvider):
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            elif "." not in file_path:
+            elif not file_path:
+                # an empty id matches no single library item
                 continue
+            elif "." not in file_path:
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    MediaType.AUDIOBOOK
+                    if self.media_content_type == "audiobooks"
+                    else MediaType.TRACK
+                )
             else:
                 ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
@@ -2380,7 +2388,13 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if is_track(library_item):
+                is_last_mapping = all(
+                    x.provider_instance == self.instance_id and x.item_id == file_path
+                    for x in library_item.provider_mappings
+                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping
@@ -2391,7 +2405,11 @@ class LocalFileSystemProvider(MusicProvider):
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
-                await controller.remove_item_from_library(library_item.item_id)
+                # the library item may also be mapped to other providers,
+                # so only drop this file's mapping
+                await controller.remove_provider_mapping(
+                    library_item.item_id, self.instance_id, file_path
+                )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):

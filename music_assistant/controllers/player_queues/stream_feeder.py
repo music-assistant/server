@@ -80,6 +80,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # for an item that left it would sit on a buffer no cleanup reaches
                 if self.get_item(queue_id, prepared_item.queue_item_id) is None:
                     return
+                # a stop releases the audio of its session once; what gets attached to a queue
+                # without a session after that stays until its inactivity timeout
+                if queue_data.session_id is None:
+                    return
                 if (streamed_item := self.get_item(queue_id, queue_item_id)) and (
                     holder := self._single_source_slot_holder(streamed_item, prepared_item)
                 ):
@@ -107,8 +111,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # removal paths that do not cancel this task (replace_next, delete) can take
                 # the item off the queue while the buffer fills; the stale-buffer sweep walks
                 # only current items, so a buffer left here would sit until its inactivity
-                # timeout. Detached before releasing, as everywhere a buffer is cleared.
-                if self.get_item(queue_id, prepared_item.queue_item_id) is None:
+                # timeout. The same goes for a queue whose session ended meanwhile. A session
+                # that rotated (a skip) owns the audio, and its stop releases it.
+                # Detached before releasing, as everywhere a buffer is cleared.
+                if (
+                    self.get_item(queue_id, prepared_item.queue_item_id) is None
+                    or queue_data.session_id is None
+                ):
                     if (details := prepared_item.streamdetails) and (orphan := details.buffer):
                         details.buffer = None
                         await orphan.clear()

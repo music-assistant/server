@@ -109,6 +109,10 @@ from .parsers import (
 
 _PLAYLIST_PAGINATION_STATE_LIMIT = 32
 
+# the throttler of an instance outlives the provider object, so a (re)load of the
+# provider does not lift a rate limit the service imposed
+_THROTTLERS: dict[str, ThrottlerManager] = {}
+
 
 class NotModifiedError(Exception):
     """Exception raised when a resource has not been modified."""
@@ -187,7 +191,10 @@ class SpotifyProvider(MusicProvider):
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._playlist_pagination_states = OrderedDict()
         # Default throttler for global session (heavy rate limited)
-        self.throttler = ThrottlerManager(rate_limit=1, period=2)
+        self.throttler = _THROTTLERS.setdefault(
+            self.instance_id, ThrottlerManager(rate_limit=1, period=2)
+        )
+        self.throttler.set_rate_limit(rate_limit=1, period=2)
 
         # playback authorization is independent of the Web API tokens
         self.backend = self._create_backend()
@@ -209,7 +216,7 @@ class SpotifyProvider(MusicProvider):
                         "Developer session must use the same Spotify account as the main session."
                     )
                 # loosen the throttler when a custom client id is used
-                self.throttler = ThrottlerManager(rate_limit=45, period=30)
+                self.throttler.set_rate_limit(rate_limit=30, period=30)
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
 
@@ -239,6 +246,7 @@ class SpotifyProvider(MusicProvider):
                 await backend.unload()
         finally:
             if is_removed:
+                _THROTTLERS.pop(self.instance_id, None)
                 # Both hold reusable login material - the soloist session in the
                 # storage dir, librespot's credential in the cache - so a removed
                 # instance keeps neither, even if the teardown above failed.

@@ -16,6 +16,8 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    MAX_WAIT_TIME,
     ThrottlerManager,
     parse_retry_after,
     throttle_with_retries,
@@ -217,12 +219,12 @@ class TestRateLimited:
     async def test_absurd_retry_after_capped(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A hostile Retry-After is clamped to MAX_RETRY_AFTER (1 hour)."""
+        """A hostile Retry-After is clamped to MAX_RETRY_AFTER (1 day)."""
         provider.set_side_effects([RateLimited("rate limited", backoff_time=999999), "ok"])
-        await provider.api_call("ok")
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
 
-        sleep_times = fake_clock.sleeps
-        assert 3600.0 <= sleep_times[0] <= 3960.0
+        assert provider.throttler.cooldown_remaining == MAX_RETRY_AFTER
 
 
 class TestSharedCooldown:
@@ -252,19 +254,26 @@ class TestSharedCooldown:
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
         """The 429 that exhausts our retries still holds back the callers behind us."""
-        provider.set_side_effects([RateLimited("rate limited", backoff_time=200)] * 5)
+        # a small initial backoff keeps the escalated backoff below the Retry-After
+        provider.throttler = ThrottlerManager(
+            rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=2
+        )
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=50)] * 5)
         with pytest.raises(RetriesExhausted):
             await provider.api_call("test")
         exhausted_at = fake_clock.now
 
         provider.set_side_effects(["ok"])
         assert await provider.api_call("ok") == "ok"
-        assert fake_clock.now - exhausted_at == pytest.approx(200)
+        assert fake_clock.now - exhausted_at == pytest.approx(50)
 
     async def test_exhausted_retries_gate_without_retry_after(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
         """Without a Retry-After the gate closes on the backoff we escalated to."""
+        provider.throttler = ThrottlerManager(
+            rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=2
+        )
         provider.set_side_effects([RateLimited("rate limited")] * 5)
         with pytest.raises(RetriesExhausted):
             await provider.api_call("test")
@@ -272,8 +281,8 @@ class TestSharedCooldown:
 
         provider.set_side_effects(["ok"])
         assert await provider.api_call("ok") == "ok"
-        # initial_backoff 4, doubled by each of the 4 retries
-        assert fake_clock.now - exhausted_at == pytest.approx(64)
+        # initial_backoff 2, doubled by each of the 4 retries
+        assert fake_clock.now - exhausted_at == pytest.approx(32)
 
     async def test_bypassing_caller_still_backs_off(
         self, provider: FakeProvider, fake_clock: FakeClock
@@ -315,6 +324,196 @@ class TestSharedCooldown:
             elapsed = time.monotonic() - start_time
         await armer
         assert elapsed >= 0.3
+
+
+class TestLongWaits:
+    """A call asked by the server to wait longer than MAX_WAIT_TIME fails instead."""
+
+    async def test_long_retry_after_fails_right_away(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A 429 asking for more than MAX_WAIT_TIME fails the call without waiting."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=3600), "ok"])
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("test")
+        assert provider.call_count == 1
+        assert fake_clock.now == 0
+        assert fake_clock.sleeps == []
+        assert exc_info.value.translation_key == "rate_limited"
+        assert isinstance(exc_info.value.__cause__, RateLimited)
+
+    @pytest.mark.parametrize(
+        ("backoff_time", "expected"),
+        [(3600, 3600), (7200, 7200), (999999, MAX_RETRY_AFTER)],
+    )
+    async def test_long_retry_after_closes_the_gate_for_the_full_time(
+        self, provider: FakeProvider, fake_clock: FakeClock, backoff_time: int, expected: int
+    ) -> None:
+        """The gate stays closed for the full time the server asked, up to MAX_RETRY_AFTER."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=backoff_time)])
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        assert provider.throttler.cooldown_remaining == pytest.approx(expected)
+
+    async def test_call_during_a_long_cooldown_fails_without_reaching_the_api(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A call made during a long cooldown fails right away and leaves the cooldown as is."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=3600)])
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        fake_clock.now += 100
+
+        provider.set_side_effects(["ok"])
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert fake_clock.now == 100
+        assert exc_info.value.translation_key == "rate_limited"
+        assert isinstance(exc_info.value.__cause__, RateLimited)
+        assert provider.throttler.cooldown_remaining == pytest.approx(3500)
+
+    async def test_call_after_a_long_cooldown_goes_through(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """Once the cooldown has passed a call reaches the api again."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=3600)])
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        fake_clock.now += 3600
+
+        provider.set_side_effects(["ok"])
+        assert await provider.api_call("ok") == "ok"
+        assert provider.call_count == 1
+
+    async def test_call_behind_exhausted_retries_fails_on_a_long_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A cooldown escalated beyond MAX_WAIT_TIME fails the callers behind it as well."""
+        provider.set_side_effects([RateLimited("rate limited")] * 5)
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        # initial_backoff 4, doubled by each of the 4 retries
+        assert provider.throttler.cooldown_remaining == pytest.approx(64)
+        exhausted_at = fake_clock.now
+
+        provider.set_side_effects(["ok"])
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert fake_clock.now == exhausted_at
+
+    async def test_wait_of_max_wait_time_is_sat_out(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A server wait of exactly MAX_WAIT_TIME is waited out and retried."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=MAX_WAIT_TIME), "ok"])
+        assert await provider.api_call("ok") == "ok"
+        assert provider.call_count == 2
+        assert fake_clock.now >= MAX_WAIT_TIME
+
+    async def test_wait_above_max_wait_time_gives_up(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A server wait of one second more than MAX_WAIT_TIME gives up right away."""
+        provider.set_side_effects(
+            [RateLimited("rate limited", backoff_time=MAX_WAIT_TIME + 1), "ok"]
+        )
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
+        assert provider.call_count == 1
+        assert fake_clock.now == 0
+
+    async def test_cooldown_of_max_wait_time_is_waited_out(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A cooldown of exactly MAX_WAIT_TIME holds a new call back instead of failing it."""
+        provider.throttler.set_cooldown(MAX_WAIT_TIME)
+        assert await provider.api_call("ok") == "ok"
+        assert fake_clock.now == pytest.approx(MAX_WAIT_TIME)
+
+    async def test_bypassing_caller_ignores_a_long_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A caller that bypasses the gate still reaches the api during a long cooldown."""
+        provider.throttler.set_cooldown(3600)
+        async with provider.throttler.bypass():
+            assert await provider.api_call("ok") == "ok"
+        assert provider.call_count == 1
+        assert fake_clock.now == 0
+
+    async def test_bypassing_caller_gives_up_on_a_long_retry_after(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A caller that bypasses the gate gives up right away when asked to wait too long."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=3600), "ok"])
+        async with provider.throttler.bypass():
+            with pytest.raises(RetriesExhausted):
+                await provider.api_call("ok")
+        assert provider.call_count == 1
+        assert fake_clock.now == 0
+        assert provider.throttler.cooldown_remaining == pytest.approx(3600)
+
+    async def test_long_unavailable_wait_gives_up_without_a_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A long wait on a non rate limit error gives up but holds no other caller back."""
+        provider.set_side_effects(
+            [ResourceTemporarilyUnavailable("unavailable", backoff_time=300), "ok"]
+        )
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("ok")
+        assert provider.call_count == 1
+        assert fake_clock.now == 0
+        assert exc_info.value.translation_key == "resource_temporarily_unavailable"
+        assert provider.throttler.cooldown_remaining == 0
+
+    async def test_backing_off_caller_gives_up_when_a_long_cooldown_is_armed(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A retry gives up when another caller arms a long cooldown during our backoff."""
+
+        def another_caller_is_rate_limited(call_count: int) -> None:
+            if call_count == 1:
+                provider.throttler.set_cooldown(3600)
+
+        provider.on_call = another_caller_is_rate_limited
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=5), "ok"])
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
+        assert provider.call_count == 1
+        # only our own short backoff was slept, not the long cooldown
+        assert fake_clock.now < MAX_WAIT_TIME
+        assert provider.throttler.cooldown_remaining == pytest.approx(3600 - fake_clock.now)
+
+
+class TestSetRateLimit:
+    """Changing the rate limit of a throttler keeps its cooldown."""
+
+    def test_cooldown_survives_a_rate_limit_change(self, fake_clock: FakeClock) -> None:
+        """An armed cooldown is unchanged by a new rate limit."""
+        throttler = ThrottlerManager(rate_limit=1, period=2)
+        throttler.set_cooldown(3600)
+        throttler.set_rate_limit(rate_limit=30, period=30)
+        assert throttler.cooldown_remaining == pytest.approx(3600)
+
+    async def test_rate_limit_holds_back_a_second_call(self) -> None:
+        """A second call within the period waits for a free slot."""
+        throttler = ThrottlerManager(rate_limit=1, period=0.2)
+        async with throttler.acquire() as delay:
+            assert delay == 0
+        async with throttler.acquire() as delay:
+            assert delay >= 0.2
+
+    async def test_new_rate_limit_applies(self) -> None:
+        """A raised rate limit lets a second call within the period through right away."""
+        throttler = ThrottlerManager(rate_limit=1, period=100)
+        throttler.set_rate_limit(rate_limit=2, period=100)
+        async with throttler.acquire() as delay:
+            assert delay == 0
+        # a call held to the previous limit would wait out the period
+        async with asyncio.timeout(1), throttler.acquire() as delay:
+            assert delay == 0
 
 
 class TestExponentialBackoffWithJitter:
