@@ -490,12 +490,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
         for holder_id, queue_data in self._queue_data.items():
             if holder_id == queue_id or not self._is_paused(holder_id):
                 continue
-            # a buffer holds its provider's slot for as long as its source is producing
+            # a buffer holds its provider's slot from its first audio until its source stops
+            # producing; one that is not ready yet can still be waiting for a slot itself
             if any(
                 (details := item.streamdetails) is not None
                 and details.provider == provider_instance
                 and details.buffer is not None
                 and details.buffer.is_buffering
+                and details.buffer.ready.is_set()
                 for item in queue_data.items
             ):
                 return holder_id

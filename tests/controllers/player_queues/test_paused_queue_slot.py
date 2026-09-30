@@ -291,6 +291,24 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     await paused_buffer.clear()
 
 
+async def test_a_paused_queue_still_waiting_for_a_slot_is_no_holder(rig: _Rig) -> None:
+    """A paused queue whose source waits behind a playing queue holds nothing to hand over."""
+    playing_item = rig.add_queue("office", PlaybackState.PLAYING)
+    playing_buffer = await rig.fill(playing_item)
+    waiting_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    assert waiting_item.streamdetails is not None
+    waiting_buffer = await AudioBuffer.get_buffer(
+        rig.mass, waiting_item.streamdetails, wait_ready=False, source_wait_timeout=None
+    )
+    await asyncio.sleep(0)
+    assert waiting_buffer.is_buffering
+
+    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, STARTING_QUEUE)
+
+    await waiting_buffer.clear()
+    await playing_buffer.clear()
+
+
 async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig) -> None:
     """The stop waits for the queue's playback lock, and a resume holding it wins."""
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
