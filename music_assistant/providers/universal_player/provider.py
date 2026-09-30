@@ -521,7 +521,7 @@ class UniversalPlayerProvider(PlayerProvider):
             if (config := all_player_configs.get(protocol_id)) and config.get("provider")
         }
         for player_id, config in all_player_configs.items():
-            if player_id in protocol_ids:
+            if player_id in protocol_ids or config.get("player_type") != "protocol":
                 continue
             if (config.get("values") or {}).get(CONF_PROTOCOL_PARENT_ID) != native_id:
                 continue
