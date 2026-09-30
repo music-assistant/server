@@ -5,9 +5,10 @@ import json
 import logging
 import traceback
 from collections.abc import AsyncIterator
+from itertools import count
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
@@ -16,6 +17,7 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.providers.feiniu_music import SUPPORTED_FEATURES
+from music_assistant.providers.feiniu_music import provider as provider_module
 from music_assistant.providers.feiniu_music.client import (
     AuthenticationError,
     NetworkError,
@@ -309,8 +311,8 @@ async def test_audio_authentication_retry_is_bounded(provider: Any, emit_first: 
     assert provider._reauthenticate.await_count == (0 if emit_first else 1)
 
 
-async def test_library_sync_reads_all_pages(provider: Any) -> None:
-    """Collection iteration cannot silently truncate the native library."""
+async def test_library_sync_rows_without_access_status(provider: Any) -> None:
+    """Music 1.0.1 list rows omit accessStatus and still retain every page."""
     provider._client.page = AsyncMock(
         side_effect=[
             {"list": [{"guid": "one", "title": "One"}], "total": 2},
@@ -320,6 +322,137 @@ async def test_library_sync_reads_all_pages(provider: Any) -> None:
     items = [item async for item in provider.get_library_tracks()]
     assert [item.item_id for item in items] == ["one", "two"]
     assert provider._client.page.await_count == 2
+    provider._client.detail.assert_not_awaited()
+    provider._client.lyrics.assert_not_awaited()
+    provider._client.playlists.assert_not_awaited()
+
+
+async def test_track_search_rows_without_access_status(provider: Any) -> None:
+    """Music 1.0.1 search rows need no status field or per-track permission probe."""
+    provider._client.search = AsyncMock(
+        return_value={"list": [{"guid": "one", "title": "One"}], "total": 1}
+    )
+    result = await provider.search("One", [MediaType.TRACK])
+    assert [(item.item_id, item.name) for item in result.tracks] == [("one", "One")]
+    provider._client.search.assert_awaited_once_with("track", "One", 1, size=5)
+    provider._client.detail.assert_not_awaited()
+    provider._client.lyrics.assert_not_awaited()
+    provider._client.page.assert_not_awaited()
+    provider._client.playlists.assert_not_awaited()
+
+
+async def test_collection_parses_before_fetching_next_page(provider: Any) -> None:
+    """Raw pages do not accumulate before parsing starts."""
+    provider._parse_item = Mock(wraps=provider._parse_item)
+
+    async def fetch(kind: str, page: int) -> dict[str, Any]:
+        assert kind == "track"
+        assert provider._parse_item.call_count == page - 1
+        return {"list": [{"guid": f"track-{page}"}], "total": 2}
+
+    provider._client.page = AsyncMock(side_effect=fetch)
+    tracks = [item async for item in provider.get_library_tracks()]
+    assert [item.item_id for item in tracks] == ["track-1", "track-2"]
+    assert provider._client.page.await_count == 2
+
+
+async def test_collection_parse_failure_closes_pages_without_partial_yield(provider: Any) -> None:
+    """A later parse failure closes the iterator immediately and publishes no items."""
+    closed = False
+    error = InvalidDataError("synthetic parse failure")
+    first_item = provider._parse_item("track", {"guid": "valid"})
+    provider._parse_item = Mock(side_effect=[first_item, error])
+
+    async def pages(_fetch: Any) -> AsyncIterator[dict[str, Any]]:
+        nonlocal closed
+        try:
+            yield {"guid": "valid"}
+            yield {"guid": "invalid"}
+        finally:
+            closed = True
+
+    provider._pages = pages
+    delivered = []
+
+    async def collect() -> None:
+        async for item in provider.get_library_tracks():
+            delivered.append(item)
+
+    with pytest.raises(InvalidDataError, match="synthetic parse failure") as raised:
+        await collect()
+    assert raised.value is error
+    assert provider._parse_item.call_args_list == [
+        call("track", {"guid": "valid"}),
+        call("track", {"guid": "invalid"}),
+    ]
+    assert closed
+    assert delivered == []
+
+
+async def test_playlist_collection_rejects_duplicate_ids(provider: Any) -> None:
+    """The nonpaginated collection keeps its duplicate-ID validation."""
+    provider._client.playlists = AsyncMock(return_value=[{"guid": "one"}, {"guid": "one"}])
+    with pytest.raises(InvalidDataError, match="duplicate collection identifiers"):
+        await provider._collection("playlist")
+
+
+@pytest.mark.parametrize("playlist", [False, True])
+@pytest.mark.parametrize(
+    ("second_page", "message"),
+    [
+        ({"list": [], "total": 2}, "incomplete"),
+        ({"list": [{"guid": "two"}], "total": 3}, "changed"),
+        ({"list": [{"guid": "two"}, {"guid": "three"}], "total": 2}, "incomplete"),
+        ({"list": [{}], "total": 2}, "missing"),
+        ({"list": [], "total": True}, "invalid page"),
+        ({"list": [], "total": -1}, "invalid page"),
+        ({"list": [], "total": "2"}, "invalid page"),
+    ],
+)
+async def test_pagination_validation_rejects_incomplete_results(
+    provider: Any, playlist: bool, second_page: dict[str, Any], message: str
+) -> None:
+    """Both iterators retain progress and total validation after removing the page cap."""
+    fetch = AsyncMock(
+        side_effect=[{"list": [{"guid": "one", "accessStatus": 0}], "total": 2}, second_page]
+    )
+    if playlist:
+        provider._client.related = fetch
+    else:
+        provider._client.page = fetch
+    read = (
+        provider.get_playlist_tracks("playlist-test") if playlist else provider._collection("track")
+    )
+    with pytest.raises(InvalidDataError, match=message):
+        await read
+    assert fetch.await_count == 2
+
+
+@pytest.mark.parametrize("playlist", [False, True])
+async def test_pagination_continues_above_10000(
+    provider: Any, monkeypatch: pytest.MonkeyPatch, playlist: bool
+) -> None:
+    """Advance the page counter near the old boundary without thousands of fetches."""
+    counter = Mock(return_value=count(9999))
+    monkeypatch.setattr(provider_module, "count", counter)
+    fetch = AsyncMock(
+        side_effect=[
+            {"list": [{"guid": guid, "accessStatus": 0}], "total": 3}
+            for guid in ("one", "two", "three")
+        ]
+    )
+    if playlist:
+        provider._client.related = fetch
+        tracks = await provider.get_playlist_tracks("playlist-test")
+        assert fetch.await_args_list == [
+            call("playlist", "playlist-test", page) for page in (9999, 10000, 10001)
+        ]
+    else:
+        provider._client.page = fetch
+        tracks = [item async for item in provider.get_library_tracks()]
+        assert fetch.await_args_list == [call("track", page) for page in (9999, 10000, 10001)]
+    assert [item.item_id for item in tracks] == ["one", "two", "three"]
+    counter.assert_called_once_with(1)
 
 
 async def test_repeated_page_fails_sync(provider: Any) -> None:

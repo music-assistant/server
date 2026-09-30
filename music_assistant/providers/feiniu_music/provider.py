@@ -9,6 +9,7 @@ from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import replace
 from functools import partial
+from itertools import count
 from typing import Any, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
@@ -191,6 +192,8 @@ class FeiNiuProvider(MusicProvider):
                 )
             ) as pages:
                 async for item in pages:
+                    # Music 1.0.1 (0.8.41) track search rows omit accessStatus;
+                    # inaccessible tracks are filtered server-side.
                     found.append(self._bind_images(parser(item, self.instance_id)))
                     if len(found) >= limit:
                         break
@@ -310,17 +313,23 @@ class FeiNiuProvider(MusicProvider):
 
     async def _read_collection(self, kind: str) -> dict[str, MediaItem]:
         self._check_open()
-        rows = (
-            await self._call(self._client.playlists)
-            if kind == "playlist"
-            else [row async for row in self._pages(lambda page: self._client.page(kind, page))]
-        )
-        items = {}
-        for row in rows:
+        items: dict[str, MediaItem] = {}
+
+        def store(row: dict[str, Any]) -> None:
             item = self._parse_item(kind, row)
             if item.item_id in items:
                 raise InvalidDataError("FeiNiu returned duplicate collection identifiers")
             items[item.item_id] = item
+
+        if kind == "playlist":
+            for row in await self._call(self._client.playlists):
+                store(row)
+        else:
+            # Music 1.0.1 (0.8.41) track list rows omit accessStatus;
+            # inaccessible tracks are filtered server-side.
+            async with aclosing(self._pages(lambda page: self._client.page(kind, page))) as rows:
+                async for row in rows:
+                    store(row)
         self._check_open()
         return items
 
@@ -376,13 +385,15 @@ class FeiNiuProvider(MusicProvider):
         items: list[dict[str, Any]] = []
         total = None
         received = 0
-        for page in range(1, 10001):
-            rows, count = self._page_data(
+        pages = count(1)
+        while True:
+            page = next(pages)
+            rows, page_total = self._page_data(
                 await self._call(partial(self._client.related, "playlist", item_id, page))
             )
-            if total is not None and count != total:
+            if total is not None and page_total != total:
                 raise InvalidDataError("FeiNiu playlist changed during pagination")
-            total = count
+            total = page_total
             for row in rows:
                 if not isinstance(row.get("guid"), str) or not row["guid"]:
                     raise InvalidDataError("FeiNiu playlist has a missing track ID")
@@ -394,7 +405,6 @@ class FeiNiuProvider(MusicProvider):
                 return items
             if not rows or received > total:
                 raise InvalidDataError("FeiNiu playlist pagination is incomplete")
-        raise InvalidDataError("FeiNiu playlist exceeded its safety limit")
 
     async def _login(self) -> None:
         user = await self._client.login(
@@ -445,11 +455,13 @@ class FeiNiuProvider(MusicProvider):
     ) -> AsyncGenerator[dict[str, Any]]:
         seen = set()
         total = None
-        for page in range(1, 10001):
-            items, count = self._page_data(await self._call(partial(fetch, page)))
-            if total is not None and total != count:
+        pages = count(1)
+        while True:
+            page = next(pages)
+            items, page_total = self._page_data(await self._call(partial(fetch, page)))
+            if total is not None and total != page_total:
                 raise InvalidDataError("FeiNiu library changed during pagination; retry sync")
-            total = count
+            total = page_total
             for item in items:
                 guid = item.get("guid")
                 if not isinstance(guid, str) or not guid or guid in seen:
@@ -460,7 +472,6 @@ class FeiNiuProvider(MusicProvider):
                 return
             if not items or len(seen) > total:
                 raise InvalidDataError("FeiNiu pagination is incomplete")
-        raise InvalidDataError("FeiNiu pagination exceeded its safety limit")
 
     @staticmethod
     def _page_data(result: Any) -> tuple[list[dict[str, Any]], int]:
