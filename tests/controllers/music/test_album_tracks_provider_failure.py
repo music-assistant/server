@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import AlbumType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+)
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     Album,
@@ -87,6 +92,7 @@ def _failing_provider_fetch(
     [
         MediaNotFoundError("Failed to get album tracks"),
         InvalidDataError("Bandcamp returned a response that is not usable JSON"),
+        ProviderPermissionDenied("Not available in your region"),
     ],
 )
 async def test_album_tracks_skip_failing_provider(
@@ -104,6 +110,21 @@ async def test_album_tracks_skip_failing_provider(
         tracks = await mass.music.albums.tracks(db_album.item_id, "library")
     assert [track.name for track in tracks] == ["Track One", "Track Two"]
     assert "Unable to fetch tracks for album Test Album from provider streaming_inst" in caplog.text
+
+
+async def test_album_tracks_do_not_hide_a_provider_account_failure(mass: MusicAssistant) -> None:
+    """A failure that is not a fetch failure is not skipped over, even with playable tracks left."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    with (
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            side_effect=_failing_provider_fetch(LoginFailed("token expired")),
+        ),
+        pytest.raises(LoginFailed),
+    ):
+        await mass.music.albums.tracks(db_album.item_id, "library")
 
 
 async def test_album_tracks_raise_when_library_tracks_unavailable(mass: MusicAssistant) -> None:

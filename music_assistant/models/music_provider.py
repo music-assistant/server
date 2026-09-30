@@ -19,6 +19,10 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
@@ -77,9 +81,15 @@ MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 # skipped id's are resolved back to library id's in batches of this size
 SKIPPED_ITEM_QUERY_LIMIT: Final[int] = 500
-# errors outside our control a provider fetch may raise; multi-provider callers skip that provider
+# failures of one provider's fetch that leave the other providers' items playable: a
+# multi-provider caller skips that provider rather than abort on its behalf
 PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
-    MusicAssistantError,
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     TimeoutError,
     aiohttp.ClientError,
 )
