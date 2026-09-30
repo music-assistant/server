@@ -154,7 +154,7 @@ class MetadataEnrichmentMixin:
         if not artist.mbid:
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
-        await self._link_artist_to_musicbrainz(artist)
+        retry_soon = await self._link_artist_to_musicbrainz(artist)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -167,7 +167,6 @@ class MetadataEnrichmentMixin:
 
         # collect metadata from all (online)[metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        retry_soon = False
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
             for provider in self.providers:
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
@@ -287,7 +286,7 @@ class MetadataEnrichmentMixin:
                     album.album_type = prov_item.album_type
 
         # identify the album on MusicBrainz before the metadata providers need its id
-        await self._link_album_to_musicbrainz(album)
+        retry_soon = await self._link_album_to_musicbrainz(album)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -300,7 +299,6 @@ class MetadataEnrichmentMixin:
 
         # collect metadata from all (online) [metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        retry_soon = False
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
@@ -371,7 +369,7 @@ class MetadataEnrichmentMixin:
                 track.metadata.update(prov_item.metadata)
 
         # identify the track on MusicBrainz before the metadata providers need its id
-        await self._link_track_to_musicbrainz(track)
+        retry_soon = await self._link_track_to_musicbrainz(track)
 
         # don't merge online genres on top of source-supplied ones
         prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
@@ -382,7 +380,6 @@ class MetadataEnrichmentMixin:
         # Only fetch metadata from these sources if force_refresh is set OR
         # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
-        retry_soon = False
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
@@ -591,10 +588,16 @@ class MetadataEnrichmentMixin:
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
 
-    async def _link_artist_to_musicbrainz(self, artist: Artist) -> None:
-        """Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows."""
+    async def _link_artist_to_musicbrainz(self, artist: Artist) -> bool:
+        """
+        Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows.
+
+        :param artist: The library artist to link.
+        :return: Whether the lookup failed temporarily, which makes the item due for a refresh
+            again soon.
+        """
         if not (musicbrainz := self._musicbrainz_provider()):
-            return
+            return False
         # the Various Artists entity is nobody's discography, so it is not linked anywhere
         if artist.mbid and artist.mbid != VARIOUS_ARTISTS_MBID:
             try:
@@ -606,6 +609,13 @@ class MetadataEnrichmentMixin:
                     artist.add_external_id(*discogs)
                 if self.link_providers_via_musicbrainz:
                     await self.mass.music.artists.link_musicbrainz_mappings(artist, urls)
+            except _TEMPORARY_ERRORS as err:
+                self.logger.debug(
+                    "Artist %s could not be looked up on MusicBrainz right now: %s",
+                    artist.name,
+                    err,
+                )
+                return True
             except Exception as err:
                 self.logger.warning(
                     "Error linking Artist %s through MusicBrainz: %s",
@@ -613,13 +623,20 @@ class MetadataEnrichmentMixin:
                     err,
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-                return
+                return False
         artist.metadata.last_musicbrainz_lookup = int(time())
+        return False
 
-    async def _link_album_to_musicbrainz(self, album: Album) -> None:
-        """Identify an album on MusicBrainz, fill in what it knows and link it and its tracks."""
+    async def _link_album_to_musicbrainz(self, album: Album) -> bool:
+        """
+        Identify an album on MusicBrainz, fill in what it knows and link it and its tracks.
+
+        :param album: The library album to link.
+        :return: Whether the lookup failed temporarily, which makes the item due for a refresh
+            again soon.
+        """
         if not (musicbrainz := self._musicbrainz_provider()):
-            return
+            return False
         try:
             db_tracks = await self.mass.music.albums.get_library_album_tracks(album.item_id)
             release = await musicbrainz.resolve_release(
@@ -636,6 +653,11 @@ class MetadataEnrichmentMixin:
                 await self.mass.music.albums.link_album_tracks(
                     album, db_tracks, release, link_providers=link_providers
                 )
+        except _TEMPORARY_ERRORS as err:
+            self.logger.debug(
+                "Album %s could not be looked up on MusicBrainz right now: %s", album.name, err
+            )
+            return True
         except Exception as err:
             self.logger.warning(
                 "Error linking Album %s through MusicBrainz: %s",
@@ -643,13 +665,20 @@ class MetadataEnrichmentMixin:
                 err,
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
-            return
+            return False
         album.metadata.last_musicbrainz_lookup = int(time())
+        return False
 
-    async def _link_track_to_musicbrainz(self, track: Track) -> None:
-        """Identify a track on MusicBrainz, fill in its recording id and ISRCs and link it."""
+    async def _link_track_to_musicbrainz(self, track: Track) -> bool:
+        """
+        Identify a track on MusicBrainz, fill in its recording id and ISRCs and link it.
+
+        :param track: The library track to link.
+        :return: Whether the lookup failed temporarily, which makes the item due for a refresh
+            again soon.
+        """
         if not (musicbrainz := self._musicbrainz_provider()):
-            return
+            return False
         try:
             recording = await musicbrainz.resolve_recording(track)
             if recording is None:
@@ -660,6 +689,11 @@ class MetadataEnrichmentMixin:
                     await self.mass.music.tracks.link_musicbrainz_mappings(
                         track, relation_urls(recording.relations)
                     )
+        except _TEMPORARY_ERRORS as err:
+            self.logger.debug(
+                "Track %s could not be looked up on MusicBrainz right now: %s", track.name, err
+            )
+            return True
         except Exception as err:
             self.logger.warning(
                 "Error linking Track %s through MusicBrainz: %s",
@@ -667,8 +701,9 @@ class MetadataEnrichmentMixin:
                 err,
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
-            return
+            return False
         track.metadata.last_musicbrainz_lookup = int(time())
+        return False
 
     def _musicbrainz_provider(self) -> MusicbrainzProvider | None:
         """Return the MusicBrainz provider, if it is loaded."""

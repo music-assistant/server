@@ -519,6 +519,14 @@ def _musicbrainz(
     return musicbrainz
 
 
+def _logged_musicbrainz_unavailable(enrichment: MetadataEnrichmentMixin) -> bool:
+    """Return whether the enrichment logged a lookup MusicBrainz could not answer right now."""
+    return any(
+        "could not be looked up on MusicBrainz right now" in call.args[0]
+        for call in _logger(enrichment).debug.call_args_list
+    )
+
+
 def _album(external_ids: set[tuple[ExternalID, str]] | None = None, **kwargs: Any) -> Album:
     """Return a library album without provider mappings."""
     return Album(
@@ -598,7 +606,7 @@ async def test_album_identity_with_linking_disabled_fills_ids_but_links_nothing(
     albums.get_library_album_tracks = AsyncMock(return_value=db_tracks)
     album = _album()
 
-    await enrichment._link_album_to_musicbrainz(album)
+    assert await enrichment._link_album_to_musicbrainz(album) is False
 
     assert album.mbid == RELEASE_ID
     assert album.metadata.last_musicbrainz_lookup is not None
@@ -667,17 +675,62 @@ async def test_album_identity_is_skipped_without_a_musicbrainz_provider() -> Non
 
 @pytest.mark.asyncio
 async def test_album_identity_failure_is_logged_and_left_for_the_next_run() -> None:
-    """A failing lookup is a warning, not the end of the enrichment, and is not marked done."""
+    """A temporarily failing lookup is logged quietly, not marked done and due again soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.resolve_release = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
     album = _album()
 
-    await enrichment._update_album_metadata(album, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
+
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
+    assert album.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_album_identity_unexpected_failure_is_a_warning() -> None:
+    """An unexpected lookup failure is a warning, not marked done and due at the usual time."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_release = AsyncMock(side_effect=ValueError("bad payload"))
+    enrichment = _enrichment(musicbrainz)
+    album = _album()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
 
     _logger(enrichment).warning.assert_called_once()
     assert album.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW
+
+
+@pytest.mark.asyncio
+async def test_album_without_musicbrainz_ids_is_due_again_soon_while_musicbrainz_is_down() -> None:
+    """
+    An album MusicBrainz cannot identify right now is due again soon.
+
+    Without the MusicBrainz ids an album metadata provider such as the Cover Art Archive
+    has nothing to look up and returns nothing instead of failing.
+    """
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_release = AsyncMock(side_effect=RetriesExhausted("x"))
+    enrichment = _enrichment(musicbrainz)
+    cover_art = _metadata_provider("Cover Art Archive", ProviderFeature.ALBUM_METADATA)
+    cover_art.get_album_metadata = AsyncMock(return_value=None)
+    enrichment.providers = [cover_art]  # type: ignore[misc]
+    album = _album()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
+
+    cover_art.get_album_metadata.assert_awaited_once_with(album)
+    assert album.mbid is None
+    _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once_with("1", album)
+    assert album.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
 
 
 def _track(external_ids: set[tuple[ExternalID, str]] | None = None) -> Track:
@@ -737,17 +790,37 @@ async def test_track_identity_keeps_an_existing_recording_id_and_marks_a_miss() 
 
 @pytest.mark.asyncio
 async def test_track_identity_failure_is_left_for_the_next_run() -> None:
-    """A track whose lookup fails is not marked as looked up, unlike an authoritative miss."""
+    """A track whose lookup fails temporarily is not marked as looked up and is due again soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.resolve_recording = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
     track = _track()
 
-    await enrichment._update_track_metadata(track, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
+    assert track.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+    assert track.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_track_identity_unexpected_failure_is_a_warning() -> None:
+    """An unexpected lookup failure is a warning, not marked done and due at the usual time."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_recording = AsyncMock(side_effect=ValueError("bad payload"))
+    enrichment = _enrichment(musicbrainz)
+    track = _track()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
 
     _logger(enrichment).warning.assert_called_once()
     assert track.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+    assert track.metadata.last_refresh == NOW
 
 
 def test_fill_track_from_recording_reports_whether_the_track_gained_an_id() -> None:
@@ -803,7 +876,7 @@ async def test_artist_identity_fills_discogs_and_links() -> None:
 
 @pytest.mark.asyncio
 async def test_artist_identity_failure_is_left_for_the_next_run() -> None:
-    """An artist whose MusicBrainz details cannot be fetched is not marked as looked up."""
+    """An artist whose MusicBrainz details cannot be fetched now is left unmarked and due soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.get_artist_details = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
@@ -815,11 +888,47 @@ async def test_artist_identity_failure_is_left_for_the_next_run() -> None:
         external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
     )
 
-    await enrichment._update_artist_metadata(artist, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
 
-    _logger(enrichment).warning.assert_called_once()
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
     assert artist.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+    assert artist.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
+@pytest.mark.parametrize(
+    ("error", "temporary"),
+    [(RetriesExhausted("x"), True), (ValueError("bad payload"), False)],
+    ids=["temporary", "unexpected"],
+)
+async def test_identity_step_reports_whether_its_lookup_failed_temporarily(
+    media_type: MediaType, error: Exception, temporary: bool
+) -> None:
+    """A failed lookup is never marked done; only a temporary failure is logged quietly."""
+    musicbrainz = _musicbrainz()
+    item: Artist | Album | Track
+    if media_type == MediaType.ARTIST:
+        musicbrainz.get_artist_details = AsyncMock(side_effect=error)
+        item = _artist()
+        item.mbid = OTHER_MBID
+    elif media_type == MediaType.ALBUM:
+        musicbrainz.resolve_release = AsyncMock(side_effect=error)
+        item = _album()
+    else:
+        musicbrainz.resolve_recording = AsyncMock(side_effect=error)
+        item = _track()
+    enrichment = _enrichment(musicbrainz)
+
+    link = getattr(enrichment, f"_link_{media_type.value}_to_musicbrainz")
+    assert await link(item) is temporary
+
+    assert item.metadata.last_musicbrainz_lookup is None
+    assert _logged_musicbrainz_unavailable(enrichment) is temporary
+    assert _logger(enrichment).warning.called is not temporary
 
 
 @pytest.mark.asyncio
@@ -875,7 +984,7 @@ async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_not
         external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
     )
 
-    await enrichment._link_artist_to_musicbrainz(artist)
+    assert await enrichment._link_artist_to_musicbrainz(artist) is False
 
     assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
     assert artist.metadata.last_musicbrainz_lookup is not None
@@ -895,7 +1004,7 @@ async def test_track_identity_with_linking_disabled_fills_ids_but_links_nothing(
     enrichment.link_providers_via_musicbrainz = False  # type: ignore[misc]
     track = _track()
 
-    await enrichment._link_track_to_musicbrainz(track)
+    assert await enrichment._link_track_to_musicbrainz(track) is False
 
     assert track.mbid == RECORDING_ID
     assert (ExternalID.ISRC, "GBSTK0700001") in track.external_ids

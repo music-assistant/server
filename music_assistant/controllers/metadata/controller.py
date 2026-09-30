@@ -615,8 +615,8 @@ class MetaDataController(
     async def _reconcile_duplicate_albums(self) -> None:
         """Enrich and re-match a small batch of sparse or possibly duplicated albums."""
         update_current_task_progress_text("Searching for albums needing reconciliation")
-        # candidates keep retrying at the normal REFRESH_INTERVAL cadence (e.g. after a
-        # transient provider outage), rather than only ever once
+        # candidates are selected again once their refresh is due (sooner after a temporary
+        # provider failure), rather than only ever once
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"({DB_TABLE_ALBUMS}.album_type = '{AlbumType.UNKNOWN.value}' "
