@@ -1761,7 +1761,7 @@ class YandexMusicClient:
             "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
-        if self._global_concurrency is not None and current_priority() is not RequestPriority.HIGH:
+        if self._global_concurrency is not None:
             async with self._global_concurrency:
                 return await self._call_with_retry_inner(func, kind=kind)
         return await self._call_with_retry_inner(func, kind=kind)

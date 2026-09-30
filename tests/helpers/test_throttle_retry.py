@@ -808,10 +808,12 @@ class TestThrottlerPriorities:
     async def test_priority_defaults_to_the_current_context(self, fake_clock: FakeClock) -> None:
         """Without an explicit priority the throttler uses the priority of the context."""
         throttler = Throttler(rate_limit=30, period=30)
-        await throttler.acquire()
-        # a second low priority request would be paced
-        with request_priority(RequestPriority.NORMAL):
+        with request_priority(RequestPriority.LOW):
             assert await throttler.acquire() == 0
+            # the second low priority request meets the pacer
+            assert await throttler.acquire() == pytest.approx(2)
+        # a user action is not paced
+        assert await throttler.acquire() == 0
 
 
 class TestThrottlerVirtualClock:

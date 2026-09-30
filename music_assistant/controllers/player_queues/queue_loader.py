@@ -725,8 +725,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
     @handle_play_action
-    # playback has priority over other requests that may be happening in the background
-    @with_request_priority(RequestPriority.HIGH)
     async def _handle_play_media(
         self,
         queue_id: str,
