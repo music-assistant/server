@@ -97,7 +97,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_folder_size, get_ip_from_host
-from music_assistant.models.core_controller import CoreController
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -122,6 +122,7 @@ class StorageController(CoreController):
         self.manifest.name = "Storage"
         self.manifest.description = "Keeps track of the storage the server can use."
         self.manifest.icon = "harddisk"
+        self.manifest.documentation = CORE_DOCS_URL
         self._locations: list[StorageLocation] = []
         self._in_container = False
         # the data and cache directory of the server, as given until setup resolves them
