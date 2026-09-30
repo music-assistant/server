@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import math
+import time
+from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -47,7 +52,12 @@ from music_assistant.helpers.podcast_parsers import (
     parse_podcast_episode,
     refresh_cached_podcast,
 )
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    ThrottlerManager,
+    set_request_priority,
+    throttle_with_retries,
+)
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.itunes_podcasts.schema import (
     ITunesSearchResults,
@@ -73,8 +83,28 @@ DEFAULT_LOCALE = "us"
 
 # category 0 holds the parsed podcast feeds, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_RECOMMENDATIONS = 1
-CACHE_KEY_TOP_PODCASTS = "top-podcasts"
+CACHE_CATEGORY_FEED_LOOKUP = 2
+CACHE_KEY_TOP_PODCASTS = "top-podcasts-full"
+CACHE_KEY_LIBRARY_RECOMMENDATIONS = "library-recommendations"
 RECOMMENDATION_ROW_TOP_PODCASTS = "itunes-top-podcasts"
+RECOMMENDATION_ROW_FOR_YOU = "itunes-library-recommendations"
+RECOMMENDATION_ROW_SIZE = 15
+
+# iTunes root genre "Podcasts", present on every show and useless for similarity
+ROOT_GENRE_ID = "26"
+# one chart request per genre
+MAX_SEED_GENRES = 4
+GENRE_CHART_LIMIT = 100
+# library podcasts resolved while the row is requested, the rest in the background
+MAX_INLINE_RESOLVES = 5
+LOOKUP_BATCH_SIZE = 100
+# the v2 feed returns at most 100 entries
+TOP_PODCASTS_LIMIT = 100
+TOP_PODCASTS_CACHE_EXPIRATION = 60 * 60 * 24
+# the trending row shows every n-th chart entry (1, 8, 15, ...) and moves to the next
+# offset every rotation, so the whole chart is shown once per cache lifetime
+TOP_PODCASTS_NUM_PAGES = math.ceil(TOP_PODCASTS_LIMIT / RECOMMENDATION_ROW_SIZE)
+TOP_PODCASTS_ROTATION = TOP_PODCASTS_CACHE_EXPIRATION // TOP_PODCASTS_NUM_PAGES
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
@@ -180,16 +210,13 @@ class ITunesPodcastsProvider(MusicProvider):
             "term": search_query,
         }
         url = "https://itunes.apple.com/search?"
-        result.podcasts = await self._perform_search(url, params)
+        results = await self._get_itunes_results(url, params) or []
+        result.podcasts = self._get_podcast_list(results)
 
         return result
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's available recommendation rows, without items.
-
-        A single row with the top podcasts for the configured country.
-        """
+        """Get this provider's available recommendation rows, without items."""
         return [
             RecommendationFolder(
                 item_id=RECOMMENDATION_ROW_TOP_PODCASTS,
@@ -197,7 +224,14 @@ class ITunesPodcastsProvider(MusicProvider):
                 icon="mdi-trending-up",
                 translation_key="trending_podcasts",
                 provider=self.instance_id,
-            )
+            ),
+            RecommendationFolder(
+                item_id=RECOMMENDATION_ROW_FOR_YOU,
+                name="Podcasts you might like",
+                icon="mdi-podcast",
+                translation_key="podcasts_you_might_like",
+                provider=self.instance_id,
+            ),
         ]
 
     async def get_recommendation_items(
@@ -208,9 +242,12 @@ class ITunesPodcastsProvider(MusicProvider):
 
         :param item_id: The item_id of the row, as returned by get_recommendations.
         """
-        if item_id != RECOMMENDATION_ROW_TOP_PODCASTS:
+        if item_id == RECOMMENDATION_ROW_TOP_PODCASTS:
+            search_results = await self._get_top_podcasts_page()
+        elif item_id == RECOMMENDATION_ROW_FOR_YOU:
+            search_results = await self._get_library_recommendations()
+        else:
             return UniqueList()
-        search_results = await self._cache_get_top_podcasts()
         return UniqueList(self._get_podcast_list(search_results))
 
     async def get_podcast_episode_transcript(
@@ -228,15 +265,18 @@ class ITunesPodcastsProvider(MusicProvider):
         )
 
     @throttle_with_retries
-    async def _perform_search(self, url: str, params: dict[str, str | int]) -> list[Podcast]:
-        response = await self.mass.http_session.get(url, params=params)
-        json_response = b""
-        if response.status == 200:
+    async def _get_itunes_results(
+        self, url: str, params: dict[str, str | int]
+    ) -> list[PodcastSearchResult] | None:
+        """Run an iTunes search/lookup request, None on failure (so it is not cached)."""
+        async with self.mass.http_session.get(url, params=params) as response:
+            if response.status != 200:
+                self.logger.debug("iTunes request failed with status %s", response.status)
+                return None
             json_response = await response.read()
         if not json_response:
-            return []
-        results = ITunesSearchResults.from_json(json_response).results
-        return self._get_podcast_list(results)
+            return None
+        return ITunesSearchResults.from_json(json_response).results
 
     def _get_podcast_list(self, results: list[PodcastSearchResult]) -> list[Podcast]:
         podcast_list: list[Podcast] = []
@@ -411,25 +451,6 @@ class ITunesPodcastsProvider(MusicProvider):
             allow_seek=True,
         )
 
-    @throttle_with_retries
-    async def _get_podcast_search_result_from_itunes_id(
-        self, itunes_id: int
-    ) -> PodcastSearchResult:
-        params = {"id": itunes_id}
-        url = "https://itunes.apple.com/lookup?"
-        response = await self.mass.http_session.get(url, params=params)
-        json_response = b""
-        if response.status == 200:
-            json_response = await response.read()
-        if not json_response:
-            raise MediaNotFoundError
-        search_results = ITunesSearchResults.from_json(json_response)
-        if search_results.result_count == 0:
-            raise MediaNotFoundError
-        if search_results.result_count > 1:
-            self.logger.warning("More than a single result for podcast.")
-        return search_results.results[0]
-
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         # raises MediaNotFoundError if the feed is gone or invalid
         return await get_cached_podcast(
@@ -453,62 +474,341 @@ class ITunesPodcastsProvider(MusicProvider):
             return schedule.every * 24 * 60 * 60 + 600
         return 60 * 60 * 12  # 12h
 
-    async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
-        await self.mass.cache.set(
-            key=CACHE_KEY_TOP_PODCASTS,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_RECOMMENDATIONS,
-            data=top_podcast_helper.to_dict(),
-            expiration=60 * 60 * 6,  # 6 hours
-        )
-
     async def _cache_get_top_podcasts(self) -> list[PodcastSearchResult]:
-        parsed_top_podcasts = await self.mass.cache.get(
-            key=CACHE_KEY_TOP_PODCASTS,
+        # cached unfiltered, so the library and explicit filters take effect right away
+        cache_key = f"{CACHE_KEY_TOP_PODCASTS}-{self.config.get_value(CONF_LOCALE)}"
+        cached = await self.mass.cache.get(
+            key=cache_key, provider=self.instance_id, category=CACHE_CATEGORY_RECOMMENDATIONS
+        )
+        if cached is not None:
+            return TopPodcastsHelper.from_dict(cached).top_podcasts
+        itunes_ids = await self._get_top_chart_ids(str(self.config.get_value(CONF_LOCALE)))
+        top_podcasts = None if itunes_ids is None else await self._lookup_itunes_ids(itunes_ids)
+        if top_podcasts is None:
+            # failed, not cached so the next request retries
+            return []
+        await self.mass.cache.set(
+            key=cache_key,
             provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
+            data=TopPodcastsHelper(top_podcasts=top_podcasts).to_dict(),
+            expiration=TOP_PODCASTS_CACHE_EXPIRATION,
         )
-        if parsed_top_podcasts is not None:
-            helper = TopPodcastsHelper.from_dict(parsed_top_podcasts)
-            return helper.top_podcasts
+        return top_podcasts
 
-        # 15 results
-        # keep 20 requests max per minute in mind
-        # https://rss.marketingtools.apple.com/
-        country = str(self.config.get_value(CONF_LOCALE))
-        url = f"https://rss.marketingtools.apple.com/api/v2/{country}/podcasts/top/15/podcasts.json"
-        response = await self.mass.http_session.get(url)
-        json_response = b""
-        if response.status == 200:
+    @throttle_with_retries
+    async def _get_top_chart_ids(self, country: str) -> list[int] | None:
+        """Get the iTunes ids of the top podcasts chart in chart order, None on failure."""
+        # see https://rss.marketingtools.apple.com/
+        url = (
+            f"https://rss.marketingtools.apple.com/api/v2/{country}/podcasts/top/"
+            f"{TOP_PODCASTS_LIMIT}/podcasts.json"
+        )
+        async with self.mass.http_session.get(url) as response:
+            if response.status != 200:
+                return None
             json_response = await response.read()
         if not json_response:
-            return []
-
+            return None
         top_podcasts_response = TopPodcastsResponse.from_json(json_response)
-
         if top_podcasts_response.feed is None:
-            return []
+            return None
+        itunes_ids: list[int] = []
+        for top_podcast in top_podcasts_response.feed.results:
+            try:
+                itunes_ids.append(int(top_podcast.id_))
+            except ValueError:
+                continue
+        return itunes_ids
 
+    async def _get_top_podcasts_page(self) -> list[PodcastSearchResult]:
+        """Get the current page of the top podcasts, without podcasts of the library."""
+        library = [podcast async for podcast in self.mass.music.podcasts.iter_library_items()]
+        library_filter = self._get_library_filter(library)
+        include_explicit = bool(self.config.get_value(CONF_EXPLICIT))
+        top_podcasts = [
+            podcast
+            for podcast in await self._cache_get_top_podcasts()
+            if self._is_recommendable(podcast, library_filter, include_explicit)
+        ]
+        if not top_podcasts:
+            return []
+        # clock based, so every client shows the same page and a restart does not reset it
+        page = int(time.time() // TOP_PODCASTS_ROTATION) % TOP_PODCASTS_NUM_PAGES
+        return top_podcasts[page::TOP_PODCASTS_NUM_PAGES]
+
+    @staticmethod
+    def _normalize_feed_url(url: str) -> str:
+        url = url.strip().lower()
+        for prefix in ("https://", "http://"):
+            url = url.removeprefix(prefix)
+        url = url.removeprefix("www.")
+        return url.rstrip("/")
+
+    @staticmethod
+    def _get_feed_url(podcast: Podcast) -> str | None:
+        # this provider and e.g. gpodder use the feed url as item_id, others their own ids
+        for mapping in podcast.provider_mappings:
+            if mapping.item_id.startswith(("http://", "https://")):
+                return mapping.item_id
+        return None
+
+    def _get_library_filter(self, library: list[Podcast]) -> tuple[set[str], set[str]]:
+        """Return the normalized feed urls and lowercase names of the library podcasts."""
+        feed_urls = {
+            self._normalize_feed_url(url)
+            for podcast in library
+            if (url := self._get_feed_url(podcast))
+        }
+        # names catch library podcasts whose provider does not store the feed url
+        names = {podcast.name.lower() for podcast in library if podcast.name}
+        return feed_urls, names
+
+    def _is_recommendable(
+        self,
+        podcast: PodcastSearchResult,
+        library_filter: tuple[set[str], set[str]],
+        include_explicit: bool,
+    ) -> bool:
+        library_feeds, library_names = library_filter
+        if podcast.feed_url is None:
+            return False
+        if self._normalize_feed_url(podcast.feed_url) in library_feeds:
+            return False
+        if (podcast.track_name or podcast.collection_name or "").lower() in library_names:
+            return False
+        return include_explicit or not podcast.is_explicit
+
+    async def _resolve_library_podcast(
+        self, podcast: Podcast, cached_only: bool = False
+    ) -> tuple[bool, PodcastSearchResult | None]:
+        """
+        Find the iTunes entry of a library podcast.
+
+        :param podcast: The library podcast.
+        :param cached_only: Only look at the cache, do not send a request.
+        :return: (resolved, entry). Not resolved: not cached yet or the request failed.
+            No entry: not listed in iTunes.
+        """
+        if not podcast.name:
+            return True, None
+        feed_url = self._get_feed_url(podcast)
+        cache_key = feed_url or f"{podcast.name}|{podcast.publisher}"
+        cached = await self.mass.cache.get(
+            key=cache_key, provider=self.instance_id, category=CACHE_CATEGORY_FEED_LOOKUP
+        )
+        if cached is not None:
+            # an empty dict marks a known miss
+            return True, PodcastSearchResult.from_dict(cached) if cached else None
+        if cached_only:
+            return False, None
+
+        # Apple has no lookup by feed url: search the title, then match the feed url
+        params: dict[str, str | int] = {
+            "media": "podcast",
+            "entity": "podcast",
+            "country": str(self.config.get_value(CONF_LOCALE)),
+            "limit": 25,
+            "term": podcast.name,
+        }
+        results = await self._get_itunes_results("https://itunes.apple.com/search?", params)
+        if results is None:
+            return False, None
+        match: PodcastSearchResult | None = None
+        if feed_url:
+            wanted = self._normalize_feed_url(feed_url)
+            match = next(
+                (
+                    r
+                    for r in results
+                    if r.feed_url and self._normalize_feed_url(r.feed_url) == wanted
+                ),
+                None,
+            )
+        if match is None and podcast.publisher:
+            # the feed may have moved, or the provider does not store the feed url
+            name, publisher = podcast.name.lower(), podcast.publisher.lower()
+            match = next(
+                (
+                    r
+                    for r in results
+                    if (r.track_name or r.collection_name or "").lower() == name
+                    and (r.artist_name or "").lower() == publisher
+                ),
+                None,
+            )
+        await self.mass.cache.set(
+            key=cache_key,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FEED_LOOKUP,
+            data=match.to_dict() if match else {},
+            # retry misses sooner, the show may get listed later on
+            expiration=60 * 60 * 24 * (30 if match else 7),
+        )
+        return True, match
+
+    async def _resolve_library_podcasts(self, podcasts: list[Podcast]) -> None:
+        # background task, only fills the cache. low priority keeps the throttle
+        # free for the row request and searches
+        set_request_priority(RequestPriority.LOW)
+        for podcast in podcasts:
+            await self._resolve_library_podcast(podcast)
+
+    async def _resolve_library(
+        self, library: list[Podcast]
+    ) -> tuple[list[PodcastSearchResult], bool]:
+        """
+        Resolve the library podcasts to their iTunes entries.
+
+        :return: (entries, complete). Not complete if some podcasts still resolve in
+            the background or a request failed.
+        """
+        seeds: list[PodcastSearchResult] = []
+        unresolved: list[Podcast] = []
+        for podcast in library:
+            resolved, seed = await self._resolve_library_podcast(podcast, cached_only=True)
+            if not resolved:
+                unresolved.append(podcast)
+            elif seed is not None:
+                seeds.append(seed)
+        complete = True
+        for podcast in unresolved[:MAX_INLINE_RESOLVES]:
+            resolved, seed = await self._resolve_library_podcast(podcast)
+            complete = complete and resolved
+            if seed is not None:
+                seeds.append(seed)
+        # the throttle would make a large library block the row for minutes
+        if background := unresolved[MAX_INLINE_RESOLVES:]:
+            complete = False
+            self.mass.create_task(
+                self._resolve_library_podcasts(background),
+                task_id=f"itunes_podcasts_resolve_library_{self.instance_id}",
+                task_name="itunes_podcasts_resolve_library",
+            )
+        return seeds, complete
+
+    @use_cache(3600 * 12, cache_none=False)
+    @throttle_with_retries
+    async def _get_genre_chart(self, country: str, genre_id: str) -> list[int] | None:
+        """Get the iTunes ids of the top podcasts of a genre in chart order, None on failure."""
+        # legacy feed, the v2 feed has no genre filter. country is an argument (not
+        # read from the config) so it is part of the cache key
+        url = (
+            f"https://itunes.apple.com/{country}/rss/toppodcasts/"
+            f"limit={GENRE_CHART_LIMIT}/genre={genre_id}/json"
+        )
+        async with self.mass.http_session.get(url) as response:
+            if response.status != 200:
+                return None
+            body = await response.read()
+        try:
+            # served as text/javascript, so parse the body ourselves
+            data = json.loads(body)
+        except ValueError:
+            return None
+        entries = data.get("feed", {}).get("entry", [])
+        if isinstance(entries, dict):
+            # a single entry is not wrapped in a list
+            entries = [entries]
+        ids: list[int] = []
+        for entry in entries:
+            try:
+                ids.append(int(entry["id"]["attributes"]["im:id"]))
+            except KeyError, TypeError, ValueError:
+                continue
+        return ids
+
+    async def _lookup_itunes_ids(self, itunes_ids: list[int]) -> list[PodcastSearchResult] | None:
+        """Batch lookup iTunes ids, keeping their order. None on failure."""
+        country = str(self.config.get_value(CONF_LOCALE))
+        by_id: dict[int, PodcastSearchResult] = {}
+        for start in range(0, len(itunes_ids), LOOKUP_BATCH_SIZE):
+            chunk = itunes_ids[start : start + LOOKUP_BATCH_SIZE]
+            params: dict[str, str | int] = {
+                "id": ",".join(str(i) for i in chunk),
+                "entity": "podcast",
+                "country": country,
+            }
+            results = await self._get_itunes_results("https://itunes.apple.com/lookup?", params)
+            if results is None:
+                return None
+            for result in results:
+                if result.collection_id is not None:
+                    by_id[result.collection_id] = result
+        return [by_id[i] for i in itunes_ids if i in by_id]
+
+    async def _get_library_recommendations(self) -> list[PodcastSearchResult]:
+        """Recommend podcasts of the genres dominating the library."""
+        library = [podcast async for podcast in self.mass.music.podcasts.iter_library_items()]
+        if not library:
+            return []
+        country = str(self.config.get_value(CONF_LOCALE))
         include_explicit = bool(self.config.get_value(CONF_EXPLICIT))
 
-        helper = TopPodcastsHelper()
-        for top_podcast in top_podcasts_response.feed.results:
-            if not include_explicit and top_podcast.content_advisory_rating is not None:
-                # the spelling within the API is wrong.
-                if top_podcast.content_advisory_rating in [
-                    "explicit",
-                    "Explicit",
-                    "Explict",
-                    "explict",
-                ]:
-                    continue
-            try:
-                podcast_search_result = await self._get_podcast_search_result_from_itunes_id(
-                    int(top_podcast.id_)
-                )
-            except MediaNotFoundError:
-                continue
-            helper.top_podcasts.append(podcast_search_result)
+        # recompute whenever the library or the relevant config changes
+        fingerprint = hashlib.sha1(
+            "\n".join(
+                [
+                    country,
+                    str(include_explicit),
+                    *sorted(f"{p.name}|{self._get_feed_url(p)}" for p in library),
+                ]
+            ).encode()
+        ).hexdigest()
+        cached = await self.mass.cache.get(
+            key=CACHE_KEY_LIBRARY_RECOMMENDATIONS,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            checksum=fingerprint,
+        )
+        if cached is not None:
+            return TopPodcastsHelper.from_dict(cached).top_podcasts
 
-        await self._cache_set_top_podcasts(top_podcast_helper=helper)
-        return helper.top_podcasts
+        seeds, complete = await self._resolve_library(library)
+        if not seeds:
+            return []
+
+        # only the primary (first) genre of a show counts: parent genres like "News"
+        # would otherwise double count and crowd out other interests
+        genre_weights: Counter[str] = Counter()
+        for seed in seeds:
+            specific = [g for g in seed.genre_ids if g != ROOT_GENRE_ID]
+            if specific:
+                genre_weights[specific[0]] += 1
+
+        # score by genre weight and chart position, shows ranking in several genres win
+        library_ids = {s.collection_id for s in seeds}
+        scores: dict[int, float] = defaultdict(float)
+        for genre_id, weight in genre_weights.most_common(MAX_SEED_GENRES):
+            chart = await self._get_genre_chart(country, genre_id)
+            if chart is None:
+                complete = False
+                continue
+            for rank, itunes_id in enumerate(chart):
+                if itunes_id not in library_ids:
+                    scores[itunes_id] += weight * (1 - rank / len(chart))
+        if not scores:
+            return []
+
+        # some headroom for items dropped by the filters below
+        ranked = sorted(scores, key=scores.__getitem__, reverse=True)
+        candidates = await self._lookup_itunes_ids(ranked[: RECOMMENDATION_ROW_SIZE * 2])
+        if candidates is None:
+            return []
+
+        library_filter = self._get_library_filter(library)
+        recommendations = [
+            candidate
+            for candidate in candidates
+            if self._is_recommendable(candidate, library_filter, include_explicit)
+        ][:RECOMMENDATION_ROW_SIZE]
+        await self.mass.cache.set(
+            key=CACHE_KEY_LIBRARY_RECOMMENDATIONS,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            data=TopPodcastsHelper(top_podcasts=recommendations).to_dict(),
+            checksum=fingerprint,
+            # incomplete: recompute soon, with what the background resolved meanwhile
+            expiration=60 * 60 * 24 if complete else 60 * 10,
+        )
+        return recommendations

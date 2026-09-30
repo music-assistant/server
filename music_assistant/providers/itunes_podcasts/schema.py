@@ -49,6 +49,26 @@ class PodcastSearchResult(_BaseModel):
         metadata=field_options(alias="primaryGenreName"), default=None
     )
     genres: list[str] = field(default_factory=list)
+    genre_ids: list[str] = field(metadata=field_options(alias="genreIds"), default_factory=list)
+    collection_explicitness: str | None = field(
+        metadata=field_options(alias="collectionExplicitness"), default=None
+    )
+    track_explicitness: str | None = field(
+        metadata=field_options(alias="trackExplicitness"), default=None
+    )
+    content_advisory_rating: str | None = field(
+        metadata=field_options(alias="contentAdvisoryRating"), default=None
+    )
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether the podcast is explicit."""
+        # collectionExplicitness is "notExplicit" even for explicit podcasts
+        return "explicit" in (
+            self.collection_explicitness,
+            self.track_explicitness,
+            (self.content_advisory_rating or "").lower(),
+        )
 
 
 @dataclass(kw_only=True)
