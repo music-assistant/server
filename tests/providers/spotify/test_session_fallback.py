@@ -5,7 +5,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.errors import LoginFailed, RetriesExhausted
+from music_assistant_models.errors import (
+    LoginFailed,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.providers.spotify import provider as provider_module
@@ -26,8 +31,12 @@ def clear_throttlers() -> Generator[None]:
     provider_module._THROTTLERS.clear()
 
 
-async def _make_provider() -> SpotifyProvider:
-    """Return a loaded Spotify provider with a custom Client ID and a mocked http layer."""
+async def _make_provider(login_dev_error: Exception | None = None) -> SpotifyProvider:
+    """
+    Return a loaded Spotify provider with a custom Client ID and a mocked http layer.
+
+    :param login_dev_error: Error the login of the custom Client ID raises at load, if any.
+    """
     values = {CONF_CLIENT_ID: "client", CONF_REFRESH_TOKEN_DEV: "token"}
     provider = object.__new__(SpotifyProvider)
     provider.config = MagicMock(instance_id=INSTANCE_ID)
@@ -40,14 +49,15 @@ async def _make_provider() -> SpotifyProvider:
         return_value=MagicMock(setup=AsyncMock(), unload=AsyncMock())
     )
     provider.login = AsyncMock(return_value=GLOBAL_TOKEN)  # type: ignore[method-assign]
-    provider.login_dev = AsyncMock(return_value=DEV_TOKEN)  # type: ignore[method-assign]
+    provider.login_dev = AsyncMock(  # type: ignore[method-assign]
+        return_value=DEV_TOKEN, side_effect=login_dev_error
+    )
     provider.get_setup_value = MagicMock(  # type: ignore[method-assign]
         side_effect=lambda key, default=None: values.get(key, default)
     )
     provider._test_audiobook_support = AsyncMock(return_value=True)  # type: ignore[method-assign]
     provider._remove_unused_playback_credentials = MagicMock()  # type: ignore[method-assign]
     provider._sp_user = {"id": "user"}
-    _stub_http(provider, {"id": "user"})
     await provider.handle_async_init()
     assert provider.dev_session_active
     # lift the rate limits, so the tests do not wait for a free slot
@@ -90,6 +100,33 @@ def _fallback_logs(provider: SpotifyProvider) -> int:
     """Return how often the fallback to the global session was logged."""
     info = provider.logger.info
     return sum("custom Client ID" in call.args[0] for call in info.call_args_list)  # type: ignore[attr-defined]
+
+
+async def test_dev_session_is_active_without_an_account_lookup() -> None:
+    """The load activates the dev session without an api request to verify the account."""
+    provider = await _make_provider()
+
+    provider.login_dev.assert_awaited_once()  # type: ignore[attr-defined]
+    provider.mass.http_session.request.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RateLimited("token endpoint", backoff_time=120),
+        ResourceTemporarilyUnavailable(backoff_time=30),
+    ],
+)
+async def test_load_goes_ahead_when_the_dev_login_is_not_answered(error: Exception) -> None:
+    """A temporary error from the custom Client ID login does not fail the load."""
+    provider = await _make_provider(login_dev_error=error)
+    provider.login_dev.side_effect = None  # type: ignore[attr-defined]
+    request = _stub_http(provider, {})
+
+    assert provider.dev_session_active
+    # the first request on the custom Client ID retries its login
+    await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev"]
 
 
 async def test_request_uses_the_dev_session() -> None:

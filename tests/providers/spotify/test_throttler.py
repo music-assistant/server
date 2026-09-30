@@ -5,11 +5,17 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.errors import RetriesExhausted
+from music_assistant_models.errors import RateLimited
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.spotify import provider as provider_module
-from music_assistant.providers.spotify.constants import CONF_CLIENT_ID, CONF_REFRESH_TOKEN_DEV
+from music_assistant.providers.spotify.constants import (
+    CONF_ACCOUNT_ID,
+    CONF_ACCOUNT_NAME,
+    CONF_AUDIOBOOKS_SUPPORTED,
+    CONF_CLIENT_ID,
+    CONF_REFRESH_TOKEN_DEV,
+)
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 INSTANCE_ID = "spotify--test"
@@ -71,6 +77,27 @@ def clear_throttlers() -> Generator[None]:
     provider_module._THROTTLERS.clear()
 
 
+async def test_load_goes_ahead_when_the_login_is_not_answered() -> None:
+    """A login Spotify does not answer at load falls back on the stored account details."""
+    provider = _make_provider({CONF_ACCOUNT_ID: "u1", CONF_ACCOUNT_NAME: "tester"})
+    provider.login.side_effect = RateLimited("token endpoint", backoff_time=3600)  # type: ignore[attr-defined]
+
+    await provider.handle_async_init()
+
+    assert provider._sp_user == {"id": "u1", "display_name": "tester", "country": None}
+    provider.backend.unload.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_load_without_a_stored_account_still_needs_the_login() -> None:
+    """Without stored account details a login Spotify does not answer fails the load."""
+    provider = _make_provider()
+    provider.login.side_effect = RateLimited("token endpoint", backoff_time=3600)  # type: ignore[attr-defined]
+
+    with pytest.raises(RateLimited):
+        await provider.handle_async_init()
+    provider.backend.unload.assert_awaited_once()  # type: ignore[attr-defined]
+
+
 async def test_reload_keeps_the_throttlers_and_their_cooldowns() -> None:
     """A new provider object of the same instance gets the same throttlers with their cooldowns."""
     first = _make_provider()
@@ -104,7 +131,6 @@ async def test_loose_rate_limit_with_custom_client_id() -> None:
     """With a custom Client ID only the dev throttler runs on 30 requests per 30 seconds."""
     provider = _make_provider({CONF_CLIENT_ID: "client", CONF_REFRESH_TOKEN_DEV: "token"})
     provider._sp_user = {"id": "user"}
-    provider._get_data = AsyncMock(return_value={"id": "user"})  # type: ignore[method-assign]
 
     await provider.handle_async_init()
     global_throttler, dev_throttler = _throttlers(provider)
@@ -115,25 +141,24 @@ async def test_loose_rate_limit_with_custom_client_id() -> None:
     assert provider.dev_session_active
 
 
-async def test_load_during_a_long_cooldown_fails_without_a_request() -> None:
-    """A load during a long cooldown fails without sending a request to Spotify."""
+async def test_load_during_a_long_cooldown_uses_the_stored_audiobook_answer() -> None:
+    """A load during a long cooldown takes the stored audiobook answer without a request."""
     _stored_throttler().set_cooldown(3600)
-    provider = _make_provider()
+    provider = _make_provider({CONF_AUDIOBOOKS_SUPPORTED: True})
     # drop the stub, so the load goes through the real audiobook check and api call
     del provider._test_audiobook_support
     provider.mass.http_session.request = MagicMock()  # type: ignore[method-assign]
 
-    with pytest.raises(RetriesExhausted):
-        await provider.handle_async_init()
+    await provider.handle_async_init()
+    assert provider.audiobooks_supported
     provider.mass.http_session.request.assert_not_called()
-    provider.backend.unload.assert_awaited_once()  # type: ignore[attr-defined]
+    provider.backend.unload.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_changed_client_id_starts_without_the_old_cooldown() -> None:
     """A new custom Client ID is another Spotify app, so it does not inherit the old app's limit."""
     provider = _make_provider({CONF_CLIENT_ID: "client-a", CONF_REFRESH_TOKEN_DEV: "token"})
     provider._sp_user = {"id": "user"}
-    provider._get_data = AsyncMock(return_value={"id": "user"})  # type: ignore[method-assign]
     await provider.handle_async_init()
     global_throttler, old_dev_throttler = _throttlers(provider)
     global_throttler.set_cooldown(3600)
@@ -141,7 +166,6 @@ async def test_changed_client_id_starts_without_the_old_cooldown() -> None:
 
     reconfigured = _make_provider({CONF_CLIENT_ID: "client-b", CONF_REFRESH_TOKEN_DEV: "token"})
     reconfigured._sp_user = {"id": "user"}
-    reconfigured._get_data = AsyncMock(return_value={"id": "user"})  # type: ignore[method-assign]
     await reconfigured.handle_async_init()
     new_global_throttler, new_dev_throttler = _throttlers(reconfigured)
 
