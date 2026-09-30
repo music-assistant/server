@@ -168,6 +168,8 @@ class KionMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
+            # the retry is a request of its own, so it takes a slot of its own
+            await self._throttler.acquire()
             return await func(client)
 
     async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
