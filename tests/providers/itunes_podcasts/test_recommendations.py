@@ -197,10 +197,10 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 async def test_top_podcasts_single_batched_lookup(
     provider: ITunesPodcastsProvider, mass_mock: Mock
 ) -> None:
-    """The chart is resolved with one batched lookup, keeping chart order, and cached."""
-    chart = [3, 1, 2]
+    """The top podcasts are resolved with one batched lookup, keeping rank order, and cached."""
+    top_podcasts = [3, 1, 2]
     with (
-        patch.object(provider, "_get_top_chart_ids", AsyncMock(return_value=chart)),
+        patch.object(provider, "_get_top_podcast_ids", AsyncMock(return_value=top_podcasts)),
         patch.object(
             provider,
             "_perform_search",
@@ -209,7 +209,7 @@ async def test_top_podcasts_single_batched_lookup(
     ):
         results = await provider._cache_get_top_podcasts()
 
-    assert [r.collection_id for r in results] == chart
+    assert [r.collection_id for r in results] == top_podcasts
     lookup.assert_awaited_once()
     assert lookup.await_args is not None
     assert lookup.await_args.args[1]["id"] == "3,1,2"
@@ -218,19 +218,19 @@ async def test_top_podcasts_single_batched_lookup(
 
 
 @pytest.mark.parametrize(
-    ("chart", "lookup"),
+    ("top_podcasts", "lookup"),
     [(None, [_result(1)]), ([1], None)],
-    ids=["chart-failed", "lookup-failed"],
+    ids=["top-podcasts-failed", "lookup-failed"],
 )
 async def test_top_podcasts_failure_not_cached(
     provider: ITunesPodcastsProvider,
     mass_mock: Mock,
-    chart: list[int] | None,
+    top_podcasts: list[int] | None,
     lookup: list[PodcastSearchResult] | None,
 ) -> None:
     """A failed request returns nothing and is not cached, so the next call retries."""
     with (
-        patch.object(provider, "_get_top_chart_ids", AsyncMock(return_value=chart)),
+        patch.object(provider, "_get_top_podcast_ids", AsyncMock(return_value=top_podcasts)),
         patch.object(provider, "_perform_search", AsyncMock(return_value=lookup)),
     ):
         assert await provider._cache_get_top_podcasts() == []
@@ -238,9 +238,9 @@ async def test_top_podcasts_failure_not_cached(
 
 
 async def test_top_podcasts_page_rotates_and_wraps(provider: ITunesPodcastsProvider) -> None:
-    """Every rotation interval shows the next offset into the chart, wrapping around."""
-    chart = [_result(i) for i in range(100)]
-    with patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=chart)):
+    """Every rotation interval shows the next offset into the top podcasts, wrapping around."""
+    top_podcasts = [_result(i) for i in range(100)]
+    with patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=top_podcasts)):
         pages = []
         for window in range(TOP_PODCASTS_NUM_PAGES + 1):
             with patch(TIME, return_value=window * TOP_PODCASTS_ROTATION):
@@ -264,9 +264,9 @@ async def test_top_podcasts_page_filters_library_and_explicit(
         "locale": "us",
         "explicit": False,
     }.get(key, default)
-    chart = [_result(1), _result(2), _result(3, explicit=True), _result(4)]
+    top_podcasts = [_result(1), _result(2), _result(3, explicit=True), _result(4)]
     with (
-        patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=chart)),
+        patch.object(provider, "_cache_get_top_podcasts", AsyncMock(return_value=top_podcasts)),
         patch("music_assistant.providers.itunes_podcasts.TOP_PODCASTS_NUM_PAGES", 1),
         patch(TIME, return_value=0),
     ):
@@ -324,7 +324,7 @@ def _seed_cache(mass: Mock, seeds: dict[str, PodcastSearchResult]) -> None:
 
 
 async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mock: Mock) -> None:
-    """Charts of the library's primary genres are merged, library podcasts dropped."""
+    """Top podcasts of the library's primary genres are merged, library podcasts dropped."""
     library = [
         _library_podcast("Podcast 1", "https://example.com/1.xml"),
         _library_podcast("Podcast 2", "https://example.com/2.xml"),
@@ -337,10 +337,10 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
             "example.com/2.xml": _result(2, ["1526", "26", "1489"]),
         },
     )
-    charts = {"1488": [1, 10, 11], "1526": [20, 2, 10]}
-    genre_chart = AsyncMock(side_effect=lambda _country, genre_id: charts[genre_id])
+    top_podcasts = {"1488": [1, 10, 11], "1526": [20, 2, 10]}
+    genre_top_podcasts = AsyncMock(side_effect=lambda _country, genre_id: top_podcasts[genre_id])
     with (
-        patch.object(provider, "_get_genre_chart", genre_chart),
+        patch.object(provider, "_get_genre_top_podcast_ids", genre_top_podcasts),
         patch.object(
             provider,
             "_perform_search",
@@ -353,10 +353,10 @@ async def test_library_recommendations(provider: ITunesPodcastsProvider, mass_mo
     ):
         results = await provider._get_library_recommendations()
 
-    # 10 ranks in both charts, so it comes first; library podcasts 1 and 2 are gone
+    # 10 ranks in both genres, so it comes first; library podcasts 1 and 2 are gone
     assert [r.collection_id for r in results] == [10, 20, 11]
     # only primary genres are used, parent genre 1489 (News) is not fetched
-    assert sorted(call.args[1] for call in genre_chart.await_args_list) == ["1488", "1526"]
+    assert sorted(call.args[1] for call in genre_top_podcasts.await_args_list) == ["1488", "1526"]
     assert mass_mock.cache.set.await_args.kwargs["expiration"] == (
         LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION
     )
@@ -378,7 +378,7 @@ async def test_library_recommendations_resolve_in_background(
     )
     with (
         patch.object(provider, "_resolve_library_podcast", resolve),
-        patch.object(provider, "_get_genre_chart", AsyncMock(return_value=[50])),
+        patch.object(provider, "_get_genre_top_podcast_ids", AsyncMock(return_value=[50])),
         patch.object(provider, "_perform_search", AsyncMock(return_value=[_result(50)])),
     ):
         results = await provider._get_library_recommendations()
@@ -398,16 +398,19 @@ async def test_library_recommendations_empty_library(
     mass_mock.http_session.get.assert_not_called()
 
 
-async def test_genre_chart_parsing(provider: ITunesPodcastsProvider, mass_mock: Mock) -> None:
-    """The legacy chart is parsed, a single entry is not wrapped in a list."""
-    get_genre_chart = ITunesPodcastsProvider._get_genre_chart.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+async def test_genre_top_podcasts_parsing(
+    provider: ITunesPodcastsProvider, mass_mock: Mock
+) -> None:
+    """The legacy feed is parsed, a single entry is not wrapped in a list."""
+    unwrapped = ITunesPodcastsProvider._get_genre_top_podcast_ids
+    get_genre_top_podcast_ids = unwrapped.__wrapped__.__wrapped__  # type: ignore[attr-defined]
     mass_mock.http_session = Mock()
     mass_mock.http_session.get = Mock(
         return_value=_http_response(
             200, b'{"feed": {"entry": {"id": {"attributes": {"im:id": "42"}}}}}'
         )
     )
-    assert await get_genre_chart(provider, "us", "1488") == [42]
+    assert await get_genre_top_podcast_ids(provider, "us", "1488") == [42]
 
     mass_mock.http_session.get = Mock(return_value=_http_response(503, b""))
-    assert await get_genre_chart(provider, "us", "1488") is None
+    assert await get_genre_top_podcast_ids(provider, "us", "1488") is None

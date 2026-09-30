@@ -92,9 +92,9 @@ RECOMMENDATION_ROW_SIZE = 15
 
 # iTunes root genre "Podcasts", present on every show and useless for similarity
 ROOT_GENRE_ID = "26"
-# one chart request per genre
+# one request per genre
 MAX_SEED_GENRES = 4
-GENRE_CHART_LIMIT = 100
+GENRE_TOP_PODCASTS_LIMIT = 100
 # library podcasts resolved while the row is requested, the rest in the background
 MAX_INLINE_RESOLVES = 5
 # short, so podcasts resolved in the background are picked up soon
@@ -102,8 +102,8 @@ LIBRARY_RECOMMENDATIONS_CACHE_EXPIRATION = 60 * 60
 # the v2 feed returns at most 100 entries
 TOP_PODCASTS_LIMIT = 100
 TOP_PODCASTS_CACHE_EXPIRATION = 60 * 60 * 24
-# the trending row shows every n-th chart entry (1, 8, 15, ...) and moves to the next
-# offset every rotation, so the whole chart is shown once per cache lifetime
+# the trending row shows every n-th top podcast (1, 8, 15, ...) and moves to the next
+# offset every rotation, so all of them are shown once per cache lifetime
 TOP_PODCASTS_NUM_PAGES = math.ceil(TOP_PODCASTS_LIMIT / RECOMMENDATION_ROW_SIZE)
 TOP_PODCASTS_ROTATION = TOP_PODCASTS_CACHE_EXPIRATION // TOP_PODCASTS_NUM_PAGES
 
@@ -496,7 +496,7 @@ class ITunesPodcastsProvider(MusicProvider):
             return helper.top_podcasts
 
         country = str(self.config.get_value(CONF_LOCALE))
-        itunes_ids = await self._get_top_chart_ids(country)
+        itunes_ids = await self._get_top_podcast_ids(country)
         if itunes_ids is None:
             return []
         top_podcasts = await self._get_podcast_search_results_from_itunes_ids(itunes_ids)
@@ -508,8 +508,8 @@ class ITunesPodcastsProvider(MusicProvider):
         return helper.top_podcasts
 
     @throttle_with_retries
-    async def _get_top_chart_ids(self, country: str) -> list[int] | None:
-        """Get the iTunes ids of the top podcasts chart in chart order, None on failure."""
+    async def _get_top_podcast_ids(self, country: str) -> list[int] | None:
+        """Get the iTunes ids of the top podcasts in rank order, None on failure."""
         # see https://rss.marketingtools.apple.com/
         url = (
             f"https://rss.marketingtools.apple.com/api/v2/{country}/podcasts/top/"
@@ -626,13 +626,13 @@ class ITunesPodcastsProvider(MusicProvider):
 
     @use_cache(3600 * 12, cache_none=False)
     @throttle_with_retries
-    async def _get_genre_chart(self, country: str, genre_id: str) -> list[int] | None:
-        """Get the iTunes ids of the top podcasts of a genre in chart order, None on failure."""
+    async def _get_genre_top_podcast_ids(self, country: str, genre_id: str) -> list[int] | None:
+        """Get the iTunes ids of the top podcasts of a genre in rank order, None on failure."""
         # legacy feed, the v2 feed has no genre filter. country is an argument (not
         # read from the config) so it is part of the cache key
         url = (
             f"https://itunes.apple.com/{country}/rss/toppodcasts/"
-            f"limit={GENRE_CHART_LIMIT}/genre={genre_id}/json"
+            f"limit={GENRE_TOP_PODCASTS_LIMIT}/genre={genre_id}/json"
         )
         async with self.mass.http_session.get(url) as response:
             if response.status != 200:
@@ -722,11 +722,13 @@ class ITunesPodcastsProvider(MusicProvider):
             if specific:
                 genre_weights[specific[0]] += 1
 
-        # score by genre weight and chart position, shows ranking in several genres win
+        # score by genre weight and rank, shows ranking in several genres win
         scores: dict[int, float] = defaultdict(float)
         for genre_id, weight in genre_weights.most_common(MAX_SEED_GENRES):
-            for rank, itunes_id in enumerate(await self._get_genre_chart(country, genre_id) or []):
-                scores[itunes_id] += weight * (1 - rank / GENRE_CHART_LIMIT)
+            for rank, itunes_id in enumerate(
+                await self._get_genre_top_podcast_ids(country, genre_id) or []
+            ):
+                scores[itunes_id] += weight * (1 - rank / GENRE_TOP_PODCASTS_LIMIT)
         if not scores:
             return []
 
