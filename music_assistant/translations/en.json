@@ -1522,6 +1522,7 @@
   "provider.itunes_podcasts.config_entries.num_episodes.description": "Maximum number of episodes. 0 for unlimited.",
   "provider.itunes_podcasts.config_entries.num_episodes.label": "Maximum number of episodes. 0 for unlimited.",
   "provider.itunes_podcasts.manifest.description": "Search and play podcasts indexed via Apple’s iTunes feed / podcast directory.",
+  "provider.itunes_podcasts.media.recommendations.podcasts_you_might_like.name": "Podcasts you might like",
   "provider.jellyfin.config_entries.url.description": "The url of the Jellyfin server to connect to.",
   "provider.jellyfin.config_entries.url.label": "Server",
   "provider.jellyfin.config_entries.username.description": "The username to authenticate to the remote server. For example 'media'.",
