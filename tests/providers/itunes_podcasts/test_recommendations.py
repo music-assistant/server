@@ -259,8 +259,15 @@ async def test_top_podcasts_page_filters_library_and_explicit(
     provider: ITunesPodcastsProvider, mass_mock: Mock, config_mock: Mock
 ) -> None:
     """Library podcasts and, if disabled, explicit ones are dropped."""
-    # same feed, different scheme/host spelling
-    _set_library(mass_mock, [_library_podcast("Whatever", "http://www.example.com/1.xml/")])
+    _set_library(
+        mass_mock,
+        [
+            # same feed, different scheme/host spelling
+            _library_podcast("Whatever", "http://www.EXAMPLE.com/1.xml/"),
+            # different feed, the path is case-sensitive
+            _library_podcast("Other", "https://example.com/4.XML"),
+        ],
+    )
     config_mock.get_value.side_effect = lambda key, default=None: {
         "locale": "us",
         "explicit": False,

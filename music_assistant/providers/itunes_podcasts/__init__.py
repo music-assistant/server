@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
@@ -618,11 +619,10 @@ class ITunesPodcastsProvider(MusicProvider):
 
     @staticmethod
     def _normalize_feed_url(url: str) -> str:
-        url = url.strip().lower()
-        for prefix in ("https://", "http://"):
-            url = url.removeprefix(prefix)
-        url = url.removeprefix("www.")
-        return url.rstrip("/")
+        # only scheme and host are case-insensitive
+        parts = urlsplit(url.strip())
+        normalized = parts.netloc.lower().removeprefix("www.") + parts.path.rstrip("/")
+        return f"{normalized}?{parts.query}" if parts.query else normalized
 
     def _is_recommendable(
         self, podcast: PodcastSearchResult, library_feeds: set[str], include_explicit: bool
