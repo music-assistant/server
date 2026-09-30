@@ -23,10 +23,15 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -104,9 +109,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     prepared_item,
                     reason="prepare_next",
                     capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-                    # speculative preparation gives up softly, so it must stay cheap:
-                    # leave the cross-provider search to the actual playback start
+                    # speculative preparation gives up softly, so it must stay cheap and
+                    # harmless: leave the cross-provider search and stopping a paused
+                    # queue to the actual playback start
                     allow_provider_match=False,
+                    stop_paused_queues=False,
                 )
                 # removal paths that do not cancel this task (replace_next, delete) can take
                 # the item off the queue while the buffer fills; the stale-buffer sweep walks
@@ -165,6 +172,50 @@ class StreamFeederMixin(_PlayerQueuesBase):
         if queue_data.last_served_item_id != item_id:
             return
         self.prepare_next_audio_buffer(queue_id, item_id)
+
+    def has_paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> bool:
+        """
+        Return whether a paused queue other than the given one holds a slot of a full provider.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        return self._paused_stream_slot_holder(provider_instance, queue_id) is not None
+
+    async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
+        """
+        Stop a paused queue other than the given one that holds a slot of a full provider.
+
+        The stopped queue resumes from where it was paused, with a new source stream.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot, which is never stopped itself.
+        :return: Whether a paused queue's session was ended, which frees its slot shortly.
+        """
+        if (holder_id := self._paused_stream_slot_holder(provider_instance, queue_id)) is None:
+            return False
+        async with self.mass.players.get_group_and_player_lock(holder_id):
+            # while the lock was held elsewhere the queue can have resumed, or its source
+            # can have finished and handed the slot to someone else
+            if self._paused_stream_slot_holder(provider_instance, queue_id) != holder_id:
+                return False
+            holder = self._queue_data[holder_id]
+            self.logger.info(
+                "Stopping paused queue %s, another queue needs its %s stream slot",
+                holder.queue.display_name,
+                provider_instance,
+            )
+            try:
+                await self._handle_stop(holder_id)
+            except Exception as err:
+                # deliberately broad: the device stop is a raw provider call that can surface
+                # anything its client library raises, on a player the requesting playback has
+                # nothing to do with. CancelledError is a BaseException and still propagates.
+                self.logger.warning(
+                    "Stopping paused queue %s failed: %s", holder.queue.display_name, err
+                )
+            # a failed device stop still ends the session, and ending it is what frees the slot
+            return holder.session_id is None
 
     def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
         """
@@ -429,3 +480,52 @@ class StreamFeederMixin(_PlayerQueuesBase):
         ):
             return provider
         return None
+
+    def _paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> str | None:
+        """
+        Return a paused queue other than the given one that holds a slot of a full provider.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+        if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
+            return None
+        user = get_current_user()
+        for holder_id, queue_data in self._queue_data.items():
+            # a stop only releases the audio of a session, so a queue without one has
+            # nothing to hand over
+            if (
+                holder_id == queue_id
+                or queue_data.session_id is None
+                or not self._is_paused(holder_id)
+            ):
+                continue
+            # the starting user only takes the slot of a player they may control
+            if not has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):
+                continue
+            # a buffer holds its provider's slot from its first audio until its source stops
+            # producing; one that is not ready yet can still be waiting for a slot itself
+            if any(
+                (details := item.streamdetails) is not None
+                and details.provider == provider_instance
+                and details.buffer is not None
+                and details.buffer.is_buffering
+                and details.buffer.ready.is_set()
+                for item in queue_data.items
+            ):
+                return holder_id
+        return None
+
+    def _is_paused(self, queue_id: str) -> bool:
+        """Return whether the queue is paused and its player confirms it is paused on it."""
+        queue_data = self._queue_data.get(queue_id)
+        player = self.mass.players.get_player(queue_id)
+        return (
+            queue_data is not None
+            and queue_data.queue.state == PlaybackState.PAUSED
+            and player is not None
+            and player.state.playback_state == PlaybackState.PAUSED
+            and player.state.active_source == queue_id
+            and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )

@@ -285,6 +285,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Return the server-side record for a queue, or None if it is not registered."""
         return self._queue_data.get(queue_id)
 
+    def has_lost_paused_stream(self, queue_id: str) -> bool:
+        """
+        Return whether the queue's player is paused on a stream the queue has since ended.
+
+        Such a player can only continue with the audio it buffered, so playing it has to
+        start the queue again rather than unpause the player.
+
+        :param queue_id: The queue to check.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        player = self.mass.players.get_player(queue_id)
+        # a stop that could not reach the player still ends the queue's session
+        return (
+            queue_data is not None
+            and queue_data.session_id is None
+            and player is not None
+            and player.state.playback_state == PlaybackState.PAUSED
+            and player.state.active_source == queue_id
+        )
+
     @api_command("player_queues/items", required_scope=Scope.QUEUES_READ)
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
@@ -1917,7 +1937,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        if (queue := self.get(queue_id)) and queue.active and queue.state == PlaybackState.PAUSED:
+        if (
+            (queue := self.get(queue_id))
+            and queue.active
+            and queue.state == PlaybackState.PAUSED
+            and not self.has_lost_paused_stream(queue_id)
+        ):
             # forward the actual play/unpause command to the player,
             # holding the action until the player confirms it resumed playback
             async with self.mass.players.wait_for_player_update(
