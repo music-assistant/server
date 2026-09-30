@@ -1740,15 +1740,17 @@ class YandexMusicClient:
         """
         Execute an async API call with throttling and one reconnect attempt on connection error.
 
-        Three layers of rate-control apply, outermost first:
+        Three layers of rate-control apply, in this order:
 
-        * **Global concurrency cap** (restrictive mode only) — a
-          token-wide ``asyncio.Semaphore`` sized to ``RESTRICTIVE_GLOBAL_
-          CONCURRENCY``. Keeps total in-flight requests under Yandex's
-          per-token edge limit observed on datacenter / VPN IPs (~6).
         * **Per-kind throttler** — a token bucket shared by all calls of a
           given logical class (``default``, ``metadata``, ``file_info``,
-          ``rotor``). Caps sustained RPS per kind.
+          ``rotor``). Caps sustained RPS per kind and serves playback first.
+        * **Global concurrency cap** (restrictive mode only) — a
+          token-wide ``asyncio.Semaphore`` sized to ``RESTRICTIVE_GLOBAL_
+          CONCURRENCY``, taken only while a request is in flight so a call
+          that still waits for its throttler slot holds no permit. Keeps
+          total in-flight requests under Yandex's per-token edge limit
+          observed on datacenter / VPN IPs (~6).
         * **Per-endpoint lock** — derived from ``func.__qualname__`` so each
           ``YandexMusicClient`` method gets its own ``asyncio.Lock``. Caps
           concurrency to 1 per endpoint family — cheap defense-in-depth
@@ -1761,9 +1763,6 @@ class YandexMusicClient:
             "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
-        if self._global_concurrency is not None:
-            async with self._global_concurrency:
-                return await self._call_with_retry_inner(func, kind=kind)
         return await self._call_with_retry_inner(func, kind=kind)
 
     async def _call_with_retry_inner(
@@ -1800,7 +1799,7 @@ class YandexMusicClient:
         client = await self._ensure_connected()
         endpoint = self._derive_endpoint(func)
         try:
-            return await self._invoke_under_endpoint_lock(func, client, endpoint)
+            return await self._invoke_in_flight(func, client, endpoint)
         except Exception as err:
             rate_limit_exc = self._maybe_handle_429(err, kind)
             if rate_limit_exc is not None:
@@ -1828,12 +1827,24 @@ class YandexMusicClient:
             # otherwise a captcha on the retry attempt bypasses the cooldown
             # logic and propagates the raw HTML body.
             try:
-                return await self._invoke_under_endpoint_lock(func, client, endpoint)
+                return await self._invoke_in_flight(func, client, endpoint)
             except Exception as retry_err:
                 retry_exc = self._maybe_handle_429(retry_err, kind)
                 if retry_exc is not None:
                     raise retry_exc from NetworkError(self._truncate_err_msg(retry_err))
                 raise
+
+    async def _invoke_in_flight(
+        self,
+        func: Callable[[ClientAsync], Awaitable[_T]],
+        client: ClientAsync,
+        endpoint: str | None,
+    ) -> _T:
+        """Run ``func(client)`` under the global concurrency cap, when restrictive mode sets one."""
+        if self._global_concurrency is None:
+            return await self._invoke_under_endpoint_lock(func, client, endpoint)
+        async with self._global_concurrency:
+            return await self._invoke_under_endpoint_lock(func, client, endpoint)
 
     async def _invoke_under_endpoint_lock(
         self,

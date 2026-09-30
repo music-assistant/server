@@ -21,7 +21,11 @@ from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
-from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.providers.yandex_music.api_client import (
     GET_FILE_INFO_CODECS,
     YandexMusicClient,
@@ -2039,6 +2043,45 @@ async def test_parallel_same_endpoint_calls_serialize() -> None:
     assert concurrent_peak == 1, (
         f"per-endpoint lock failed to serialise; saw {concurrent_peak} concurrent calls"
     )
+
+
+async def test_restrictive_mode_waiting_calls_hold_no_permit() -> None:
+    """A call still waiting for its throttler slot holds no permit, so playback gets through."""
+    client = YandexMusicClient(token=SecretStr("fake"), restrictive_rate_limits=True)
+    client._client = mock.AsyncMock()
+    client._user_id = 12345
+    for kind in client._throttlers:
+        client._throttlers[kind] = mock.AsyncMock()
+    release_low = asyncio.Event()
+
+    async def _paced_acquire(priority: RequestPriority | None = None) -> float:
+        # background calls sit in the pacer, playback takes its slot at once
+        if (priority or current_priority()) is RequestPriority.LOW:
+            await release_low.wait()
+        return 0.0
+
+    client._throttlers["default"].acquire = _paced_acquire  # type: ignore[method-assign]
+    client._invoke_under_endpoint_lock = mock.AsyncMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock()
+    )
+
+    async def _fake(_c: Any) -> Any:
+        return None
+
+    with request_priority(RequestPriority.LOW):
+        waiting = [
+            asyncio.create_task(client._call_with_retry(_fake, kind="default"))
+            for _ in range(RESTRICTIVE_GLOBAL_CONCURRENCY + 1)
+        ]
+    await asyncio.sleep(0)
+    try:
+        with request_priority(RequestPriority.HIGH):
+            async with asyncio.timeout(1):
+                await client._call_with_retry(_fake, kind="default")
+        assert all(not task.done() for task in waiting)
+    finally:
+        release_low.set()
+        await asyncio.gather(*waiting)
 
 
 async def test_restrictive_mode_caps_global_concurrency() -> None:
