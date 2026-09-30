@@ -22,7 +22,7 @@ from music_assistant.controllers.streams.constants import (
 
 from .constants import (
     DATA_STATION_IMAGE,
-    NOW_PLAYING_START_TIMEOUT,
+    NOW_PLAYING_TIMEOUT,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
 from .parsers import (
@@ -70,8 +70,9 @@ class IHeartRadioStreamingManager:
         :param elapsed_time: Elapsed playback time in seconds, not used for live stations.
         """
         try:
-            now_playing = await self.provider.api.get_now_playing(streamdetails.item_id)
-        except MusicAssistantError as err:
+            async with asyncio.timeout(NOW_PLAYING_TIMEOUT):
+                now_playing = await self.provider.api.get_now_playing(streamdetails.item_id)
+        except (MusicAssistantError, TimeoutError) as err:
             # a failed refresh says nothing about what is playing, so the last known
             # metadata stays put
             self.logger.debug("Could not update now-playing metadata: %s", err)
@@ -106,7 +107,7 @@ class IHeartRadioStreamingManager:
         try:
             # the audio does not depend on this, so a slow or retrying lookup must not
             # hold up the start; the periodic refresh fills the metadata in later
-            async with asyncio.timeout(NOW_PLAYING_START_TIMEOUT):
+            async with asyncio.timeout(NOW_PLAYING_TIMEOUT):
                 now_playing = await self.provider.api.get_now_playing(item_id)
         except MediaNotFoundError:
             # the station publishes no track metadata at all, so the titles the stream

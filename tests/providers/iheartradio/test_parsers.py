@@ -79,7 +79,7 @@ def test_parse_now_playing() -> None:
     assert metadata.title == "Red Rocks"
     assert metadata.artist == "Above & Beyond"
     assert metadata.album == "The Club Instrumentals"
-    assert metadata.image_url == "http://image.iheart.com/red-rocks.jpg"
+    assert metadata.image_url == "https://image.iheart.com/red-rocks.jpg"
     assert metadata.duration == 466
     assert metadata.elapsed_time == 466
     assert parse_now_playing({}, None) is None

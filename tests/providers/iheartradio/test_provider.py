@@ -160,7 +160,7 @@ async def test_station_stream_starts_without_slow_now_playing(
         await asyncio.Event().wait()
         return None
 
-    monkeypatch.setattr(streaming, "NOW_PLAYING_START_TIMEOUT", 0.01)
+    monkeypatch.setattr(streaming, "NOW_PLAYING_TIMEOUT", 0.01)
     monkeypatch.setattr(provider.api, "get_now_playing", never_answers)
     details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
     assert details.path == "https://example.com/kiis.m3u8"

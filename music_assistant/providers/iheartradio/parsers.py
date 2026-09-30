@@ -357,7 +357,7 @@ def parse_now_playing(
         title=str(title),
         artist=str(now_playing["artist"]) if now_playing.get("artist") else None,
         album=str(now_playing["album"]) if now_playing.get("album") else None,
-        image_url=str(now_playing.get("imagePath") or fallback_image or "") or None,
+        image_url=_https(str(now_playing.get("imagePath") or fallback_image or "")) or None,
         duration=duration,
         elapsed_time=elapsed,
         elapsed_time_last_updated=time.time() if elapsed is not None else None,
@@ -466,3 +466,10 @@ def _as_epoch_seconds(value: Any) -> int | None:
     except TypeError, ValueError:
         return None
     return millis // 1000 if millis > 0 else None
+
+
+def _https(url: str) -> str:
+    """Return an iHeartRadio image url over https, which its image host also serves."""
+    if url.startswith("http://image.iheart.com/"):
+        return "https://" + url.removeprefix("http://")
+    return url
