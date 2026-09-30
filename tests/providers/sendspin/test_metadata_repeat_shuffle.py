@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -17,6 +18,9 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     """The metadata object carries no repeat/shuffle; the controller state does."""
     player = MagicMock()
     player.available = True
+    player._content_takeover_pending = False
+    player._metadata_lock = asyncio.Lock()
+    player._metadata_publish_allowed.return_value = True
     player.state = SimpleNamespace(
         current_media=PlayerMedia(
             uri="track-1",
@@ -36,6 +40,9 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     player._send_beat_schedule = AsyncMock()
     player._compute_track_progress_ms.return_value = 1000
     player._color_role = None
+    player._build_current_media_metadata = partial(
+        SendspinPlayer._build_current_media_metadata, player
+    )
     player._queue_repeat_shuffle = SendspinPlayer._queue_repeat_shuffle
     player._publish_repeat_shuffle = partial(SendspinPlayer._publish_repeat_shuffle, player)
 
@@ -52,6 +59,7 @@ def test_queue_update_publishes_repeat_and_shuffle_for_the_playing_queue_only() 
     """A repeat or shuffle change reaches clients without waiting for the next metadata push."""
     player = MagicMock()
     player.synced_to = None
+    player._content_takeover_pending = False
     player.state.current_media = PlayerMedia(
         uri="track-1", media_type=MediaType.TRACK, source_id="queue-1", queue_item_id="item-1"
     )
