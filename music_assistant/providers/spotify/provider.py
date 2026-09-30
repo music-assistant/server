@@ -797,13 +797,18 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
             return []
 
-    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
+    @use_cache(
+        86400 * 14,  # 14 days
+        cache_checksum="global_session_v1",
+        allow_expired_cache=True,
+    )
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         try:
             artist = await self.get_artist(prov_artist_id)
             endpoint = f"artists/{prov_artist_id}/top-tracks"
-            items = await self._get_data(endpoint)
+            # top tracks are not available to developer apps
+            items = await self._get_data(endpoint, use_global_session=True)
             return [
                 parse_track(item, self, artist=artist)
                 for item in items["tracks"]
