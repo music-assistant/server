@@ -72,17 +72,13 @@
       "title": "Pair again (optional)",
       "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
     },
-    "companion_offer": {
+    "control_offer": {
       "title": "Set up remote control (optional)",
-      "description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings."
+      "description": "Optionally pair remote control to monitor power, wake the device before playback, control native playback and volume, and show the app and media playing outside Music Assistant. Your device may show more than one pairing code. You can skip this and set it up later from the player settings."
     },
     "pair_companion": {
       "title": "Pair remote control",
       "description": "A pairing code is shown on the screen of your device. Enter it below to pair the remote controls."
-    },
-    "mrp_offer": {
-      "title": "Set up playback monitoring (optional)",
-      "description": "Optionally pair playback monitoring to show the active app and media playing outside Music Assistant. You can skip this and set it up later from the player settings."
     },
     "pair_mrp": {
       "title": "Pair playback monitoring",
