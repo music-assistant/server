@@ -74,6 +74,7 @@ QUALITY_LOSSLESS = "lossless"
 QUALITY_MQA = "mqa"
 # platformID values nugs.net's own clients send to subPlayer.aspx for each quality
 PLATFORM_IDS = {QUALITY_LOSSY: -1, QUALITY_LOSSLESS: 2, QUALITY_MQA: 5}
+PROBE_TIMEOUT = 10
 
 
 async def setup(
@@ -519,11 +520,15 @@ class NugsProvider(MusicProvider):
         :param stream_url: The stream url to probe.
         """
         try:
-            tags = await async_parse_tags(stream_url)
+            tags = await async_parse_tags(stream_url, timeout=PROBE_TIMEOUT)
         except InvalidDataError:
             self.logger.debug("Unable to probe the audio format of track %s", item_id)
             return AudioFormat(content_type=ContentType.UNKNOWN)
-        codec_name = ((tags.raw or {}).get("streams") or [{}])[0].get("codec_name")
+        audio_stream: dict[str, Any] = next(
+            (s for s in (tags.raw or {}).get("streams", []) if s.get("codec_type") == "audio"),
+            {},
+        )
+        codec_name = audio_stream.get("codec_name")
         return AudioFormat(
             content_type=ContentType.try_parse(tags.format),
             codec_type=ContentType.try_parse(codec_name or ""),

@@ -134,7 +134,12 @@ async def test_stream_details_use_probed_format(
     """A lossless stream reports the sample rate and bit depth the stream actually has."""
     tags = MagicMock(format="flac", sample_rate=48000, bits_per_sample=24, channels=2)
     tags.bit_rate = 2000
-    tags.raw = {"streams": [{"codec_name": "flac"}]}
+    tags.raw = {
+        "streams": [
+            {"codec_type": "video", "codec_name": "mjpeg"},
+            {"codec_type": "audio", "codec_name": "flac"},
+        ]
+    }
     probe = AsyncMock(return_value=tags)
     monkeypatch.setattr("music_assistant.providers.nugs.async_parse_tags", probe)
     provider._get_stream_url = AsyncMock(  # type: ignore[method-assign]
@@ -142,7 +147,9 @@ async def test_stream_details_use_probed_format(
     )
 
     details = await provider.get_stream_details("123", MediaType.TRACK)
+    probe.assert_awaited_once_with("https://stream.test/track.flac", timeout=10)
     assert details.audio_format.content_type == ContentType.FLAC
+    assert details.audio_format.codec_type == ContentType.FLAC
     assert details.audio_format.sample_rate == 48000
     assert details.audio_format.bit_depth == 24
 

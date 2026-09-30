@@ -701,19 +701,30 @@ class AudioTags:
 
 
 async def async_parse_tags(
-    input_file: str, file_size: int | None = None, require_duration: bool = False
+    input_file: str,
+    file_size: int | None = None,
+    require_duration: bool = False,
+    timeout: float | None = None,
 ) -> AudioTags:
     """Parse tags from a media file (or URL). Async friendly."""
-    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration)
+    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration, timeout)
 
 
 def parse_tags(
-    input_file: str, file_size: int | None = None, require_duration: bool = False
+    input_file: str,
+    file_size: int | None = None,
+    require_duration: bool = False,
+    timeout: float | None = None,
 ) -> AudioTags:
     """
     Parse tags from a media file (or URL). NOT Async friendly.
 
     Input_file may be a (local) filename or URL accessible by ffmpeg.
+
+    :param input_file: The (local) filename or URL to parse.
+    :param file_size: The file size in bytes, used to estimate a missing duration.
+    :param require_duration: Fall back to decoding the file when no duration is found.
+    :param timeout: Seconds after which ffprobe is killed and InvalidDataError is raised.
     """
     args = (
         "ffprobe",
@@ -732,7 +743,7 @@ def parse_tags(
         input_file,
     )
     try:
-        res = subprocess.check_output(args, stderr=subprocess.PIPE)  # noqa: S603
+        res = subprocess.check_output(args, stderr=subprocess.PIPE, timeout=timeout)  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -766,6 +777,9 @@ def parse_tags(
         return tags
     except subprocess.CalledProcessError as err:
         error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
+        raise InvalidDataError(error_msg) from err
+    except subprocess.TimeoutExpired as err:
+        error_msg = f"Timed out retrieving info for {input_file}"
         raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         try:
