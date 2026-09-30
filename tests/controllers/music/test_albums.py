@@ -266,7 +266,9 @@ async def test_album_tracks_prefer_a_playable_copy(
             for track in listing:
                 track.external_ids = set()
     elif with_isrc == "different":
-        provider_tracks[playable][0].external_ids = {(ExternalID.ISRC, "GBAYC2100002")}
+        # a re-release of the same recording under another ISRC (not the ISRC of "Bonus",
+        # which would make the playable copy that recording instead)
+        provider_tracks[playable][0].external_ids = {(ExternalID.ISRC, "GBAYC2100099")}
         provider_tracks[unplayable][0].external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
 
     with patch.object(
@@ -349,7 +351,13 @@ async def test_album_tracks_fall_back_to_the_library_when_every_provider_fails(
 @pytest.mark.parametrize("same_isrc", [True, False])
 @pytest.mark.parametrize("position", [1, 2])
 def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) -> None:
-    """Listing positions, not recording identifiers, determine album slots."""
+    """
+    Across sources the ISRC, then the position, decides a slot; one source never collapses.
+
+    A source listing two entries means two entries, whatever their ISRCs say. Another
+    source's entry with the same ISRC is the same recording wherever it lists it, and
+    without a shared ISRC the position decides.
+    """
     base = create_track("qobuz_1", "first", name="I. Allegro")
     candidate = create_track(
         "qobuz_1" if same_provider else "spotify_1", "second", name="I. Allegro"
@@ -357,11 +365,31 @@ def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) 
     base.track_number, candidate.track_number = 1, position
     base.external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
     candidate.external_ids = {(ExternalID.ISRC, "GBAYC2100001" if same_isrc else "GBAYC2100002")}
-    assert len(select_album_tracks([], [base, candidate])) == position
+    if same_provider:
+        expected = 2
+    elif same_isrc:
+        expected = 1
+    else:
+        expected = position
+    assert len(select_album_tracks([], [base, candidate])) == expected
+
+
+def test_album_track_slot_keeps_editions_that_disagree_about_a_position() -> None:
+    """Different recordings (by ISRC and title) at one position are both listed."""
+    qobuz = create_track("qobuz_1", "first", name="I. Allegro")
+    spotify = create_track("spotify_1", "second", name="Ouverture")
+    qobuz.track_number = spotify.track_number = 1
+    qobuz.external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
+    spotify.external_ids = {(ExternalID.ISRC, "GBAYC2100002")}
+    assert len(select_album_tracks([], [qobuz, spotify])) == 2
+    # the same title makes the ISRC mismatch a re-release, not a different recording
+    spotify.name = "I. Allegro"
+    assert len(select_album_tracks([], [qobuz, spotify])) == 1
 
 
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
     """Distinct IDs and ISRCs preserve repeated movement names across two discs."""
+    # this listing is one source: it is kept as-is whatever its identifiers say
     album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "kbiz0u05dkexb"))
     names = [
         "I. Allegro",
