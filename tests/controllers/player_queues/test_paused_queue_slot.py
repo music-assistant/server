@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -190,6 +191,25 @@ async def test_a_paused_queue_hands_its_slot_to_a_start_on_another_queue(rig: _R
 
     assert buffer.is_buffering
     rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert rig.queues._queue_data[PAUSED_QUEUE].session_id is None
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
+async def test_a_paused_player_that_cannot_be_reached_still_hands_over_its_slot(
+    rig: _Rig,
+) -> None:
+    """The paused queue's session is torn down anyway, so its player's failure stays its own."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    rig.stop_device.side_effect = PlayerUnavailableError("gone")
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    buffer = await rig.audio.get_audio_buffer(
+        starting_item, reason="prepare", capacity_wait_timeout=2
+    )
+
+    assert buffer.is_buffering
     assert rig.queues._queue_data[PAUSED_QUEUE].session_id is None
     assert paused_buffer.cancelled
     await buffer.clear()

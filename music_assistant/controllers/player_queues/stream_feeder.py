@@ -194,12 +194,19 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # the lock can have been held by the very action that resumed the queue
             if not self._is_paused(holder_id):
                 return False
+            display_name = self._queue_data[holder_id].queue.display_name
             self.logger.info(
                 "Stopping paused queue %s, another queue needs its %s stream slot",
-                self._queue_data[holder_id].queue.display_name,
+                display_name,
                 provider_instance,
             )
-            await self._handle_stop(holder_id)
+            try:
+                await self._handle_stop(holder_id)
+            except Exception as err:
+                # deliberately broad: the stop reaches a device the requesting playback has
+                # nothing to do with, and a failed device stop still tears the session down
+                # so its slot comes free. CancelledError is a BaseException and propagates.
+                self.logger.warning("Stopping paused queue %s failed: %s", display_name, err)
         return True
 
     def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
