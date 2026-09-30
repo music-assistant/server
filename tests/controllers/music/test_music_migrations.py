@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -666,3 +666,103 @@ async def test_migration_survives_a_favorite_without_a_modification_timestamp(
 
     assert await _favorite_rows(database) == [(PENDING_USER_ID, 1, 1, 0)]
     assert "favorite" not in await _table_columns(database, "tracks")
+
+
+def _image(image_type: str, path: str, provider: str) -> dict[str, object]:
+    """Return a stored playlist image."""
+    return {"type": image_type, "path": path, "provider": provider, "remotely_accessible": False}
+
+
+async def _playlist_metadata(database: DatabaseConnection) -> dict[int, Any]:
+    """Return the raw stored metadata of every playlist, by item id."""
+    return {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query(
+            "SELECT item_id, metadata FROM playlists", limit=0
+        )
+    }
+
+
+async def test_migration_drops_playlist_collages_and_system_playlist_artwork(
+    database: DatabaseConnection, tmp_path: Path
+) -> None:
+    """
+    Collages leave every playlist, generated artwork leaves the builtin system playlists.
+
+    A playlist that lost its collage cover also loses its refresh timestamp, rows that can
+    not be parsed are left alone and a second pass over the database changes nothing.
+    """
+    await database.execute("ALTER TABLE playlists ADD COLUMN metadata json")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT)"
+    )
+    collage_thumb = _image("thumb", "/collage/abc_thumb.jpg", "builtin")
+    collage_fanart = _image("fanart", "/collage/abc_fanart.jpg", "builtin")
+    # a remote url and another provider's path that merely contain /collage/ are no collages
+    remote_thumb = _image("thumb", "https://cdn.example.com/collage/abc.jpg", "spotify")
+    foreign_fanart = _image("fanart", "/collage/cover.jpg", "filesystem_local")
+    generated_thumb = _image("thumb", "/playlist_metadata_images/1_thumb.jpg", "playlist_metadata")
+    # older Playlist Metadata versions stored their images under the builtin provider
+    generated_fanart = _image("fanart", "/playlist_metadata_images/1_fanart.jpg", "builtin")
+    logo = _image("thumb", "logo.png", "builtin")
+    stored_metadata = {
+        1: json.dumps(
+            {
+                "images": [
+                    collage_thumb,
+                    remote_thumb,
+                    "garbage",
+                    collage_fanart,
+                    foreign_fanart,
+                    generated_thumb,
+                ],
+                "last_refresh": 1,
+            }
+        ),
+        2: json.dumps({"images": [remote_thumb, collage_fanart], "last_refresh": 1}),
+        3: "not json /collage/",
+        4: '["/collage/abc_thumb.jpg"]',
+        5: None,
+        # the builtin "All favorited tracks" playlist and a user-created builtin playlist
+        6: json.dumps(
+            {"images": [logo, generated_thumb, collage_fanart, generated_fanart], "last_refresh": 1}
+        ),
+        7: json.dumps({"images": [generated_thumb], "last_refresh": 1}),
+    }
+    for item_id, metadata in stored_metadata.items():
+        await database.execute(
+            "INSERT INTO playlists (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) VALUES "
+        "('playlist', 6, 'builtin', 'builtin', 'all_favorite_tracks'), "
+        "('playlist', 7, 'builtin', 'builtin', 'my_playlist')"
+    )
+    await database.commit()
+    collage_file = tmp_path / "collage_images" / "abc_thumb.jpg"
+    collage_file.parent.mkdir()
+    collage_file.write_bytes(b"jpg")
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    mass.cache_path = str(tmp_path)
+
+    await migrate_database(mass, database, MagicMock(), prev_version=61, create_tables=AsyncMock())
+    migrated = await _playlist_metadata(database)
+    await migrate_database(mass, database, MagicMock(), prev_version=61, create_tables=AsyncMock())
+
+    assert await _playlist_metadata(database) == migrated
+    assert json.loads(migrated[1]) == {
+        "images": [remote_thumb, "garbage", foreign_fanart, generated_thumb]
+    }
+    # only a lost collage cover asks for a new one
+    assert json.loads(migrated[2]) == {"images": [remote_thumb], "last_refresh": 1}
+    assert json.loads(migrated[6]) == {
+        "images": [logo, _image("fanart", "fanart.jpg", "builtin")],
+        "last_refresh": 1,
+    }
+    for item_id in (3, 4, 5, 7):
+        assert migrated[item_id] == stored_metadata[item_id]
+    assert not collage_file.parent.exists()

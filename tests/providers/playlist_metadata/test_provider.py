@@ -207,6 +207,40 @@ async def test_get_playlist_metadata_handles_exception(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prov_playlist_id", "gets_artwork"),
+    [("all_favorite_tracks", False), ("my_playlist", True)],
+)
+async def test_get_playlist_metadata_skips_builtin_system_playlists(
+    tmp_path: Any, prov_playlist_id: str, gets_artwork: bool
+) -> None:
+    """A builtin system playlist keeps its static artwork, a user-created one gets artwork."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+    playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Builtin Playlist",
+        provider_mappings={
+            ProviderMapping(
+                item_id=prov_playlist_id, provider_domain="builtin", provider_instance="builtin"
+            )
+        },
+    )
+    thumb = MediaItemImage(
+        type=ImageType.THUMB,
+        path=os.path.join(provider._images_dir, "1_thumb.jpg"),
+        provider="playlist_metadata",
+        remotely_accessible=False,
+    )
+
+    with patch.object(provider, "_generate_and_write", AsyncMock(return_value=thumb)):
+        result = await provider.get_playlist_metadata(playlist)
+
+    assert (result is not None) is gets_artwork
+
+
+@pytest.mark.asyncio
 async def test_get_playlist_metadata_cleans_up_old_files(
     tmp_path: Any,
 ) -> None:

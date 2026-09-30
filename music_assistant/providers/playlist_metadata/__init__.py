@@ -54,6 +54,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.providers.builtin.constants import BUILTIN_PLAYLISTS
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -185,6 +186,12 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         :param playlist: The playlist to generate metadata for.
         """
+        if any(
+            pm.provider_domain == "builtin" and pm.item_id in BUILTIN_PLAYLISTS
+            for pm in playlist.provider_mappings
+        ):
+            # a builtin system playlist keeps changing content, so it keeps its static artwork
+            return None
         skip_provider = self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS)
         if skip_provider:
             has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
