@@ -2271,6 +2271,7 @@ class StreamsAudio:
         pcm_format: AudioFormat,
         session_id: str | None = None,
         protocol_player: Player | None = None,
+        consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2285,6 +2286,9 @@ class StreamsAudio:
             Must be the same player that was used to select ``pcm_format`` so
             restart decisions are made against the correct supported sample rates
             and flow mode configuration. Falls back to the queue's player when omitted.
+        :param consumer_connected: Reports whether the consumer of this stream is still
+            connected; once it reports False, the stream ends before its next item and
+            does not report the queue completed.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2310,6 +2314,19 @@ class StreamsAudio:
             )
             return
         queue.flow_mode = True
+
+        def _consumer_left() -> bool:
+            """Return True once the consumer of this stream has disconnected."""
+            if consumer_connected is None or consumer_connected():
+                return False
+            self.logger.debug(
+                "Flow stream for queue %s lost its consumer - exiting", queue.display_name
+            )
+            return True
+
+        # without a consumer, leave the session's play log to the producers still playing it
+        if _consumer_left():
+            return
         # A session can also be handed a second producer, which the session check does not
         # catch: players such as DLNA renderers sometimes open the same flow url twice to
         # probe the audio. Append to the list published here rather than to whatever the
@@ -2366,6 +2383,11 @@ class StreamsAudio:
                         pq_data.session_id,
                     )
                     return
+                # a consumer that left is only noticed when audio is written to it, which never
+                # happens while items produce no audio: end here, without walking the rest of
+                # the queue or reporting it completed
+                if _consumer_left():
+                    return
                 # get (next) queue item to stream
                 if queue_track is None:
                     queue_track = start_queue_item
@@ -2377,6 +2399,9 @@ class StreamsAudio:
                     except QueueEmpty:
                         queue_exhausted = True
                         break
+                    # the consumer may have left while the next item was loading
+                    if _consumer_left():
+                        return
 
                 if self._flow_stream_needs_restart(
                     queue_track,
@@ -2910,6 +2935,9 @@ class StreamsAudio:
                 "Flow stream for queue %s superseded - skipping end-of-queue handling",
                 queue.display_name,
             )
+            return
+        # the queue did not play out on a consumer that left, so it is not reported completed
+        if _consumer_left():
             return
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
