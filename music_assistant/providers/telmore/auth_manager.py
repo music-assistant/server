@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from music_assistant_models.errors import LoginFailed
 from yarl import URL
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
@@ -35,13 +36,17 @@ class TelmoreAuthManager(Music247eAuthManager):
                     self._refresh_token = refresh_result["tokenResult"]["refresh_token"]
                     return self._access_token
 
+            self.logger.warning(
+                "Refresh token flow failed: status=%s", refresh_result.get("status")
+            )
+
         async with self.mass.http_session.get(
             "https://musik.telmore.dk/api/delegatedlogin",
             allow_redirects=False,
         ) as delegate_response:
             session = URL(delegate_response.headers.get("Location", "")).query.get("session")
             if not session:
-                return None
+                raise LoginFailed("Telmore login failed: no session in delegated login response")
 
         async with self.mass.http_session.post(
             "https://id.telmore.dk/internal-login",
@@ -53,12 +58,14 @@ class TelmoreAuthManager(Music247eAuthManager):
             },
         ) as login_response:
             if login_response.status != 200:
-                return None
+                raise LoginFailed(
+                    f"Telmore login failed: internal-login returned HTTP {login_response.status}"
+                )
 
             login_result = await login_response.json()
             login_url = login_result.get("url")
             if not login_url:
-                return None
+                raise LoginFailed("Telmore login failed: no redirect URL in login response")
 
         async with self.mass.http_session.get(login_url) as token_response:
             token_page = await token_response.text()
@@ -66,7 +73,9 @@ class TelmoreAuthManager(Music247eAuthManager):
             refresh_token_re = re.search(r'refreshToken:\s*"([^"]+)"', token_page)
 
             if not access_token_re or not refresh_token_re:
-                return None
+                raise LoginFailed(
+                    "Telmore login failed: access/refresh token not found in response"
+                )
 
             access_token = access_token_re.group(1)
             self._refresh_token = refresh_token_re.group(1)

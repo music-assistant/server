@@ -34,7 +34,7 @@ class Music247eAccessToken:
 
 
 class Music247eAuthManager:
-    """24-7 (247e) authentication manager base; concrete providers implement auth_token."""
+    """24-7 (247e) authentication manager base; concrete providers implement _fetch_token."""
 
     def __init__(self, provider: Music247eProvider):
         """Initialize Music247eAuthManager."""
@@ -53,7 +53,8 @@ class Music247eAuthManager:
         """Return a valid access token, authenticating only if the cached one expired."""
         if self._access_token and not self._access_token.is_expired():
             return self._access_token
-        return await self._fetch_token()
+        self._access_token = await self._fetch_token()
+        return self._access_token
 
     async def _fetch_token(self) -> Music247eAccessToken | None:
         """Perform the provider-specific login flow and return a fresh access token."""
