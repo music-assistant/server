@@ -137,7 +137,6 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     ("publish_ip", "expected_interface"),
     [
         ("192.168.1.50", "192.168.1.50"),
-        # a NAT/port-forward publish IP is not ours, so librespot advertises on all interfaces
         ("203.0.113.7", None),
     ],
 )
@@ -206,9 +205,7 @@ recorded_pairing_argv: list[list[str]] = []
 @pytest.mark.parametrize(
     ("zeroconf_interface", "expected_flag_present"),
     [
-        # a known publish IP pins the advertisement, keeping it off Docker bridges
         ("192.168.1.169", True),
-        # no publish IP: librespot advertises on all interfaces
         (None, False),
     ],
 )

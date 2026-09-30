@@ -588,10 +588,8 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         librespot_bin = await get_librespot_binary()
     except RuntimeError as err:
         raise SetupFlowError(str(err), translation_key="librespot_unavailable") from err
-    # same address the streamserver advertises to players, so pairing lands on the LAN
-    # instead of a Docker bridge or other side interface on multi-homed hosts
+    # pair on the network the players use; a NAT publish IP isn't local, so advertise everywhere
     publish_ip = session.mass.streams.publish_ip
-    # a configured NAT/external publish IP is not a local interface librespot can advertise on
     local_ips = await get_ip_addresses(include_ipv6=True)
     zeroconf_interface = publish_ip if publish_ip in local_ips else None
     errors: dict[str, str | SetupFlowError] | None = None

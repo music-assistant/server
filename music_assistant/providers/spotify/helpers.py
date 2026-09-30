@@ -98,8 +98,7 @@ async def librespot_credentials_via_pairing(
             device_name,
         ]
         if zeroconf_interface:
-            # without this, librespot's bundled mDNS responder advertises every local
-            # interface, including Docker bridge networks the Spotify app can't reach
+            # otherwise librespot advertises on every interface, Docker bridges included
             args += ["--zeroconf-interface", zeroconf_interface]
         # stdout carries decoded audio once the user hits play; discard it so the pairing
         # daemon never blocks on a pipe nobody reads
