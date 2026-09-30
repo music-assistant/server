@@ -116,8 +116,8 @@ def test_clear_still_empties_the_queue() -> None:
     assert ctrl._queue_data[QUEUE_ID].items == []
     assert queue.current_index is None
     assert queue.current_item is None
-    assert queue.next_item is None
     assert queue.ended is False
+    assert queue.next_item is None
 
 
 async def test_play_on_an_ended_queue_restarts_from_the_beginning() -> None:
