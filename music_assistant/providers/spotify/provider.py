@@ -123,7 +123,7 @@ class NotModifiedError(Exception):
 
 @dataclass(slots=True)
 class _PlaylistPaginationState:
-    """Hold the synchronization and metadata snapshot for one playlist endpoint."""
+    """Hold the synchronization and metadata snapshot for one playlist."""
 
     lock: asyncio.Lock
     snapshot: dict[str, Any] | None = None
@@ -138,7 +138,7 @@ class SpotifyProvider(MusicProvider):
     _auth_info_dev: dict[str, Any] | None = None
     _sp_user: dict[str, Any] | None = None
     _audiobooks_supported = False
-    _playlist_pagination_states: OrderedDict[tuple[str, bool], _PlaylistPaginationState]
+    _playlist_pagination_states: OrderedDict[str, _PlaylistPaginationState]
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
     _global_session: SpotifySession
@@ -791,8 +791,8 @@ class SpotifyProvider(MusicProvider):
 
         while True:
             try:
-                meta = await self._get_playlist_pagination_meta(uri, page, use_global)
-                cache_checksum = meta["etag"]
+                meta = await self._get_playlist_pagination_meta(prov_playlist_id, page, use_global)
+                cache_checksum = meta["checksum"]
                 total = meta["total"]
 
                 # Spotify has started returning 5xx for offset >= total on some
@@ -1457,21 +1457,23 @@ class SpotifyProvider(MusicProvider):
         return liked_songs
 
     async def _get_playlist_pagination_meta(
-        self, endpoint: str, page: int, use_global_session: bool
+        self, prov_playlist_id: str, page: int, use_global_session: bool
     ) -> dict[str, Any]:
         """
-        Return pagination metadata for a Spotify playlist traversal.
+        Return the page cache checksum and item total for a Spotify playlist traversal.
 
-        :param endpoint: Spotify API endpoint for the playlist items.
+        Page 0 fetches fresh metadata, later pages of the same traversal reuse it.
+
+        :param prov_playlist_id: The Spotify playlist ID, or the Liked Songs playlist ID.
         :param page: Requested playlist page.
         :param use_global_session: Whether the global Spotify session is required.
+        :returns: A dict with the page cache ``checksum`` and the item ``total``.
         """
-        state_key = (endpoint, use_global_session)
-        if state := self._playlist_pagination_states.get(state_key):
-            self._playlist_pagination_states.move_to_end(state_key)
+        if state := self._playlist_pagination_states.get(prov_playlist_id):
+            self._playlist_pagination_states.move_to_end(prov_playlist_id)
         else:
             state = _PlaylistPaginationState(lock=asyncio.Lock())
-            self._playlist_pagination_states[state_key] = state
+            self._playlist_pagination_states[prov_playlist_id] = state
             while len(self._playlist_pagination_states) > _PLAYLIST_PAGINATION_STATE_LIMIT:
                 self._playlist_pagination_states.popitem(last=False)
 
@@ -1484,14 +1486,52 @@ class SpotifyProvider(MusicProvider):
 
             if page == 0:
                 state.snapshot = None
-            meta = await self._get_paginated_meta(
-                endpoint,
-                limit=1,
-                offset=0,
-                use_global_session=use_global_session,
-            )
+            if prov_playlist_id == self._get_liked_songs_playlist_id():
+                # Liked Songs has no snapshot id, but it lists newest first, so the ETag
+                # of a one-item page (first item and total) changes on every edit
+                liked_meta = await self._get_paginated_meta(
+                    "me/tracks",
+                    limit=1,
+                    offset=0,
+                    use_global_session=use_global_session,
+                )
+                meta = {"checksum": liked_meta["etag"], "total": liked_meta["total"]}
+            else:
+                meta = await self._get_playlist_snapshot(
+                    prov_playlist_id, use_global_session=use_global_session
+                )
             state.snapshot = meta
             return meta
+
+    async def _get_playlist_snapshot(
+        self, prov_playlist_id: str, use_global_session: bool
+    ) -> dict[str, Any]:
+        """
+        Return the current snapshot id and item total of a Spotify playlist.
+
+        The snapshot id changes on every edit of the playlist.
+
+        :param prov_playlist_id: The Spotify playlist ID.
+        :param use_global_session: Whether the global Spotify session is required.
+        :returns: A dict with the snapshot id as ``checksum`` and the item ``total``.
+        :raises MediaNotFoundError: If the developer session may not read the playlist's items.
+        """
+        playlist = await self._get_data(
+            f"playlists/{prov_playlist_id}",
+            fields="snapshot_id,items(total)",
+            use_global_session=use_global_session,
+        )
+        items = playlist.get("items")
+        # Development Mode returns only the metadata of a playlist the user does not own
+        # or collaborate on
+        if items is None and self.dev_session_active and not use_global_session:
+            raise MediaNotFoundError(
+                f"Items of playlist {prov_playlist_id} need the global session"
+            )
+        return {
+            "checksum": playlist.get("snapshot_id"),
+            "total": (items or {}).get("total", 0),
+        }
 
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
         """
