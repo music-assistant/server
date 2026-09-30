@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
+from aiohttp import ClientResponseError
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
@@ -122,6 +123,7 @@ class OpenSonicProvider(MusicProvider):
                 key=CONF_ENABLE_PODCASTS,
                 type=ConfigEntryType.BOOLEAN,
                 required=True,
+                hidden=True,
                 default_value=True,
             ),
             ConfigEntry(
@@ -242,7 +244,23 @@ class OpenSonicProvider(MusicProvider):
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
-        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+        # Migration from the old subsonic config for enabling podcasts + the generic library sync option
+        # to a only using the library sync (plus probing a podcast endpoint)
+        # After this code has gone out in a release which marks the podcast option
+        # as not visible, we will drop that config option entirely and set
+        # _enable_podcasts to the result of the probe
+
+        can_podcast = False
+        if bool(self.config.get_value("library_sync_podcasts")):
+            try:
+                await self.conn.get_podcasts(inc_episodes=False)
+                can_podcast = True
+            except SonicError:
+                self.logger.info("Server does not support podcasts, disabling")
+            except ClientResponseError:
+                self.logger.info("Server does not support podcasts, disabling")
+
+        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS)) and can_podcast
         self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
