@@ -67,6 +67,14 @@ def test_shared_isrc_matches_across_positions(position: int) -> None:
     assert len(album_tracks.select_album_tracks([], tracks)) == 1
 
 
+def test_positionless_copy_of_a_placed_recording_is_not_listed_by_title() -> None:
+    """An entry without a position whose ISRC a slot already holds does not fall back to title."""
+    placed = entry("a", "one", 3, "GBAYC2100001")
+    copy = entry("b", "two", 0, "GBAYC2100001")
+    copy.name = "Allegro (Remastered)"
+    assert album_tracks.select_album_tracks([], [placed, copy]) == [placed]
+
+
 def test_library_recording_suppresses_its_provider_copy_by_isrc() -> None:
     """A provider copy of a recording the library holds is not listed again, at any position."""
     library = entry("library", "42", 0, "GBAYC2100001")
