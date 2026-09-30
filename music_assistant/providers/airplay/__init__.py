@@ -23,11 +23,7 @@ SUPPORTED_FEATURES = {
 
 
 async def setup(
-    mass: MusicAssistant,
-    manifest: ProviderManifest,
-    config: ProviderConfig,
-    *,
-    auto_setup: bool = False,  # noqa: ARG001
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AirPlayProvider(mass, manifest, config, SUPPORTED_FEATURES)

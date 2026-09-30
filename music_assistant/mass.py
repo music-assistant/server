@@ -1446,9 +1446,11 @@ class MusicAssistant:
         async with _provider_load_step(domain, "import its module"):
             prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
-            # Only passed when set: only default providers declare the parameter.
-            setup_kwargs = {"auto_setup": True} if auto_setup else {}
-            provider = await prov_mod.setup(self, prov_manifest, conf, **setup_kwargs)
+            if auto_setup and "auto_setup" in inspect.signature(prov_mod.setup).parameters:
+                # Only a provider that may refuse an automatic setup declares the flag.
+                provider = await prov_mod.setup(self, prov_manifest, conf, auto_setup=True)
+            else:
+                provider = await prov_mod.setup(self, prov_manifest, conf)
 
         # The instance now exists, so its full (options) config entries can be resolved
         # (get_config_entries is an instance method). Rehydrate the config values from
