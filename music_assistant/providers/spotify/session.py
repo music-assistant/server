@@ -11,12 +11,15 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from orjson import JSONDecodeError
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
     ThrottlerManager,
+    current_priority,
     parse_retry_after,
     throttle_with_retries,
 )
@@ -44,6 +47,7 @@ class SpotifySession:
         throttler: ThrottlerManager,
         get_auth: Callable[[], Awaitable[dict[str, Any]]],
         on_unauthorized: Callable[[], None],
+        fallback_for_playback: bool = False,
     ) -> None:
         """
         Initialize the session.
@@ -54,6 +58,8 @@ class SpotifySession:
         :param throttler: Throttler that paces the requests of this session.
         :param get_auth: Returns a valid access token of this session.
         :param on_unauthorized: Called when Spotify rejects the access token of this session.
+        :param fallback_for_playback: Whether another session serves playback while this one is
+            rate limited, so a playback request gives up on a limit at once.
         """
         self.mass = mass
         self.logger = logger
@@ -61,6 +67,7 @@ class SpotifySession:
         self.throttler = throttler
         self._get_auth = get_auth
         self._on_unauthorized = on_unauthorized
+        self._fallback_for_playback = fallback_for_playback
 
     @throttle_with_retries
     async def get(
@@ -210,6 +217,13 @@ class SpotifySession:
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                if self._fallback_for_playback and current_priority() is RequestPriority.HIGH:
+                    # playback does not sit out a limit of this app while another session can
+                    # serve it: close the gate for the time asked and give up right away
+                    self.throttler.set_cooldown(max(backoff_time, self.throttler.initial_backoff))
+                    raise RetriesExhausted(
+                        "Spotify Rate Limiter", translation_key=RateLimited.translation_key
+                    )
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)

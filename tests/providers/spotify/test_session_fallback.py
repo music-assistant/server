@@ -191,6 +191,55 @@ async def test_background_work_that_runs_into_a_long_limit_fails() -> None:
     assert _tokens_used(request) == ["dev"]
 
 
+def _stub_http_sequence(provider: SpotifyProvider, dev_statuses: list[int]) -> MagicMock:
+    """
+    Answer dev requests with a sequence of statuses and shared requests with 200.
+
+    :param provider: The provider whose requests to answer.
+    :param dev_statuses: HTTP status of each dev request in order, 429 carries a 5 s Retry-After.
+    """
+    remaining = list(dev_statuses)
+
+    def _respond(_method: str, _url: str, headers: dict[str, str], **_kwargs: Any) -> MagicMock:
+        status = remaining.pop(0) if headers["Authorization"].endswith("dev") else 200
+        response = MagicMock(status=status, headers={"Retry-After": "5"} if status == 429 else {})
+        response.json = AsyncMock(return_value={})
+        return MagicMock(
+            __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=None)
+        )
+
+    request = MagicMock(side_effect=_respond)
+    provider.mass.http_session.request = request  # type: ignore[method-assign]
+    return request
+
+
+async def test_playback_that_meets_a_short_limit_switches_at_once() -> None:
+    """Playback that meets even a short limit of the custom Client ID switches without waiting."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429])
+
+    with (
+        patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep,
+        request_priority(RequestPriority.HIGH),
+    ):
+        await provider._get_data("tracks/abc")
+    assert _tokens_used(request) == ["dev", "global"]
+    assert provider._dev_session.throttler.cooldown_remaining > 0
+    sleep.assert_not_awaited()
+
+
+async def test_user_action_that_meets_a_short_limit_waits_and_retries() -> None:
+    """A user action sits out a short limit of the custom Client ID and retries there."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429, 200])
+
+    with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep:
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev", "dev"]
+    assert sleep.await_count == 1
+    assert 5 <= sleep.await_args_list[0].args[0] <= 5.5
+
+
 async def test_playback_leaves_a_limited_dev_session_at_once() -> None:
     """Playback takes the shared client during any limit of the custom Client ID, however short."""
     provider = await _make_provider()

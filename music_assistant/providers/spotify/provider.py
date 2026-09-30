@@ -212,6 +212,7 @@ class SpotifyProvider(MusicProvider):
             self._clear_auth_info_dev,
             rate_limit=30,
             period=30,
+            fallback_for_playback=True,
         )
 
         # playback authorization is independent of the Web API tokens
@@ -1747,6 +1748,7 @@ class SpotifyProvider(MusicProvider):
         on_unauthorized: Callable[[], None],
         rate_limit: int,
         period: float,
+        fallback_for_playback: bool = False,
     ) -> SpotifySession:
         """
         Return a session of this instance on its stored throttler, created on first use.
@@ -1757,6 +1759,8 @@ class SpotifyProvider(MusicProvider):
         :param on_unauthorized: Drops the cached access token of the session.
         :param rate_limit: Number of requests the session may make per period.
         :param period: Length of the period in seconds.
+        :param fallback_for_playback: Whether another session serves playback while this one
+            is rate limited.
         """
         key = (self.instance_id, name, client_id)
         # a throttler of another app the session spoke for before is of no use anymore
@@ -1766,7 +1770,15 @@ class SpotifyProvider(MusicProvider):
             key, ThrottlerManager(rate_limit=rate_limit, period=period)
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
-        return SpotifySession(self.mass, self.logger, name, throttler, get_auth, on_unauthorized)
+        return SpotifySession(
+            self.mass,
+            self.logger,
+            name,
+            throttler,
+            get_auth,
+            on_unauthorized,
+            fallback_for_playback=fallback_for_playback,
+        )
 
     def _clear_auth_info_global(self) -> None:
         """Drop the cached access token of the global session."""
