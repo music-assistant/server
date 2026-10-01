@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     Artist,
     MediaCollection,
     MediaItemType,
+    ProviderMapping,
     RecommendationFolder,
     UniqueList,
 )
@@ -24,11 +25,20 @@ from music_assistant_models.media_items import (
 from music_assistant.helpers.collections import get_collection_item_id
 from music_assistant.providers.audiobookshelf import Audiobookshelf
 
+INSTANCE_ID = "audiobookshelf--test123"
+
+
+def _artist(item_id: str, name: str) -> Artist:
+    mapping = ProviderMapping(
+        item_id=item_id, provider_domain="audiobookshelf", provider_instance=INSTANCE_ID
+    )
+    return Artist(item_id=item_id, provider="library", name=name, provider_mappings={mapping})
+
+
 ARTISTS = {
-    "aut1": Artist(
-        item_id="1", provider="library", name="Terry Pratchett", provider_mappings=set()
-    ),
-    "aut2": Artist(item_id="2", provider="library", name="Robert Jordan", provider_mappings=set()),
+    "aut1": _artist("aut1", "Terry Pratchett"),
+    "aut2": _artist("aut2", "Robert Jordan"),
+    "aut3": _artist("aut3", "Brandon Sanderson"),
 }
 
 
@@ -43,7 +53,6 @@ def _collection(name: str) -> MediaCollection[Mock]:
 
 
 def _serve_persisted_payload(provider: Audiobookshelf, folders: list[RecommendationFolder]) -> None:
-    """Serve the folders from the persistent cache, serialized like the cache db stores them."""
     restored = [RecommendationFolder.from_dict(x.to_dict()) for x in folders]
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         return_value=(restored, True, True)
@@ -53,18 +62,22 @@ def _serve_persisted_payload(provider: Audiobookshelf, folders: list[Recommendat
     )
 
 
-def _stub_library(provider: Audiobookshelf) -> None:
-    """Serve collapsed library audiobooks and library artists."""
-    provider.mass.music.audiobooks.library_items = AsyncMock(  # type: ignore[method-assign]
+def _stub_library(provider: Audiobookshelf) -> AsyncMock:
+    library_items = AsyncMock(
         return_value=[_collection("Wheel of Time"), Mock(), _collection("Discworld")]
     )
+    provider.mass.music.audiobooks.library_items = library_items  # type: ignore[method-assign]
 
-    async def _get_library_item_by_prov_id(item_id: str, **_kwargs: str) -> Artist | None:
-        return ARTISTS.get(item_id)
+    # the db returns matches in its own order, not in the requested one
+    async def _get_library_items_by_prov_id(
+        provider_item_ids: list[str], **_kwargs: str
+    ) -> list[Artist]:
+        return [ARTISTS[x] for x in reversed(provider_item_ids) if x in ARTISTS]
 
-    provider.mass.music.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
-        side_effect=_get_library_item_by_prov_id
+    provider.mass.music.artists.get_library_items_by_prov_id = AsyncMock(  # type: ignore[method-assign,misc]
+        side_effect=_get_library_items_by_prov_id
     )
+    return library_items
 
 
 @pytest.mark.asyncio
@@ -83,21 +96,23 @@ async def test_recommendation_shelves(provider: Audiobookshelf) -> None:
     authors_shelf.id_ = AbsShelfId.NEWEST_AUTHORS
     authors_shelf.type_ = AbsShelfType.AUTHORS
     authors_shelf.entities = []
-    for author_id, num_books in (("aut1", 3), ("aut2", 0)):
+    for author_id, num_books in (("aut2", 2), ("aut3", 0), ("aut1", 3)):
         entity = Mock(spec=AuthorExpanded)
         entity.id_ = author_id
         entity.num_books = num_books
         authors_shelf.entities.append(entity)
     items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]] = {}
 
-    await provider._recommendations_iter_shelves([series_shelf, authors_shelf], items_by_shelf_id)
+    await provider._recommendations_iter_shelves(
+        [series_shelf, authors_shelf], items_by_shelf_id, await provider._get_series_collections()
+    )
 
     (series,) = items_by_shelf_id[AbsShelfId.RECENT_SERIES]
     assert [(type(x), x.name) for x in series] == [
         (MediaCollection, "Discworld"),
         (MediaCollection, "Wheel of Time"),
     ]
-    assert items_by_shelf_id[AbsShelfId.NEWEST_AUTHORS] == [[ARTISTS["aut1"]]]
+    assert items_by_shelf_id[AbsShelfId.NEWEST_AUTHORS] == [[ARTISTS["aut2"], ARTISTS["aut1"]]]
 
 
 @pytest.mark.parametrize(
@@ -123,11 +138,11 @@ async def test_browse_authors_and_narrators(
 
 @pytest.mark.asyncio
 async def test_browse_series(provider: Audiobookshelf) -> None:
-    """Series browse to the library collections of the library's series, sorted by name."""
+    """Series browse to the library collections of the library's series, sorted and unique."""
     _stub_library(provider)
 
     async def _get_library_series(**_kwargs: str) -> AsyncGenerator[SimpleNamespace]:
-        names = ("Wheel of Time", "Not synced", "Discworld")
+        names = ("Wheel of Time", "Not synced", "Discworld", "Discworld")
         yield SimpleNamespace(results=[SimpleNamespace(name=x) for x in names])
         yield SimpleNamespace(results=[])
 
@@ -143,16 +158,17 @@ async def test_browse_series(provider: Audiobookshelf) -> None:
 
 @pytest.mark.asyncio
 async def test_series_row_from_persisted_payload(provider: Audiobookshelf) -> None:
-    """A series row restored from the persisted payload serves collections, not item mappings."""
-    _stub_library(provider)
+    """A restored series row serves library collections, rehydrated once, without removed ones."""
+    library_items = _stub_library(provider)
     folder = RecommendationFolder(
         item_id=AbsShelfId.RECENT_SERIES,
         provider=provider.instance_id,
         name="Recent series",
-        items=UniqueList([_collection("Discworld")]),
+        items=UniqueList([_collection("Removed"), _collection("Discworld")]),
     )
     _serve_persisted_payload(provider, [folder])
 
-    items = await provider.get_recommendation_items(AbsShelfId.RECENT_SERIES)
-
-    assert [(type(x), x.name) for x in items] == [(MediaCollection, "Discworld")]
+    for _ in range(2):
+        items = await provider.get_recommendation_items(AbsShelfId.RECENT_SERIES)
+        assert [(type(x), x.name) for x in items] == [(MediaCollection, "Discworld")]
+    assert library_items.await_count == 1
