@@ -508,24 +508,22 @@ class SpotifyProvider(MusicProvider):
         if media_types is None:
             return searchresult
 
-        searchtype = self._build_search_types(media_types)
-        if not searchtype:
-            return searchresult
-
         search_query = search_query.replace("'", "")
-        offset = 0
-        page_limit = min(limit, 10)
-
-        while True:
-            api_result = await self._get_data(
-                "search", q=search_query, type=searchtype, limit=page_limit, offset=offset
+        searches: list[tuple[list[MediaType], bool]] = [(media_types, False)]
+        if self.dev_session_active and MediaType.PLAYLIST in media_types:
+            # Spotify returns the playlists a developer app may not access (its own
+            # editorial ones) as null search items, which can leave a playlist search
+            # almost empty. Search playlists on the global session, which sees them.
+            searches = [
+                ([mt for mt in media_types if mt != MediaType.PLAYLIST], False),
+                ([MediaType.PLAYLIST], True),
+            ]
+        await asyncio.gather(
+            *(
+                self._search_pages(search_query, types, limit, searchresult, use_global)
+                for types, use_global in searches
             )
-            items_received = self._process_search_results(api_result, searchresult)
-
-            offset += page_limit
-            if offset >= limit or items_received < page_limit:
-                break
-
+        )
         return searchresult
 
     @use_cache()
@@ -1242,6 +1240,45 @@ class SpotifyProvider(MusicProvider):
 
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
+
+    async def _search_pages(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int,
+        searchresult: SearchResults,
+        use_global_session: bool,
+    ) -> None:
+        """
+        Page through Spotify search results for the given media types.
+
+        :param search_query: Search query.
+        :param media_types: The media types to search for.
+        :param limit: Number of items to return per media type.
+        :param searchresult: The search result to add the found items to.
+        :param use_global_session: Force use of global session (for features not available on dev).
+        """
+        searchtype = self._build_search_types(media_types)
+        if not searchtype:
+            return
+
+        offset = 0
+        page_limit = min(limit, 10)
+
+        while True:
+            api_result = await self._get_data(
+                "search",
+                q=search_query,
+                type=searchtype,
+                limit=page_limit,
+                offset=offset,
+                use_global_session=use_global_session,
+            )
+            items_received = self._process_search_results(api_result, searchresult)
+
+            offset += page_limit
+            if offset >= limit or items_received < page_limit:
+                break
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""
