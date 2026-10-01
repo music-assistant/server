@@ -1,4 +1,4 @@
-"""Tests for authenticating a request coming from Home Assistant Ingress."""
+"""Tests for signing in a Home Assistant user, through Ingress or the Home Assistant login."""
 
 from __future__ import annotations
 
@@ -10,12 +10,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.auth import AuthProviderType, Scope, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
-from music_assistant.controllers.webserver.helpers import auth_middleware
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_authenticated_user
+from music_assistant.controllers.webserver.helpers import auth_middleware, auth_providers
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_authenticated_user,
+    set_current_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthResult,
+    HomeAssistantOAuthProvider,
+    HomeAssistantProviderConfig,
+)
+from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -95,6 +104,56 @@ def _ingress_request(
         patch.object(mass, "get_provider", return_value=hass_provider),
     ):
         yield request
+
+
+async def _create_user(
+    auth_manager: AuthenticationManager,
+    username: str,
+    *,
+    ha_user_id: str | None = None,
+    disabled: bool = False,
+) -> User:
+    """
+    Create a user with display name "Old name", optionally linked to HA and disabled.
+
+    :param auth_manager: The authentication manager to create the user with.
+    :param username: The username of the user.
+    :param ha_user_id: The Home Assistant user id to link the user to, if any.
+    :param disabled: Whether to disable the user's account (as an admin would).
+    """
+    user = await auth_manager.create_user(username=username, display_name="Old name")
+    if ha_user_id:
+        await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+    if disabled:
+        set_current_user(await auth_manager.create_user(username="admin", role=UserRole.ADMIN))
+        await auth_manager.disable_user(user.user_id)
+    return user
+
+
+async def _get_ha_link(
+    auth_manager: AuthenticationManager, ha_user_id: str
+) -> dict[str, object] | None:
+    """
+    Return the stored link of the given Home Assistant user id, if any.
+
+    :param auth_manager: The authentication manager whose database holds the links.
+    :param ha_user_id: The Home Assistant user id to look up.
+    """
+    row = await auth_manager.database.get_row(
+        "user_auth_providers",
+        {"provider_type": AuthProviderType.HOME_ASSISTANT.value, "provider_user_id": ha_user_id},
+    )
+    return dict(row) if row else None
+
+
+def _oauth_provider(mass: MusicAssistant) -> HomeAssistantOAuthProvider:
+    """
+    Return a Home Assistant OAuth login provider for the given server.
+
+    :param mass: The server the login provider signs users in to.
+    """
+    ha_config: HomeAssistantProviderConfig = {"ha_url": "http://ha.local:8123"}
+    return HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
 
 
 @pytest.mark.parametrize(
@@ -235,3 +294,159 @@ async def test_a_non_ingress_request_ignores_the_ingress_headers(
         AuthProviderType.HOME_ASSISTANT, "ha_alice"
     )
     assert linked is None
+
+
+async def test_ingress_refuses_a_disabled_linked_user_under_another_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    A disabled user linked to the HA account is refused, even when its username differs.
+
+    No new account is created for the Home Assistant user and the disabled user is untouched.
+    """
+    mass = auth_manager.mass
+    disabled = await _create_user(auth_manager, "alice_old", ha_user_id="ha_alice", disabled=True)
+    user_count = len(await auth_manager.list_users())
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=False, details=("alice", "Alice from HA", None)
+    )
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is None
+    assert len(await auth_manager.list_users()) == user_count
+    row = await auth_manager.database.get_row("users", {"user_id": disabled.user_id})
+    assert row is not None
+    assert not row["enabled"]
+    assert row["display_name"] == "Old name"
+
+
+async def test_ingress_refuses_a_username_match_with_a_disabled_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An unlinked HA user whose username matches a disabled user is refused, and not linked."""
+    mass = auth_manager.mass
+    await _create_user(auth_manager, "bob", disabled=True)
+    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=False)
+    headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "Bob"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is None
+    assert await _get_ha_link(auth_manager, "ha_bob") is None
+
+
+@pytest.mark.parametrize("disabled", [False, True], ids=["enabled", "disabled"])
+async def test_ingress_websocket_signs_in_the_linked_user_unless_disabled(
+    auth_manager: AuthenticationManager, disabled: bool
+) -> None:
+    """
+    An Ingress websocket connection is signed in as the linked user, unless it is disabled.
+
+    A refused connection receives no events until it authenticates with a token.
+
+    :param disabled: Whether the linked user's account is disabled.
+    """
+    mass = auth_manager.mass
+    linked = await _create_user(auth_manager, "alice", ha_user_id="ha_alice", disabled=disabled)
+    hass_provider = _ready_hass_provider(mass, "ha_alice", admin=False)
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        client = WebsocketClientHandler(auth_manager.webserver, request)
+        await client._handle_ingress_auth()
+
+    signed_in = client._authenticated_user
+    assert (signed_in.user_id if signed_in else None) == (None if disabled else linked.user_id)
+    assert (client._events_unsub_callback is None) == disabled
+
+
+async def test_ha_login_resolves_a_disabled_linked_user_under_another_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    The HA login resolves to the disabled linked user, even when its username differs.
+
+    No new account is created for the Home Assistant user and the disabled user is untouched.
+    """
+    mass = auth_manager.mass
+    disabled = await _create_user(auth_manager, "alice_old", ha_user_id="ha_alice", disabled=True)
+    user_count = len(await auth_manager.list_users())
+    hass_provider = _ready_hass_provider(mass, "ha_alice", admin=False)
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        user = await _oauth_provider(mass)._get_or_create_user("alice", "Alice from HA", "ha_alice")
+
+    assert user is not None
+    assert user.user_id == disabled.user_id
+    assert not user.enabled
+    assert user.display_name == "Old name"
+    assert len(await auth_manager.list_users()) == user_count
+
+
+async def test_ha_login_does_not_link_a_username_match_with_a_disabled_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An unlinked HA user whose username matches a disabled user resolves to it, unlinked."""
+    disabled = await _create_user(auth_manager, "bob", disabled=True)
+
+    user = await _oauth_provider(auth_manager.mass)._get_or_create_user("Bob", None, "ha_bob")
+
+    assert user is not None
+    assert user.user_id == disabled.user_id
+    assert not user.enabled
+    assert await _get_ha_link(auth_manager, "ha_bob") is None
+
+
+async def test_ha_login_links_a_username_match_and_refreshes_its_details(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An existing user matched by username is linked to HA and gets the HA display name."""
+    existing = await _create_user(auth_manager, "bob")
+
+    user = await _oauth_provider(auth_manager.mass)._get_or_create_user(
+        "Bob", "Bob from HA", "ha_bob"
+    )
+
+    assert user is not None
+    assert user.user_id == existing.user_id
+    assert user.display_name == "Bob from HA"
+    link = await _get_ha_link(auth_manager, "ha_bob")
+    assert link is not None
+    assert link["user_id"] == existing.user_id
+
+
+@pytest.mark.parametrize("display_name", [None, "Alice from HA"], ids=["no_details", "details"])
+async def test_ha_login_callback_refuses_a_disabled_user(
+    auth_manager: AuthenticationManager, display_name: str | None
+) -> None:
+    """
+    The HA login callback refuses to sign in a disabled user.
+
+    :param display_name: The display name Home Assistant returns for the user, if any.
+    """
+    mass = auth_manager.mass
+    await _create_user(auth_manager, "alice", ha_user_id="ha_alice", disabled=True)
+    provider = _oauth_provider(mass)
+    provider._oauth_sessions["login_state"] = None
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=False, details=("alice", display_name, None)
+    )
+
+    with (
+        patch.object(mass, "get_provider", return_value=hass_provider),
+        patch.object(
+            auth_providers, "get_token", AsyncMock(return_value={"access_token": "ha_token"})
+        ),
+        patch.object(
+            provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value="ha_alice")
+        ),
+    ):
+        result = await provider.handle_oauth_callback(
+            "ha_code", "login_state", "http://ma.local:8095/auth/callback"
+        )
+
+    assert result == AuthResult(success=False, error="User account is disabled")
