@@ -125,6 +125,10 @@ class GeniusProvider(MetadataProvider):
 
         try:
             return await asyncio.to_thread(_fetch_lyrics, artist, title)
-        except (RequestException, AssertionError) as err:
+        except RequestException as err:
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err
+        except AssertionError as err:
             # lyricsgenius raises AssertionError on any non-200 API response
+            if not str(err).startswith("Unexpected response status code"):
+                raise
             raise ResourceTemporarilyUnavailable("Genius request failed") from err

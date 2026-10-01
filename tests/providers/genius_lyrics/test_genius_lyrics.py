@@ -48,6 +48,14 @@ async def test_fetch_lyrics_raises_temporary_error(
     cache_set.assert_not_called()
 
 
+async def test_fetch_lyrics_keeps_other_assertion_errors(provider: GeniusProvider) -> None:
+    """An AssertionError unrelated to the API response status is not treated as temporary."""
+    provider._genius.search_song.side_effect = AssertionError("parser invariant")
+
+    with pytest.raises(AssertionError):
+        await provider.fetch_lyrics("Artist", "Song")
+
+
 async def test_fetch_lyrics_returns_none_when_not_found(provider: GeniusProvider) -> None:
     """No search result means there are no lyrics, so None is returned."""
     provider._genius.search_song.return_value = None
