@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
@@ -194,9 +195,11 @@ def _mute_natively(player: MockPlayer) -> AsyncMock:
 
 
 @pytest.fixture
-def mock_mass() -> MagicMock:
+def mock_mass() -> Iterator[MagicMock]:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
+    # kept so teardown still sees its calls when a test swaps mass.create_task
+    create_task = mass.create_task = MagicMock()
     mass.closing = False
     mass.loop = None
     mass.config = MagicMock()
@@ -207,7 +210,12 @@ def mock_mass() -> MagicMock:
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
-    return mass
+    yield mass
+    # a mocked create_task never runs what it is handed, so close what no test started
+    for scheduled in create_task.call_args_list:
+        target = scheduled.args[0] if scheduled.args else None
+        if inspect.iscoroutine(target) and inspect.getcoroutinestate(target) == "CORO_CREATED":
+            target.close()
 
 
 @pytest.fixture
