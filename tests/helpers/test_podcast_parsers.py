@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 
+import podcastparser
 from aiohttp.client import ClientError
 from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
+    _MAX_TRANSCRIPT_BYTES,
+    _inject_episode_transcripts,
     enrich_episode_chapters,
     find_episode_stream_url,
+    find_episode_transcripts,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
+    parse_podcast,
     parse_podcast_episode,
     parse_podcast_persons,
     rank_episodes_by_date,
@@ -184,6 +191,31 @@ def test_missing_description_left_unset() -> None:
     mass_episode = _parse(_episode())
     assert mass_episode is not None
     assert mass_episode.metadata.description is None
+
+
+# --- podcast genres ---------------------------------------------------------------------------
+
+
+def test_podcast_without_categories_gets_spoken_word_genre() -> None:
+    """A feed with no itunes categories falls back to the Spoken Word genre."""
+    mass_podcast = parse_podcast(
+        feed_url="https://example.com/feed.xml",
+        parsed_feed={"title": "My Show"},
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_podcast.metadata.genres == {"Spoken Word"}
+
+
+def test_podcast_with_categories_keeps_them() -> None:
+    """A feed with itunes categories keeps them instead of the fallback genre."""
+    mass_podcast = parse_podcast(
+        feed_url="https://example.com/feed.xml",
+        parsed_feed={"title": "My Show", "itunes_categories": [["News", "Tech"]]},
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_podcast.metadata.genres == {"News", "Tech"}
 
 
 # --- parent podcast reference ----------------------------------------------------------------
@@ -599,11 +631,33 @@ FEED_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+class _FakeStreamReader:
+    """Stand-in for an aiohttp body stream that hands out the body in pieces until the end."""
+
+    def __init__(self, body: bytes, chunk_size: int | None) -> None:
+        self._body = body
+        self._chunk_size = chunk_size
+        self._position = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        # like aiohttp, a read may return less than asked, and returns nothing at the end
+        size = len(self._body) - self._position if n < 0 else n
+        if self._chunk_size is not None:
+            size = min(size, self._chunk_size)
+        chunk = self._body[self._position : self._position + size]
+        self._position += len(chunk)
+        return chunk
+
+
 class _FakeFeedResponse:
     """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
 
-    def __init__(self, body: bytes) -> None:
+    def __init__(
+        self, body: bytes, content_length: int | None, chunk_size: int | None = None
+    ) -> None:
         self._body = body
+        self.content_length = content_length
+        self.content = _FakeStreamReader(body, chunk_size)
 
     async def read(self) -> bytes:
         return self._body
@@ -619,7 +673,9 @@ class _FakeFeedGetContext:
         error = self._session.errors.pop(0) if self._session.errors else None
         if error is not None:
             raise error
-        return _FakeFeedResponse(self._session.body)
+        return _FakeFeedResponse(
+            self._session.body, self._session.content_length, self._session.chunk_size
+        )
 
     async def __aexit__(self, *exc_info: object) -> bool:
         self._session.released += 1
@@ -629,16 +685,29 @@ class _FakeFeedGetContext:
 class _FakeFeedSession:
     """Session stand-in serving a fixed feed body, optionally failing the first attempts."""
 
-    def __init__(self, *, body: bytes = FEED_XML, errors: list[Exception] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        body: bytes = FEED_XML,
+        errors: list[Exception] | None = None,
+        content_length: int | None = None,
+        chunk_size: int | None = None,
+    ) -> None:
         self.body = body
         self.errors = errors or []
+        # None mimics a host that streams the body without announcing its size
+        self.content_length = content_length
+        # a small chunk size mimics a host that streams the body in many pieces
+        self.chunk_size = chunk_size
         self.calls = 0
         self.released = 0
         self.headers: list[dict[str, str]] = []
+        self.urls: list[str] = []
 
     def get(self, url: str, headers: dict[str, str], **kwargs: Any) -> _FakeFeedGetContext:
         self.calls += 1
         self.headers.append(headers)
+        self.urls.append(url)
         return _FakeFeedGetContext(self)
 
 
@@ -721,3 +790,305 @@ def test_find_episode_stream_url_matches_empty_guid() -> None:
     assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="") == (
         "https://example.com/ep1.mp3"
     )
+
+
+# --- transcript retrieval ----------------------------------------------------------------------
+
+TRANSCRIPT_URL = "https://example.com/ep1.vtt"
+TRANSCRIPT_VTT = b"""WEBVTT
+
+00:00.000 --> 00:02.000
+<v Jane Doe>Welcome to the show.
+"""
+
+
+async def test_transcript_is_fetched_and_parsed() -> None:
+    """A fetched WebVTT transcript yields readable text and timed cues."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert cues is not None
+    assert cues[0].speaker == "Jane Doe"
+
+
+async def test_transcript_prefers_a_format_carrying_timings() -> None:
+    """The format with timings wins over one that would only yield plain text."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    _, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[
+            {"url": "https://example.com/ep1.txt", "type": "text/plain"},
+            {"url": TRANSCRIPT_URL, "type": "text/vtt"},
+        ],
+    )
+    assert cues is not None
+
+
+async def test_transcript_is_fetched_once_and_then_cached() -> None:
+    """A transcript is downloaded once and served from the cache afterwards."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    mass = _fake_mass(session)
+    for _ in range(2):
+        text, _ = await get_episode_transcript(
+            mass=mass,
+            provider_instance_id="podcastfeed--test",
+            transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+        )
+        assert text is not None
+    assert session.calls == 1
+
+
+async def test_transcript_falls_back_to_untimed_text() -> None:
+    """A document without timings still yields readable text, but no cues."""
+    session = _FakeFeedSession(body=b"<p>Just some prose.</p>")
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.html", "type": "text/html"}],
+    )
+    assert text == "Just some prose."
+    assert cues is None
+
+
+async def test_json_transcript_yields_cues_rather_than_raw_json() -> None:
+    """A Podcasting 2.0 JSON transcript is parsed into cues and never shown as raw JSON."""
+    body = b'{"segments": [{"startTime": 0.5, "endTime": 1.0, "speaker": "Jane", "body": "Hi."}]}'
+    session = _FakeFeedSession(body=body)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.json", "type": "application/json"}],
+    )
+    assert text == "Jane: Hi."
+    assert cues is not None
+    assert cues[0].start == 0.5
+
+
+async def test_json_transcript_without_segments_yields_nothing() -> None:
+    """A JSON document carrying no segments is not passed off as readable text."""
+    session = _FakeFeedSession(body=b'{"version": "1.0.0"}')
+    assert await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.json", "type": "application/json"}],
+    ) == (None, None)
+
+
+async def test_transcript_prefers_vtt_over_json() -> None:
+    """A cue-level WebVTT document wins over a JSON one, which is often word by word."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    text, _ = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[
+            {"url": "https://example.com/ep1.json", "type": "application/json"},
+            {"url": TRANSCRIPT_URL, "type": "text/vtt"},
+        ],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert session.urls == [TRANSCRIPT_URL]
+
+
+async def test_transcript_announced_as_too_large_is_not_read() -> None:
+    """A response whose announced size is over the cap is skipped and never cached."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, content_length=_MAX_TRANSCRIPT_BYTES + 1)
+    mass = _fake_mass(session)
+    assert await get_episode_transcript(
+        mass=mass,
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
+    assert cast("_FakeMass", mass).cache.sets == 0
+
+
+async def test_transcript_served_in_pieces_is_read_to_the_end() -> None:
+    """A body that arrives in many small pieces is assembled in full, not cut short."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, chunk_size=7)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert cues is not None
+
+
+async def test_transcript_streamed_past_the_cap_is_dropped() -> None:
+    """A body that grows past the cap without an announced size is dropped, not cached."""
+    session = _FakeFeedSession(body=b"x" * (_MAX_TRANSCRIPT_BYTES + 1))
+    mass = _fake_mass(session)
+    assert await get_episode_transcript(
+        mass=mass,
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
+    assert cast("_FakeMass", mass).cache.sets == 0
+
+
+async def test_no_transcripts_on_offer_does_not_fetch() -> None:
+    """An episode with no transcript on offer costs no request."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    assert await get_episode_transcript(
+        mass=_fake_mass(session), provider_instance_id="podcastfeed--test", transcripts=None
+    ) == (None, None)
+    assert session.calls == 0
+
+
+async def test_transcript_fetch_error_is_swallowed() -> None:
+    """A failed transcript fetch yields nothing rather than raising."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, errors=[ClientError("boom")])
+    assert await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
+
+
+# --- RSS transcript extraction -------------------------------------------------------------------
+
+
+RSS_FEED_WITH_TRANSCRIPTS = b"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+<channel>
+<title>Test Podcast</title>
+<item>
+<title>Episode with transcripts</title>
+<guid>ep-1</guid>
+<enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1"/>
+<podcast:transcript url="https://example.com/ep1.vtt" type="text/vtt" language="en"/>
+<podcast:transcript url="https://example.com/ep1.srt" type="application/srt"/>
+</item>
+<item>
+<title>Episode without transcripts</title>
+<guid>ep-2</guid>
+<enclosure url="https://example.com/ep2.mp3" type="audio/mpeg" length="1"/>
+</item>
+</channel>
+</rss>
+"""
+
+
+TRANSCRIPT_FEED_URL = "https://example.com/feed"
+
+
+def _parse_feed(feed: bytes) -> dict[str, Any]:
+    """Parse a test feed the way get_podcastparser_dict does."""
+    return cast("dict[str, Any]", podcastparser.parse(TRANSCRIPT_FEED_URL, BytesIO(feed)))
+
+
+def test_inject_episode_transcripts_extracts_all_entries() -> None:
+    """All podcast:transcript tags for an episode are extracted with url and type."""
+    parsed = _parse_feed(RSS_FEED_WITH_TRANSCRIPTS)
+    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, RSS_FEED_WITH_TRANSCRIPTS, parsed)
+    assert parsed["episodes"][0]["transcripts"] == [
+        {"url": "https://example.com/ep1.vtt", "type": "text/vtt", "language": "en"},
+        {"url": "https://example.com/ep1.srt", "type": "application/srt"},
+    ]
+    assert "transcripts" not in parsed["episodes"][1]
+
+
+def test_inject_episode_transcripts_follows_the_parsed_episode_order() -> None:
+    """Transcripts land on the right episode after podcastparser reorders the items."""
+    feed = RSS_FEED_WITH_TRANSCRIPTS.replace(
+        b"<item>\n<title>Episode with transcripts</title>",
+        b"<item>\n<title>Episode with transcripts</title>\n"
+        b"<pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>",
+    ).replace(
+        b"<item>\n<title>Episode without transcripts</title>",
+        b"<item>\n<title>Episode without transcripts</title>\n"
+        b"<pubDate>Tue, 02 Jan 2024 00:00:00 +0000</pubDate>",
+    )
+    parsed = _parse_feed(feed)
+    assert [episode["title"] for episode in parsed["episodes"]] == [
+        "Episode without transcripts",
+        "Episode with transcripts",
+    ]
+
+    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+
+    assert "transcripts" not in parsed["episodes"][0]
+    assert len(parsed["episodes"][1]["transcripts"]) == 2
+
+
+def test_inject_episode_transcripts_reads_the_older_namespace_address() -> None:
+    """Feeds still declaring the older Podcasting 2.0 namespace address get transcripts."""
+    feed = RSS_FEED_WITH_TRANSCRIPTS.replace(
+        b"https://podcastindex.org/namespace/1.0",
+        b"https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+    )
+    parsed = _parse_feed(feed)
+    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+    assert len(parsed["episodes"][0]["transcripts"]) == 2
+
+
+def test_inject_episode_transcripts_survives_invalid_xml() -> None:
+    """Malformed XML does not crash, the episodes are left untouched."""
+    parsed: dict[str, Any] = {"episodes": [{"guid": "ep-1"}]}
+    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, b"not xml at all", parsed)
+    assert "transcripts" not in parsed["episodes"][0]
+
+
+def test_inject_episode_transcripts_skips_entries_without_url() -> None:
+    """A podcast:transcript tag without a url attribute is ignored."""
+    feed = b"""\
+<?xml version="1.0"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+<channel><item>
+<guid>ep-1</guid>
+<enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1"/>
+<podcast:transcript type="text/vtt"/>
+<podcast:transcript url="https://example.com/ep1.srt" type="application/srt"/>
+</item></channel></rss>
+"""
+    parsed = _parse_feed(feed)
+    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+    assert len(parsed["episodes"][0]["transcripts"]) == 1
+
+
+def test_parse_podcast_episode_sets_has_transcript_from_transcripts() -> None:
+    """When the episode dict carries a transcripts list, has_transcript is set."""
+    ep = _episode(transcripts=[{"url": "https://example.com/t.vtt", "type": "text/vtt"}])
+    mass_episode = _parse(ep)
+    assert mass_episode is not None
+    assert mass_episode.metadata.has_transcript is True
+
+
+def test_parse_podcast_episode_clears_has_transcript_without_transcripts() -> None:
+    """Without transcripts in the dict, has_transcript is False."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    assert mass_episode.metadata.has_transcript is False
+
+
+def test_find_episode_transcripts_matches_by_guid() -> None:
+    """find_episode_transcripts looks up an episode by guid and returns its transcripts."""
+    transcripts = [{"url": "https://example.com/t.vtt", "type": "text/vtt"}]
+    feed: dict[str, Any] = {
+        "episodes": [
+            _episode(guid="ep-1", transcripts=transcripts),
+            _episode(guid="ep-2"),
+        ]
+    }
+    assert find_episode_transcripts(parsed_feed=feed, guid_or_stream_url="ep-1") == transcripts
+    assert find_episode_transcripts(parsed_feed=feed, guid_or_stream_url="ep-2") is None
+    assert find_episode_transcripts(parsed_feed=feed, guid_or_stream_url="ep-3") is None
+
+
+async def test_get_podcastparser_dict_injects_transcripts() -> None:
+    """Transcripts from podcast:transcript tags are injected into the parsed feed."""
+    session = _FakeFeedSession(body=RSS_FEED_WITH_TRANSCRIPTS)
+    parsed_feed = await get_podcastparser_dict(
+        session=cast("aiohttp.ClientSession", session), feed_url=FEED_URL
+    )
+    episodes = parsed_feed["episodes"]
+    assert episodes[0]["transcripts"] == [
+        {"url": "https://example.com/ep1.vtt", "type": "text/vtt", "language": "en"},
+        {"url": "https://example.com/ep1.srt", "type": "application/srt"},
+    ]
+    assert "transcripts" not in episodes[1]

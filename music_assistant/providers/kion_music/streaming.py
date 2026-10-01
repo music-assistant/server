@@ -14,7 +14,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 
 from .constants import (
     CONF_CODECS,
@@ -511,16 +511,13 @@ class KionMusicStreamingManager:
             attempt + 1,
             max_retries,
         )
-        token = BYPASS_THROTTLER.set(True)
-        try:
+        with request_priority(RequestPriority.HIGH):
             file_info = await self.client.get_track_file_info(
                 track_id,
                 quality=data["fi_quality"],
                 codecs=data["fi_codecs"],
                 transport=data.get("transport", TRANSPORT_RAW),
             )
-        finally:
-            BYPASS_THROTTLER.reset(token)
         if file_info and file_info.get("url"):
             data["url"] = file_info["url"]
             if "decryption_key" in data and file_info.get("key"):

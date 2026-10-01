@@ -3,20 +3,18 @@ Image handling for the Metadata Controller.
 
 Provides the ImageProxyMixin, mixed into the MetaDataController, which resolves
 media images to (proxied) URLs, renders and caches thumbnails, serves the
-``/imageproxy`` HTTP endpoint, extracts colour palettes and builds playlist
-collage images.
+``/imageproxy`` HTTP endpoint, extracts colour palettes and serves previously
+generated playlist collage images.
 """
 
 from __future__ import annotations
 
 import os
-import random
 import threading
 import time
 from base64 import b64encode
 from typing import TYPE_CHECKING, cast
 
-import aiofiles
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
@@ -35,7 +33,6 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette, invalidate_cached_palette
 from music_assistant.helpers.images import (
-    create_collage,
     create_thumb_hash,
     detect_image_content_format,
     get_image_data,
@@ -360,45 +357,6 @@ class ImageProxyMixin:
             request.query.get("fmt")
         ) or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
-
-    async def create_collage_image(
-        self,
-        images: list[MediaItemImage],
-        filename: str,
-        fanart: bool = False,
-    ) -> MediaItemImage | None:
-        """Create collage thumb/fanart image for (in-library) playlist."""
-        if (len(images) < 8 and fanart) or len(images) < 3:
-            # require at least some images otherwise this does not make a lot of sense
-            return None
-        # limit to 50 images to prevent we're going OOM
-        if len(images) > 50:
-            images = random.sample(images, 50)
-        else:
-            random.shuffle(images)
-        try:
-            # create collage thumb from playlist tracks
-            # if playlist has no default image (e.g. a local playlist)
-            dimensions = (2500, 1750) if fanart else (1500, 1500)
-            img_data = await create_collage(self.mass, images, dimensions)
-            # always overwrite existing path
-            file_path = os.path.join(self._collage_images_dir, filename)
-            async with aiofiles.open(file_path, "wb") as _file:
-                await _file.write(img_data)
-            del img_data
-            return MediaItemImage(
-                type=ImageType.FANART if fanart else ImageType.THUMB,
-                path=f"/collage/{filename}",
-                provider="builtin",
-                remotely_accessible=False,
-            )
-        except Exception as err:
-            self.logger.warning(
-                "Error while creating playlist image: %s",
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(10) else None,
-            )
-        return None
 
     async def _resolve_thumbnail(
         self,

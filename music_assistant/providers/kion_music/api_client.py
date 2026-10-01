@@ -28,7 +28,7 @@ from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedE
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
+from music_assistant.helpers.throttle_retry import Throttler
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -153,8 +153,7 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         try:
             return await func(client)
@@ -169,6 +168,8 @@ class KionMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
+            # the retry is a request of its own, so it takes a slot of its own
+            await self._throttler.acquire()
             return await func(client)
 
     async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
@@ -184,8 +185,7 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         return await func(client)
 

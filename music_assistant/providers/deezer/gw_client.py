@@ -27,6 +27,7 @@ USER_AGENT_HEADER = (
 
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
+GW_TIMEOUT = ClientTimeout(total=30)
 
 
 class DeezerGWError(Exception):
@@ -127,6 +128,7 @@ class GWClient:
         }
         url_response = await self.session.post(
             MEDIA_GET_URL,
+            timeout=GW_TIMEOUT,
             json=url_data,
             headers={"User-Agent": USER_AGENT_HEADER},
             cookies=self._request_cookies(MEDIA_GET_URL),
@@ -277,7 +279,7 @@ class GWClient:
             http_method,
             GW_LIGHT_URL,
             params=cast("Mapping[str, str]", parameters),
-            timeout=ClientTimeout(total=30),
+            timeout=GW_TIMEOUT,
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
             cookies=self._request_cookies(GW_LIGHT_URL),

@@ -1266,6 +1266,8 @@ class AuthenticationManager:
         # the playlists it owned or was given access to outlive it as well; this comes last
         # so the sockets of the user are gone before the deletion first awaits
         await self.mass.music.playlists.release_user_playlists(user_id)
+        # its favorites and dislikes do not outlive it
+        await self.mass.music.favorites.release_user(user_id)
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",

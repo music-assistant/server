@@ -1405,7 +1405,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
     render_count = 0
 
     def create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
-        task = asyncio.create_task(target())
+        task = asyncio.create_task(target)
         metadata_tasks.append(task)
         return task
 

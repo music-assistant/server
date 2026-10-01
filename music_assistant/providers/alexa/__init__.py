@@ -375,7 +375,9 @@ class AlexaPlayer(Player):
             # store last pushed values
             self._last_meta_checksum = meta_checksum
 
-        self.mass.create_task(_upload_metadata())
+        self.mass.create_task(
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+        )
 
 
 class AlexaProvider(PlayerProvider):

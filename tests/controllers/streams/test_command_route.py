@@ -126,3 +126,17 @@ async def test_command_request_refuses_an_unknown_queue(
     with pytest.raises(web.HTTPNotFound):
         await streams_controller.serve_command_request(_request("session-1"))
     create_task.assert_not_called()
+
+
+async def test_command_request_is_ignored_before_the_session_streamed(
+    streams_controller: StreamsController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command fetched after the session rotated, but before its stream started, is ignored."""
+    queue_data = _queue_data("session-1")
+    queue_data.last_served_item_id = None
+    _mock_player_queues(streams_controller, queue_data)
+    create_task = MagicMock()
+    monkeypatch.setattr(streams_controller.mass, "create_task", create_task)
+    resp = await streams_controller.serve_command_request(_request("session-1"))
+    assert isinstance(resp, web.FileResponse)
+    create_task.assert_not_called()

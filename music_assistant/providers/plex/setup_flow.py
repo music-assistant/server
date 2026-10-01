@@ -25,6 +25,7 @@ from .helpers import (
     LIBRARY_TYPE_AUDIOBOOKS,
     LIBRARY_TYPE_MUSIC,
     LIBRARY_TYPE_PODCASTS,
+    PlexServerAccessError,
     discover_local_servers,
     get_section_info,
 )
@@ -57,25 +58,31 @@ async def run_setup(session: SetupSession) -> None:
     server = await _collect_server(session, setup_data, discovered)
     # authenticate once: MyPlex OAuth is expensive to repeat on a retry
     token = await _authenticate(session)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         if errors is not None:
             # a previous attempt failed: let the user correct the server details
             server = await _collect_server(session, setup_data, discovered, errors=errors)
-        sections = await session.progress_until(
-            get_section_info(
-                session.mass,
-                token,
-                bool(server[CONF_LOCAL_SERVER_SSL]),
-                str(server[CONF_LOCAL_SERVER_IP]),
-                str(server[CONF_LOCAL_SERVER_PORT]),
-                bool(server[CONF_LOCAL_SERVER_VERIFY_CERT]),
-                session.context.instance_id,
-            ),
-            step_id="loading_libraries",
-            text="loading_libraries",
-            expires_in=60,
-        )
+        try:
+            sections = await session.progress_until(
+                get_section_info(
+                    session.mass,
+                    token,
+                    bool(server[CONF_LOCAL_SERVER_SSL]),
+                    str(server[CONF_LOCAL_SERVER_IP]),
+                    str(server[CONF_LOCAL_SERVER_PORT]),
+                    bool(server[CONF_LOCAL_SERVER_VERIFY_CERT]),
+                    session.context.instance_id,
+                ),
+                step_id="loading_libraries",
+                text="loading_libraries",
+                expires_in=60,
+            )
+        except PlexServerAccessError:
+            # never fall back to the plain account token: the server could then treat a
+            # user it is shared with as its owner
+            errors = {"base": "server_access_denied"}
+            continue
         if not sections:
             errors = {"base": "no_libraries"}
             continue
@@ -93,7 +100,7 @@ async def run_setup(session: SetupSession) -> None:
             )
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _discover_servers(session: SetupSession) -> tuple[str | None, int | None]:
@@ -114,7 +121,7 @@ async def _collect_server(
     session: SetupSession,
     setup_data: dict[str, ConfigValueType],
     discovered: tuple[str | None, int | None],
-    errors: dict[str, str] | None = None,
+    errors: dict[str, str | SetupFlowError] | None = None,
 ) -> dict[str, ConfigValueType]:
     """Show the server-details form and return the collected connection settings."""
     ip_default = setup_data.get(CONF_LOCAL_SERVER_IP) or discovered[0]
