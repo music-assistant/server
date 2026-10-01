@@ -116,16 +116,20 @@ class GlobalPlayerProvider(MusicProvider):
         if not query:
             return results
         stations = await self._get_stations()
-        matches: list[Radio] = []
+        name_matches: list[dict[str, Any]] = []
+        tagline_matches: list[dict[str, Any]] = []
         for station_data in stations.values():
             name = station_data.get("name", "").lower()
-            tagline = station_data.get("tagline", "").lower()
             brand = station_data.get("brandName", "").lower()
-            if query in name or query in tagline or query in brand:
-                matches.append(parse_radio(station_data, self.instance_id, self.domain))
-                if len(matches) >= limit:
-                    break
-        results.radio = matches
+            tagline = station_data.get("tagline", "").lower()
+            if query in name or query in brand:
+                name_matches.append(station_data)
+            elif query in tagline:
+                tagline_matches.append(station_data)
+        results.radio = [
+            parse_radio(station_data, self.instance_id, self.domain)
+            for station_data in (name_matches + tagline_matches)[:limit]
+        ]
         return results
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

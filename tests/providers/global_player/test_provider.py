@@ -189,6 +189,35 @@ async def test_search(provider: GlobalPlayerProvider) -> None:
     assert len(res.radio) == 0
 
 
+async def test_search_ranks_name_matches_before_tagline_matches(
+    provider: GlobalPlayerProvider,
+) -> None:
+    """Test name matches come before tagline matches and survive the limit."""
+    brands = [
+        {
+            "id": "heartdance",
+            "name": "Heart Dance",
+            "tagline": "Non-Stop Club Classics",
+            "brandName": "Heart",
+        },
+        {
+            "id": "classicfm",
+            "name": "Classic FM",
+            "tagline": "The World's Greatest Music",
+            "brandName": "Classic FM",
+        },
+    ]
+    cast("MagicMock", provider.mass.http_session.get).return_value = _make_http_response_ctx(
+        status=200, json_data=brands
+    )
+
+    res = await provider.search("classic", [MediaType.RADIO])
+    assert [radio.name for radio in res.radio] == ["Classic FM", "Heart Dance"]
+
+    res = await provider.search("classic", [MediaType.RADIO], limit=1)
+    assert [radio.name for radio in res.radio] == ["Classic FM"]
+
+
 async def test_get_stream_details(provider: GlobalPlayerProvider) -> None:
     """Test resolving stream details for a radio station."""
     cast("MagicMock", provider.mass.http_session.get).return_value = _make_http_response_ctx(
@@ -240,6 +269,7 @@ async def test_get_playable_not_found(provider: GlobalPlayerProvider) -> None:
     )
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("missing", MediaType.RADIO)
+
 
 async def test_get_playable_transport_failure(provider: GlobalPlayerProvider) -> None:
     """Test _get_playable handles transport errors with ProviderUnavailableError."""
