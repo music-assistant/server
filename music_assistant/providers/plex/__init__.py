@@ -52,7 +52,7 @@ from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
-from music_assistant.constants import APPLICATION_NAME, UNKNOWN_ARTIST
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
@@ -422,17 +422,6 @@ class PlexProvider(MusicProvider):
                     bool(self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
-                )
-                # Add Music Assistant client identification headers. The client identifier
-                # is announced globally via configure_plex_identity() (plexapi rebuilds it
-                # from BASE_HEADERS per request, overriding any session-level value), so we
-                # only set the per-connection product/platform/version here.
-                session.headers.update(
-                    {
-                        "X-Plex-Product": APPLICATION_NAME,
-                        "X-Plex-Platform": APPLICATION_NAME,
-                        "X-Plex-Version": self.mass.version,
-                    }
                 )
                 local_server_protocol = (
                     "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
