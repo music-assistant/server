@@ -545,7 +545,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             }
             artists.append(self._parse_artist(fake_artist))
 
-        return artists
+        return artists[:limit]
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
