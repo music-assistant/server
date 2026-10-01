@@ -100,6 +100,9 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ALL_FAVORITE_TRACKS,
+    BUILTIN_PLAYLIST_FANART,
+    BUILTIN_PLAYLIST_IMAGE_PATHS,
+    BUILTIN_PLAYLIST_THUMBS,
     BUILTIN_PLAYLISTS,
     BUILTIN_PLAYLISTS_ENTRIES,
     CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
@@ -108,8 +111,6 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
-    DEFAULT_FANART,
-    DEFAULT_THUMB,
     DYNAMIC_BUILTIN_PLAYLISTS,
     INFINITE_MIX,
     INFINITE_MIX_FAVORITES,
@@ -290,7 +291,11 @@ class BuiltinProvider(MusicProvider):
                 owner="Music Assistant",
                 is_editable=False,
                 is_dynamic=prov_playlist_id in DYNAMIC_BUILTIN_PLAYLISTS,
-                metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART])),
+                metadata=MediaItemMetadata(
+                    images=UniqueList(
+                        [BUILTIN_PLAYLIST_THUMBS[prov_playlist_id], BUILTIN_PLAYLIST_FANART]
+                    )
+                ),
             )
         # user created playlist - read from M3U file on disk
         playlist_file = self._playlist_file(prov_playlist_id)
@@ -855,15 +860,16 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        Returns raw bytes for a bundled image, a remote URL / data URI fetched from
-        elsewhere, or a bundled provider asset inside our own package directory. Any other
-        local path is user-supplied and refused: it would let the image route read an
-        arbitrary server file.
+        Returns the file path of a bundled image, a remote URL / data URI as is, or a
+        bundled provider asset inside our own package directory. Any other local path is
+        user-supplied and refused: it would let the image route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
         if path in ("fanart.jpg", "fallback_fanart.jpeg"):
             return VARIOUS_ARTISTS_FANART
+        if path in BUILTIN_PLAYLIST_IMAGE_PATHS:
+            return str(RESOURCES_DIR.joinpath(path))
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
             icons_base = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME)
