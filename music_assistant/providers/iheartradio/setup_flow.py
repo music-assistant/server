@@ -50,9 +50,11 @@ async def run_setup(session: SetupSession) -> None:
         if not submitted.get(CONF_PASSWORD) and _same_account(saved_setup_data, submitted):
             submitted[CONF_PASSWORD] = saved_setup_data.get(CONF_PASSWORD)
         elif submitted.get(CONF_PASSWORD):
-            # a saved session would be reused without checking the new password
+            # a saved session would be reused without checking the new password; the keys are
+            # blanked rather than removed because reconfigure merges over the saved values
             for key in (CONF_PROFILE_ID, CONF_SESSION_ID, CONF_SESSION_USERNAME):
-                setup_data.pop(key, None)
+                if key in setup_data:
+                    setup_data[key] = None
         setup_data.update(submitted)
         try:
             await session.finish(setup_data)

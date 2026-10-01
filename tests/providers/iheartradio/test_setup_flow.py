@@ -11,7 +11,13 @@ from music_assistant_models.enums import FlowStepType
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError, SetupSession
-from music_assistant.providers.iheartradio.constants import CONF_COUNTRY, DEFAULT_COUNTRY
+from music_assistant.providers.iheartradio.constants import (
+    CONF_COUNTRY,
+    CONF_PROFILE_ID,
+    CONF_SESSION_ID,
+    CONF_SESSION_USERNAME,
+    DEFAULT_COUNTRY,
+)
 from music_assistant.providers.iheartradio.setup_flow import run_setup
 
 from .conftest import DOMAIN
@@ -120,7 +126,14 @@ async def _reconfigure(submitted: dict[str, Any]) -> dict[str, Any]:
         collected.update(values)
         return {"instance_id": "iheartradio--test"}
 
-    saved = {CONF_COUNTRY: "au", CONF_USERNAME: "gav@example.com", CONF_PASSWORD: "secret"}
+    saved = {
+        CONF_COUNTRY: "au",
+        CONF_USERNAME: "gav@example.com",
+        CONF_PASSWORD: "secret",
+        CONF_PROFILE_ID: "profile",
+        CONF_SESSION_ID: "session",
+        CONF_SESSION_USERNAME: "gav@example.com",
+    }
     session = _make_session(finish_handler, saved)
     task = asyncio.create_task(run_setup(session))
     step = await _wait_for_form(session)
@@ -148,3 +161,14 @@ async def test_reconfigure_drops_password_for_another_account() -> None:
     assert not other[CONF_PASSWORD]
     guest = await _reconfigure({CONF_COUNTRY: "au", CONF_USERNAME: "", CONF_PASSWORD: None})
     assert not guest[CONF_PASSWORD]
+
+
+async def test_reconfigure_with_new_password_clears_saved_session() -> None:
+    """A new password blanks the saved session so the next start signs in with it."""
+    saved = await _reconfigure(
+        {CONF_COUNTRY: "au", CONF_USERNAME: "gav@example.com", CONF_PASSWORD: "new"}
+    )
+    assert saved[CONF_PASSWORD] == "new"
+    assert saved[CONF_PROFILE_ID] is None
+    assert saved[CONF_SESSION_ID] is None
+    assert saved[CONF_SESSION_USERNAME] is None
