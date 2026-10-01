@@ -70,17 +70,18 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const BASES = ['dev', 'stable'];
-            const REQUIRED = ['lint', 'test'];      // dev ruleset's required status checks
+            // dev ruleset's required status checks, with the conclusions that count as green. `test`
+            // is skipped on docs-only PRs, but also when `changes` fails, hence `changes` is required.
+            const REQUIRED = { changes: ['success'], lint: ['success'], test: ['success', 'skipped'] };
             const ACTIONS_APP_ID = 15368;           // their integration_id: GitHub Actions
-            const PASSING = ['success', 'skipped']; // `test` is skipped on docs-only PRs
             // REST reports the reviewer as the bot, a pending request as the Copilot user.
             const COPILOT = new Set(['copilot-pull-request-reviewer[bot]', 'Copilot']);
 
             async function checksGreen(sha) {
               const runs = await github.paginate(github.rest.checks.listForRef,
                 { owner, repo, ref: sha, app_id: ACTIONS_APP_ID, filter: 'latest', per_page: 100 });
-              return REQUIRED.every(name => runs.some(r =>
-                r.name === name && r.status === 'completed' && PASSING.includes(r.conclusion)));
+              return Object.entries(REQUIRED).every(([name, ok]) => runs.some(r =>
+                r.name === name && r.status === 'completed' && ok.includes(r.conclusion)));
             }
 
             async function copilotPendingOrDone(pr) {
