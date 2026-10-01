@@ -95,6 +95,12 @@ MAX_CUSTOM_IMAGE_BYTES = 2 * 1024 * 1024
 # Pillow only rejects decompression bombs far above this, and a small highly
 # compressed file can still decode to hundreds of MB when thumbnailed.
 MAX_CUSTOM_IMAGE_PIXELS = 25_000_000
+# Only these Pillow decoders are tried for an upload, which keeps formats that need
+# an external decoder (EPS runs Ghostscript) away from untrusted data.
+_CUSTOM_IMAGE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "WEBP", "GIF", "BMP")
+_UNSUPPORTED_IMAGE_MESSAGE = (
+    f"Uploaded data is not a supported image ({', '.join(_CUSTOM_IMAGE_FORMATS)})"
+)
 # Overrides for Pillow format names whose canonical file extension differs from
 # format.lower() (MPO is the multi-picture jpeg variant many phone cameras produce).
 _CUSTOM_IMAGE_FORMAT_EXTENSIONS: dict[str, str] = {"JPEG": "jpg", "MPO": "jpg"}
@@ -132,10 +138,10 @@ def validate_custom_image(data: bytes) -> str:
     """
     Validate user-uploaded image bytes and return the canonical file extension.
 
-    Any raster format Pillow can decode is accepted (which guarantees the
-    imageproxy can thumbnail it later); SVG is rejected. The format is detected
-    from the actual content, never from a client-supplied hint. This is blocking
-    CPU work, so call it from an executor thread.
+    Only PNG, JPEG, WebP, GIF and BMP are accepted, and the image is fully
+    decoded (which guarantees the imageproxy can thumbnail it later). The format
+    is detected from the actual content, never from a client-supplied hint. This
+    is blocking CPU work, so call it from an executor thread.
 
     :param data: Raw image bytes to validate.
     """
@@ -144,16 +150,16 @@ def validate_custom_image(data: bytes) -> str:
     if is_svg_data(data):
         raise InvalidDataError("SVG images are not supported for custom images")
     try:
-        with Image.open(BytesIO(data)) as img:
+        with Image.open(BytesIO(data), formats=_CUSTOM_IMAGE_FORMATS) as img:
             image_format = img.format
-            pixels = img.width * img.height
-            img.verify()
+            if img.width * img.height > MAX_CUSTOM_IMAGE_PIXELS:
+                raise InvalidDataError("Image dimensions exceed the limit")
+            # a full decode proves the image can be thumbnailed later
+            img.load()
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as err:
-        raise InvalidDataError("Uploaded data is not a valid image") from err
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE) from err
     if not image_format:
-        raise InvalidDataError("Uploaded data is not a valid image")
-    if pixels > MAX_CUSTOM_IMAGE_PIXELS:
-        raise InvalidDataError("Image dimensions exceed the limit")
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE)
     return _CUSTOM_IMAGE_FORMAT_EXTENSIONS.get(image_format, image_format.lower())
 
 

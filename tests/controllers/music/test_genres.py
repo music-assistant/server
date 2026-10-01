@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, ImageType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -3012,6 +3012,35 @@ class TestCustomGenreImages:
         after = await genre_ctrl.get_library_item(genre_id)
         assert after.image is not None
         assert after.image.path == custom_path
+
+    async def test_custom_fanart_does_not_block_icon_refresh(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A custom fanart neither blocks the builtin thumb refresh nor gets dropped by it."""
+        genre_id = await _default_genre_id(mass, "funk")
+        await genre_ctrl.set_item_image(genre_id, _png_base64(), image_type=ImageType.FANART)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        metadata = json.loads(row["metadata"])
+        thumb = next(img for img in metadata["images"] if img["type"] == ImageType.THUMB.value)
+        builtin_path = thumb["path"]
+        thumb["path"] = "genres/stale.svg"
+        await mass.music.database.update(
+            DB_TABLE_GENRES, {"item_id": genre_id}, {"metadata": json.dumps(metadata)}
+        )
+        await genre_ctrl.restore_default_genres(full_restore=False)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        images = json.loads(row["metadata"])["images"]
+        assert any(
+            img["type"] == ImageType.THUMB.value and img["path"] == builtin_path for img in images
+        )
+        assert any(
+            img["type"] == ImageType.FANART.value
+            and img["path"].startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+            for img in images
+        )
+        await genre_ctrl.remove_item_image(genre_id, ImageType.FANART)
 
     async def test_full_restore_deletes_custom_image_file(
         self, mass: MusicAssistant, genre_ctrl: GenreController

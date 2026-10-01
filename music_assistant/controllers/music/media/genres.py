@@ -1884,13 +1884,20 @@ class GenreController(MediaControllerBase[Genre]):
                     if icon_metadata is not None:
                         current_md = json.loads(rows[0]["metadata"]) if rows[0]["metadata"] else {}
                         current_images = current_md.get("images") or []
-                        # never clobber a user-uploaded custom image with the builtin icon
-                        has_custom_image = any(
-                            (img.get("path") or "").startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+                        custom_images = [
+                            img
                             for img in current_images
+                            if (img.get("path") or "").startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+                        ]
+                        # never clobber a user-uploaded custom thumb with the builtin icon
+                        has_custom_thumb = any(
+                            img.get("type") == ImageType.THUMB.value for img in custom_images
                         )
-                        fresh_images = icon_metadata.to_dict().get("images")
-                        if not has_custom_image and current_md.get("images") != fresh_images:
+                        fresh_images = [
+                            *(icon_metadata.to_dict().get("images") or []),
+                            *custom_images,
+                        ]
+                        if not has_custom_thumb and current_images != fresh_images:
                             current_md["images"] = fresh_images
                             await self.mass.music.database.update(
                                 DB_TABLE_GENRES,

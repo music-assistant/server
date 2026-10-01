@@ -748,6 +748,9 @@ async def test_detect_provider_icons_none(tmp_path: Path) -> None:
     assert await detect_provider_icons(str(tmp_path)) == {}
 
 
+TRUNCATED_JPEG_FRACTION = 0.7
+
+
 def _raster_bytes(image_format: str) -> bytes:
     """Return a minimal valid raster image in the given Pillow format."""
     buf = BytesIO()
@@ -772,7 +775,7 @@ def test_validate_custom_image_rejects_svg() -> None:
 
 def test_validate_custom_image_rejects_garbage() -> None:
     """Random bytes are not a valid image."""
-    with pytest.raises(InvalidDataError, match="not a valid image"):
+    with pytest.raises(InvalidDataError, match="not a supported image"):
         validate_custom_image(b"certainly not an image")
 
 
@@ -793,3 +796,26 @@ def test_validate_custom_image_rejects_truncated() -> None:
     """A truncated raster file fails validation."""
     with pytest.raises(InvalidDataError):
         validate_custom_image(_raster_bytes("PNG")[:20])
+
+
+def test_validate_custom_image_accepts_mpo() -> None:
+    """Multi-picture JPEG (phone cameras) is accepted through the JPEG decoder."""
+    buf = BytesIO()
+    first = Image.new("RGB", (4, 4), "blue")
+    first.save(buf, "MPO", save_all=True, append_images=[Image.new("RGB", (4, 4), "red")])
+    assert validate_custom_image(buf.getvalue()) == "jpg"
+
+
+def test_validate_custom_image_rejects_unlisted_format() -> None:
+    """A valid image in a format outside the allowlist is rejected."""
+    with pytest.raises(InvalidDataError, match="not a supported image"):
+        validate_custom_image(_raster_bytes("TIFF"))
+
+
+def test_validate_custom_image_rejects_undecodable() -> None:
+    """A JPEG cut off inside its pixel data fails the full decode."""
+    buf = BytesIO()
+    Image.frombytes("RGB", (256, 256), os.urandom(256 * 256 * 3)).save(buf, format="JPEG")
+    data = buf.getvalue()
+    with pytest.raises(InvalidDataError, match="not a supported image"):
+        validate_custom_image(data[: int(len(data) * TRUNCATED_JPEG_FRACTION)])

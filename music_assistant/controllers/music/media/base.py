@@ -539,9 +539,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Set a custom image for a library item from base64 encoded image data.
 
-        Replaces any existing image(s) of the given type on the item. Any raster
-        format that can be decoded is accepted (SVG is rejected); the format is
-        detected from the actual content.
+        Replaces any existing image(s) of the given type on the item. PNG, JPEG,
+        WebP, GIF or BMP is accepted; the format is detected from the actual content.
 
         :param item_id: The library (database) id of the item.
         :param data: Base64 encoded image bytes, optionally as a data-URL.
