@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -1174,6 +1174,43 @@ async def test_get_login_providers_ha_provider_without_url(
 
     assert any(p["provider_id"] == "builtin" for p in providers)
     assert not any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+@pytest.fixture
+def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
+    """
+    Register a stub OAuth login provider as "oauth" on the auth manager.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    provider = MagicMock(requires_redirect=True)
+    provider.get_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
+    auth_manager.login_providers["oauth"] = provider
+    return provider
+
+
+@pytest.mark.parametrize("return_url", ["javascript:alert(1)", "https:///no-host"])
+async def test_get_auth_url_rejects_invalid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that an invalid return_url is rejected without asking the provider."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": None, "error": "Invalid return_url"}
+    oauth_provider.get_authorization_url.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "return_url", ["https://music.example.com/#/home", "musicassistant://auth/callback"]
+)
+async def test_get_auth_url_passes_valid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that a valid return_url is passed to the provider and its URL is returned."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": "https://idp.example.com/authorize"}
+    oauth_provider.get_authorization_url.assert_awaited_once_with(ANY, return_url)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:

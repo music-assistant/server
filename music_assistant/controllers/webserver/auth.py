@@ -60,6 +60,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -1077,8 +1078,14 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url.
+        :return: Dictionary with authorization_url, or None plus an error when the provider
+            does not support OAuth or return_url is invalid.
         """
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(return_url, base_url=self.webserver.base_url)
+            if not is_valid:
+                return {"authorization_url": None, "error": "Invalid return_url"}
+
         auth_url = await self.get_authorization_url(provider_id, return_url)
         if not auth_url:
             return {
