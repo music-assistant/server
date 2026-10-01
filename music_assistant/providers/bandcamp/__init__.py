@@ -91,7 +91,7 @@ from .constants import (
     PERSON_SUB_ROUTES,
     SUPPORTED_FEATURES,
 )
-from .converters import BandcampConverters, DiscographyItem
+from .converters import BandcampConverters, DiscographyItem, collection_album_id
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -572,7 +572,7 @@ class BandcampProvider(MusicProvider):
         for item in items:
             if item.item_type == "band":
                 band_ids.add(item.item_id)
-            elif item.item_type == "album":
+            elif collection_album_id(item):
                 band_ids.add(item.band_id)
 
         for band_id in band_ids:
@@ -594,9 +594,10 @@ class BandcampProvider(MusicProvider):
             items = await self._get_all_collection_items(
                 CollectionType.COLLECTION, require_complete=True
             )
-        album_ids = [
-            f"{item.band_id}-{item.item_id}" for item in items if item.item_type == "album"
-        ]
+        # An album bought as a download and again as a package syncs once
+        album_ids = list(
+            dict.fromkeys(album_id for item in items if (album_id := collection_album_id(item)))
+        )
         track_ids = [
             f"{item.band_id}-{item.album_id or 0}-{item.item_id}"
             for item in items
@@ -1333,10 +1334,7 @@ class BandcampProvider(MusicProvider):
         seen_ids: set[str] = set()
         for item in items:
             entry: Album | Track
-            if item.item_type == "album" or (
-                # A package, for example a record, that comes with a digital album
-                item.item_type == "package" and item.tralbum_type == "a"
-            ):
+            if collection_album_id(item):
                 entry = self._converters.album_from_collection(item)
             elif item.item_type == "track":
                 entry = self._converters.track_from_collection(item)

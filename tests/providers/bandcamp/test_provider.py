@@ -2579,6 +2579,54 @@ async def test_get_library_albums_ignores_single_track_purchases(
     mock.assert_awaited_once_with("123-1")
 
 
+def _collection_package(package_id: int, album_id: int | None, band_id: int = 123) -> Mock:
+    """Create a collection item for a package, for example a record."""
+    return Mock(
+        item_type="package",
+        item_id=package_id,
+        band_id=band_id,
+        tralbum_type="a" if album_id else None,
+        tralbum_id=album_id,
+    )
+
+
+async def test_library_sync_takes_the_album_of_a_package(provider: BandcampProvider) -> None:
+    """An album bought as a package syncs, once, with its artist and its tracks."""
+    collection = [
+        *_collection_albums(1),
+        _collection_package(900, album_id=2, band_id=55),
+        # the album 123-1 again, bought as a record
+        _collection_package(901, album_id=1),
+        # merchandise without a digital album
+        _collection_package(902, album_id=None),
+    ]
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection
+        ),
+        patch.object(
+            provider, "get_album", new_callable=AsyncMock, side_effect=lambda album_id: album_id
+        ),
+        patch.object(
+            provider,
+            "get_album_tracks",
+            new_callable=AsyncMock,
+            side_effect=lambda album_id: [f"track of {album_id}"],
+        ),
+        patch.object(
+            provider, "get_artist", new_callable=AsyncMock, side_effect=lambda band_id: band_id
+        ),
+    ):
+        albums = [album async for album in provider.get_library_albums()]
+        tracks = [track async for track in provider.get_library_tracks()]
+        artists = [artist async for artist in provider.get_library_artists()]
+
+    assert albums == ["123-1", "55-2"]
+    assert tracks == ["track of 123-1", "track of 55-2"]
+    assert sorted(map(str, artists)) == ["123", "55"]
+
+
 @pytest.mark.parametrize("error", SYNC_ERRORS)
 async def test_get_library_tracks_skips_a_failing_single_track(
     provider: BandcampProvider, error: Exception

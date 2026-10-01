@@ -16,7 +16,11 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import MediaItem
 from music_assistant_models.media_items import Track as MATrack
 
-from music_assistant.providers.bandcamp.converters import BandcampConverters, DiscographyItem
+from music_assistant.providers.bandcamp.converters import (
+    BandcampConverters,
+    DiscographyItem,
+    collection_album_id,
+)
 
 
 @pytest.fixture
@@ -122,6 +126,30 @@ def test_artist_from_search(converters: BandcampConverters) -> None:
     assert result.item_id == "123"
     assert result.name == "Test Artist"
     assert result.provider == "bandcamp_test"
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        pytest.param(CollectionItem("album", 456, 123), "123-456", id="album"),
+        pytest.param(
+            CollectionItem("package", 900, 123, tralbum_type="a", tralbum_id=456),
+            "123-456",
+            id="package",
+        ),
+        pytest.param(CollectionItem("package", 901, 123), None, id="package_without_album"),
+        pytest.param(
+            CollectionItem("package", 902, 123, tralbum_type="t", tralbum_id=789),
+            None,
+            id="package_of_a_track",
+        ),
+        pytest.param(CollectionItem("track", 789, 123), None, id="track"),
+        pytest.param(CollectionItem("band", 123, 123), None, id="band"),
+    ],
+)
+def test_collection_album_id(item: CollectionItem, expected: str | None) -> None:
+    """Only an album and a package with a digital album give an album ID."""
+    assert collection_album_id(item) == expected
 
 
 def test_album_from_collection(converters: BandcampConverters) -> None:

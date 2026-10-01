@@ -231,8 +231,7 @@ class BandcampConverters:
 
     def album_from_collection(self, item: CollectionItem) -> MAAlbum:
         """Create an Album from an entry of a collection or a wishlist, without an album request."""
-        # A package, for example a record, names its digital album in tralbum_id
-        album_id = f"{item.band_id}-{item.tralbum_id or item.item_id}"
+        album_id = collection_album_id(item) or f"{item.band_id}-{item.item_id}"
         output = MAAlbum(
             item_id=album_id,
             provider=self.instance_id,
@@ -644,6 +643,20 @@ class BandcampConverters:
                     remotely_accessible=True,
                 )
             )
+
+
+def collection_album_id(item: CollectionItem) -> str | None:
+    """
+    Return the provider ID of the album of a collection or wishlist entry, or None.
+
+    A package, for example a record, names its digital album in tralbum_id. A package
+    without a digital album, a track and a band give None.
+    """
+    if item.item_type == "album":
+        return f"{item.band_id}-{item.item_id}"
+    if item.item_type == "package" and item.tralbum_type == "a" and item.tralbum_id:
+        return f"{item.band_id}-{item.tralbum_id}"
+    return None
 
 
 def _resolve_artist_id(
