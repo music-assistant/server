@@ -622,8 +622,6 @@ class PlaylistMetadataProvider(MetadataProvider):
             return None
 
         # Use timestamp in filename to bust browser cache when tracks change.
-        # Frontend uses absolute path with provider="builtin" so builtin's resolve_image
-        # is bypassed and the file is served directly via os.path.isfile().
         image_type = ImageType.FANART if fanart else ImageType.THUMB
         suffix = "fanart" if fanart else "thumb"
         filename = f"{playlist.item_id}_{int(time())}_{suffix}.jpg"
