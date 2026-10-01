@@ -75,7 +75,6 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.tags import AudioTags
-from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -1705,10 +1704,8 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     """
     The media items a converted source cached are removed, as they name its old domain.
 
-    So are the search results combined over all sources. The rest of what it cached stays:
-    the items of its last sync, which the next sync needs and which share their category with
-    the artists, and what holds no domain. So does everything other sources cached, and the
-    image ids.
+    So are the search results combined over all sources. The rest of what it cached holds no
+    domain and stays. So does everything other sources cached, and the image ids.
     """
     _store_source(mass, SMB_ID, SMB_SETUP)
     _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
@@ -1726,7 +1723,6 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
         ("jazz-track-25", CACHE_CATEGORY_SEARCH_RESULTS, {"tracks": [track.to_dict()]}),
     ]
     kept: list[tuple[str, int, Any]] = [
-        ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS, [1, 2, 3]),
         ("Artist", CACHE_CATEGORY_FOLDER_IMAGES, [image.to_dict()]),
         ("Books/Book.m4b", CACHE_CATEGORY_AUDIOBOOK_CHAPTERS, [["Books/Book.m4b", 60.0]]),
         ("Podcasts/Show", CACHE_CATEGORY_PODCAST_METADATA, {"title": "Show"}),
@@ -1801,8 +1797,6 @@ async def test_album_and_artist_cached_before_a_restart_keep_the_domain_of_local
         await mass.cache.set(
             key, item.to_dict(), provider=SMB_ID, category=category, expiration=120
         )
-    # the items of the last sync share their category with the artists
-    await mass.cache.set("album", [1], provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS)
 
     await consolidate_filesystem_sources(mass)
 
@@ -1837,9 +1831,6 @@ async def test_album_and_artist_cached_before_a_restart_keep_the_domain_of_local
         (SMB_ID, "filesystem_local", "album", "Artist/Album"),
         (SMB_ID, "filesystem_local", "artist", "Artist"),
     ]
-    assert await mass.cache.get(
-        "album", provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS
-    ) == [1]
 
 
 @pytest.mark.usefixtures("reconcile")

@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "feiniu_music",
+  "stage": "experimental",
+  "name": "FeiNiu Music",
+  "description": "Read your personal library from the native FeiNiu Music service.",
+  "codeowners": ["@neqq3"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/feiniu-music/",
+  "multi_instance": true
+}

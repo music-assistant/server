@@ -2716,6 +2716,7 @@ class Player(ABC):
             and self._state.playback_state != PlaybackState.IDLE
         ):
             self.__stop_called = False
+            self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif (
             prev_state.playback_state != PlaybackState.IDLE
             and self._state.playback_state == PlaybackState.IDLE

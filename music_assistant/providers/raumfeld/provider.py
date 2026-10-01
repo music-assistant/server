@@ -71,11 +71,6 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # rooms already warned about sharing a serial, so the warning goes out once per room
     _shared_serial_warned: set[str]
 
-    @property
-    def host_address(self) -> str:
-        """Return the configured Raumfeld host IP address."""
-        return self._host_address
-
     def line_in(self, renderer_uuid: str | None) -> tuple[str, str] | None:
         """Return the ``(stream url, title)`` of a room's Line-In input, or ``None``."""
         if not renderer_uuid:

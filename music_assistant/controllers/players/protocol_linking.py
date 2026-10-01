@@ -645,7 +645,9 @@ class ProtocolLinkingMixin:
                     )
                     break
 
-        self.mass.create_task(_do_save())
+        self.mass.create_task(
+            _do_save(), task_name=f"save_universal_player_{universal_player.player_id}"
+        )
 
     def _get_known_protocol_ids(self, parent: Player) -> list[str]:
         """

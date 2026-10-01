@@ -9,7 +9,7 @@ import shutil
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -84,8 +84,11 @@ from .backends import (
 )
 from .constants import (
     BACKEND_SOLOIST,
+    CONF_ACCOUNT_COUNTRY,
     CONF_ACCOUNT_ID,
+    CONF_ACCOUNT_NAME,
     CONF_AUDIO_QUALITY,
+    CONF_AUDIOBOOKS_SUPPORTED,
     CONF_CLIENT_ID,
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
@@ -216,19 +219,30 @@ class SpotifyProvider(MusicProvider):
         await self.backend.setup()
         try:
             # try login which will raise if it fails (logs in global session)
-            await self.login()
+            try:
+                await self.login()
+            except ResourceTemporarilyUnavailable:
+                # Spotify does not answer the login right now: load on the stored account
+                # details, the first request retries the login through its throttler
+                if (stored := self._stored_account()) is None:
+                    raise
+                self._set_account(stored)
+                self.logger.info(
+                    "Spotify did not answer the login, loaded with the stored account details"
+                )
 
             # Check if user has a custom client ID with valid dev token
             client_id = self.get_setup_value(CONF_CLIENT_ID)
             dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
             if client_id and dev_token and self._sp_user:
-                await self.login_dev()
-                # Verify user matches
-                userinfo = await self._get_data("me", use_global_session=False)
-                if userinfo["id"] != self._sp_user["id"]:
-                    raise LoginFailed(
-                        "Developer session must use the same Spotify account as the main session."
+                try:
+                    await self.login_dev()
+                except ResourceTemporarilyUnavailable:
+                    # Spotify does not answer for the custom Client ID right now: the first
+                    # request on it retries the login, the shared session carries the rest
+                    self.logger.info(
+                        "Spotify did not answer the login of the custom Client ID, retrying later"
                     )
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
@@ -425,7 +439,11 @@ class SpotifyProvider(MusicProvider):
         are only returned when using the non-dev (global) token.
         """
         yield await self._get_liked_songs_playlist()
-        async for item in self._get_all_items("me/playlists", use_global_session=True):
+        # the page cache only checks the first playlist for changes, so it would miss a
+        # rename or new cover of any playlist further down the list
+        async for item in self._get_all_items(
+            "me/playlists", use_cache=False, use_global_session=True
+        ):
             if item and item["id"]:
                 yield parse_playlist(item, self)
 
@@ -670,31 +688,43 @@ class SpotifyProvider(MusicProvider):
                 raise NotImplementedError("Spotify audiobook resume sync disabled in settings")
 
             try:
-                chapters_data = await self._get_audiobook_chapters_data(item_id)
-                if not chapters_data:
-                    raise NotImplementedError("No chapters data available")
-
                 total_position_ms = 0
                 fully_played = True
+                has_chapters = False
 
-                for chapter in chapters_data:
-                    resume_point = chapter.get("resume_point", {})
-                    chapter_fully_played = resume_point.get("fully_played", False)
-                    chapter_position_ms = resume_point.get("resume_position_ms", 0)
+                chapters = self._get_all_items(
+                    f"audiobooks/{item_id}/chapters", use_cache=False, market="from_token"
+                )
+                async with aclosing(chapters):
+                    async for chapter in chapters:
+                        if not chapter.get("id"):
+                            continue
+                        has_chapters = True
+                        resume_point = chapter.get("resume_point", {})
+                        chapter_fully_played = resume_point.get("fully_played", False)
+                        chapter_position_ms = resume_point.get("resume_position_ms", 0)
 
-                    if chapter_fully_played:
-                        total_position_ms += chapter.get("duration_ms", 0)
-                    elif chapter_position_ms > 0:
-                        total_position_ms += chapter_position_ms
-                        fully_played = False
-                        break
-                    else:
-                        fully_played = False
-                        break
+                        if chapter_fully_played:
+                            total_position_ms += chapter.get("duration_ms", 0)
+                        elif chapter_position_ms > 0:
+                            total_position_ms += chapter_position_ms
+                            fully_played = False
+                            break
+                        else:
+                            fully_played = False
+                            break
+
+                if not has_chapters:
+                    raise NotImplementedError("No chapters data available")
 
                 return fully_played, total_position_ms, None
 
-            except (MediaNotFoundError, ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
+            except (
+                MediaNotFoundError,
+                ResourceTemporarilyUnavailable,
+                RetriesExhausted,
+                aiohttp.ClientError,
+            ) as e:
                 self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
                 raise NotImplementedError("Unable to get audiobook resume position from Spotify")
 
@@ -1128,16 +1158,32 @@ class SpotifyProvider(MusicProvider):
 
         # get logged-in user info
         if not self._sp_user:
-            self._sp_user = userinfo = await self._get_data(
-                "me", auth_info=auth_info, use_global_session=True
-            )
-            if country := userinfo.get("country"):
-                self.mass.metadata.set_default_preferred_language(country)
-            if self.get_setup_value(CONF_ACCOUNT_ID) != userinfo["id"]:
+            try:
+                userinfo = await self._get_data("me", auth_info=auth_info, use_global_session=True)
+            except RetriesExhausted, ResourceTemporarilyUnavailable:
+                if (stored := self._stored_account()) is None:
+                    raise
+                userinfo = stored
+                self.logger.info(
+                    "Spotify did not answer the account lookup, loaded with the stored "
+                    "account details of %s",
+                    userinfo["display_name"],
+                )
+            else:
                 # instances configured before the account was recorded fill it in here,
-                # so the setup flow can spot a duplicate account without loading them
-                self._update_setup_data(CONF_ACCOUNT_ID, userinfo["id"])
-            self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
+                # so the setup flow can spot a duplicate account without loading them;
+                # the stored details also let a later load go ahead while Spotify does not answer
+                for key, value in (
+                    (CONF_ACCOUNT_ID, userinfo["id"]),
+                    (CONF_ACCOUNT_NAME, userinfo.get("display_name")),
+                    (CONF_ACCOUNT_COUNTRY, userinfo.get("country")),
+                ):
+                    if self.get_setup_value(key) != value:
+                        self._update_setup_data(key, value, immediate=False)
+                self.logger.info(
+                    "Successfully logged in to Spotify as %s", userinfo["display_name"]
+                )
+            self._set_account(userinfo)
         return auth_info
 
     @lock
@@ -1614,7 +1660,7 @@ class SpotifyProvider(MusicProvider):
 
         return episodes_data
 
-    @use_cache(7200)  # 2 hours - shorter cache for resume point data
+    @use_cache()
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
         """
         Get raw chapter data from Spotify API (cached).
@@ -1641,22 +1687,42 @@ class SpotifyProvider(MusicProvider):
         return chapters_data
 
     async def _get_all_items(
-        self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
+        self,
+        endpoint: str,
+        key: str = "items",
+        limit: int = 50,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any]]:
-        """Get all items from a paged list."""
+        """
+        Get all items from a paged list.
+
+        :param endpoint: API endpoint of the paged list.
+        :param key: Key of the items in each page.
+        :param limit: Number of items to request per page.
+        :param use_cache: Serve pages from the page cache; when False, every page is requested
+            from the API.
+        """
         offset = 0
-        # single request to fetch the etag (used as cache checksum) and total
-        meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        cache_checksum: str | None = None
+        total = 0
+        if use_cache:
+            # single request to fetch the etag (used as cache checksum) and total
+            meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+            cache_checksum = meta["etag"]
+            total = meta["total"]
         while True:
             # Avoid requesting beyond the known end. Spotify can return 5xx
             # for offset >= total on some endpoints (e.g. algorithmic playlists).
             if total and offset >= total:
                 break
-            result = await self._get_data_with_caching(
-                endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
-            )
+            if use_cache:
+                result = await self._get_data_with_caching(
+                    endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
+                )
+            else:
+                result = await self._get_data(endpoint, limit=limit, offset=offset, **kwargs)
+                total = result.get("total", 0)
             offset += limit
             if not result or key not in result or not result[key]:
                 break
@@ -1827,6 +1893,26 @@ class SpotifyProvider(MusicProvider):
             fallback_for_playback=fallback_for_playback,
         )
 
+    def _stored_account(self) -> dict[str, Any] | None:
+        """Return the account details of the last successful login, None when never logged in."""
+        if not (account_id := self.get_setup_value(CONF_ACCOUNT_ID)):
+            return None
+        return {
+            "id": account_id,
+            "display_name": self.get_setup_value(CONF_ACCOUNT_NAME) or account_id,
+            "country": self.get_setup_value(CONF_ACCOUNT_COUNTRY),
+        }
+
+    def _set_account(self, userinfo: dict[str, Any]) -> None:
+        """
+        Take the given Spotify account as the one this instance serves.
+
+        :param userinfo: The account details, as the me endpoint returns them.
+        """
+        self._sp_user = userinfo
+        if country := userinfo.get("country"):
+            self.mass.metadata.set_default_preferred_language(country)
+
     def _clear_auth_info_global(self) -> None:
         """Drop the cached access token of the global session."""
         self._auth_info_global = None
@@ -1852,13 +1938,19 @@ class SpotifyProvider(MusicProvider):
         """Test if audiobooks are supported in user's region."""
         try:
             await self._get_data("me/audiobooks", limit=1)
-            return True
+            supported = True
         except aiohttp.ClientResponseError as e:
-            if e.status == 403:
-                return False  # Not available
-            raise  # Re-raise other HTTP errors
+            if e.status != 403:
+                raise  # Re-raise other HTTP errors
+            supported = False  # Not available
         except MediaNotFoundError, ProviderUnavailableError:
-            return False
+            supported = False
+        except RetriesExhausted, ResourceTemporarilyUnavailable:
+            # Spotify did not answer: go with the answer of an earlier load
+            return bool(self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED, False))
+        if self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED) != supported:
+            self._update_setup_data(CONF_AUDIOBOOKS_SUPPORTED, supported, immediate=False)
+        return supported
 
     def _stored_refresh_token(self, key: str) -> str | None:
         """
