@@ -3888,6 +3888,65 @@ class TestProtocolSwitchingDuringPlayback:
 
         assert observed_volume_controls == ["joiner_airplay"]
 
+    async def test_leaving_member_releases_its_protocol(self, mock_mass: MagicMock) -> None:
+        """A member that leaves a protocol group reports playback started on the device again."""
+        controller = PlayerController(mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        leader = MockPlayer(sendspin_provider, "leader", "LedFx")
+        leader_sendspin = MockPlayer(
+            sendspin_provider, "leader_sendspin", "LedFx", player_type=PlayerType.PROTOCOL
+        )
+        leader_sendspin._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_sendspin.set_protocol_parent_id("leader")
+
+        member = MockPlayer(sonos_provider, "member", "Living Room")
+        member_bridge = MockPlayer(
+            sendspin_provider,
+            "member_bridge",
+            "Living Room (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        member_bridge.set_protocol_parent_id("member")
+        member.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="member_bridge", protocol_domain="sendspin", priority=40
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            player.player_id: player for player in (leader, leader_sendspin, member, member_bridge)
+        }
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=leader_sendspin,
+            protocol_members_to_add=["member_bridge"],
+            protocol_members_to_remove=[],
+        )
+        joined_protocol = member.active_output_protocol
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=leader_sendspin,
+            protocol_members_to_add=[],
+            protocol_members_to_remove=["member_bridge"],
+        )
+        assert (joined_protocol, member.active_output_protocol) == ("member_bridge", None)
+
+        member._attr_playback_state = PlaybackState.PLAYING
+        member._attr_active_source = "Amazon Music"
+        member.update_state(signal_event=False)
+
+        assert member.state.playback_state == PlaybackState.PLAYING
+        assert member.state.active_source == "Amazon Music"
+
 
 class TestNativeProtocolPlayerGrouping:
     """Tests for grouping with native protocol players (e.g., native AirPlay like Apple TV)."""

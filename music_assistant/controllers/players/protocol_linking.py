@@ -3003,6 +3003,8 @@ class ProtocolLinkingMixin:
             player_ids_to_remove=filtered_protocol_remove or None,
         )
 
+        self._release_protocol_on_removed_children(filtered_protocol_remove)
+
         if filtered_protocol_add:
             await self._activate_group_output_protocol(
                 parent_player, parent_protocol_player, stranded_native_members
@@ -3036,6 +3038,18 @@ class ProtocolLinkingMixin:
                 child_protocol_id,
             )
             child_player.set_active_output_protocol(child_protocol_id)
+
+    def _release_protocol_on_removed_children(self, protocol_member_ids: list[str]) -> None:
+        """Clear the active output protocol a parent still holds for a protocol member that left."""
+        for child_protocol_id in protocol_member_ids:
+            if not (child_protocol := self.get_player(child_protocol_id)):
+                continue
+            if not child_protocol.protocol_parent_id:
+                continue
+            if not (child_player := self.get_player(child_protocol.protocol_parent_id)):
+                continue
+            if child_player.active_output_protocol == child_protocol_id:
+                child_player.set_active_output_protocol(None)
 
     async def _activate_group_output_protocol(
         self,
