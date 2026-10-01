@@ -37,7 +37,7 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnplayableMediaError,
 )
-from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, ProviderMapping, Track
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
@@ -45,7 +45,9 @@ from music_assistant.providers.bandcamp import BandcampProvider, setup, split_id
 from music_assistant.providers.bandcamp._ids import make_artist_id
 from music_assistant.providers.bandcamp.constants import (
     BANDCAMP_TIMEOUT,
+    CACHE_CHANGING_LISTING,
     CACHE_EMPTY_RESULTS,
+    CACHE_METADATA,
     CACHE_USER_LISTS,
     CONF_GET_LYRICS,
     DEFAULT_TOP_TRACKS_LIMIT,
@@ -1405,6 +1407,11 @@ class _CacheLookup(Exception):
             lambda p: p.get_album_tracks("123-456"), PARSED_ITEM_CACHE_CHECKSUM, id="album_tracks"
         ),
         pytest.param(
+            lambda p: p._get_album_tracks_daily("123-456"),
+            PARSED_ITEM_CACHE_CHECKSUM,
+            id="album_tracks_daily",
+        ),
+        pytest.param(
             lambda p: p.get_artist_albums("123"), PARSED_ITEM_CACHE_CHECKSUM, id="artist_albums"
         ),
         pytest.param(
@@ -1435,7 +1442,14 @@ async def test_get_album_tracks_serves_an_expired_listing_and_refreshes_it(
 ) -> None:
     """An expired album listing comes back at once, and a background task fetches it again."""
     old_track = Track(
-        item_id="123-456-789", provider="bandcamp_test", name="Old name", provider_mappings=set()
+        item_id="123-456-789",
+        provider="bandcamp_test",
+        name="Old name",
+        provider_mappings={
+            ProviderMapping(
+                item_id="123-456-789", provider_domain="bandcamp", provider_instance="bandcamp_test"
+            )
+        },
     )
     mass_mock.cache.get_with_freshness.return_value = ([old_track.to_dict()], False, True)
 
@@ -1459,6 +1473,68 @@ async def test_get_album_tracks_serves_an_expired_listing_and_refreshes_it(
     stored = mass_mock.cache.set.await_args
     assert stored.kwargs["allow_expired_cache"] is True
     assert [track.item_id for track in stored.kwargs["data"]] == ["123-456-789", "123-456-790"]
+
+
+@pytest.mark.parametrize(
+    ("second_track_streams", "from_daily_listing"),
+    [
+        pytest.param(True, False, id="every_track_streams"),
+        pytest.param(False, True, id="a_track_without_a_stream"),
+    ],
+)
+async def test_get_album_tracks_takes_a_changing_album_from_the_daily_listing(
+    provider: BandcampProvider, second_track_streams: bool, from_daily_listing: bool
+) -> None:
+    """An album with a track without a stream comes from the listing of one day."""
+    monthly = [Mock(available=True), Mock(available=second_track_streams)]
+    daily = [Mock(available=True), Mock(available=True)]
+
+    with (
+        patch.object(
+            provider, "_get_album_tracks_monthly", new_callable=AsyncMock, return_value=monthly
+        ),
+        patch.object(
+            provider, "_get_album_tracks_daily", new_callable=AsyncMock, return_value=daily
+        ) as mock_daily,
+    ):
+        result = await provider.get_album_tracks("123-456")
+
+    assert result is (daily if from_daily_listing else monthly)
+    assert mock_daily.await_count == int(from_daily_listing)
+
+
+@pytest.mark.parametrize(
+    ("listing", "expiration"),
+    [
+        pytest.param("_get_album_tracks_monthly", CACHE_METADATA, id="monthly"),
+        pytest.param("_get_album_tracks_daily", CACHE_CHANGING_LISTING, id="daily"),
+    ],
+)
+async def test_album_track_listings_keep_their_cache_time(
+    provider: BandcampProvider, mass_mock: Mock, listing: str, expiration: int
+) -> None:
+    """Each album track listing stores its own cache time, and both serve an expired row."""
+    with patch.object(
+        provider._client,
+        "get_album",
+        new_callable=AsyncMock,
+        return_value=_album_with_a_hidden_track(),
+    ):
+        await getattr(provider, listing)("123-456")
+        # the cache store runs as a background task; let it finish
+        for _ in range(100):
+            if mass_mock.cache.set.await_count:
+                break
+            await asyncio.sleep(0.01)
+
+    stored = mass_mock.cache.set.await_args
+    assert stored.kwargs["expiration"] == expiration
+    assert stored.kwargs["allow_expired_cache"] is True
+
+
+def test_changing_listing_lasts_one_day() -> None:
+    """A preorder track can open any day, so the listing of such an album lasts one day."""
+    assert CACHE_CHANGING_LISTING == 3600 * 24
 
 
 async def test_get_track_not_found(provider: BandcampProvider) -> None:

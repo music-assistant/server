@@ -78,6 +78,7 @@ from .constants import (
     BROWSE_FOLLOWERS,
     BROWSE_FOLLOWING,
     BROWSE_WISHLIST,
+    CACHE_CHANGING_LISTING,
     CACHE_EMPTY_RESULTS,
     CACHE_METADATA,
     CACHE_USER_LISTS,
@@ -897,13 +898,33 @@ class BandcampProvider(MusicProvider):
             artist_item_id=artist_item_id,
         )
 
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get all tracks in an album."""
+        tracks = await self._get_album_tracks_monthly(prov_album_id)
+        if all(track.available for track in tracks):
+            return tracks
+        # A track without a stream can open any day, for example a preorder track before
+        # or on its release, so such an album takes its listing from a one-day cache
+        return await self._get_album_tracks_daily(prov_album_id)
+
     # An expired listing comes back at once and is fetched again in the background,
     # as in the album track listings of the other music providers
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
+    async def _get_album_tracks_monthly(self, prov_album_id: str) -> list[Track]:
+        """Get the tracks of an album from the cache of an album that does not change."""
+        return await self._fetch_album_tracks(prov_album_id)
+
+    @use_cache(
+        CACHE_CHANGING_LISTING, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )
+    async def _get_album_tracks_daily(self, prov_album_id: str) -> list[Track]:
+        """Get the tracks of an album from the cache of an album that can change soon."""
+        return await self._fetch_album_tracks(prov_album_id)
+
     @throttle_with_retries
     @_retry_transport_errors
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get all tracks in an album."""
+    async def _fetch_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Fetch all tracks of an album from Bandcamp."""
         artist_id, album_id, _ = split_id(prov_album_id)
         async with self._map_api_errors(
             f"Failed to get albums tracks for {prov_album_id}",
