@@ -328,10 +328,8 @@ async def get_song_radio_tracks(
 
 async def search(
     query: str,
-    headers: dict[str, str],
     ytm_filter: YTMSearchFilter | None = None,
     limit: int = 20,
-    user: str | None = None,
 ) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi search function."""
 
@@ -342,7 +340,8 @@ async def search(
         # provider expects anyway, as it compares result fields such as the album type
         # against English literals. Revisit once ytmusicapi compares against the
         # translated title.
-        ytm = ytmusicapi.YTMusic(auth=headers, language="en", user=user)
+        # Unauthenticated on purpose: an account search lands in the user's YouTube search history.
+        ytm = ytmusicapi.YTMusic(language="en")
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
