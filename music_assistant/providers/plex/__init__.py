@@ -52,7 +52,7 @@ from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import APPLICATION_NAME, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
@@ -89,7 +89,6 @@ from music_assistant.providers.plex.constants import (
     ERR_NO_LIBRARIES,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
-    PLEX_PRODUCT,
 )
 from music_assistant.providers.plex.helpers import (
     configure_plex_identity,
@@ -430,8 +429,8 @@ class PlexProvider(MusicProvider):
                 # only set the per-connection product/platform/version here.
                 session.headers.update(
                     {
-                        "X-Plex-Product": PLEX_PRODUCT,
-                        "X-Plex-Platform": PLEX_PRODUCT,
+                        "X-Plex-Product": APPLICATION_NAME,
+                        "X-Plex-Platform": APPLICATION_NAME,
                         "X-Plex-Version": self.mass.version,
                     }
                 )

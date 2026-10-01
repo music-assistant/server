@@ -14,7 +14,8 @@ from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.server import PlexServer
 
-from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH, PLEX_PRODUCT
+from music_assistant.constants import APPLICATION_NAME
+from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH
 
 if TYPE_CHECKING:
     from plexapi.base import PlexObject
@@ -34,13 +35,12 @@ def configure_plex_identity(client_id: str) -> None:
 
     :param client_id: Stable client identifier to advertise (Music Assistant's server id).
     """
-    plexapi.X_PLEX_PRODUCT = PLEX_PRODUCT
-    plexapi.X_PLEX_DEVICE_NAME = PLEX_PRODUCT
-    plexapi.BASE_HEADERS["X-Plex-Product"] = PLEX_PRODUCT
-    plexapi.BASE_HEADERS["X-Plex-Device-Name"] = PLEX_PRODUCT
-    if client_id:
-        plexapi.X_PLEX_IDENTIFIER = client_id
-        plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
+    plexapi.X_PLEX_PRODUCT = APPLICATION_NAME
+    plexapi.X_PLEX_DEVICE_NAME = APPLICATION_NAME
+    plexapi.X_PLEX_IDENTIFIER = client_id
+    plexapi.BASE_HEADERS["X-Plex-Product"] = APPLICATION_NAME
+    plexapi.BASE_HEADERS["X-Plex-Device-Name"] = APPLICATION_NAME
+    plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
 
 
 async def get_libraries(
