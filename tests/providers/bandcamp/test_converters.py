@@ -4,7 +4,7 @@ from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
-from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack
+from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack, FollowingItem
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import MediaItem
 from music_assistant_models.media_items import Track as MATrack
@@ -115,6 +115,34 @@ def test_artist_from_search(converters: BandcampConverters) -> None:
     assert result.item_id == "123"
     assert result.name == "Test Artist"
     assert result.provider == "bandcamp_test"
+
+
+def test_artist_from_following(converters: BandcampConverters) -> None:
+    """A following entry gives the same ID, name, URL and URI as the band request."""
+    item = FollowingItem(
+        band_id=1772311897,
+        name="James Acaster",
+        url="https://jamesacaster.bandcamp.com",
+        image_url="https://f4.bcbits.com/img/46508512_0.jpg",
+        location="London, UK",
+    )
+    band = BCArtist(
+        id=1772311897,
+        name="James Acaster",
+        url="https://jamesacaster.bandcamp.com",
+        image_url="https://f4.bcbits.com/img/00046508512_0.png",
+    )
+
+    result = converters.artist_from_following(item)
+    expected = converters.artist_from_api(band)
+
+    assert (result.item_id, result.name, result.uri) == (
+        expected.item_id,
+        expected.name,
+        expected.uri,
+    )
+    assert result.provider_mappings == expected.provider_mappings
+    assert [image.path for image in result.metadata.images or []] == [item.image_url]
 
 
 def test_track_from_api(converters: BandcampConverters) -> None:
@@ -660,6 +688,10 @@ def _api_album(art_url: str | None) -> Mock:
         pytest.param(lambda c: c.artist_from_search(_artist(None)), id="artist_from_search"),
         pytest.param(lambda c: c.artist_from_api(_artist(None)), id="artist_from_api"),
         pytest.param(lambda c: c.album_from_api(_api_album(None)), id="album_from_api"),
+        pytest.param(
+            lambda c: c.artist_from_following(FollowingItem(band_id=123, name="Test Artist")),
+            id="artist_from_following",
+        ),
     ],
 )
 def test_converters_add_no_image_without_a_path(

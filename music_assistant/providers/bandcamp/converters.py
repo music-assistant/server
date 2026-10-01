@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from bandcamp_async_api.models import BCTrack as APITrack
     from bandcamp_async_api.models import (
         FeedTrack,
+        FollowingItem,
         SearchResultAlbum,
         SearchResultArtist,
         SearchResultTrack,
@@ -185,6 +186,35 @@ class BandcampConverters:
             },
         )
         output.metadata.genres = item.tags
+        if item.url:
+            output.metadata.description = item.url
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        return output
+
+    def artist_from_following(self, item: FollowingItem) -> MAArtist:
+        """Create an Artist from an entry of a following list, without a band request."""
+        output = MAArtist(
+            item_id=str(item.band_id),
+            provider=self.instance_id,
+            name=item.name,
+            uri=item.url,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(item.band_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=item.url,
+                )
+            },
+        )
         if item.url:
             output.metadata.description = item.url
         if item.image_url:

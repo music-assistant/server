@@ -1330,18 +1330,13 @@ class BandcampProvider(MusicProvider):
         cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Artist)
         if cached is not None:
             return cached  # type: ignore[no-any-return]
-        artists: list[Artist] = []
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
             collection = await self._get_all_collection_items(
                 CollectionType.FOLLOWING, fan_id=person_id
             )
-            for item in collection:
-                try:
-                    artists.append(await self.get_artist(str(item.band_id)))
-                except MediaNotFoundError:
-                    self.logger.warning(
-                        "Artist not found for band_id %s (%s)", item.band_id, item.name
-                    )
+        # The list gives the name, the URL and the image of each band, so the artists need
+        # no band request each, as in the artist lists of the other music providers
+        artists = [self._converters.artist_from_following(item) for item in collection]
         await self.mass.cache.set(
             cache_key,
             [a.to_dict() for a in artists],

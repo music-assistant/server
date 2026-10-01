@@ -19,7 +19,7 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from bandcamp_async_api.models import BCArtist, BCTrack, CollectionType
+from bandcamp_async_api.models import BCArtist, BCTrack, CollectionType, FollowingItem
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -2678,14 +2678,11 @@ async def test_browse_wishlist_rate_limit(provider: BandcampProvider) -> None:
 
 
 async def test_browse_following_returns_artists(provider: BandcampProvider) -> None:
-    """Test browsing following returns resolved artists."""
+    """Test browsing following returns the artists of the following list."""
     collection_items = [
-        Mock(spec=["band_id", "name"], band_id=100, name="Artist1"),
-        Mock(spec=["band_id", "name"], band_id=200, name="Artist2"),
+        FollowingItem(band_id=100, name="Artist1"),
+        FollowingItem(band_id=200, name="Artist2"),
     ]
-
-    mock_artist_1 = Mock()
-    mock_artist_2 = Mock()
 
     with (
         patch.object(
@@ -2694,37 +2691,12 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
         mock_get_collection.return_value = collection_items
-        mock_get_artist.side_effect = [mock_artist_1, mock_artist_2]
 
         result = await provider.browse("bandcamp_test://following")
 
         mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=None)
-        mock_get_artist.assert_has_awaits([call("100"), call("200")])
-        assert mock_get_artist.call_count == 2
-        assert len(result) == 2
-
-
-async def test_browse_following_skips_failed_artists(provider: BandcampProvider) -> None:
-    """Test that following browse skips artists that fail to resolve."""
-    collection_items = [
-        Mock(spec=["band_id", "name"], band_id=100, name="Found"),
-        Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
-    ]
-
-    mock_artist = Mock()
-
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
-    ):
-        mock_get_collection.return_value = collection_items
-        mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
-
-        result = await provider.browse("bandcamp_test://following")
-
-        assert len(result) == 1
+        assert [item.item_id for item in result] == ["100", "200"]
+        mock_get_artist.assert_not_awaited()
 
 
 async def test_browse_following_login_error(provider: BandcampProvider) -> None:
@@ -3028,8 +3000,7 @@ async def test_browse_person_wishlist(provider: BandcampProvider) -> None:
 
 async def test_browse_person_following(provider: BandcampProvider) -> None:
     """Test browsing fans/42/following fetches person's followed artists."""
-    collection_items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
-    mock_artist = Mock()
+    collection_items = [FollowingItem(band_id=100, name="Artist1")]
 
     with (
         patch.object(
@@ -3038,13 +3009,12 @@ async def test_browse_person_following(provider: BandcampProvider) -> None:
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
         mock_get_collection.return_value = collection_items
-        mock_get_artist.return_value = mock_artist
 
         result = await provider.browse("bandcamp_test://fans/42/following")
 
         mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=42)
-        assert len(result) == 1
-        assert result[0] is mock_artist
+        assert [(item.item_id, item.name) for item in result] == [("100", "Artist1")]
+        mock_get_artist.assert_not_awaited()
 
 
 async def test_browse_person_fans(provider: BandcampProvider) -> None:
@@ -3314,23 +3284,17 @@ async def test_browse_person_content_api_error(provider: BandcampProvider) -> No
 
 async def test_browse_person_following_with_person_id(provider: BandcampProvider) -> None:
     """Test _browse_person_following with explicit person_id."""
-    collection_items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
-    mock_artist = Mock()
+    collection_items = [FollowingItem(band_id=100, name="Artist1")]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_artist.return_value = mock_artist
 
         result = await provider._browse_person_following(42)
 
         mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=42)
-        assert len(result) == 1
-        assert result[0] is mock_artist
+        assert [(item.item_id, item.name) for item in result] == [("100", "Artist1")]
 
 
 async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> None:
@@ -3360,26 +3324,34 @@ async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> 
         assert result[0].name == "Cached Artist"
 
 
-async def test_browse_person_following_skips_not_found(provider: BandcampProvider) -> None:
-    """Test _browse_person_following logs warning and skips unfound artists."""
+async def test_browse_person_following_sends_no_band_request(provider: BandcampProvider) -> None:
+    """The following list gives the artists, with no band request for each of them."""
     collection_items = [
-        Mock(spec=["band_id", "name"], band_id=100, name="Found"),
-        Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
+        FollowingItem(
+            band_id=100,
+            name="With page",
+            url="https://withpage.bandcamp.com",
+            image_url="https://f4.bcbits.com/img/46508512_0.jpg",
+        ),
+        FollowingItem(band_id=200, name="Without page"),
     ]
-    mock_artist = Mock()
 
     with (
         patch.object(
             provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
-        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+        patch.object(provider._client, "get_artist", new_callable=AsyncMock) as mock_band,
     ):
         mock_get_collection.return_value = collection_items
-        mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
 
         result = await provider._browse_person_following(42)
 
-        assert len(result) == 1
+    assert [(item.item_id, item.name) for item in result] == [
+        ("100", "With page"),
+        ("200", "Without page"),
+    ]
+    assert [len(item.metadata.images or []) for item in result] == [1, 0]
+    mock_band.assert_not_awaited()
 
 
 # --- _browse_person_people tests ---
