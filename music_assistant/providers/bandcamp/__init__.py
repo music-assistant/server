@@ -1324,16 +1324,28 @@ class BandcampProvider(MusicProvider):
                 return [self._deserialize_content_item(item) for item in cached]
             except LookupError, ValueError, UnserializableDataError, InvalidDataError:
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
-        results: list[Album | Track] = []
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
             items = await self._get_all_collection_items(collection_type, fan_id=person_id)
-            for item in items:
-                with suppress(MediaNotFoundError):
-                    if item.item_type == "album":
-                        results.append(await self.get_album(f"{item.band_id}-{item.item_id}"))
-                    elif item.item_type == "track":
-                        results.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
+        # The list gives the title, the band, the URL and the cover of each entry, so the
+        # entries need no request each, as in the lists of the other music providers
+        results: list[Album | Track] = []
+        seen_ids: set[str] = set()
+        for item in items:
+            entry: Album | Track
+            if item.item_type == "album" or (
+                # A package, for example a record, that comes with a digital album
+                item.item_type == "package" and item.tralbum_type == "a"
+            ):
+                entry = self._converters.album_from_collection(item)
+            elif item.item_type == "track":
+                entry = self._converters.track_from_collection(item)
+            else:
+                continue
+            # A fan can own the same album as a download and as a package
+            if entry.item_id not in seen_ids:
+                seen_ids.add(entry.item_id)
+                results.append(entry)
         await self.mass.cache.set(
             cache_key,
             [item.to_dict() for item in results],

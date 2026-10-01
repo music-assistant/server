@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
@@ -19,7 +19,13 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from bandcamp_async_api.models import BCArtist, BCTrack, CollectionType, FollowingItem
+from bandcamp_async_api.models import (
+    BCArtist,
+    BCTrack,
+    CollectionItem,
+    CollectionType,
+    FollowingItem,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -2752,15 +2758,17 @@ async def test_browse_standard_subpath_delegates_to_super(provider: BandcampProv
         assert len(result) == 2
 
 
-async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvider) -> None:
-    """Test browsing wishlist returns resolved albums and tracks."""
-    collection_items = [
-        Mock(item_type="album", item_id=456, band_id=123),
-        Mock(item_type="track", item_id=789, band_id=123),
-    ]
+def _collection_entry(item_type: str, item_id: int, **fields: Any) -> CollectionItem:
+    """Build a collection or wishlist entry of band 123."""
+    return CollectionItem(item_type=item_type, item_id=item_id, band_id=123, **fields)
 
-    mock_album = Mock()
-    mock_track = Mock()
+
+async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvider) -> None:
+    """Test browsing wishlist returns the albums and tracks of the list, with no request each."""
+    collection_items = [
+        _collection_entry("album", 456, tralbum_id=456),
+        _collection_entry("track", 789, tralbum_id=789),
+    ]
 
     with (
         patch.object(
@@ -2770,40 +2778,35 @@ async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvi
         patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track,
     ):
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
-        mock_get_track.return_value = mock_track
 
         result = await provider.browse("bandcamp_test://wishlist")
 
         mock_get_collection.assert_called_once_with(CollectionType.WISHLIST, fan_id=None)
-        mock_get_album.assert_called_once_with("123-456")
-        mock_get_track.assert_called_once_with("123-0-789")
-        assert len(result) == 2
-        assert mock_album in result
-        assert mock_track in result
+        assert [(type(item), item.item_id) for item in result] == [
+            (Album, "123-456"),
+            (Track, "123-0-789"),
+        ]
+        mock_get_album.assert_not_awaited()
+        mock_get_track.assert_not_awaited()
 
 
-async def test_browse_wishlist_skips_failed_items(provider: BandcampProvider) -> None:
-    """Test that wishlist browse skips items that fail to resolve."""
+async def test_browse_person_content_takes_the_album_of_a_package(
+    provider: BandcampProvider,
+) -> None:
+    """A package gives its digital album, and an album owned twice shows once."""
     collection_items = [
-        Mock(item_type="album", item_id=456, band_id=123),
-        Mock(item_type="album", item_id=789, band_id=123),
+        _collection_entry("package", 4197129855, tralbum_id=3846833501, tralbum_type="a"),
+        _collection_entry("album", 3846833501, tralbum_id=3846833501, tralbum_type="a"),
+        _collection_entry("package", 4003807767, tralbum_id=626289772, tralbum_type="a"),
+        _collection_entry("package", 1, tralbum_id=None, tralbum_type=None),
     ]
 
-    mock_album = Mock()
-
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection_items
     ):
-        mock_get_collection.return_value = collection_items
-        mock_get_album.side_effect = [mock_album, MediaNotFoundError("not found")]
+        result = await provider._browse_person_content(42, CollectionType.COLLECTION)
 
-        result = await provider.browse("bandcamp_test://wishlist")
-
-        assert len(result) == 1
+    assert [item.item_id for item in result] == ["123-3846833501", "123-626289772"]
 
 
 async def test_browse_wishlist_login_error(provider: BandcampProvider) -> None:
@@ -2874,25 +2877,18 @@ async def test_browse_following_login_error(provider: BandcampProvider) -> None:
 async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProvider) -> None:
     """Test that wishlist browse ignores items with unknown item_type."""
     collection_items = [
-        Mock(item_type="band", item_id=100, band_id=100),
-        Mock(item_type="album", item_id=456, band_id=123),
+        _collection_entry("band", 100),
+        _collection_entry("album", 456, tralbum_id=456),
     ]
 
-    mock_album = Mock()
-
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://wishlist")
 
-        assert len(result) == 1
-        mock_get_album.assert_called_once_with("123-456")
+        assert [item.item_id for item in result] == ["123-456"]
 
 
 # --- _map_api_errors context manager tests ---
@@ -3117,44 +3113,32 @@ async def test_browse_fans_person_id_shows_subfolders(provider: BandcampProvider
 
 async def test_browse_person_collection(provider: BandcampProvider) -> None:
     """Test browsing fans/42/collection fetches person's collection."""
-    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
-    mock_album = Mock()
+    collection_items = [_collection_entry("album", 456, tralbum_id=456)]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://fans/42/collection")
 
         mock_get_collection.assert_called_once_with(CollectionType.COLLECTION, fan_id=42)
-        assert len(result) == 1
-        assert result[0] is mock_album
+        assert [item.item_id for item in result] == ["123-456"]
 
 
 async def test_browse_person_wishlist(provider: BandcampProvider) -> None:
     """Test browsing fans/42/wishlist fetches person's wishlist."""
-    collection_items = [Mock(item_type="album", item_id=789, band_id=123)]
-    mock_album = Mock()
+    collection_items = [_collection_entry("album", 789, tralbum_id=789)]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://fans/42/wishlist")
 
         mock_get_collection.assert_called_once_with(CollectionType.WISHLIST, fan_id=42)
-        assert len(result) == 1
-        assert result[0] is mock_album
+        assert [item.item_id for item in result] == ["123-789"]
 
 
 async def test_browse_person_following(provider: BandcampProvider) -> None:
@@ -3290,38 +3274,27 @@ async def test_browse_person_invalid_path_no_id(provider: BandcampProvider) -> N
 
 async def test_browse_person_content_with_person_id(provider: BandcampProvider) -> None:
     """Test _browse_person_content with explicit person_id passes fan_id."""
-    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
-    mock_album = Mock()
+    collection_items = [_collection_entry("album", 456, tralbum_id=456)]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
 
         mock_get_collection.assert_called_once_with(CollectionType.COLLECTION, fan_id=42)
-        assert len(result) == 1
-        assert result[0] is mock_album
+        assert [item.item_id for item in result] == ["123-456"]
 
 
 async def test_browse_person_content_caches_results(provider: BandcampProvider) -> None:
     """Test _browse_person_content caches non-empty results."""
-    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
-    mock_album = Mock()
+    collection_items = [_collection_entry("album", 456, tralbum_id=456)]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         await provider._browse_person_content(42, CollectionType.WISHLIST)
 
@@ -3406,17 +3379,12 @@ async def test_browse_person_content_nonempty_cached_with_normal_ttl(
     provider: BandcampProvider,
 ) -> None:
     """Test non-empty results are cached with CACHE_USER_LISTS TTL."""
-    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
-    mock_album = Mock()
+    collection_items = [_collection_entry("album", 456, tralbum_id=456)]
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = collection_items
-        mock_get_album.return_value = mock_album
 
         await provider._browse_person_content(42, CollectionType.COLLECTION)
 
@@ -3780,28 +3748,18 @@ async def test_browse_person_content_returns_only_resolved_items(
     objects into the returned list.
     """
     raw_items = [
-        Mock(item_type="album", item_id=456, band_id=123),
-        Mock(item_type="track", item_id=789, band_id=123),
+        _collection_entry("album", 456, tralbum_id=456),
+        _collection_entry("track", 789, tralbum_id=789),
     ]
-    mock_album = Mock(spec=Album)
-    mock_track = Mock(spec=Track)
 
-    with (
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-        patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track,
-    ):
+    with patch.object(
+        provider, "_get_all_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
         mock_get_collection.return_value = raw_items
-        mock_get_album.return_value = mock_album
-        mock_get_track.return_value = mock_track
 
         result = await provider._browse_person_content(42, CollectionType.WISHLIST)
 
-        assert len(result) == 2
-        assert result[0] is mock_album
-        assert result[1] is mock_track
+        assert [type(item) for item in result] == [Album, Track]
         # Verify no raw CollectionItem objects leaked into the result
         for item in result:
             assert item is not raw_items[0]

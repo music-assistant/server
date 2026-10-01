@@ -4,7 +4,14 @@ from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
-from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack, FollowingItem
+from bandcamp_async_api.models import (
+    BCAlbum,
+    BCArtist,
+    BCTrack,
+    CollectionItem,
+    FeedTrack,
+    FollowingItem,
+)
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import MediaItem
 from music_assistant_models.media_items import Track as MATrack
@@ -115,6 +122,71 @@ def test_artist_from_search(converters: BandcampConverters) -> None:
     assert result.item_id == "123"
     assert result.name == "Test Artist"
     assert result.provider == "bandcamp_test"
+
+
+def test_album_from_collection(converters: BandcampConverters) -> None:
+    """A collection entry gives the album ID, title, band, URL and cover of the release."""
+    item = CollectionItem(
+        item_type="package",
+        item_id=4197129855,
+        band_id=1772311897,
+        tralbum_type="a",
+        tralbum_id=3846833501,
+        band_name="The Wow! Scenario",
+        item_title="Stand in the Star. A Verse and a Chorus",
+        item_url="https://jamesacaster.bandcamp.com/album/stand-in-the-star",
+        art_url="https://f4.bcbits.com/img/a1234567890_10.jpg",
+    )
+
+    result = converters.album_from_collection(item)
+
+    assert (result.item_id, result.name) == (
+        "1772311897-3846833501",
+        "Stand in the Star. A Verse and a Chorus",
+    )
+    # band_name is the artist credit on the page of James Acaster, as measured on Bandcamp
+    assert [(artist.item_id, artist.name) for artist in result.artists] == [
+        ("1772311897:the-wow-scenario", "The Wow! Scenario")
+    ]
+    assert [mapping.url for mapping in result.provider_mappings] == [item.item_url]
+    assert [image.path for image in result.metadata.images or []] == [item.art_url]
+
+
+@pytest.mark.parametrize(
+    ("album_id", "featured_track", "expected_id", "expected_album", "duration"),
+    [
+        pytest.param(None, 789, "123-0-789", None, 193, id="single"),
+        pytest.param(456, 789, "123-456-789", ("123-456", "Album"), 193, id="album_track"),
+        pytest.param(None, None, "123-0-789", None, 0, id="no_featured_track"),
+    ],
+)
+def test_track_from_collection(
+    converters: BandcampConverters,
+    album_id: int | None,
+    featured_track: int | None,
+    expected_id: str,
+    expected_album: tuple[str, str] | None,
+    duration: int,
+) -> None:
+    """A track entry gives the track ID of the track page, its album and its duration."""
+    item = CollectionItem(
+        item_type="track",
+        item_id=789,
+        band_id=123,
+        tralbum_id=789,
+        band_name="Test Band",
+        item_title="Track",
+        album_id=album_id,
+        album_title="Album" if album_id else None,
+        featured_track=featured_track,
+        featured_track_duration=193.5,
+    )
+
+    result = converters.track_from_collection(item)
+
+    assert (result.item_id, result.duration) == (expected_id, duration)
+    album = (result.album.item_id, result.album.name) if result.album else None
+    assert album == expected_album
 
 
 def test_artist_from_following(converters: BandcampConverters) -> None:
@@ -716,6 +788,14 @@ def _api_album(art_url: str | None) -> Mock:
         pytest.param(
             lambda c: c.artist_from_following(FollowingItem(band_id=123, name="Test Artist")),
             id="artist_from_following",
+        ),
+        pytest.param(
+            lambda c: c.album_from_collection(CollectionItem("album", 456, 123)),
+            id="album_from_collection",
+        ),
+        pytest.param(
+            lambda c: c.track_from_collection(CollectionItem("track", 789, 123)),
+            id="track_from_collection",
         ),
     ],
 )
