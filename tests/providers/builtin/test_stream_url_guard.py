@@ -35,7 +35,6 @@ def _make_provider() -> BuiltinProvider:
     """Return a BuiltinProvider instance with mocked collaborators."""
     provider = BuiltinProvider.__new__(BuiltinProvider)
     provider.mass = MagicMock()
-    provider.mass.cache_path = "/data/cache"
     provider.logger = MagicMock()
     provider.manifest = MagicMock(domain="builtin")
     provider.config = MagicMock(instance_id="builtin_1")
@@ -210,11 +209,9 @@ async def test_resolve_image_keeps_bundled_images() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_image_allows_server_generated_local_files() -> None:
-    """Generated collages and bundled provider assets under our own dirs resolve."""
+async def test_resolve_image_allows_bundled_provider_assets() -> None:
+    """Bundled provider assets under our own package dir resolve."""
     provider = _make_provider()
-    collage = os.path.join(provider.mass.cache_path, "collage_images", "playlist.jpg")
-    assert await provider.resolve_image(collage) == collage
     bundled = os.path.join(
         os.path.dirname(music_assistant.__file__), "providers", "ai_radio", "air.png"
     )

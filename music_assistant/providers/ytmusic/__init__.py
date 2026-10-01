@@ -156,6 +156,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
@@ -269,10 +270,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return parsed_results
         results = await search(
             query=search_query,
-            headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -527,6 +526,24 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         result.append(track)
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
+        artists = []
+
+        for similar_artist in artist_obj.get("related", {}).get("results", []):
+            # ytmusicapi returns related artists as if they were tracks,
+            # reshape into something _parse_artist() will understand.
+            fake_artist = {
+                "channelId": similar_artist["browseId"],
+                "name": similar_artist["title"],
+                "thumbnails": similar_artist["thumbnails"],
+            }
+            artists.append(self._parse_artist(fake_artist))
+
+        return artists[:limit]
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:

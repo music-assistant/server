@@ -11,7 +11,7 @@ from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
     _MAX_TRANSCRIPT_BYTES,
-    _inject_episode_transcripts,
+    _inject_podcast_namespace_tags,
     enrich_episode_chapters,
     find_episode_stream_url,
     find_episode_transcripts,
@@ -963,6 +963,7 @@ RSS_FEED_WITH_TRANSCRIPTS = b"""\
 <enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1"/>
 <podcast:transcript url="https://example.com/ep1.vtt" type="text/vtt" language="en"/>
 <podcast:transcript url="https://example.com/ep1.srt" type="application/srt"/>
+<podcast:chapters url="https://example.com/ep1.json" type="application/json+chapters"/>
 </item>
 <item>
 <title>Episode without transcripts</title>
@@ -985,7 +986,7 @@ def _parse_feed(feed: bytes) -> dict[str, Any]:
 def test_inject_episode_transcripts_extracts_all_entries() -> None:
     """All podcast:transcript tags for an episode are extracted with url and type."""
     parsed = _parse_feed(RSS_FEED_WITH_TRANSCRIPTS)
-    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, RSS_FEED_WITH_TRANSCRIPTS, parsed)
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, RSS_FEED_WITH_TRANSCRIPTS, parsed)
     assert parsed["episodes"][0]["transcripts"] == [
         {"url": "https://example.com/ep1.vtt", "type": "text/vtt", "language": "en"},
         {"url": "https://example.com/ep1.srt", "type": "application/srt"},
@@ -1010,7 +1011,7 @@ def test_inject_episode_transcripts_follows_the_parsed_episode_order() -> None:
         "Episode with transcripts",
     ]
 
-    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, feed, parsed)
 
     assert "transcripts" not in parsed["episodes"][0]
     assert len(parsed["episodes"][1]["transcripts"]) == 2
@@ -1023,14 +1024,23 @@ def test_inject_episode_transcripts_reads_the_older_namespace_address() -> None:
         b"https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
     )
     parsed = _parse_feed(feed)
-    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, feed, parsed)
     assert len(parsed["episodes"][0]["transcripts"]) == 2
+
+
+def test_chapters_url_is_read_on_the_current_namespace_address() -> None:
+    """The podcast:chapters url is read on the current namespace address podcastparser skips."""
+    parsed = _parse_feed(RSS_FEED_WITH_TRANSCRIPTS)
+    assert not parsed["episodes"][0].get("chapters_json_url")
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, RSS_FEED_WITH_TRANSCRIPTS, parsed)
+    assert parsed["episodes"][0]["chapters_json_url"] == "https://example.com/ep1.json"
+    assert not parsed["episodes"][1].get("chapters_json_url")
 
 
 def test_inject_episode_transcripts_survives_invalid_xml() -> None:
     """Malformed XML does not crash, the episodes are left untouched."""
     parsed: dict[str, Any] = {"episodes": [{"guid": "ep-1"}]}
-    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, b"not xml at all", parsed)
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, b"not xml at all", parsed)
     assert "transcripts" not in parsed["episodes"][0]
 
 
@@ -1047,7 +1057,7 @@ def test_inject_episode_transcripts_skips_entries_without_url() -> None:
 </item></channel></rss>
 """
     parsed = _parse_feed(feed)
-    _inject_episode_transcripts(TRANSCRIPT_FEED_URL, feed, parsed)
+    _inject_podcast_namespace_tags(TRANSCRIPT_FEED_URL, feed, parsed)
     assert len(parsed["episodes"][0]["transcripts"]) == 1
 
 

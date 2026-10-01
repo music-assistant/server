@@ -65,16 +65,14 @@ _TIMED_TRANSCRIPT_TYPES = (
     "application/json",
 )
 
-# podcast:transcript under the current Podcasting 2.0 namespace and the older addresses
-# that feeds still declare
-_TRANSCRIPT_TAGS = frozenset(
-    f"{{{namespace}}}transcript"
-    for namespace in (
-        "https://podcastindex.org/namespace/1.0",
-        "https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
-        "https://github.com/podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
-    )
+# the current Podcasting 2.0 namespace address and the older ones that feeds still declare
+_PODCAST_NAMESPACES = (
+    "https://podcastindex.org/namespace/1.0",
+    "https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+    "https://github.com/podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
 )
+_TRANSCRIPT_TAGS = frozenset(f"{{{namespace}}}transcript" for namespace in _PODCAST_NAMESPACES)
+_CHAPTERS_TAGS = frozenset(f"{{{namespace}}}chapters" for namespace in _PODCAST_NAMESPACES)
 
 # defaults for the parsed-feed cache shared by the podcast providers
 CACHE_CATEGORY_PODCAST_FEED = 0
@@ -119,8 +117,8 @@ async def get_podcastparser_dict(
         )
     except podcastparser.FeedParseError:
         raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
-    # enrich with transcript data that podcastparser does not capture
-    _inject_episode_transcripts(feed_url, feed_data, parsed)
+    # enrich with transcript and chapter data that podcastparser does not capture
+    _inject_podcast_namespace_tags(feed_url, feed_data, parsed)
     return parsed
 
 
@@ -695,10 +693,10 @@ async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str 
         return None
 
 
-def _inject_episode_transcripts(feed_url: str, feed_data: bytes, parsed: dict[str, Any]) -> None:
-    """Add each episode's transcript entries from the raw feed to the parsed feed."""
-    # podcastparser keeps at most one transcript url per episode, and none on the current
-    # namespace address
+def _inject_podcast_namespace_tags(feed_url: str, feed_data: bytes, parsed: dict[str, Any]) -> None:
+    """Add each episode's transcripts and chapters url from the raw feed to the parsed feed."""
+    # podcastparser keeps at most one transcript url per episode, and reads neither
+    # transcripts nor chapters on the current namespace address
     try:
         root = parse_xml(feed_data)
     except XMLParseError, ValueError:
@@ -710,13 +708,18 @@ def _inject_episode_transcripts(feed_url: str, feed_data: bytes, parsed: dict[st
 
     # podcastparser reorders and filters the items, so they are matched on its guid
     transcripts_by_guid: dict[str, list[dict[str, str]]] = {}
+    chapters_by_guid: dict[str, str] = {}
     for item in channel.iter("item"):
         transcripts: list[dict[str, str]] = []
+        chapters_url: str | None = None
         for child in item:
-            if child.tag not in _TRANSCRIPT_TAGS:
-                continue
             url = child.get("url")
             if not url:
+                continue
+            if child.tag in _CHAPTERS_TAGS:
+                chapters_url = urljoin(feed_url, url)
+                continue
+            if child.tag not in _TRANSCRIPT_TAGS:
                 continue
             entry: dict[str, str] = {"url": url}
             if mime_type := child.get("type"):
@@ -724,12 +727,19 @@ def _inject_episode_transcripts(feed_url: str, feed_data: bytes, parsed: dict[st
             if language := child.get("language"):
                 entry["language"] = language
             transcripts.append(entry)
-        if transcripts and (guid := _podcastparser_guid(feed_url, item)):
+        if not (transcripts or chapters_url) or not (guid := _podcastparser_guid(feed_url, item)):
+            continue
+        if transcripts:
             transcripts_by_guid[guid] = transcripts
+        if chapters_url:
+            chapters_by_guid[guid] = chapters_url
 
     for episode in parsed.get("episodes", []):
-        if episode_transcripts := transcripts_by_guid.get(episode.get("guid", "")):
+        guid = episode.get("guid", "")
+        if episode_transcripts := transcripts_by_guid.get(guid):
             episode["transcripts"] = episode_transcripts
+        if not episode.get("chapters_json_url") and (chapters_url := chapters_by_guid.get(guid)):
+            episode["chapters_json_url"] = chapters_url
 
 
 def _podcastparser_guid(feed_url: str, item: Element) -> str | None:

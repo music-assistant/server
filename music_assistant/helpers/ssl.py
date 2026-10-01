@@ -62,6 +62,10 @@ SSL_CIPHER_LISTS = {
     SSLCipherList.INSECURE: "DEFAULT:@SECLEVEL=0",
 }
 
+# Matches aiohttp's default context; CDNs such as Fastly (Bandcamp) serve a bot
+# challenge page to a ClientHello without ALPN.
+ALPN_PROTOCOLS = ("http/1.1",)
+
 
 @cache
 def _client_context_no_verify(ssl_cipher_list: SSLCipherList) -> ssl.SSLContext:
@@ -78,6 +82,7 @@ def _client_context_no_verify(ssl_cipher_list: SSLCipherList) -> ssl.SSLContext:
     sslcontext.set_default_verify_paths()
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
+    sslcontext.set_alpn_protocols(ALPN_PROTOCOLS)
 
     return sslcontext
 
@@ -100,6 +105,7 @@ def _create_client_context(
         sslcontext.load_verify_locations(cafile=certifi.where())
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
+    sslcontext.set_alpn_protocols(ALPN_PROTOCOLS)
 
     return sslcontext
 
