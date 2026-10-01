@@ -509,12 +509,18 @@ class BandcampProvider(MusicProvider):
         self,
         collection_type: CollectionType,
         fan_id: int | None = None,
+        require_complete: bool = False,
     ) -> list[CollectionItem | FollowingItem | FanItem]:
         """
         Fetch all pages of a collection endpoint.
 
         :param collection_type: The type of collection to fetch.
         :param fan_id: Fan ID to query. None = authenticated user.
+        :param require_complete: Raise when Bandcamp repeats a page token, instead of
+            returning the pages fetched so far. A library sync needs this: it takes each
+            item that is missing from a short list as removed from the library.
+        :raises ResourceTemporarilyUnavailable: If require_complete is set and Bandcamp
+            repeats a page token.
         """
         all_items: list[CollectionItem | FollowingItem | FanItem] = []
         older_than_token: str | None = None
@@ -533,6 +539,11 @@ class BandcampProvider(MusicProvider):
             if not page.has_more or not page.last_token:
                 break
             if page.last_token in seen_tokens:
+                if require_complete:
+                    raise ResourceTemporarilyUnavailable(
+                        f"Bandcamp repeated the page token {page.last_token} "
+                        f"of the {collection_type.value} list, so the list is incomplete"
+                    )
                 self.logger.warning(
                     "Pagination loop detected for %s: token %s already seen, stopping",
                     collection_type.value,
@@ -552,7 +563,9 @@ class BandcampProvider(MusicProvider):
             "Failed to get library artists",
             not_found="Bandcamp library artists returned no results",
         ):
-            items = await self._get_all_collection_items(CollectionType.COLLECTION)
+            items = await self._get_all_collection_items(
+                CollectionType.COLLECTION, require_complete=True
+            )
         band_ids = set()
         for item in items:
             if item.item_type == "band":
@@ -576,7 +589,9 @@ class BandcampProvider(MusicProvider):
             "Failed to get library albums",
             not_found="Bandcamp library albums returned no results",
         ):
-            items = await self._get_all_collection_items(CollectionType.COLLECTION)
+            items = await self._get_all_collection_items(
+                CollectionType.COLLECTION, require_complete=True
+            )
         return [f"{item.band_id}-{item.item_id}" for item in items if item.item_type == "album"]
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:

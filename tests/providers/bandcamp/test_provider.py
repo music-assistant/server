@@ -3618,3 +3618,54 @@ async def test_get_all_collection_items_detects_token_loop(
         assert mock_get.call_count == 2
         assert len(result) == 2
         assert "Pagination loop detected" in caplog.text
+
+
+async def test_get_all_collection_items_raises_on_a_token_loop_when_complete(
+    provider: BandcampProvider,
+) -> None:
+    """A repeated page token raises instead of returning a short list, if the caller asks."""
+    stuck_page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=True,
+        last_token="same_token_forever",
+    )
+
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = stuck_page
+
+        with pytest.raises(ResourceTemporarilyUnavailable, match="same_token_forever"):
+            await provider._get_all_collection_items(
+                CollectionType.COLLECTION, require_complete=True
+            )
+
+        assert mock_get.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("library_method", "item_method"),
+    [
+        ("get_library_artists", "get_artist"),
+        ("get_library_albums", "get_album"),
+        ("get_library_tracks", "get_album_tracks"),
+    ],
+)
+async def test_library_sync_stops_on_a_token_loop(
+    provider: BandcampProvider, library_method: str, item_method: str
+) -> None:
+    """A library sync fails on a repeated page token, so the core deletes no library item."""
+    stuck_page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=True,
+        last_token="same_token_forever",
+    )
+
+    with (
+        patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, item_method, new_callable=AsyncMock) as mock_item,
+    ):
+        mock_get.return_value = stuck_page
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            _ = [item async for item in getattr(provider, library_method)()]
+
+        mock_item.assert_not_awaited()
