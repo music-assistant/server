@@ -553,6 +553,19 @@ class WebserverController(CoreController):
                 )
                 return
 
+    def get_sendspin_player_users(self, player_id: str) -> list[User]:
+        """
+        Return the users of the sessions that a sendspin web player is bound to.
+
+        :param player_id: The sendspin player ID.
+        """
+        return [
+            user
+            for client in list(self.clients)
+            if client.sendspin_player_id == player_id
+            and (user := client.authenticated_user) is not None
+        ]
+
     def create_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """
         Return a short-lived path on this server that serves a preview clip of the given item.

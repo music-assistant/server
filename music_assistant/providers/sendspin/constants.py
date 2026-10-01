@@ -46,3 +46,6 @@ CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE = "management_dynamic_pin_disable"
 # Declared here because only the player provider can add player config entries.
 CONF_SOURCE_AUTOSTART_TARGET = "source_autostart_target"
 SOURCE_AUTOSTART_OFF = "off"
+
+# Device product names the built-in player reports when running in a web browser.
+BROWSER_PLAYER_PRODUCT_NAMES = frozenset({"Web Player", "Web Browser", "PWA"})

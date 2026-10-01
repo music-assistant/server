@@ -46,7 +46,7 @@ from aiosendspin.server import (
     SendspinServer,
 )
 from aiosendspin.server.roles.registry import role_requires_pairing
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -63,6 +63,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    CONF_ALLOW_BROWSER_PLAYERS,
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
@@ -71,6 +72,7 @@ from music_assistant.constants import (
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.dashboard.controller import DASHBOARD_VIEWER_USERNAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.guest_access import (
     credential_owner,
@@ -91,6 +93,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
+    BROWSER_PLAYER_PRODUCT_NAMES,
     CONF_ALLOW_LEGACY_CLIENTS,
     CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
@@ -533,6 +536,23 @@ class SendspinProvider(PlayerProvider):
             self.mass.create_task(self._handle_client_added(player_id, event_version))
             return
         super().on_player_enabled(player_id)
+
+    def apply_browser_players_setting(self) -> None:
+        """Add or remove connected web browser players to match the core players setting."""
+        for sendspin_client in self.server_api.connected_clients:
+            if not self._is_browser_client(sendspin_client):
+                continue
+            client_id = sendspin_client.client_id
+            blocked = self._is_blocked_browser_client(sendspin_client)
+            registered = self.mass.players.get_player(client_id) is not None
+            if blocked and registered:
+                handler = self._handle_client_removed
+            elif not blocked and not registered:
+                handler = self._handle_client_added
+            else:
+                continue
+            event_version = self._begin_client_event(client_id)
+            self.mass.create_task(handler(client_id, event_version))
 
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
@@ -1586,6 +1606,9 @@ class SendspinProvider(PlayerProvider):
             if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
+            if self._is_blocked_browser_client(sendspin_client):
+                self.logger.debug("Ignoring web browser player %s: not allowed", client_id)
+                return
             await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             existing_player = self.mass.players.get_player(client_id)
             preserved_identifiers = (
@@ -1639,6 +1662,28 @@ class SendspinProvider(PlayerProvider):
             await asyncio.sleep(0.1)
         self.logger.warning("Client %s hello not received within timeout", client_id)
         return False
+
+    def _is_browser_client(self, sendspin_client: SendspinClient) -> bool:
+        """Return whether a client is the built-in player running in a web browser."""
+        info = sendspin_client.info_or_none
+        return (
+            info is not None
+            and info.device_info is not None
+            and info.device_info.product_name in BROWSER_PLAYER_PRODUCT_NAMES
+        )
+
+    def _is_blocked_browser_client(self, sendspin_client: SendspinClient) -> bool:
+        """Return whether a client is a web browser player the core players setting keeps out."""
+        if self.mass.players.get_config_value(CONF_ALLOW_BROWSER_PLAYERS, True, return_type=bool):
+            return False
+        if not self._is_browser_client(sendspin_client):
+            return False
+        # party and music quiz guests listen in through their browser, dashboard screens do not
+        users = self.mass.webserver.get_sendspin_player_users(sendspin_client.client_id)
+        return not any(
+            user.role == UserRole.GUEST and user.username != DASHBOARD_VIEWER_USERNAME
+            for user in users
+        )
 
     async def _auto_trust_guest_access(
         self, client_id: str, sendspin_client: SendspinClient, event_version: int

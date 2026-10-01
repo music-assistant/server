@@ -110,6 +110,11 @@ class WebsocketClientHandler:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
 
+    @property
+    def sendspin_player_id(self) -> str | None:
+        """Return the id of the sendspin web player bound to this connection, if any."""
+        return self._sendspin_player_id
+
     def matches_token(self, token: str) -> bool:
         """
         Return True if this client authenticated with the given access token.
