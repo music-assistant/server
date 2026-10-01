@@ -439,7 +439,11 @@ class SpotifyProvider(MusicProvider):
         are only returned when using the non-dev (global) token.
         """
         yield await self._get_liked_songs_playlist()
-        async for item in self._get_all_items("me/playlists", use_global_session=True):
+        # the page cache only checks the first playlist for changes, so it would miss a
+        # rename or new cover of any playlist further down the list
+        async for item in self._get_all_items(
+            "me/playlists", use_cache=False, use_global_session=True
+        ):
             if item and item["id"]:
                 yield parse_playlist(item, self)
 
@@ -1671,22 +1675,42 @@ class SpotifyProvider(MusicProvider):
         return chapters_data
 
     async def _get_all_items(
-        self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
+        self,
+        endpoint: str,
+        key: str = "items",
+        limit: int = 50,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any]]:
-        """Get all items from a paged list."""
+        """
+        Get all items from a paged list.
+
+        :param endpoint: API endpoint of the paged list.
+        :param key: Key of the items in each page.
+        :param limit: Number of items to request per page.
+        :param use_cache: Serve pages from the page cache; when False, every page is requested
+            from the API.
+        """
         offset = 0
-        # single request to fetch the etag (used as cache checksum) and total
-        meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        cache_checksum: str | None = None
+        total = 0
+        if use_cache:
+            # single request to fetch the etag (used as cache checksum) and total
+            meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+            cache_checksum = meta["etag"]
+            total = meta["total"]
         while True:
             # Avoid requesting beyond the known end. Spotify can return 5xx
             # for offset >= total on some endpoints (e.g. algorithmic playlists).
             if total and offset >= total:
                 break
-            result = await self._get_data_with_caching(
-                endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
-            )
+            if use_cache:
+                result = await self._get_data_with_caching(
+                    endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
+                )
+            else:
+                result = await self._get_data(endpoint, limit=limit, offset=offset, **kwargs)
+                total = result.get("total", 0)
             offset += limit
             if not result or key not in result or not result[key]:
                 break
