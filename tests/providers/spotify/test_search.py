@@ -87,7 +87,7 @@ def _respond(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
 async def test_search_without_dev_session_is_one_request(
     provider: SpotifyProvider, get_data: AsyncMock
 ) -> None:
-    """Without a custom client ID all types go in one request on the global session."""
+    """Without a custom client ID all types go in one request, without forcing a session."""
     get_data.side_effect = _respond
 
     result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=10)

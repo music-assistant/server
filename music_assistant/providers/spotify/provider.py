@@ -514,10 +514,10 @@ class SpotifyProvider(MusicProvider):
             # Spotify returns the playlists a developer app may not access (its own
             # editorial ones) as null search items, which can leave a playlist search
             # almost empty. Search playlists on the global session, which sees them.
-            searches = [
-                ([mt for mt in media_types if mt != MediaType.PLAYLIST], False),
-                ([MediaType.PLAYLIST], True),
-            ]
+            other_types: list[MediaType] = [mt for mt in media_types if mt != MediaType.PLAYLIST]
+            searches = [([MediaType.PLAYLIST], True)]
+            if other_types:
+                searches.append((other_types, False))
         await asyncio.gather(
             *(
                 self._search_pages(search_query, types, limit, searchresult, use_global)
