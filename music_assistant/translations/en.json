@@ -1987,7 +1987,7 @@
   "provider.playlist_metadata.config_entries.genre_max_count.label": "Maximum number of genres",
   "provider.playlist_metadata.config_entries.genre_min_threshold.description": "Minimum percentage of tracks that must have a genre for it to be included.",
   "provider.playlist_metadata.config_entries.genre_min_threshold.label": "Genre minimum threshold (%)",
-  "provider.playlist_metadata.config_entries.skip_provider_playlists.description": "When enabled, provider playlists that already have their own artwork are skipped. Playlists without any artwork still receive a generated collage.",
+  "provider.playlist_metadata.config_entries.skip_provider_playlists.description": "When enabled, provider playlists that already have their own cover are skipped. When disabled, they keep their own cover and also receive a generated collage as a background image. Playlists without a cover always receive a generated collage.",
   "provider.playlist_metadata.config_entries.skip_provider_playlists.label": "Skip provider playlists",
   "provider.playlist_metadata.config_entries.template.description": "Choose how playlist artwork is generated.",
   "provider.playlist_metadata.config_entries.template.label": "Artwork template",
