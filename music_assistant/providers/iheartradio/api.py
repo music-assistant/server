@@ -219,20 +219,23 @@ class IHeartRadioApiClient:
         :param genre_id: Only return the stations of this genre.
         """
         stations: list[dict[str, Any]] = []
+        offset = 0
         while True:
             payload = await self.get_json(
                 PATH_LIVE_STATIONS,
                 {
                     "countryCode": self.country.upper(),
                     "limit": STATION_PAGE_LIMIT,
-                    "offset": len(stations),
+                    "offset": offset,
                     "marketId": market_id,
                     "genreId": genre_id,
                 },
             )
-            hits = json_items(payload.get("hits")) if isinstance(payload, dict) else []
-            stations.extend(hits)
-            if len(hits) < STATION_PAGE_LIMIT:
+            hits = payload.get("hits") if isinstance(payload, dict) else None
+            page = hits if isinstance(hits, list) else []
+            stations.extend(json_items(page))
+            offset += len(page)
+            if len(page) < STATION_PAGE_LIMIT:
                 return stations
 
     @use_cache(CACHE_TTL_CATALOG, category=CACHE_CATEGORY_CATALOG)
