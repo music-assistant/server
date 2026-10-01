@@ -1430,6 +1430,37 @@ async def test_cache_checksum_of_each_cached_call(
     assert lookup.await_args.kwargs["checksum"] == checksum
 
 
+async def test_get_album_tracks_serves_an_expired_listing_and_refreshes_it(
+    provider: BandcampProvider, mass_mock: Mock
+) -> None:
+    """An expired album listing comes back at once, and a background task fetches it again."""
+    old_track = Track(
+        item_id="123-456-789", provider="bandcamp_test", name="Old name", provider_mappings=set()
+    )
+    mass_mock.cache.get_with_freshness.return_value = ([old_track.to_dict()], False, True)
+
+    with patch.object(
+        provider._client,
+        "get_album",
+        new_callable=AsyncMock,
+        return_value=_album_with_a_hidden_track(),
+    ) as mock_get_album:
+        result = await provider.get_album_tracks("123-456")
+        assert [track.name for track in result] == ["Old name"]
+        # the refresh runs as a background task; let it finish
+        for _ in range(100):
+            if mass_mock.cache.set.await_count:
+                break
+            await asyncio.sleep(0.01)
+
+    lookup = mass_mock.cache.get_with_freshness.await_args
+    assert lookup.kwargs["include_expired"] is True
+    mock_get_album.assert_awaited_once()
+    stored = mass_mock.cache.set.await_args
+    assert stored.kwargs["allow_expired_cache"] is True
+    assert [track.item_id for track in stored.kwargs["data"]] == ["123-456-789", "123-456-790"]
+
+
 async def test_get_track_not_found(provider: BandcampProvider) -> None:
     """Test track retrieval when not found."""
     with (

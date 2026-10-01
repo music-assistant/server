@@ -897,7 +897,9 @@ class BandcampProvider(MusicProvider):
             artist_item_id=artist_item_id,
         )
 
-    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
+    # An expired listing comes back at once and is fetched again in the background,
+    # as in the album track listings of the other music providers
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
