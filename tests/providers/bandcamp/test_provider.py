@@ -19,7 +19,7 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from bandcamp_async_api.models import CollectionType
+from bandcamp_async_api.models import BCArtist, BCTrack, CollectionType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -1189,14 +1189,13 @@ async def test_get_track_success(provider: BandcampProvider) -> None:
 
 
 async def test_get_track_standalone(provider: BandcampProvider) -> None:
-    """Test get_track for a standalone track (album_id=0) uses get_track API path."""
-    mock_album_obj = Mock()
-    mock_album_obj.id = 456
-    mock_album_obj.title = "Standalone Album"
-    mock_album_obj.art_url = "http://example.com/art.jpg"
-
+    """A track asked for without its album takes the album and the cover from get_track."""
     mock_api_track = Mock()
-    mock_api_track.album = mock_album_obj
+    # get_track never sets `album`, it names the album in album_id and album_title
+    mock_api_track.album = None
+    mock_api_track.album_id = 456
+    mock_api_track.album_title = "Standalone Album"
+    mock_api_track.art_url = "http://example.com/art.jpg"
     # Standalone single tracks carry their own performer credit; the
     # provider forwards it to the converter so synthetic IDs are emitted
     # for label-released singles. Performer matches band name here so the
@@ -1227,9 +1226,12 @@ async def test_get_track_standalone(provider: BandcampProvider) -> None:
 
 
 async def test_get_track_standalone_no_album(provider: BandcampProvider) -> None:
-    """Test get_track for a standalone track where api_track.album is None."""
+    """A single has no album, and it keeps its own cover."""
     mock_api_track = Mock()
     mock_api_track.album = None
+    mock_api_track.album_id = None
+    mock_api_track.album_title = None
+    mock_api_track.art_url = "http://example.com/single.jpg"
     mock_api_track.tralbum_artist = None
     mock_api_track.artist.id = 123
     mock_api_track.artist.name = "Test Band"
@@ -1248,11 +1250,90 @@ async def test_get_track_standalone_no_album(provider: BandcampProvider) -> None
             track=mock_api_track,
             album_id=None,
             album_name="",
-            album_image_url="",
+            album_image_url="http://example.com/single.jpg",
             tralbum_artist=None,
             artist_item_id="123",
         )
         assert result is not None
+
+
+def _api_track(art_url: str | None, album_id: int | None = None) -> BCTrack:
+    """Build a streamable library track of band 123 with the ID 789."""
+    return BCTrack(
+        id=789,
+        title="Track",
+        artist=BCArtist(id=123, name="Test Band"),
+        duration=200.0,
+        streaming_url={"mp3-128": "http://example.com/track.mp3"},
+        album_id=album_id,
+        album_title="Album" if album_id else None,
+        art_url=art_url,
+    )
+
+
+def _image_paths(track: Track) -> list[str]:
+    """Return the image paths of a converted track."""
+    return [image.path for image in track.metadata.images or []]
+
+
+async def test_get_track_without_album_part_gets_the_album_listing_id(
+    provider: BandcampProvider,
+) -> None:
+    """A track of an album asked for as 123-0-789 gets the ID that its album listing gives."""
+    api_track = _api_track("http://example.com/own.jpg", album_id=456)
+    with patch.object(
+        provider._client, "get_track", new_callable=AsyncMock, return_value=api_track
+    ):
+        result = await provider.get_track("123-0-789")
+
+    assert result.item_id == "123-456-789"
+    assert result.album is not None
+    assert (result.album.item_id, result.album.name) == ("123-456", "Album")
+    assert _image_paths(result) == ["http://example.com/own.jpg"]
+
+
+async def test_get_album_tracks_prefers_the_track_cover(provider: BandcampProvider) -> None:
+    """A track with a cover of its own shows that cover, the others show the album cover."""
+    own_cover = _api_track("http://example.com/own.jpg")
+    no_cover = _api_track(None)
+    no_cover.id = 790
+    api_album = Mock()
+    api_album.tracks = [own_cover, no_cover]
+    api_album.title = "Album"
+    api_album.art_url = "http://example.com/album.jpg"
+    api_album.artist.id = 123
+    api_album.artist.name = "Test Band"
+    api_album.tralbum_artist = None
+
+    with patch.object(
+        provider._client, "get_album", new_callable=AsyncMock, return_value=api_album
+    ):
+        result = await provider.get_album_tracks("123-456")
+
+    assert [_image_paths(track) for track in result] == [
+        ["http://example.com/own.jpg"],
+        ["http://example.com/album.jpg"],
+    ]
+
+
+async def test_get_track_album_fallback_prefers_the_track_cover(provider: BandcampProvider) -> None:
+    """A track that the album listing lacks keeps its own cover on the fresh path."""
+    api_album = Mock()
+    api_album.tracks = [_api_track("http://example.com/own.jpg")]
+    api_album.id = 456
+    api_album.title = "Album"
+    api_album.art_url = "http://example.com/album.jpg"
+    api_album.artist.id = 123
+    api_album.artist.name = "Test Band"
+    api_album.tralbum_artist = None
+
+    with (
+        patch.object(provider, "get_album_tracks", new_callable=AsyncMock, return_value=[]),
+        patch.object(provider._client, "get_album", new_callable=AsyncMock, return_value=api_album),
+    ):
+        result = await provider.get_track("123-456-789")
+
+    assert _image_paths(result) == ["http://example.com/own.jpg"]
 
 
 async def test_get_track_not_found(provider: BandcampProvider) -> None:

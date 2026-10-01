@@ -812,7 +812,7 @@ class BandcampProvider(MusicProvider):
                 track=api_track,
                 album_id=api_album.id,
                 album_name=api_album.title,
-                album_image_url=api_album.art_url or "",
+                album_image_url=api_track.art_url or api_album.art_url or "",
                 tralbum_artist=api_album.tralbum_artist,
                 artist_item_id=artist_item_id,
             )
@@ -823,11 +823,13 @@ class BandcampProvider(MusicProvider):
             performer=api_track.tralbum_artist,
             band_name=api_track.artist.name,
         )
+        # A track of an album, asked for without its album, gets the album ID of the
+        # album listing, so that one track keeps one ID. A single has no album.
         return self._converters.track_from_api(
             track=api_track,
-            album_id=api_track.album.id if api_track.album else None,
-            album_name=api_track.album.title if api_track.album else "",
-            album_image_url=(api_track.album.art_url if api_track.album else "") or "",
+            album_id=api_track.album_id,
+            album_name=api_track.album_title or "",
+            album_image_url=api_track.art_url or "",
             tralbum_artist=api_track.tralbum_artist,
             artist_item_id=artist_item_id,
         )
@@ -855,7 +857,8 @@ class BandcampProvider(MusicProvider):
                 track=track,
                 album_id=album_id,
                 album_name=api_album.title,
-                album_image_url=api_album.art_url or "",
+                # A track can have a cover of its own, which then replaces the album cover.
+                album_image_url=track.art_url or api_album.art_url or "",
                 tralbum_artist=api_album.tralbum_artist,
                 artist_item_id=artist_item_id,
             )
