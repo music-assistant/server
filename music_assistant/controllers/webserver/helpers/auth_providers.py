@@ -129,7 +129,7 @@ async def get_or_create_ha_user(
     display_name: str | None,
     avatar_url: str | None,
     *,
-    allow_create: bool = True,
+    allow_create: bool,
 ) -> User | None:
     """
     Get the user of a Home Assistant account, linking or creating it as needed.
@@ -146,6 +146,7 @@ async def get_or_create_ha_user(
     :param allow_create: Whether to create a user when none matches.
     :return: The user, which may be a disabled one, or None if none matches and
         allow_create is False.
+    :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
     """
     auth = mass.webserver.auth
     # Check if user already linked to HA

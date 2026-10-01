@@ -175,6 +175,7 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         ha_username or ingress_username,
         ha_display_name or ingress_display_name,
         avatar_url,
+        allow_create=True,
     )
     if user and not user.enabled:
         LOGGER.warning(
