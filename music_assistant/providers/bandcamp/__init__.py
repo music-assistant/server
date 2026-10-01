@@ -84,6 +84,7 @@ from .constants import (
     CONF_IDENTITY,
     CONF_TOP_TRACKS_LIMIT,
     DEFAULT_TOP_TRACKS_LIMIT,
+    PARSED_ITEM_CACHE_CHECKSUM,
     PERSON_SUB_FOLDERS,
     PERSON_SUB_ROUTES,
     SUPPORTED_FEATURES,
@@ -589,7 +590,7 @@ class BandcampProvider(MusicProvider):
                 yield track
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -704,7 +705,7 @@ class BandcampProvider(MusicProvider):
             return str(real_band_id)
         return make_artist_id(band_id, performer)
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_album(self, prov_album_id: str) -> Album:
@@ -790,7 +791,7 @@ class BandcampProvider(MusicProvider):
             ) from error
         return {str(track_id): text for track_id, text in lyrics.items()}
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_track_base(self, prov_track_id: str) -> Track:
         """Get full track details by id, without the lyrics layer."""
         artist_id, album_id, track_id = split_track_id(prov_track_id)
@@ -834,7 +835,7 @@ class BandcampProvider(MusicProvider):
             artist_item_id=artist_item_id,
         )
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -866,7 +867,7 @@ class BandcampProvider(MusicProvider):
             if track.streaming_url  # Only include tracks with streaming URLs
         ]
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -940,7 +941,7 @@ class BandcampProvider(MusicProvider):
             return str(real_id)
         return make_artist_id(band_id, performer)
 
-    @use_cache(CACHE_METADATA)
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
     @_retry_transport_errors
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:

@@ -25,6 +25,8 @@ DEFAULT_TOP_TRACKS_LIMIT = 50
 CACHE_METADATA = 3600 * 24 * 30  # 30 days - artist/album/track metadata rarely changes
 CACHE_USER_LISTS = 3600 * 4  # 4 hours - wishlists/following change with user activity
 CACHE_EMPTY_RESULTS = 300  # 5 minutes - avoid hammering API for genuinely empty lists
+# Bump when the converted form of a cached item changes, so that old cache rows are fetched again
+PARSED_ITEM_CACHE_CHECKSUM = "track_album_cover_v1"
 
 # Per-request limit like Apple Music and Spotify, keeping aiohttp's 30 s connect limit
 BANDCAMP_TIMEOUT = ClientTimeout(total=120, sock_connect=30)

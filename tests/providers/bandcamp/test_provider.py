@@ -48,6 +48,7 @@ from music_assistant.providers.bandcamp.constants import (
     CACHE_USER_LISTS,
     CONF_GET_LYRICS,
     DEFAULT_TOP_TRACKS_LIMIT,
+    PARSED_ITEM_CACHE_CHECKSUM,
     SUPPORTED_FEATURES,
 )
 from tests.common import use_real_create_task
@@ -1334,6 +1335,47 @@ async def test_get_track_album_fallback_prefers_the_track_cover(provider: Bandca
         result = await provider.get_track("123-456-789")
 
     assert _image_paths(result) == ["http://example.com/own.jpg"]
+
+
+class _CacheLookup(Exception):
+    """Stops a cached call at its cache lookup."""
+
+
+@pytest.mark.parametrize(
+    ("call_provider", "checksum"),
+    [
+        pytest.param(lambda p: p.get_artist("123"), PARSED_ITEM_CACHE_CHECKSUM, id="artist"),
+        pytest.param(lambda p: p.get_album("123-456"), PARSED_ITEM_CACHE_CHECKSUM, id="album"),
+        pytest.param(
+            lambda p: p._get_track_base("123-456-789"), PARSED_ITEM_CACHE_CHECKSUM, id="track"
+        ),
+        pytest.param(
+            lambda p: p.get_album_tracks("123-456"), PARSED_ITEM_CACHE_CHECKSUM, id="album_tracks"
+        ),
+        pytest.param(
+            lambda p: p.get_artist_albums("123"), PARSED_ITEM_CACHE_CHECKSUM, id="artist_albums"
+        ),
+        pytest.param(
+            lambda p: p.get_artist_toptracks("123"), PARSED_ITEM_CACHE_CHECKSUM, id="top_tracks"
+        ),
+        pytest.param(lambda p: p._fetch_discography(123), None, id="raw_discography"),
+        pytest.param(lambda p: p._get_tralbum_lyrics(456, True), None, id="raw_lyrics"),
+    ],
+)
+async def test_cache_checksum_of_each_cached_call(
+    provider: BandcampProvider,
+    call_provider: Callable[[BandcampProvider], Awaitable[object]],
+    checksum: str | None,
+) -> None:
+    """A cached converted item carries the checksum, so a bump drops the old cache rows."""
+    lookup = cast("AsyncMock", provider.mass.cache.get_with_freshness)
+    lookup.side_effect = _CacheLookup
+
+    with pytest.raises(_CacheLookup):
+        await call_provider(provider)
+
+    assert lookup.await_args is not None
+    assert lookup.await_args.kwargs["checksum"] == checksum
 
 
 async def test_get_track_not_found(provider: BandcampProvider) -> None:
