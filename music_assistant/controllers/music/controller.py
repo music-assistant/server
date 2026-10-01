@@ -3740,11 +3740,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if item.provider != "library":
             if item.provider in plugin_instances:
                 return True
-            if visible is not None and item.provider not in visible:
+            # the builtin provider addresses its items by domain, its mapping holds the instance
+            source = next(
+                (
+                    mapping.provider_instance
+                    for mapping in item.provider_mappings
+                    if mapping.provider_domain == item.provider
+                ),
+                item.provider,
+            )
+            if visible is not None and source not in visible:
                 # an item addressed on another member's private account is out of reach,
                 # even when the user has an account of that same service
                 return False
-            return playback_instance_for(self.mass, item.provider, allowed) is not None
+            return playback_instance_for(self.mass, source, allowed) is not None
         return any(
             mapping.provider_instance in plugin_instances
             or playback_instance_for(self.mass, mapping.provider_instance, allowed) is not None
