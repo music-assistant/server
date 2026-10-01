@@ -13,7 +13,7 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
@@ -537,3 +537,21 @@ async def test_ha_login_callback_signs_in_an_enabled_linked_user(
     assert result.user is not None
     assert result.user.user_id == linked.user_id
     assert result.user.display_name == "Alice from HA"
+
+
+async def test_ha_login_callback_refuses_a_new_user_with_self_registration_off(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """With self-registration off, the HA login refuses an unknown HA user and creates nothing."""
+    auth_manager.webserver.config.update({CONF_AUTH_ALLOW_SELF_REGISTRATION: False})
+    user_count = len(await auth_manager.list_users())
+
+    result = await _ha_login_callback(
+        auth_manager.mass, "ha_carol", ("carol", "Carol from HA", None)
+    )
+
+    assert result == AuthResult(
+        success=False, error="Self-registration is disabled. Please contact an administrator."
+    )
+    assert len(await auth_manager.list_users()) == user_count
+    assert await _get_ha_link(auth_manager, "ha_carol") is None

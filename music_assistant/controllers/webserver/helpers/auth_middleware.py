@@ -15,9 +15,9 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 
-from .auth_providers import get_ha_user_details, get_ha_user_role
+from .auth_providers import get_ha_user_details, get_or_create_ha_user
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -166,16 +166,16 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
     if not (ingress_user_id and ingress_username):
         return None
 
-    # Try to find existing user linked to this HA user ID
-    user = await mass.webserver.auth.get_user_by_provider_link(
-        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
+    # HA is the source of truth for the user details, the ingress headers are the fallback
+    ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+    # Ingress users are created on first sign-in, as HA already authenticated them
+    user = await get_or_create_ha_user(
+        mass,
+        ingress_user_id,
+        ha_username or ingress_username,
+        ha_display_name or ingress_display_name,
+        avatar_url,
     )
-    linked = user is not None
-    if not user:
-        # Check if a user with this username already exists
-        user = await mass.webserver.auth.get_user_by_username(
-            ingress_username, include_disabled=True
-        )
     if user and not user.enabled:
         LOGGER.warning(
             "Refused Home Assistant Ingress sign-in for %s: "
@@ -184,50 +184,6 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
             user.username,
         )
         return None
-    if not user:
-        # New user - fetch details from HA
-        ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-        # Auto-create user for Ingress (they're already authenticated by HA)
-        role = await get_ha_user_role(mass, ingress_user_id)
-        user = await mass.webserver.auth.create_user(
-            username=ha_username or ingress_username,
-            role=role,
-            display_name=ha_display_name or ingress_display_name,
-            avatar_url=avatar_url,
-        )
-    if not linked:
-        # Link to Home Assistant provider (or create the link if user already existed)
-        await mass.webserver.auth.link_user_to_provider(
-            user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-        )
-
-    # Update user with HA details if available (HA is source of truth)
-    # Fall back to ingress headers if API lookup doesn't return values
-    _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-    final_display_name = ha_display_name or ingress_display_name
-    LOGGER.log(
-        VERBOSE_LOG_LEVEL,
-        "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
-        "final_display_name=%s, avatar_url=%s",
-        user.username,
-        ha_display_name,
-        ingress_display_name,
-        final_display_name,
-        avatar_url,
-    )
-    if final_display_name or avatar_url:
-        user = await mass.webserver.auth.update_user(
-            user,
-            display_name=final_display_name,
-            avatar_url=avatar_url,
-        )
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "Updated user %s: display_name=%s, avatar_url=%s",
-            user.username,
-            user.display_name,
-            user.avatar_url,
-        )
     return user
 
 
