@@ -461,6 +461,38 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     assert enabled_user is not None
 
 
+async def test_user_lookups_include_a_disabled_user_only_on_request(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the user lookups only return a disabled user when asked to include it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="lookupadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="lookupuser", role=UserRole.USER)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    assert await auth_manager.get_user(user.user_id) is None
+    assert await auth_manager.get_user_by_username("lookupuser") is None
+    assert (
+        await auth_manager.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+        is None
+    )
+    for found in (
+        await auth_manager.get_user(user.user_id, include_disabled=True),
+        await auth_manager.get_user_by_username("LookupUser", include_disabled=True),
+        await auth_manager.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, "ha_lookup", include_disabled=True
+        ),
+    ):
+        assert found is not None
+        assert found.user_id == user.user_id
+        assert not found.enabled
+
+
 async def test_cannot_disable_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot disable their own account.
