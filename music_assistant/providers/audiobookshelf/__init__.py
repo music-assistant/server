@@ -750,13 +750,16 @@ for more details.
             return self._browse_recommendation_items()
         items = await self._recommendation_items_from_payload(item_id)
         # the persisted payload restores series collections as item mappings without books
-        if series_names := [
-            x.name
-            for x in items
-            if isinstance(x, ItemMapping) and x.media_type == MediaType.COLLECTION
-        ]:
-            collections = {x.item_id: x for x in await self._get_series_collections(series_names)}
-            items = UniqueList(collections.get(x.item_id, x) for x in items)
+        if any(isinstance(x, ItemMapping) and x.media_type == MediaType.COLLECTION for x in items):
+            collections = await self._get_series_collections()
+            rehydrated: list[MediaItemType | ItemMapping | BrowseFolder] = []
+            for item in items:
+                if not (isinstance(item, ItemMapping) and item.media_type == MediaType.COLLECTION):
+                    rehydrated.append(item)
+                elif item.name in collections:
+                    rehydrated.append(collections[item.name])
+            # in place, so the in-memory payload is rehydrated only once
+            items.set(rehydrated)
         return items
 
     @handle_refresh_token
@@ -1089,6 +1092,7 @@ for more details.
         self,
         shelves: list[ShelfBook | ShelfPodcast | ShelfAuthors | ShelfEpisode | ShelfSeries],
         items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]],
+        series_collections: dict[str, MediaCollection[Audiobook]],
     ) -> None:
         # ruff: noqa: PLR0915
         for shelf in shelves:
@@ -1154,9 +1158,9 @@ for more details.
                 case AbsShelfId.RECENT_SERIES | AbsShelfId.CONTINUE_SERIES:
                     if isinstance(shelf, ShelfSeries):
                         items.extend(
-                            await self._get_series_collections(
-                                [x.name for x in shelf.entities if isinstance(x, SeriesShelf)]
-                            )
+                            series_collections[x.name]
+                            for x in shelf.entities
+                            if isinstance(x, SeriesShelf) and x.name in series_collections
                         )
                     elif isinstance(shelf, ShelfBook) and media_type == MediaType.AUDIOBOOK:
                         # Single books, must be audiobooks
@@ -1169,17 +1173,22 @@ for more details.
                             if item is not None:
                                 items.append(item)
                 case AbsShelfId.NEWEST_AUTHORS:
-                    for entity in shelf.entities:
-                        assert isinstance(entity, AuthorExpanded)
-                        if entity.num_books == 0:
-                            continue
-                        item = await self.mass.music.get_library_item_by_prov_id(
-                            media_type=media_type,
-                            provider_instance_id_or_domain=self.instance_id,
-                            item_id=entity.id_,
+                    author_ids = [
+                        x.id_
+                        for x in shelf.entities
+                        if isinstance(x, AuthorExpanded) and x.num_books > 0
+                    ]
+                    artists = {
+                        mapping.item_id: artist
+                        for artist in await self.mass.music.artists.get_library_items_by_prov_id(
+                            provider_instance=self.instance_id,
+                            provider_item_ids=author_ids,
+                            limit=0,
                         )
-                        if item is not None:
-                            items.append(item)
+                        for mapping in artist.provider_mappings
+                        if mapping.provider_instance == self.instance_id
+                    }
+                    items.extend(artists[x] for x in author_ids if x in artists)
             if not items:
                 continue
 
@@ -1366,9 +1375,11 @@ for more details.
             item_key = sub_path[1]
             match item_key:
                 case AbsBrowsePaths.AUTHORS:
-                    return await self._browse_authors(library_id=lib_id)
+                    authors = await self._client.get_library_authors(library_id=lib_id)
+                    return await self._browse_artists([x.id_ for x in authors])
                 case AbsBrowsePaths.NARRATORS:
-                    return await self._browse_narrators(library_id=lib_id)
+                    narrators = await self._client.get_library_narrators(library_id=lib_id)
+                    return await self._browse_artists([x.id_ for x in narrators])
                 case AbsBrowsePaths.SERIES:
                     return await self._browse_series(library_id=lib_id)
                 case AbsBrowsePaths.COLLECTIONS:
@@ -1470,31 +1481,11 @@ for more details.
             )
         return items
 
-    async def _browse_authors(self, library_id: str) -> Sequence[MediaItemType]:
-        abs_authors = await self._client.get_library_authors(library_id=library_id)
-        items = []
-        for author in abs_authors:
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.ARTIST,
-                item_id=author.id_,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                items.append(mass_item)
-        return sorted(items, key=lambda x: x.name)
-
-    async def _browse_narrators(self, library_id: str) -> Sequence[MediaItemType]:
-        abs_narrators = await self._client.get_library_narrators(library_id=library_id)
-        items = []
-        for narrator in abs_narrators:
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.ARTIST,
-                item_id=narrator.id_,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                items.append(mass_item)
-        return sorted(items, key=lambda x: x.name)
+    async def _browse_artists(self, prov_artist_ids: list[str]) -> Sequence[Artist]:
+        artists = await self.mass.music.artists.get_library_items_by_prov_id(
+            provider_instance=self.instance_id, provider_item_ids=prov_artist_ids, limit=0
+        )
+        return sorted(artists, key=lambda x: x.name)
 
     async def _browse_series(self, library_id: str) -> Sequence[MediaCollection[Audiobook]]:
         series_names: list[str] = []
@@ -1502,7 +1493,8 @@ for more details.
             if not response.results:
                 break
             series_names.extend(x.name for x in response.results)
-        return await self._get_series_collections(sorted(series_names))
+        collections = await self._get_series_collections()
+        return [collections[x] for x in sorted(set(series_names)) if x in collections]
 
     async def _browse_collections(
         self, current_path: str, library_id: str
@@ -1573,18 +1565,15 @@ for more details.
                 items.append(mass_item)
         return items
 
-    async def _get_series_collections(
-        self, series_names: list[str]
-    ) -> list[MediaCollection[Audiobook]]:
-        """Get the library collections of this provider's series, in the given order."""
-        collections = {
+    async def _get_series_collections(self) -> dict[str, MediaCollection[Audiobook]]:
+        """Get the library collections of this provider's series by name."""
+        return {
             item.name: item
             for item in await self.mass.music.audiobooks.library_items(
                 provider=self.instance_id, collapse_collections=True, limit=0
             )
             if isinstance(item, MediaCollection)
         }
-        return [collections[name] for name in series_names if name in collections]
 
     async def _socket_abs_item_changed(
         self, items: LibraryItemExpanded | list[LibraryItemExpanded]
@@ -2022,11 +2011,12 @@ for more details.
         limit_items_per_lib = max_items_per_row // num_libraries
         limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
 
+        series_collections = await self._get_series_collections()
         for library_id in all_libraries:
             shelves = await self._client.get_library_personalized_view(
                 library_id=library_id, limit=limit_items_per_lib
             )
-            await self._recommendations_iter_shelves(shelves, items_by_shelf_id)
+            await self._recommendations_iter_shelves(shelves, items_by_shelf_id, series_collections)
 
         folders: list[RecommendationFolder] = []
         for shelf_id, item_lists in items_by_shelf_id.items():

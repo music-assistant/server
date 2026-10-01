@@ -33,6 +33,9 @@ def _stub_backend(provider: Audiobookshelf) -> AsyncMock:
     provider.mass.music.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
         return_value=Mock()
     )
+    provider.mass.music.audiobooks.library_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     return view_mock
 
 
