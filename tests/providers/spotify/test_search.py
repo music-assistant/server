@@ -1,6 +1,6 @@
 """Unit tests for the Spotify provider's search implementation."""
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -155,3 +155,18 @@ async def test_search_skips_null_playlist_items(
     result = await provider.search("chill", [MediaType.PLAYLIST], limit=10)
 
     assert [p.item_id for p in result.playlists] == ["p1"]
+
+
+@pytest.mark.asyncio
+async def test_search_cache_uses_global_session_checksum(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """Search only reuses cache entries written since playlists moved to the global session."""
+    get_data.return_value = {}
+    cache_get = cast("AsyncMock", provider.mass.cache.get_with_freshness)
+
+    await provider.search("chill", [MediaType.PLAYLIST], limit=10)
+
+    cache_get.assert_awaited_once()
+    assert cache_get.await_args is not None
+    assert cache_get.await_args.kwargs["checksum"] == "global_session_v1"

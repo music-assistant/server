@@ -493,7 +493,7 @@ class SpotifyProvider(MusicProvider):
 
         return await super().browse(path)
 
-    @use_cache()
+    @use_cache(cache_checksum="global_session_v1")
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
