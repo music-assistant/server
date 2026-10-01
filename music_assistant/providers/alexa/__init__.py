@@ -248,6 +248,8 @@ class AlexaPlayer(Player):
         self._last_stream_url: str | None = None
         # Set once the skill shows it keeps its player screen open across commands.
         self._skill_keeps_screen_open = False
+        # Requests to the skill go out one at a time, so it gets them in the order of the commands.
+        self._skill_request_lock = asyncio.Lock()
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -311,15 +313,16 @@ class AlexaPlayer(Player):
             "imageUrl": media.image_url,
         }
 
-        answer = _parse_json_object(
-            await api_request(
-                self.provider,
-                "/ma/push-url",
-                method="POST",
-                json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
-                timeout=10,
+        async with self._skill_request_lock:
+            answer = _parse_json_object(
+                await api_request(
+                    self.provider,
+                    "/ma/push-url",
+                    method="POST",
+                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    timeout=10,
+                )
             )
-        )
         # Only a skill that keeps its screen open answers with pageLive (true or false).
         if "pageLive" in answer:
             self._skill_keeps_screen_open = True
@@ -401,21 +404,29 @@ class AlexaPlayer(Player):
 
     async def _send_to_open_screen(self, command: str) -> bool:
         """Send pause/resume to the skill's open screen; return True if the screen handled it."""
-        # An older skill has no /ma/control: only try once it has shown it keeps its screen open.
-        if not self._skill_keeps_screen_open:
-            return False
-        try:
-            resp = await api_request(
-                self.provider,
-                "/ma/control",
-                method="POST",
-                json_data={"playerId": self.player_id, "command": command, "canSkipSpeech": True},
-                timeout=5,
-            )
-        except ActionUnavailable, aiohttp.ClientError, TimeoutError:
-            # Don't try again until the skill confirms with its next pageLive answer.
-            self._skill_keeps_screen_open = False
-            return False
+        # Waits for a new track still being sent, so the skill gets the track first.
+        async with self._skill_request_lock:
+            # An older skill has no /ma/control: only try once it has shown it keeps its screen open.
+            if not self._skill_keeps_screen_open:
+                return False
+            try:
+                resp = await api_request(
+                    self.provider,
+                    "/ma/control",
+                    method="POST",
+                    json_data={
+                        "playerId": self.player_id,
+                        "command": command,
+                        "canSkipSpeech": True,
+                    },
+                    timeout=5,
+                )
+            except ActionUnavailable, aiohttp.ClientError, TimeoutError:
+                # Don't try again until the skill confirms with its next pageLive answer.
+                self._skill_keeps_screen_open = False
+                return False
+        # pageLive: true means the skill has taken the command over. The skill must apply these
+        # in the order it got them, e.g. a pause right after a new track pauses the new track.
         return bool(_parse_json_object(resp).get("pageLive"))
 
 

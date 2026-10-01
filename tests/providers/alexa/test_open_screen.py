@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -115,6 +116,32 @@ async def test_pause_after_screen_closed_is_spoken(
     await player.play_media(PlayerMedia(uri="x", title="t"))
     await player.pause()
     alexa_api.run_custom.assert_awaited_once_with("pause")
+
+
+async def test_pause_during_new_track_reaches_the_skill_after_it(
+    alexa: tuple[AlexaPlayer, MagicMock, AsyncMock],
+) -> None:
+    """A pause pressed while a new track is still being sent goes to the skill after the track."""
+    player, alexa_api, skill_api = alexa
+    skill_api.return_value = _answer(screen_open=True)
+    await player.play_media(PlayerMedia(uri="x", title="t"))
+    track_sent = asyncio.Event()
+
+    async def skill(_provider: Any, endpoint: str, **_kwargs: Any) -> str:
+        if endpoint == "/ma/push-url":
+            await track_sent.wait()
+        return _answer(screen_open=True)
+
+    skill_api.side_effect = skill
+    next_track = asyncio.create_task(player.play_media(PlayerMedia(uri="y", title="u")))
+    pause = asyncio.create_task(player.pause())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert _endpoints(skill_api) == ["/ma/push-url", "/ma/push-url"]
+    track_sent.set()
+    await asyncio.gather(next_track, pause)
+    assert _endpoints(skill_api) == ["/ma/push-url", "/ma/push-url", "/ma/control"]
+    alexa_api.run_custom.assert_not_awaited()
 
 
 async def test_failed_control_request_is_spoken(
