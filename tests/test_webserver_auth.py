@@ -1080,8 +1080,9 @@ async def test_get_user_tokens_hides_the_token_hash(auth_manager: Authentication
 
     assert len(tokens) == 1
     assert tokens[0].token_hash == ""
-    # the stored token keeps its hash, so the token still authenticates
-    assert await auth_manager.authenticate_with_token(token) is not None
+    row = await auth_manager.database.get_row("auth_tokens", {"token_id": tokens[0].token_id})
+    assert row is not None
+    assert row["token_hash"] == hashlib.sha256(token.encode()).hexdigest()
 
 
 async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
