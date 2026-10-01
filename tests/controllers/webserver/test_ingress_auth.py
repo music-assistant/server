@@ -439,6 +439,7 @@ async def test_ingress_websocket_is_closed_when_the_sign_in_fails(
         with (
             patch.object(client.wsock, "prepare", AsyncMock()),
             patch.object(client.wsock, "close", AsyncMock()) as close,
+            patch.object(client.wsock, "receive", AsyncMock(side_effect=RuntimeError)) as receive,
             patch.object(client, "_send_message", AsyncMock()),
         ):
             await client.handle_client()
@@ -446,6 +447,7 @@ async def test_ingress_websocket_is_closed_when_the_sign_in_fails(
     assert client._authenticated_user is None
     assert client._writer_task is not None
     assert client._writer_task.done()
+    receive.assert_not_awaited()
     close.assert_awaited_once()
     dashboard.handle_client_disconnected.assert_called_once_with(client.client_id)
 
