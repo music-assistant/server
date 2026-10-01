@@ -115,18 +115,23 @@ async def test_favorites_follow_the_impersonated_user(favorites_mass: MusicAssis
     liked_by_b = await _add_track(mass, "Impersonation Liked By B")
     await mass.music.tracks.set_favorite(liked_by_a.item_id, True, [USER_A])
     await mass.music.tracks.set_favorite(liked_by_b.item_id, True, [USER_B])
-    # a dislike of the session user, so the favorite field tells whose state it carries
-    await mass.music.tracks.set_favorite(liked_by_b.item_id, False, [USER_A])
 
+    # the context vars themselves: patching get_current_user would bypass the lookup under test
     session_token = current_user.set(_user(USER_A))
     impersonation_token = impersonated_user.set(_user(USER_B))
     try:
-        items = await mass.music.tracks.library_items(favorite=True, search="Impersonation")
+        likes = await mass.music.tracks.library_items(favorite=True, search="Impersonation")
+        # a favorite filter binds the user of the favorite field too, so check that unfiltered
+        listed = await mass.music.tracks.library_items(search="Impersonation")
     finally:
         impersonated_user.reset(impersonation_token)
         current_user.reset(session_token)
 
-    assert [(x.item_id, x.favorite) for x in items] == [(liked_by_b.item_id, True)]
+    assert [x.item_id for x in likes] == [liked_by_b.item_id]
+    assert {x.item_id: x.favorite for x in listed} == {
+        liked_by_a.item_id: None,
+        liked_by_b.item_id: True,
+    }
 
 
 async def test_unset_favorite_keeps_a_row_and_announces_it(
