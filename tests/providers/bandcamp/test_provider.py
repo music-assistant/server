@@ -2360,6 +2360,85 @@ async def test_get_library_tracks_skips_the_tracks_of_a_failing_album(
     mock_report.assert_called_once_with(MediaType.TRACK, None, error)
 
 
+def _collection_track(track_id: int, band_id: int, album_id: int | None) -> Mock:
+    """Create a collection item for a single track purchase."""
+    return Mock(item_type="track", item_id=track_id, band_id=band_id, album_id=album_id)
+
+
+async def test_get_library_tracks_yields_single_track_purchases(
+    provider: BandcampProvider,
+) -> None:
+    """A single track purchase syncs next to the tracks of the album purchases."""
+    collection = [
+        *_collection_albums(1),
+        _collection_track(789, band_id=55, album_id=None),
+        _collection_track(790, band_id=56, album_id=900),
+    ]
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection
+        ),
+        patch.object(
+            provider, "get_album_tracks", new_callable=AsyncMock, return_value=["album track"]
+        ) as mock_album_tracks,
+        patch.object(
+            provider,
+            "_get_track_base",
+            new_callable=AsyncMock,
+            side_effect=["single", "album part"],
+        ) as mock_track,
+    ):
+        tracks = [track async for track in provider.get_library_tracks()]
+
+    assert tracks == ["album track", "single", "album part"]
+    mock_album_tracks.assert_awaited_once_with("123-1")
+    assert mock_track.await_args_list == [call("55-0-789"), call("56-900-790")]
+
+
+async def test_get_library_albums_ignores_single_track_purchases(
+    provider: BandcampProvider,
+) -> None:
+    """A single track purchase is no library album."""
+    collection = [*_collection_albums(1), _collection_track(789, band_id=55, album_id=None)]
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection
+        ),
+        patch.object(provider, "get_album", new_callable=AsyncMock, return_value="album") as mock,
+    ):
+        albums = [album async for album in provider.get_library_albums()]
+
+    assert albums == ["album"]
+    mock.assert_awaited_once_with("123-1")
+
+
+@pytest.mark.parametrize("error", SYNC_ERRORS)
+async def test_get_library_tracks_skips_a_failing_single_track(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A single track that fails holds back the track deletions, the other tracks still sync."""
+    collection = [
+        _collection_track(789, band_id=55, album_id=None),
+        _collection_track(790, band_id=55, album_id=None),
+    ]
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection
+        ),
+        patch.object(
+            provider, "_get_track_base", new_callable=AsyncMock, side_effect=[error, "track 790"]
+        ),
+        patch.object(provider, "report_skipped_sync_item") as mock_report,
+    ):
+        tracks = [track async for track in provider.get_library_tracks()]
+
+    assert tracks == ["track 790"]
+    mock_report.assert_called_once_with(MediaType.TRACK, None, error)
+
+
 def test_split_id_malformed_non_numeric() -> None:
     """Test split_id raises InvalidDataError on non-numeric input."""
     with pytest.raises(InvalidDataError, match=r"Malformed Bandcamp ID"):

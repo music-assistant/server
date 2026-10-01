@@ -583,23 +583,32 @@ class BandcampProvider(MusicProvider):
             yield artist
             await asyncio.sleep(0)  # Yield control to avoid blocking
 
-    async def _library_album_ids(self) -> list[str]:
-        """Return the provider IDs of the albums in the own collection."""
+    async def _library_release_ids(self) -> tuple[list[str], list[str]]:
+        """Return the provider IDs of the albums and of the single tracks in the own collection."""
         async with self._map_api_errors(
-            "Failed to get library albums",
-            not_found="Bandcamp library albums returned no results",
+            "Failed to get the library collection",
+            not_found="Bandcamp library collection returned no results",
         ):
             items = await self._get_all_collection_items(
                 CollectionType.COLLECTION, require_complete=True
             )
-        return [f"{item.band_id}-{item.item_id}" for item in items if item.item_type == "album"]
+        album_ids = [
+            f"{item.band_id}-{item.item_id}" for item in items if item.item_type == "album"
+        ]
+        track_ids = [
+            f"{item.band_id}-{item.album_id or 0}-{item.item_id}"
+            for item in items
+            if item.item_type == "track"
+        ]
+        return album_ids, track_ids
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
-        for album_id in await self._library_album_ids():
+        album_ids, _ = await self._library_release_ids()
+        for album_id in album_ids:
             try:
                 album = await self.get_album(album_id)
             except PROVIDER_FETCH_ERRORS as error:
@@ -610,13 +619,14 @@ class BandcampProvider(MusicProvider):
             await asyncio.sleep(0)  # Yield control to avoid blocking
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
-        """Retrieve library tracks from Bandcamp."""
+        """Retrieve library tracks from Bandcamp: the album tracks and the single tracks."""
         if not self._client.identity:  # library requires identity
             return
 
         # Take the album IDs from the collection: get_library_albums skips a failing album
         # without a word to this track sync
-        for album_id in await self._library_album_ids():
+        album_ids, track_ids = await self._library_release_ids()
+        for album_id in album_ids:
             try:
                 tracks = await self.get_album_tracks(album_id)
             except PROVIDER_FETCH_ERRORS as error:
@@ -627,6 +637,19 @@ class BandcampProvider(MusicProvider):
             for track in tracks:
                 yield track
                 await asyncio.sleep(0)  # Yield control to avoid blocking
+
+        # A single track purchase is in no album of the collection.
+        # The lyrics stay out, as for the album tracks.
+        for track_id in track_ids:
+            try:
+                track = await self._get_track_base(track_id)
+            except PROVIDER_FETCH_ERRORS as error:
+                # The track page gives the library ID, so it can differ from the collection
+                # fields: report no ID, which holds back all track deletions of this sync
+                self.report_skipped_sync_item(MediaType.TRACK, None, error)
+                continue
+            yield track
+            await asyncio.sleep(0)  # Yield control to avoid blocking
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
