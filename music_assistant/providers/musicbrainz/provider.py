@@ -23,7 +23,6 @@ from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata,
 from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_album_name, compare_strings
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
@@ -420,35 +419,9 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
-    @use_cache(86400 * 30)
-    async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
-        """
-        Get ISRCs for a MusicBrainz Recording ID.
-
-        :param recording_id: MusicBrainz recording ID, or a track ID as
-            handed out by e.g. Last.fm.
-        :return: List of ISRCs, or empty list if not found.
-        """
-        # the search response includes the ISRCs, so either ID kind costs one call
-        safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
-        query = f"rid:{safe_id} OR tid:{safe_id}"
-        if (result := await self._api_client.get_data("recording", query=query)) and (
-            recordings := result.get("recordings")
-        ):
-            return recordings[0].get("isrcs") or []
-        # merged (redirected) recording MBIDs are absent from the search
-        # index but still resolve via direct lookup
-        with suppress(InvalidDataError):
-            recording = await self.get_recording_details(recording_id)
-            return recording.isrcs or []
-        return []
-
     async def get_recordings_by_isrc(self, isrc: str) -> list[MusicBrainzRecording]:
         """
         Get the recordings MusicBrainz has on file for an ISRC.
-
-        Inverse of :meth:`get_isrcs_for_recording`: that one goes from a
-        recording to its ISRCs, this one goes from an ISRC back to recordings.
 
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
