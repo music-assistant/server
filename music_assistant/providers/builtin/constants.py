@@ -63,8 +63,6 @@ BUILTIN_PLAYLISTS_ENTRIES = [
     for key, name in BUILTIN_PLAYLISTS.items()
 ]
 
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
-
 DEFAULT_THUMB = MediaItemImage(
     type=ImageType.THUMB,
     path="logo.png",

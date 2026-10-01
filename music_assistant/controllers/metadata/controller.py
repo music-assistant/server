@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 import sqlite3
 import threading
@@ -212,10 +211,6 @@ class MetaDataController(
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
             logging.getLogger("PIL").setLevel(logging.WARNING)
-        # make sure that our directory with collage images exists
-        self._collage_images_dir = os.path.join(self.mass.cache_path, "collage_images")
-        if not await asyncio.to_thread(os.path.exists, self._collage_images_dir):
-            await asyncio.to_thread(os.mkdir, self._collage_images_dir)
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
