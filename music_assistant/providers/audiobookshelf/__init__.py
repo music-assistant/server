@@ -2058,14 +2058,12 @@ for more details.
 
     def _browse_recommendation_row(self) -> RecommendationFolder:
         """Build the static browse row descriptor, without items."""
-        translation_key = "libraries"
-        if len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0:
-            translation_key = "library"
+        single_library = len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0
         return RecommendationFolder(
             item_id="browse",
-            name="Libraries",
+            name="Library" if single_library else "Libraries",
             icon="mdi-bookshelf",
-            translation_key=translation_key,
+            translation_key="library" if single_library else "libraries",
             provider=self.instance_id,
         )
 
