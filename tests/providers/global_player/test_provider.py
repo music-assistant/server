@@ -233,6 +233,14 @@ async def test_get_playable_api_failure(provider: GlobalPlayerProvider) -> None:
         await provider.get_stream_details("2mwx3", MediaType.RADIO)
 
 
+async def test_get_playable_not_found(provider: GlobalPlayerProvider) -> None:
+    """Test _get_playable maps a missing station to MediaNotFoundError."""
+    cast("MagicMock", provider.mass.http_session.get).return_value = _make_http_response_ctx(
+        status=404
+    )
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details("missing", MediaType.RADIO)
+
 async def test_get_playable_transport_failure(provider: GlobalPlayerProvider) -> None:
     """Test _get_playable handles transport errors with ProviderUnavailableError."""
     cast("MagicMock", provider.mass.http_session.get).side_effect = aiohttp.ClientError(
