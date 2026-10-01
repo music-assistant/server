@@ -357,7 +357,8 @@ def parse_now_playing(
         title=str(title),
         artist=str(now_playing["artist"]) if now_playing.get("artist") else None,
         album=str(now_playing["album"]) if now_playing.get("album") else None,
-        image_url=_https(str(now_playing.get("imagePath") or fallback_image or "")) or None,
+        image_url=https_image_url(str(now_playing.get("imagePath") or fallback_image or ""))
+        or None,
         duration=duration,
         elapsed_time=elapsed,
         elapsed_time_last_updated=time.time() if elapsed is not None else None,
@@ -386,7 +387,16 @@ def remote_image(
     :param instance_id: The provider instance id.
     :param image_type: The role of the image.
     """
-    return MediaItemImage(type=image_type, path=url, provider=instance_id, remotely_accessible=True)
+    return MediaItemImage(
+        type=image_type, path=https_image_url(url), provider=instance_id, remotely_accessible=True
+    )
+
+
+def https_image_url(url: str) -> str:
+    """Return an iHeartRadio image url over https, which its image host also serves."""
+    if url.startswith("http://image.iheart.com/"):
+        return "https://" + url.removeprefix("http://")
+    return url
 
 
 def episode_item_id(podcast_id: str, episode_id: str) -> str:
@@ -466,10 +476,3 @@ def _as_epoch_seconds(value: Any) -> int | None:
     except TypeError, ValueError:
         return None
     return millis // 1000 if millis > 0 else None
-
-
-def _https(url: str) -> str:
-    """Return an iHeartRadio image url over https, which its image host also serves."""
-    if url.startswith("http://image.iheart.com/"):
-        return "https://" + url.removeprefix("http://")
-    return url

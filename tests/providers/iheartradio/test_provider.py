@@ -273,4 +273,4 @@ async def test_album_tracks_are_listed_but_unavailable(
     assert tracks[0].album.item_id == "607279"
     assert tracks[0].artist_str == "Tom Petty"
     assert tracks[0].image is not None
-    assert tracks[0].image.path == "http://image.iheart.com/full-moon-fever.jpg"
+    assert tracks[0].image.path == "https://image.iheart.com/full-moon-fever.jpg"

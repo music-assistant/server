@@ -26,6 +26,7 @@ from .constants import (
     STREAM_METADATA_UPDATE_INTERVAL,
 )
 from .parsers import (
+    https_image_url,
     parse_now_playing,
     pick_stream_url,
     split_catalog_track_item_id,
@@ -122,7 +123,7 @@ class IHeartRadioStreamingManager:
         # string. The handoff still records that title so it can serve as the fallback.
         streamdetails.data = {
             STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True,
-            DATA_STATION_IMAGE: station.get("logo") or None,
+            DATA_STATION_IMAGE: https_image_url(str(station.get("logo") or "")) or None,
         }
         streamdetails.stream_metadata_update_callback = self.update_stream_metadata
         streamdetails.stream_metadata_update_interval = STREAM_METADATA_UPDATE_INTERVAL
