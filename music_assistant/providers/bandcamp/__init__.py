@@ -693,7 +693,13 @@ class BandcampProvider(MusicProvider):
         """Resolve a single album/track's artist item_id (no batch context)."""
         if not performer or slugify_performer(performer) == slugify_performer(band_name):
             return str(band_id)
-        real_band_id = await self._lookup_performer_band_id(performer)
+        try:
+            real_band_id = await self._lookup_performer_band_id(performer)
+        except Exception as error:
+            # The lookup only finds the performer's own page, and the album data already
+            # arrived: keep the synthetic id, as the batch lookup does.
+            self.logger.warning("performer band lookup failed for %r: %r", performer, error)
+            real_band_id = None
         if real_band_id is not None:
             return str(real_band_id)
         return make_artist_id(band_id, performer)

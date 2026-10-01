@@ -41,6 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.bandcamp import BandcampProvider, setup, split_id
+from music_assistant.providers.bandcamp._ids import make_artist_id
 from music_assistant.providers.bandcamp.constants import (
     BANDCAMP_TIMEOUT,
     CACHE_EMPTY_RESULTS,
@@ -701,6 +702,53 @@ async def test_get_album_unifies_label_release_to_real_performer_band(
 
         mock_converter.assert_called_once_with(api_album, artist_item_id=str(apollo_band_id))
         mock_search.assert_awaited_once_with("Apollo Brown")
+
+
+LOOKUP_ERRORS = [
+    pytest.param(BandcampUnexpectedResponseError("not usable JSON"), id="unusable_answer"),
+    pytest.param(BandcampAPIError("API Error"), id="api_error"),
+    pytest.param(TimeoutError(), id="timeout"),
+]
+
+
+@pytest.mark.parametrize("error", LOOKUP_ERRORS)
+async def test_resolve_artist_item_id_falls_back_when_the_lookup_fails(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A failed performer lookup gives the synthetic artist ID and caches nothing."""
+    with patch.object(provider._client, "search", new_callable=AsyncMock, side_effect=error):
+        item_id = await provider._resolve_artist_item_id(
+            band_id=4119123456, performer="Apollo Brown", band_name="Hip Dozer"
+        )
+
+    assert item_id == make_artist_id(4119123456, "Apollo Brown")
+    mock_cache_set = cast("AsyncMock", provider.mass.cache.set)
+    cached_keys = [cache_call.args[0] for cache_call in mock_cache_set.await_args_list]
+    assert not [key for key in cached_keys if key.startswith("performer_band_id.")]
+
+
+@pytest.mark.parametrize("error", LOOKUP_ERRORS)
+async def test_get_album_keeps_a_label_release_when_the_lookup_fails(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A label-released album still loads when the search for its performer fails."""
+    label_id = 4119123456
+    api_album = Mock()
+    api_album.artist.id = label_id
+    api_album.artist.name = "Hip Dozer"
+    api_album.tralbum_artist = "Apollo Brown"
+
+    with (
+        patch.object(provider._client, "get_album", new_callable=AsyncMock, return_value=api_album),
+        patch.object(provider._client, "search", new_callable=AsyncMock, side_effect=error),
+        patch.object(provider._converters, "album_from_api") as mock_converter,
+    ):
+        mock_converter.return_value = Mock()
+        await provider.get_album(f"{label_id}-456")
+
+    mock_converter.assert_called_once_with(
+        api_album, artist_item_id=make_artist_id(label_id, "Apollo Brown")
+    )
 
 
 async def test_search_without_identity(provider: BandcampProvider) -> None:
