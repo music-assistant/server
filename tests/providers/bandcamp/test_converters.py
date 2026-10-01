@@ -1,10 +1,13 @@
 """Test Bandcamp converters."""
 
+from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
 from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack
 from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import MediaItem
+from music_assistant_models.media_items import Track as MATrack
 
 from music_assistant.providers.bandcamp.converters import BandcampConverters, DiscographyItem
 
@@ -584,3 +587,87 @@ def test_synthetic_artist_basics(converters: BandcampConverters) -> None:
     mapping = next(iter(artist.provider_mappings))
     assert mapping.item_id == "441379041:mortaja"
     assert mapping.url == "https://audiophob.bandcamp.com"
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        pytest.param(326.895, 326, id="float"),
+        pytest.param(300, 300, id="int"),
+        pytest.param(None, 0, id="no_audio"),
+    ],
+)
+def test_track_from_api_duration(
+    converters: BandcampConverters, duration: float | None, expected: int
+) -> None:
+    """The duration is whole seconds, and a track with no audio still loads from the cache."""
+    api_track = BCTrack(
+        id=789,
+        title="Test Track",
+        artist=BCArtist(id=123, name="Test Artist"),
+        duration=duration,
+    )
+
+    result = converters.track_from_api(api_track)
+
+    assert result.duration == expected
+    assert MATrack.from_dict(result.to_dict()).duration == expected
+
+
+def _search_album(image_url: str | None) -> Mock:
+    """Create a mock search album with the given image URL."""
+    item = Mock()
+    item.artist_id = 123
+    item.id = 456
+    item.name = "Test Album"
+    item.artist_name = "Test Artist"
+    item.image_url = image_url
+    item.url = "https://test.bandcamp.com/album/test-album"
+    item.artist_url = "https://test.bandcamp.com"
+    return item
+
+
+def _artist(image_url: str | None) -> Mock:
+    """Create a mock search or API artist with the given image URL."""
+    item = Mock()
+    item.id = 123
+    item.name = "Test Artist"
+    item.url = "https://test.bandcamp.com"
+    item.image_url = image_url
+    item.tags = []
+    item.bio = None
+    return item
+
+
+def _api_album(art_url: str | None) -> Mock:
+    """Create a mock API album with the given cover URL."""
+    album = Mock()
+    album.id = 456
+    album.title = "Test Album"
+    album.artist = _artist(None)
+    album.url = "https://test.bandcamp.com/album/test-album"
+    album.art_url = art_url
+    album.release_date = None
+    album.about = None
+    album.tralbum_artist = None
+    return album
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        pytest.param(lambda c: c.album_from_search(_search_album(None)), id="album_from_search"),
+        pytest.param(lambda c: c.artist_from_search(_artist(None)), id="artist_from_search"),
+        pytest.param(lambda c: c.artist_from_api(_artist(None)), id="artist_from_api"),
+        pytest.param(lambda c: c.album_from_api(_api_album(None)), id="album_from_api"),
+    ],
+)
+def test_converters_add_no_image_without_a_path(
+    converters: BandcampConverters, convert: Callable[[BandcampConverters], MediaItem]
+) -> None:
+    """An item without an image gets no image, not one with the path None."""
+    result = convert(converters)
+
+    assert not result.metadata.images
+    for artist in getattr(result, "artists", []):
+        assert artist.image is None

@@ -157,14 +157,15 @@ class BandcampConverters:
                 )
             },
         )
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=item.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         return output
 
     def artist_from_search(self, item: SearchResultArtist) -> MAArtist:
@@ -186,14 +187,15 @@ class BandcampConverters:
         output.metadata.genres = item.tags
         if item.url:
             output.metadata.description = item.url
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=item.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         return output
 
     def track_from_api(
@@ -234,7 +236,8 @@ class BandcampConverters:
                 ]
             ),
             disc_number=0,
-            duration=track.duration,
+            # Bandcamp sends seconds as a float, and None for a track with no audio
+            duration=int(track.duration) if track.duration else 0,
             provider_mappings={
                 ProviderMapping(
                     item_id=f"{track.artist.id}-{album_id}-{track.id}",
@@ -345,14 +348,15 @@ class BandcampConverters:
             },
         )
         output.metadata.description = f"{artist.url}\n{artist.bio or ''}".strip()
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=artist.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if artist.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artist.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         return output
 
     def album_from_discography_item(
@@ -455,7 +459,9 @@ class BandcampConverters:
                             type=ImageType.THUMB,
                             provider=self.instance_id,
                             remotely_accessible=True,
-                        ),
+                        )
+                        if album.art_url
+                        else None,
                     )
                 ]
             ),
@@ -471,14 +477,15 @@ class BandcampConverters:
             if album.release_date
             else None,
         )
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=album.art_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if album.art_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=album.art_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         output.metadata.description = f"{album.url}\n{album.about or ''}".strip()
         return output
 
