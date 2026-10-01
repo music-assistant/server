@@ -328,16 +328,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.remove_item_from_library,
             required_scope=Scope.LIBRARY_MANAGE,
         )
-        self.mass.register_api_command(
-            f"music/{api_base}/set_image",
-            self.set_item_image,
-            required_scope=Scope.LIBRARY_MANAGE,
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/remove_image",
-            self.remove_item_image,
-            required_scope=Scope.LIBRARY_MANAGE,
-        )
         self._db_add_lock = asyncio.Lock()
         self._custom_image_lock = asyncio.Lock()
 
@@ -473,6 +463,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
+        # raw metadata: the parsed item also carries images merged in at read time
+        # (e.g. a track's album thumb) whose files belong to another item
+        stored_images: Iterable[MediaItemImage] = (await self._get_raw_metadata(db_id)).images or []
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -528,6 +521,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # drop cached artwork for the removed item
         for img in library_item.metadata.images or []:
             await self.mass.metadata.invalidate_image_cache(img.provider, img.path)
+        for img in stored_images:
             if self._is_custom_image(img):
                 await self._delete_custom_image_file(img.path)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():

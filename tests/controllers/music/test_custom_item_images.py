@@ -196,3 +196,16 @@ async def test_hard_delete_removes_custom_image_file(tmp_path: Path) -> None:
     controller, _mass = _controller(tmp_path, [custom_img])
     await controller.remove_item_from_library("1", recursive=False)
     assert not custom_file.exists()
+
+
+async def test_hard_delete_keeps_merged_album_image_file(tmp_path: Path) -> None:
+    """Deleting a track leaves the custom image file of its album, merged in at read time."""
+    images_dir = tmp_path / CUSTOM_IMAGES_DIRNAME
+    images_dir.mkdir()
+    album_file = images_dir / "album.7.somesuffix.png"
+    album_file.write_bytes(b"img")
+    album_img = _image(f"{CUSTOM_IMAGES_DIRNAME}/album.7.somesuffix.png")
+    controller, _mass = _controller(tmp_path, [])
+    controller.get_library_item = AsyncMock(return_value=_track([album_img]))  # type: ignore[method-assign]
+    await controller.remove_item_from_library("1", recursive=False)
+    assert album_file.exists()

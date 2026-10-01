@@ -143,6 +143,12 @@ class GenreController(MediaControllerBase[Genre]):
 
         # register extra api handlers
         self.mass.register_api_command(
+            "music/genres/set_image", self.set_item_image, required_scope=Scope.LIBRARY_MANAGE
+        )
+        self.mass.register_api_command(
+            "music/genres/remove_image", self.remove_item_image, required_scope=Scope.LIBRARY_MANAGE
+        )
+        self.mass.register_api_command(
             "music/genres/add_alias", self.add_alias, required_scope=Scope.LIBRARY_MANAGE
         )
         self.mass.register_api_command(

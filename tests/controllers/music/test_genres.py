@@ -3038,3 +3038,12 @@ class TestCustomGenreImages:
         restored = await genre_ctrl.add_item_to_library(_make_genre("Comeback Genre"))
         assert restored.image is not None
         assert restored.image.path == custom_path
+
+    async def test_image_commands_registered_for_genres_only(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Only genres expose the custom image API commands."""
+        assert "music/genres/set_image" in mass.command_handlers
+        assert "music/genres/remove_image" in mass.command_handlers
+        assert "music/tracks/set_image" not in mass.command_handlers
+        assert "music/albums/remove_image" not in mass.command_handlers
