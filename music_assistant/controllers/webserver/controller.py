@@ -1114,6 +1114,9 @@ class WebserverController(CoreController):
             if token_row:
                 await self.auth.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
 
+                # Disconnect any WebSocket connections using this token
+                self.disconnect_websockets_for_token(token_row["token_id"])
+
         return web.json_response({"success": True})
 
     async def _handle_auth_me(self, request: web.Request) -> web.Response:
