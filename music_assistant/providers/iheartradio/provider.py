@@ -394,7 +394,7 @@ class IHeartRadioProvider(MusicProvider):
 
     async def _positioned_episodes(self, podcast_id: str) -> list[tuple[int, dict[str, Any]]]:
         """
-        Return a podcast's episodes with their listing position, oldest to newest.
+        Return a podcast's episodes newest first, each with its position (the oldest is 1).
 
         :param podcast_id: The iHeartRadio podcast id.
         """
