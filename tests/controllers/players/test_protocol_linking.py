@@ -10720,6 +10720,135 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         )
 
     @pytest.mark.asyncio
+    async def test_native_owning_the_same_domain_does_not_claim_wrapper(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A native listing a foreign AirPlay next to its own AirPlay doesn't replace the wrapper."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_jbl"
+        native_id = "wiim_uuid:FF970016"
+        own_ap_id = "ap_wiim"
+        foreign_ap_id = "ap_jbl"
+
+        all_configs = {
+            universal_id: {
+                "provider": "universal_player",
+                "values": {
+                    "linked_protocol_ids": [foreign_ap_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "JBL",
+            },
+            native_id: {
+                "enabled": True,
+                "provider": "wiim",
+                "player_type": "player",
+                "values": {"linked_protocol_ids": [own_ap_id, foreign_ap_id]},
+            },
+            own_ap_id: {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": native_id},
+            },
+            foreign_ap_id: {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.register_or_update.assert_awaited_once()
+        assert not any(
+            "protocol_parent_id" in call.args[0] for call in mock_mass.config.set.call_args_list
+        )
+        mock_mass.players.delete_player_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_parent_link_on_a_native_config_does_not_block_takeover(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A non-protocol config still pointing at the native doesn't count as an owned output."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_edifier"
+        shell_id = "wiim_uuid:FF97F002-783E-6505-6579-F15FFF97F002"
+        ap_id = "airplay_edifier"
+        web_player_id = "sendspin_web_player"
+
+        all_configs = {
+            universal_id: {
+                "provider": "universal_player",
+                "values": {
+                    "linked_protocol_ids": [ap_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Edifier MS50A",
+            },
+            shell_id: {
+                "enabled": True,
+                "provider": "wiim",
+                "player_type": "player",
+                "values": {"linked_protocol_ids": [ap_id]},
+            },
+            ap_id: {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+            # a former bridge client that turned web player keeps its parent link
+            # until it registers again; its provider shares the wrapper's domain
+            web_player_id: {
+                "provider": "airplay",
+                "player_type": "player",
+                "enabled": True,
+                "values": {"protocol_parent_id": shell_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.delete_player_config.assert_called_once_with(
+            universal_id, replacement_player_id=shell_id
+        )
+        mock_mass.players.register_or_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_protocols_reparented_to_their_own_native_claimer(
         self, mock_mass: MagicMock
     ) -> None:
