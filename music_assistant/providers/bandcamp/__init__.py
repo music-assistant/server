@@ -67,7 +67,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
 
 from ._ids import make_artist_id, parse_artist_id, slugify_performer
 from .constants import (
@@ -553,39 +553,62 @@ class BandcampProvider(MusicProvider):
             not_found="Bandcamp library artists returned no results",
         ):
             items = await self._get_all_collection_items(CollectionType.COLLECTION)
-            band_ids = set()
-            for item in items:
-                if item.item_type == "band":
-                    band_ids.add(item.item_id)
-                elif item.item_type == "album":
-                    band_ids.add(item.band_id)
+        band_ids = set()
+        for item in items:
+            if item.item_type == "band":
+                band_ids.add(item.item_id)
+            elif item.item_type == "album":
+                band_ids.add(item.band_id)
 
-            for band_id in band_ids:
-                yield await self.get_artist(str(band_id))
-                await asyncio.sleep(0)  # Yield control to avoid blocking
+        for band_id in band_ids:
+            try:
+                artist = await self.get_artist(str(band_id))
+            except PROVIDER_FETCH_ERRORS as error:
+                # One artist that fails must not stop the sync of the others
+                self.report_skipped_sync_item(MediaType.ARTIST, str(band_id), error)
+                continue
+            yield artist
+            await asyncio.sleep(0)  # Yield control to avoid blocking
+
+    async def _library_album_ids(self) -> list[str]:
+        """Return the provider IDs of the albums in the own collection."""
+        async with self._map_api_errors(
+            "Failed to get library albums",
+            not_found="Bandcamp library albums returned no results",
+        ):
+            items = await self._get_all_collection_items(CollectionType.COLLECTION)
+        return [f"{item.band_id}-{item.item_id}" for item in items if item.item_type == "album"]
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
-        async with self._map_api_errors(
-            "Failed to get library albums",
-            not_found="Bandcamp library albums returned no results",
-        ):
-            items = await self._get_all_collection_items(CollectionType.COLLECTION)
-            for item in items:
-                if item.item_type == "album":
-                    yield await self.get_album(f"{item.band_id}-{item.item_id}")
-                    await asyncio.sleep(0)  # Yield control to avoid blocking
+        for album_id in await self._library_album_ids():
+            try:
+                album = await self.get_album(album_id)
+            except PROVIDER_FETCH_ERRORS as error:
+                # One album that fails must not stop the sync of the others
+                self.report_skipped_sync_item(MediaType.ALBUM, album_id, error)
+                continue
+            yield album
+            await asyncio.sleep(0)  # Yield control to avoid blocking
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
-        async for album in self.get_library_albums():
-            tracks = await self.get_album_tracks(album.item_id)
+        # Take the album IDs from the collection: get_library_albums skips a failing album
+        # without a word to this track sync
+        for album_id in await self._library_album_ids():
+            try:
+                tracks = await self.get_album_tracks(album_id)
+            except PROVIDER_FETCH_ERRORS as error:
+                # The track IDs of the album are unknown, so the core keeps every library
+                # track of this provider out of the deletion pass of this sync
+                self.report_skipped_sync_item(MediaType.TRACK, None, error)
+                continue
             for track in tracks:
                 yield track
                 await asyncio.sleep(0)  # Yield control to avoid blocking

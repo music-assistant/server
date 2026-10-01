@@ -2230,20 +2230,134 @@ async def test_get_library_tracks_success(provider: BandcampProvider) -> None:
     mock_track = Mock()
 
     with (
-        patch.object(provider, "get_library_albums") as mock_get_albums,
+        patch.object(
+            provider,
+            "_get_all_collection_items",
+            new_callable=AsyncMock,
+            return_value=[Mock(item_type="album", item_id=456, band_id=123)],
+        ),
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
         patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_get_tracks,
     ):
-        # Make get_library_albums an async generator
-        async def mock_albums_gen() -> AsyncGenerator[Mock]:
-            yield Mock(item_id="123-456")
-
-        mock_get_albums.return_value = mock_albums_gen()
         mock_get_tracks.return_value = [mock_track]
 
         tracks = [track async for track in provider.get_library_tracks()]
 
         assert len(tracks) == 1
         mock_get_tracks.assert_called_once_with("123-456")
+        # the album IDs come from the collection, the albums themselves are not needed
+        mock_get_album.assert_not_awaited()
+
+
+SYNC_ERRORS = [
+    pytest.param(MediaNotFoundError("gone"), id="not_found"),
+    pytest.param(InvalidDataError("robot check"), id="unusable_answer"),
+    pytest.param(RetriesExhausted("rate limit"), id="retries_exhausted"),
+    pytest.param(TimeoutError(), id="timeout"),
+]
+
+
+def _collection_albums(*album_ids: int) -> list[Mock]:
+    """Create collection items for albums of band 123."""
+    return [Mock(item_type="album", item_id=album_id, band_id=123) for album_id in album_ids]
+
+
+@pytest.mark.parametrize("error", SYNC_ERRORS)
+async def test_get_library_albums_skips_a_failing_album(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """One album that fails is reported as skipped, and the other albums still sync."""
+    with (
+        patch.object(
+            provider,
+            "_get_all_collection_items",
+            new_callable=AsyncMock,
+            return_value=_collection_albums(1, 2, 3),
+        ),
+        patch.object(
+            provider, "get_album", new_callable=AsyncMock, side_effect=["album 1", error, "album 3"]
+        ),
+        patch.object(provider, "report_skipped_sync_item") as mock_report,
+    ):
+        albums = [album async for album in provider.get_library_albums()]
+
+    assert albums == ["album 1", "album 3"]
+    mock_report.assert_called_once_with(MediaType.ALBUM, "123-2", error)
+
+
+async def test_get_library_albums_stops_on_a_login_failure(provider: BandcampProvider) -> None:
+    """A wrong identity token still stops the sync, it is no item to skip."""
+    with (
+        patch.object(
+            provider,
+            "_get_all_collection_items",
+            new_callable=AsyncMock,
+            return_value=_collection_albums(1, 2),
+        ),
+        patch.object(
+            provider, "get_album", new_callable=AsyncMock, side_effect=LoginFailed("wrong token")
+        ),
+        patch.object(provider, "report_skipped_sync_item") as mock_report,
+        pytest.raises(LoginFailed),
+    ):
+        _ = [album async for album in provider.get_library_albums()]
+
+    mock_report.assert_not_called()
+
+
+@pytest.mark.parametrize("error", SYNC_ERRORS)
+async def test_get_library_artists_skips_a_failing_artist(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """One artist that fails is reported as skipped, and the other artists still sync."""
+    collection = [
+        Mock(item_type="band", item_id=100, band_id=100),
+        Mock(item_type="album", item_id=1, band_id=200),
+    ]
+
+    async def fake_get_artist(band_id: str) -> str:
+        if band_id == "100":
+            raise error
+        return f"artist {band_id}"
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock, return_value=collection
+        ),
+        patch.object(provider, "get_artist", side_effect=fake_get_artist),
+        patch.object(provider, "report_skipped_sync_item") as mock_report,
+    ):
+        artists = [artist async for artist in provider.get_library_artists()]
+
+    assert artists == ["artist 200"]
+    mock_report.assert_called_once_with(MediaType.ARTIST, "100", error)
+
+
+@pytest.mark.parametrize("error", SYNC_ERRORS)
+async def test_get_library_tracks_skips_the_tracks_of_a_failing_album(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """An album whose tracks fail holds back the track deletions, the other tracks still sync."""
+    with (
+        patch.object(
+            provider,
+            "_get_all_collection_items",
+            new_callable=AsyncMock,
+            return_value=_collection_albums(1, 2, 3),
+        ),
+        patch.object(
+            provider,
+            "get_album_tracks",
+            new_callable=AsyncMock,
+            side_effect=[["track 1"], error, ["track 3"]],
+        ),
+        patch.object(provider, "report_skipped_sync_item") as mock_report,
+    ):
+        tracks = [track async for track in provider.get_library_tracks()]
+
+    assert tracks == ["track 1", "track 3"]
+    # no track ID is known, so the core keeps all library tracks out of the deletion pass
+    mock_report.assert_called_once_with(MediaType.TRACK, None, error)
 
 
 def test_split_id_malformed_non_numeric() -> None:
