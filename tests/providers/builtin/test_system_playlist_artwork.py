@@ -9,11 +9,16 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.media_items import MediaItemImage, Playlist, UniqueList
+from PIL import Image
 
 from music_assistant.constants import RESOURCES_DIR
 from music_assistant.controllers.music.media.base import SUPPRESS_MEDIA_ITEM_UPDATES
 from music_assistant.providers.builtin import BuiltinProvider
-from music_assistant.providers.builtin.constants import BUILTIN_PLAYLISTS, RECENTLY_PLAYED
+from music_assistant.providers.builtin.constants import (
+    BUILTIN_PLAYLISTS,
+    RANDOM_ALBUM,
+    RECENTLY_PLAYED,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -41,13 +46,15 @@ def _artwork(playlist_id: str) -> list[MediaItemImage]:
     ]
 
 
-def _make_provider(mass: MusicAssistant | None = None) -> BuiltinProvider:
+def _make_provider(
+    mass: MusicAssistant | None = None, instance_id: str = "builtin"
+) -> BuiltinProvider:
     """Return a BuiltinProvider instance with mocked collaborators."""
     provider = BuiltinProvider.__new__(BuiltinProvider)
     provider.mass = mass or MagicMock()
     provider.logger = MagicMock()
     provider.manifest = MagicMock(domain="builtin")
-    provider.config = MagicMock(instance_id="builtin", get_value=Mock(return_value=[]))
+    provider.config = MagicMock(instance_id=instance_id, get_value=Mock(return_value=[]))
     return provider
 
 
@@ -91,13 +98,16 @@ async def test_system_playlist_has_its_own_artwork(playlist_id: str) -> None:
 
 @pytest.mark.parametrize("playlist_id", list(BUILTIN_PLAYLISTS))
 async def test_system_playlist_artwork_is_bundled(playlist_id: str) -> None:
-    """The artwork of a system playlist resolves to a file bundled with the server."""
+    """The artwork of a system playlist resolves to a truecolour file bundled with the server."""
     provider = _make_provider()
     for image in _artwork(playlist_id):
         resolved = await provider.resolve_image(image.path)
 
         assert resolved == str(RESOURCES_DIR.joinpath(image.path))
         assert Path(resolved).is_file()
+        # Pillow resizes palette images with nearest neighbour, which gives jagged thumbnails
+        with Image.open(resolved) as img:
+            assert img.mode in ("RGB", "RGBA")
 
 
 @pytest.mark.parametrize(
@@ -109,14 +119,21 @@ async def test_resolve_image_refuses_other_playlist_paths(path: str) -> None:
         await _make_provider().resolve_image(path)
 
 
-async def test_library_sync_replaces_the_old_artwork(music_mass_module: MusicAssistant) -> None:
+# a legacy install runs the builtin provider under an instance id other than its domain
+@pytest.mark.parametrize(
+    ("instance_id", "playlist_id"),
+    [("builtin", RECENTLY_PLAYED), ("builtin--legacy", RANDOM_ALBUM)],
+)
+async def test_library_sync_replaces_the_old_artwork(
+    music_mass_module: MusicAssistant, instance_id: str, playlist_id: str
+) -> None:
     """A system playlist stored with the old shared artwork gets its own artwork at the next sync."""
-    provider = _make_provider(music_mass_module)
-    old_item = await provider.get_playlist(RECENTLY_PLAYED)
+    provider = _make_provider(music_mass_module, instance_id)
+    old_item = await provider.get_playlist(playlist_id)
     old_item.metadata.images = UniqueList(OLD_ARTWORK)
     library_item = await _sync(provider, old_item)
     assert library_item.metadata.images == OLD_ARTWORK
 
-    library_item = await _sync(provider, await provider.get_playlist(RECENTLY_PLAYED))
+    library_item = await _sync(provider, await provider.get_playlist(playlist_id))
 
-    assert library_item.metadata.images == _artwork(RECENTLY_PLAYED)
+    assert library_item.metadata.images == _artwork(playlist_id)
