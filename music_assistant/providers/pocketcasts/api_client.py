@@ -96,9 +96,9 @@ class PocketCastsClient:
         """
         podcast = await self.get_podcast(podcast_uuid)
         # full-podcast episodes use snake_case keys: uuid, title, url, file_type, file_size,
-        # duration (seconds), published, type, slug, has_generated_transcript. Note this is a
-        # different (leaner) schema than the /user/episode endpoint - no playback status,
-        # episode number, show notes or artwork.
+        # duration (seconds), published, type, slug, has_generated_transcript, number, season.
+        # Note this is a different (leaner) schema than the /user/episode endpoint - no
+        # playback status, show notes or artwork.
         episodes: list[dict[str, Any]] = podcast.get("episodes", [])
         self.logger.debug("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
         return str(podcast.get("title", "")), episodes
