@@ -128,16 +128,34 @@ async def test_stream_url_falls_back_to_lossy(provider: NugsProvider) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("container", "codec", "sample_rate", "bit_depth", "content_type", "codec_type"),
+    [
+        ("flac", "flac", 48000, 24, ContentType.FLAC, ContentType.FLAC),
+        ("hls", "flac", 48000, 24, ContentType.UNKNOWN, ContentType.FLAC),
+        ("hls", "alac", 44100, 16, ContentType.UNKNOWN, ContentType.ALAC),
+        ("mov,mp4,m4a,3gp,3g2,mj2", "alac", 44100, 16, ContentType.MP4, ContentType.ALAC),
+    ],
+)
 async def test_stream_details_use_probed_format(
-    provider: NugsProvider, monkeypatch: pytest.MonkeyPatch
+    provider: NugsProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    container: str,
+    codec: str,
+    sample_rate: int,
+    bit_depth: int,
+    content_type: ContentType,
+    codec_type: ContentType,
 ) -> None:
-    """A lossless stream reports the sample rate and bit depth the stream actually has."""
-    tags = MagicMock(format="flac", sample_rate=48000, bits_per_sample=24, channels=2)
+    """A lossless stream reports the codec, sample rate and bit depth the stream actually has."""
+    tags = MagicMock(
+        format=container, sample_rate=sample_rate, bits_per_sample=bit_depth, channels=2
+    )
     tags.bit_rate = 2000
     tags.raw = {
         "streams": [
             {"codec_type": "video", "codec_name": "mjpeg"},
-            {"codec_type": "audio", "codec_name": "flac"},
+            {"codec_type": "audio", "codec_name": codec},
         ]
     }
     probe = AsyncMock(return_value=tags)
@@ -148,10 +166,10 @@ async def test_stream_details_use_probed_format(
 
     details = await provider.get_stream_details("123", MediaType.TRACK)
     probe.assert_awaited_once_with("https://stream.test/track.flac", timeout=10)
-    assert details.audio_format.content_type == ContentType.FLAC
-    assert details.audio_format.codec_type == ContentType.FLAC
-    assert details.audio_format.sample_rate == 48000
-    assert details.audio_format.bit_depth == 24
+    assert details.audio_format.content_type == content_type
+    assert details.audio_format.codec_type == codec_type
+    assert details.audio_format.sample_rate == sample_rate
+    assert details.audio_format.bit_depth == bit_depth
 
 
 @pytest.mark.asyncio
