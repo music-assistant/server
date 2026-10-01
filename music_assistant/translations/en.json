@@ -1448,6 +1448,7 @@
   "provider.fully_kiosk.setup_flow.user.description": "Enter the password configured for the Fully Kiosk REST API on this device.",
   "provider.fully_kiosk.setup_flow.user.title": "Connect to Fully Kiosk",
   "provider.genius_lyrics.manifest.description": "Alternative lyrics source, pulling song lyrics from Genius to supplement other providers.",
+  "provider.global_player.manifest.description": "Listen to UK radio stations from Global Media including Capital, Heart, Classic FM, Smooth, Radio X, LBC, and Gold.",
   "provider.gpodder.config_entries.device_id.description": "Device ID of user.",
   "provider.gpodder.config_entries.device_id.label": "Device ID",
   "provider.gpodder.config_entries.method.label": "Connection method",

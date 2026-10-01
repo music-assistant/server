@@ -8,10 +8,8 @@ PLAYABLE_URL = f"{API_BASE_URL}/playables/{{playable_id}}"
 
 HEADERS = {
     "Accept": "application/vnd.global.8+json",
-    "User-Agent": "MusicAssistant/1.0",
 }
 
-CACHE_CATEGORY_GLOBAL_PLAYER = "global_player"
-CACHE_KEY_STATIONS = "stations"
 CACHE_TTL_STATIONS = 86400  # 24 hours
+CACHE_TTL_PLAYABLE = 1800  # 30 minutes
 API_TIMEOUT = aiohttp.ClientTimeout(total=10)

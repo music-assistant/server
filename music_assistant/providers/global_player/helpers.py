@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -22,19 +22,14 @@ def parse_radio(station_data: dict[str, Any], instance_id: str, provider_domain:
     :param instance_id: The provider instance ID.
     :param provider_domain: The provider domain string.
     """
-    station_id = str(station_data.get("id", ""))
-    if not station_id:
-        raise MediaNotFoundError("Station data missing id")
-
-    name = str(station_data.get("name") or station_data.get("title") or "Unknown Station")
-    tagline = station_data.get("tagline") or station_data.get("description")
+    station_id = str(station_data["id"])
 
     radio = Radio(
         provider=instance_id,
         item_id=station_id,
-        name=name,
+        name=station_data["name"],
         metadata=MediaItemMetadata(
-            description=tagline,
+            description=station_data.get("tagline"),
         ),
         provider_mappings={
             ProviderMapping(
@@ -46,7 +41,7 @@ def parse_radio(station_data: dict[str, Any], instance_id: str, provider_domain:
         },
     )
 
-    logo_url = station_data.get("brandLogo") or station_data.get("imageUrl")
+    logo_url = station_data.get("brandLogo")
     if logo_url:
         radio.metadata.add_image(
             MediaItemImage(
@@ -60,20 +55,16 @@ def parse_radio(station_data: dict[str, Any], instance_id: str, provider_domain:
     return radio
 
 
-def parse_stream_url(playable_data: dict[str, Any]) -> str:
+def parse_stream_url(playable_data: dict[str, Any], station_id: str) -> str:
     """
     Extract the playable stream URL from a Global Player playables API response.
 
     :param playable_data: JSON response dictionary from the playables endpoint.
+    :param station_id: The station identifier.
     """
-    playback_entries = playable_data.get("playback", [])
-    if isinstance(playback_entries, list):
-        # Look for the public stream marked usable without authentication
-        for entry in playback_entries:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("canUse") == "true" and (url := entry.get("url")):
-                return str(url)
-
-    station_id = playable_data.get("id", "unknown")
-    raise MediaNotFoundError(f"No playable stream found for station {station_id}")
+    playback_entries: list[dict[str, Any]] = playable_data.get("playback", [])
+    for entry in playback_entries:
+        if entry.get("canUse") == "true":
+            url: str = entry["url"]
+            return url
+    raise UnplayableMediaError(f"No free stream available for station {station_id}")

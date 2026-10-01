@@ -22,7 +22,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Radio
 
 from music_assistant.providers.global_player import SUPPORTED_FEATURES, GlobalPlayerProvider, setup
-from music_assistant.providers.global_player.helpers import parse_radio, parse_stream_url
+from music_assistant.providers.global_player.helpers import parse_stream_url
 from tests.common import use_real_create_task
 
 SAMPLE_BRANDS: list[dict[str, Any]] = [
@@ -72,6 +72,10 @@ def _make_http_response_ctx(status: int = 200, json_data: Any = None) -> MagicMo
     response = MagicMock()
     response.status = status
     response.json = AsyncMock(return_value=json_data)
+    if status >= 400:
+        response.raise_for_status.side_effect = aiohttp.ClientResponseError(
+            MagicMock(), (), status=status
+        )
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=response)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -93,8 +97,9 @@ def provider() -> GlobalPlayerProvider:
 
     config = MagicMock()
     config.instance_id = "global_player_test"
-    config.get_value.return_value = "GLOBAL"
-    config.values = {}
+    # the base Provider class reads the log-level config entry on init;
+    # fall through to its own default rather than hardcoding a value here
+    config.get_value = lambda _key, default=None: default
 
     return GlobalPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
@@ -106,7 +111,7 @@ async def test_setup() -> None:
     manifest.domain = "global_player"
     config = MagicMock()
     config.instance_id = "global_player_test"
-    config.get_value.return_value = "GLOBAL"
+    config.get_value = lambda _key, default=None: default
 
     instance = await setup(mass, manifest, config)
     assert isinstance(instance, GlobalPlayerProvider)
@@ -195,14 +200,10 @@ async def test_get_stream_details(provider: GlobalPlayerProvider) -> None:
     assert stream_details.provider == "global_player_test"
     assert stream_details.media_type == MediaType.RADIO
     assert stream_details.stream_type == StreamType.HTTP
-    assert stream_details.audio_format.content_type == ContentType.AAC
+    assert stream_details.audio_format.content_type == ContentType.UNKNOWN
     assert stream_details.path == "https://media-ssl.musicradio.com/CapitalUK"
     assert stream_details.can_seek is False
     assert stream_details.allow_seek is False
-
-    # Unsupported media type raises UnplayableMediaError
-    with pytest.raises(UnplayableMediaError):
-        await provider.get_stream_details("2mwx3", MediaType.TRACK)
 
 
 async def test_get_stations_api_failure(provider: GlobalPlayerProvider) -> None:
@@ -241,14 +242,8 @@ async def test_get_playable_transport_failure(provider: GlobalPlayerProvider) ->
         await provider.get_stream_details("2mwx3", MediaType.RADIO)
 
 
-def test_parse_radio_missing_id() -> None:
-    """Test parse_radio raises MediaNotFoundError when id is missing."""
-    with pytest.raises(MediaNotFoundError):
-        parse_radio({}, "inst1", "global_player")
-
-
 def test_parse_stream_url_cannot_use() -> None:
-    """Test parse_stream_url raises MediaNotFoundError when canUse is not true."""
+    """Test parse_stream_url raises UnplayableMediaError when canUse is not true."""
     playable = {
         "id": "test_id",
         "playback": [
@@ -264,11 +259,11 @@ def test_parse_stream_url_cannot_use() -> None:
             },
         ],
     }
-    with pytest.raises(MediaNotFoundError):
-        parse_stream_url(playable)
+    with pytest.raises(UnplayableMediaError, match="test_id"):
+        parse_stream_url(playable, "test_id")
 
 
 def test_parse_stream_url_not_found() -> None:
-    """Test parse_stream_url raises MediaNotFoundError when no playable stream is available."""
-    with pytest.raises(MediaNotFoundError):
-        parse_stream_url({"id": "empty", "playback": []})
+    """Test parse_stream_url raises UnplayableMediaError without a playable stream."""
+    with pytest.raises(UnplayableMediaError, match="empty"):
+        parse_stream_url({"playback": []}, "empty")

@@ -9,7 +9,6 @@ from music_assistant_models.enums import ContentType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
-    UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -21,12 +20,14 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     API_TIMEOUT,
     BRANDS_URL,
+    CACHE_TTL_PLAYABLE,
     CACHE_TTL_STATIONS,
     HEADERS,
     PLAYABLE_URL,
@@ -36,7 +37,7 @@ from .helpers import parse_radio, parse_stream_url
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -59,14 +60,18 @@ class GlobalPlayerProvider(MusicProvider):
     """Provider implementation for Global Player UK."""
 
     @property
-    def is_streaming_provider(self) -> bool:
-        """Return True if the provider is a streaming provider."""
-        return True
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        return {MediaType.RADIO}
 
     @property
     def max_concurrent_streams(self) -> None:
         """Allow unlimited concurrent upstream source streams."""
         return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """
@@ -113,9 +118,9 @@ class GlobalPlayerProvider(MusicProvider):
         stations = await self._get_stations()
         matches: list[Radio] = []
         for station_data in stations.values():
-            name = str(station_data.get("name", "")).lower()
-            tagline = str(station_data.get("tagline", "")).lower()
-            brand = str(station_data.get("brandName", "")).lower()
+            name = station_data.get("name", "").lower()
+            tagline = station_data.get("tagline", "").lower()
+            brand = station_data.get("brandName", "").lower()
             if query in name or query in tagline or query in brand:
                 matches.append(parse_radio(station_data, self.instance_id, self.domain))
                 if len(matches) >= limit:
@@ -130,75 +135,42 @@ class GlobalPlayerProvider(MusicProvider):
         :param item_id: The station identifier.
         :param media_type: The media type of the requested item.
         """
-        if media_type != MediaType.RADIO:
-            raise UnplayableMediaError(f"Unsupported media type: {media_type}")
-
         playable_data = await self._get_playable(item_id)
-        stream_url = parse_stream_url(playable_data)
+        stream_url = parse_stream_url(playable_data, item_id)
 
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.AAC,
-                channels=2,
-                sample_rate=44100,
+                content_type=ContentType.UNKNOWN,
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
             path=stream_url,
-            allow_seek=False,
-            can_seek=False,
         )
 
     @use_cache(CACHE_TTL_STATIONS)
     async def _get_stations(self) -> dict[str, dict[str, Any]]:
         """Fetch and return all stations indexed by station id."""
-        try:
-            async with self.mass.http_session.get(
-                BRANDS_URL, headers=HEADERS, timeout=API_TIMEOUT
-            ) as response:
-                if response.status != 200:
-                    self.logger.warning(
-                        "Global Player brands API returned status %s", response.status
-                    )
-                    raise ProviderUnavailableError(
-                        f"Global Player brands API returned status {response.status}"
-                    )
-                data = await response.json()
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise ProviderUnavailableError("Global Player API unavailable") from err
+        data = await self._get_json(BRANDS_URL)
+        return {str(station["id"]): station for station in data}
 
-        if not isinstance(data, list):
-            raise ProviderUnavailableError("Invalid response from Global Player brands API")
-
-        return {
-            str(station["id"]): station
-            for station in data
-            if isinstance(station, dict) and station.get("id")
-        }
-
+    @use_cache(CACHE_TTL_PLAYABLE)
     async def _get_playable(self, station_id: str) -> dict[str, Any]:
-        """
-        Fetch playable stream metadata for a given station id.
-
-        :param station_id: The station identifier.
-        """
+        """Fetch playable stream metadata for a station."""
         url = PLAYABLE_URL.format(playable_id=station_id)
+        data: dict[str, Any] = await self._get_json(url, station_id)
+        return data
+
+    async def _get_json(self, url: str, station_id: str | None = None) -> Any:
+        """Fetch JSON data from the Global Player API."""
         try:
             async with self.mass.http_session.get(
                 url, headers=HEADERS, timeout=API_TIMEOUT
             ) as response:
-                if response.status != 200:
-                    self.logger.warning(
-                        "Global Player playable API returned status %s for %s",
-                        response.status,
-                        station_id,
-                    )
-                    raise ProviderUnavailableError(
-                        f"Global Player playable API returned status {response.status}"
-                    )
-                data: dict[str, Any] = await response.json()
+                if response.status == 404 and station_id:
+                    raise MediaNotFoundError(f"Global Player station not found: {station_id}")
+                response.raise_for_status()
+                return await response.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise ProviderUnavailableError("Global Player API unavailable") from err
-        return data
