@@ -722,7 +722,7 @@ async def test_absolute_path_is_read_without_its_provider(
     """
     An absolute image path stays readable while its provider is unavailable.
 
-    Providers that write their own image files (playlist artwork, collages) pair an
+    Providers that write their own image files (such as playlist artwork) pair an
     absolute path with their instance id, and such a file needs no provider to be read.
     """
     mass = metadata_controller.mass

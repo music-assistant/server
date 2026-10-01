@@ -154,6 +154,21 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
 
 
+async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> None:
+    """A search must not use the account, so MA lookups stay out of its search history."""
+    provider._headers = {"cookie": "abc"}
+    provider._yt_user = "123"
+    mock_ytm = MagicMock()
+    mock_ytm.search.return_value = []
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await search(provider, "test", [MediaType.TRACK])
+
+    assert not mock_ytmusic.call_args.args
+    assert "auth" not in mock_ytmusic.call_args.kwargs
+    assert "user" not in mock_ytmusic.call_args.kwargs
+
+
 async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
     """get_album_versions method of the YTM provider should return other album versions if any exist."""
     album_with_versions = {

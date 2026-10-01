@@ -369,6 +369,34 @@ async def test_global_search_soft_timeout_returns_partial_and_caches_late(
     assert late_writes[0].kwargs["data"] == slow_results.to_dict()
 
 
+async def test_search_provider_waits_for_slow_provider_beyond_soft_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-provider lookup waits for a slow (throttled) provider instead of failing."""
+    monkeypatch.setattr(
+        "music_assistant.controllers.music.controller.SEARCH_PROVIDER_SOFT_TIMEOUT", 0.05
+    )
+    provider = _make_search_provider("prov_slow")
+    expected = SearchResults(tracks=[_make_track("track1", "prov_slow", "My Song")])
+
+    async def _slow_search(*_args: Any, **_kwargs: Any) -> SearchResults:
+        await asyncio.sleep(0.2)
+        return expected
+
+    provider.search.side_effect = _slow_search
+    controller = _make_controller([provider])
+
+    result = await controller.search_provider(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        allowed_provider_instances={provider.instance_id},
+    )
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+    provider.search.assert_awaited_once()
+
+
 async def test_global_search_hard_timeout_aborts_provider_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
