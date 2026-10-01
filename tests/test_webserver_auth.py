@@ -52,6 +52,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     PRUNE_THRESHOLD,
+    AuthResult,
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
@@ -247,6 +248,34 @@ async def test_authenticate_with_password(auth_manager: AuthenticationManager) -
     assert result.success is False
     assert result.user is None
     assert result.error is not None
+
+
+async def test_authenticate_with_password_refuses_a_disabled_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a disabled user is told so only after giving the right password.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    admin = await auth_manager.create_user(username="disabledloginadmin", role=UserRole.ADMIN)
+    user = await builtin_provider.create_user_with_password(
+        username="disabledlogin", password="secure_password_123"
+    )
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "secure_password_123"}
+    )
+    assert result == AuthResult(success=False, error="User account is disabled")
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "wrong_password"}
+    )
+    assert result == AuthResult(success=False, error="Invalid username or password")
 
 
 async def test_create_token(auth_manager: AuthenticationManager) -> None:

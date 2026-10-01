@@ -429,7 +429,7 @@ class BuiltinLoginProvider(LoginProvider):
 
         # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
-            AuthProviderType.BUILTIN, password_hash
+            AuthProviderType.BUILTIN, password_hash, include_disabled=True
         )
 
         if not user:
