@@ -269,10 +269,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return parsed_results
         results = await search(
             query=search_query,
-            headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
