@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamMetadata
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_utc_timestamp
 
 from .constants import (
@@ -273,7 +274,7 @@ def parse_podcast(podcast: Mapping[str, Any], instance_id: str, domain: str) -> 
     if image := podcast.get("imageUrl") or podcast.get("image"):
         mass_podcast.metadata.images = UniqueList([remote_image(str(image), instance_id)])
     # a podcast carries no category of its own, iHeartRadio only lists them as browse folders
-    mass_podcast.metadata.genres = {"Spoken Word"}
+    mass_podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
     return mass_podcast
 
 
