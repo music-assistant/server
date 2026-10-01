@@ -334,7 +334,7 @@ async def search(
     """Async wrapper around the ytmusicapi search function."""
 
     def _search() -> list[dict[str, Any]]:
-        # Always search in English: ytmusicapi (1.12.2) matches the result shelf title,
+        # Always search in English: ytmusicapi (1.12.3) matches the result shelf title,
         # which YouTube returns translated, against the English filter name, so a filtered
         # search silently returns nothing in most other languages. English is what this
         # provider expects anyway, as it compares result fields such as the album type
