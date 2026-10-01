@@ -107,7 +107,7 @@ class IHeartRadioApiClient:
 
     @property
     def instance_id(self) -> str:
-        """Return the provider instance id, which scopes the cache."""
+        """Return the cache scope, the provider instance id plus the country."""
         return f"{self.provider.instance_id}:{self.country}"
 
     @throttle_with_retries
