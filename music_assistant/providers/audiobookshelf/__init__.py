@@ -748,19 +748,7 @@ for more details.
         """
         if item_id == "browse":
             return self._browse_recommendation_items()
-        items = await self._recommendation_items_from_payload(item_id)
-        # the persisted payload restores series collections as item mappings without books
-        if any(isinstance(x, ItemMapping) and x.media_type == MediaType.COLLECTION for x in items):
-            collections = await self._get_series_collections()
-            rehydrated: list[MediaItemType | ItemMapping | BrowseFolder] = []
-            for item in items:
-                if not (isinstance(item, ItemMapping) and item.media_type == MediaType.COLLECTION):
-                    rehydrated.append(item)
-                elif item.name in collections:
-                    rehydrated.append(collections[item.name])
-            # in place, so the in-memory payload is rehydrated only once
-            items.set(rehydrated)
-        return items
+        return await self._recommendation_items_from_payload(item_id)
 
     @handle_refresh_token
     async def _get_abs_expanded_podcast(

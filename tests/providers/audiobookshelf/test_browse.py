@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -18,7 +17,6 @@ from music_assistant_models.media_items import (
     MediaCollection,
     MediaItemType,
     ProviderMapping,
-    RecommendationFolder,
     UniqueList,
 )
 
@@ -52,21 +50,10 @@ def _collection(name: str) -> MediaCollection[Mock]:
     )
 
 
-def _serve_persisted_payload(provider: Audiobookshelf, folders: list[RecommendationFolder]) -> None:
-    restored = [RecommendationFolder.from_dict(x.to_dict()) for x in folders]
-    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
-        return_value=(restored, True, True)
-    )
-    provider.mass.create_task = Mock(  # type: ignore[method-assign]
-        side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
-    )
-
-
-def _stub_library(provider: Audiobookshelf) -> AsyncMock:
-    library_items = AsyncMock(
+def _stub_library(provider: Audiobookshelf) -> None:
+    provider.mass.music.audiobooks.library_items = AsyncMock(  # type: ignore[method-assign]
         return_value=[_collection("Wheel of Time"), Mock(), _collection("Discworld")]
     )
-    provider.mass.music.audiobooks.library_items = library_items  # type: ignore[method-assign]
 
     # the db returns matches in its own order, not in the requested one
     async def _get_library_items_by_prov_id(
@@ -77,7 +64,6 @@ def _stub_library(provider: Audiobookshelf) -> AsyncMock:
     provider.mass.music.artists.get_library_items_by_prov_id = AsyncMock(  # type: ignore[method-assign,misc]
         side_effect=_get_library_items_by_prov_id
     )
-    return library_items
 
 
 @pytest.mark.asyncio
@@ -154,21 +140,3 @@ async def test_browse_series(provider: Audiobookshelf) -> None:
         (MediaCollection, "Discworld"),
         (MediaCollection, "Wheel of Time"),
     ]
-
-
-@pytest.mark.asyncio
-async def test_series_row_from_persisted_payload(provider: Audiobookshelf) -> None:
-    """A restored series row serves library collections, rehydrated once, without removed ones."""
-    library_items = _stub_library(provider)
-    folder = RecommendationFolder(
-        item_id=AbsShelfId.RECENT_SERIES,
-        provider=provider.instance_id,
-        name="Recent series",
-        items=UniqueList([_collection("Removed"), _collection("Discworld")]),
-    )
-    _serve_persisted_payload(provider, [folder])
-
-    for _ in range(2):
-        items = await provider.get_recommendation_items(AbsShelfId.RECENT_SERIES)
-        assert [(type(x), x.name) for x in items] == [(MediaCollection, "Discworld")]
-    assert library_items.await_count == 1
