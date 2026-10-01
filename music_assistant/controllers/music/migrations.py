@@ -1191,7 +1191,8 @@ async def migrate_database(  # noqa: PLR0915
             # would show as a broken image in the recently played listing
             await database.execute(
                 f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
-                "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%'"
+                "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%' "
+                "AND image LIKE '%\"builtin\"%'"
             )
         await asyncio.to_thread(
             shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True

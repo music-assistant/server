@@ -783,11 +783,13 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN image json")
     collage = _image("thumb", "/collage/abc_thumb.jpg", "builtin")
     remote = serialize_to_json(_image("thumb", "https://cdn.example.com/collage/a.jpg", "spotify"))
+    foreign = serialize_to_json(_image("thumb", "/collage/cover.jpg", "filesystem_local"))
     stored_images = {
         "user1": ("playlist", serialize_to_json(collage)),
         "user2": ("playlist", json.dumps(collage)),
         "user3": ("playlist", remote),
         "user4": ("track", serialize_to_json(collage)),
+        "user5": ("playlist", foreign),
     }
     for userid, (media_type, image) in stored_images.items():
         await database.execute(
@@ -810,4 +812,5 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
         "user2": None,
         "user3": remote,
         "user4": serialize_to_json(collage),
+        "user5": foreign,
     }
