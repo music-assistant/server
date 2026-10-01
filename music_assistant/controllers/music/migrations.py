@@ -1135,12 +1135,12 @@ async def migrate_database(  # noqa: PLR0915
         if "metadata" in playlist_columns:
             async for db_row in database.iter_items(DB_TABLE_PLAYLISTS):
                 is_system_playlist = db_row["item_id"] in system_playlist_item_ids
-                if not db_row["metadata"] or not (
-                    is_system_playlist or "/collage/" in db_row["metadata"]
+                if not isinstance(raw_metadata := db_row["metadata"], str) or not (
+                    is_system_playlist or "/collage/" in raw_metadata
                 ):
                     continue
                 try:
-                    metadata = json_loads(db_row["metadata"])
+                    metadata = json_loads(raw_metadata)
                 except ValueError:
                     continue
                 images = metadata.get("images") if isinstance(metadata, dict) else None
@@ -1152,14 +1152,15 @@ async def migrate_database(  # noqa: PLR0915
                     if not isinstance(image, dict):
                         kept_images.append(image)
                         continue
-                    path = image.get("path") or ""
-                    if image.get("provider") == "builtin" and path.startswith("/collage/"):
+                    path = image.get("path")
+                    if (
+                        image.get("provider") == "builtin"
+                        and isinstance(path, str)
+                        and path.startswith("/collage/")
+                    ):
                         lost_collage_thumb |= image.get("type") == "thumb"
                         continue
-                    if is_system_playlist and (
-                        image.get("provider") == "playlist_metadata"
-                        or "playlist_metadata_images" in path
-                    ):
+                    if is_system_playlist and image.get("provider") == "playlist_metadata":
                         continue
                     kept_images.append(image)
                 if is_system_playlist:
@@ -1179,6 +1180,19 @@ async def migrate_database(  # noqa: PLR0915
                 migrated_playlist_rows += 1
         if migrated_playlist_rows:
             logger.info("Removed outdated artwork from %d playlist(s)", migrated_playlist_rows)
+        playlog_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+            )
+        }
+        if {"image", "media_type"} <= playlog_columns:
+            # the playlog keeps the image a playlist had when it was played, so a collage
+            # would show as a broken image in the recently played listing
+            await database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%'"
+            )
         await asyncio.to_thread(
             shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
         )
