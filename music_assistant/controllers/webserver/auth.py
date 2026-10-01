@@ -804,7 +804,8 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT, with an empty
+            token_hash.
         """
         current_user = get_current_user()
         if not current_user:
@@ -827,7 +828,7 @@ class AuthenticationManager:
             order_by="created_at DESC",
             limit=TOKEN_LIST_LIMIT,
         )
-        return [AuthToken.from_dict(dict(row)) for row in token_rows]
+        return [AuthToken.from_dict({**dict(row), "token_hash": ""}) for row in token_rows]
 
     @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
@@ -1634,7 +1635,7 @@ class AuthenticationManager:
         """
         Get current user's linked authentication providers.
 
-        :return: List of provider links.
+        :return: List of provider links, the builtin link with an empty provider_user_id.
         """
         user = get_current_user()
         if not user:
@@ -1643,6 +1644,10 @@ class AuthenticationManager:
         # Get provider links from database
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        for provider in providers:
+            # the builtin link stores the password hash as its provider user id
+            if provider.provider_type == AuthProviderType.BUILTIN:
+                provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
     @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)
