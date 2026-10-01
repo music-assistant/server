@@ -558,22 +558,13 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
         for instance_id in instance_ids:
             for category in (
                 0,
+                CACHE_CATEGORY_ARTIST_INFO,
                 CACHE_CATEGORY_ALBUM_INFO,
                 CACHE_CATEGORY_SOUND_EFFECTS,
                 CACHE_CATEGORY_PODCAST_EPISODES,
                 CACHE_CATEGORY_SEARCH_RESULTS,
             ):
                 await mass.cache.delete(None, category=category, provider=instance_id)
-            # the artists share their category with the list of items of the last sync, which
-            # the next sync needs to find what was deleted
-            artists = await mass.cache.get_all(
-                provider=instance_id, category=CACHE_CATEGORY_ARTIST_INFO
-            )
-            for key, data in artists.items():
-                if isinstance(data, dict):
-                    await mass.cache.delete(
-                        key, category=CACHE_CATEGORY_ARTIST_INFO, provider=instance_id
-                    )
         # the search results combined over all sources
         await mass.cache.delete(
             None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=mass.music.domain

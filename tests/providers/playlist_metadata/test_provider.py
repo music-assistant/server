@@ -218,6 +218,8 @@ async def test_get_playlist_metadata_keeps_service_artwork(
     )
 
     playlist = _make_playlist(provider_domain)
+    # a playlist of the user's own (a builtin system playlist keeps its static artwork)
+    playlist.is_editable = True
     service_images = [
         MediaItemImage(
             type=img_type,
@@ -286,6 +288,38 @@ async def test_get_playlist_metadata_handles_exception(
         result = await provider.get_playlist_metadata(playlist)
 
         assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_editable", [False, True])
+async def test_get_playlist_metadata_skips_builtin_system_playlists(
+    tmp_path: Any, is_editable: bool
+) -> None:
+    """Only an editable builtin playlist gets artwork, a system playlist keeps its static one."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+    playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Builtin Playlist",
+        provider_mappings={
+            ProviderMapping(
+                item_id="my_playlist", provider_domain="builtin", provider_instance="builtin"
+            )
+        },
+        is_editable=is_editable,
+    )
+    thumb = MediaItemImage(
+        type=ImageType.THUMB,
+        path=os.path.join(provider._images_dir, "1_thumb.jpg"),
+        provider="playlist_metadata",
+        remotely_accessible=False,
+    )
+
+    with patch.object(provider, "_generate_and_write", AsyncMock(return_value=thumb)):
+        result = await provider.get_playlist_metadata(playlist)
+
+    assert (result is not None) is is_editable
 
 
 @pytest.mark.asyncio

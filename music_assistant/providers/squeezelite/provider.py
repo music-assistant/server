@@ -217,11 +217,19 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not (stream := sync_parent.multi_client_stream) or stream.done:
             raise web.HTTPNotFound(reason=f"There is no active stream for {player_id}!")
 
+        output_format = await self.mass.streams.audio.get_output_format(
+            output_format_str=fmt,
+            player=child_player,
+            content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
+            content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
+            media_type=MediaType.FLOW_STREAM,
+        )
+        # squeezelite takes the PCM params from the Content-Type, not from the WAV header
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers={
-                "Content-Type": get_mime_type(fmt),
+                "Content-Type": get_mime_type(output_format.output_format_str),
             },
         )
         await resp.prepare(request)
@@ -236,13 +244,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             child_player.display_name,
         )
 
-        output_format = await self.mass.streams.audio.get_output_format(
-            output_format_str=fmt,
-            player=child_player,
-            content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
-            content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
-            media_type=MediaType.FLOW_STREAM,
-        )
         output_plan = self.mass.streams.audio.get_player_output_plan(
             child_player_id,
             stream.audio_format,

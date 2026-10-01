@@ -102,7 +102,6 @@ from .constants import (
     ALL_FAVORITE_TRACKS,
     BUILTIN_PLAYLISTS,
     BUILTIN_PLAYLISTS_ENTRIES,
-    COLLAGE_IMAGE_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
@@ -291,11 +290,7 @@ class BuiltinProvider(MusicProvider):
                 owner="Music Assistant",
                 is_editable=False,
                 is_dynamic=prov_playlist_id in DYNAMIC_BUILTIN_PLAYLISTS,
-                metadata=MediaItemMetadata(
-                    images=UniqueList([DEFAULT_THUMB])
-                    if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
-                    else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
-                ),
+                metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART])),
             )
         # user created playlist - read from M3U file on disk
         playlist_file = self._playlist_file(prov_playlist_id)
@@ -305,7 +300,10 @@ class BuiltinProvider(MusicProvider):
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
         metadata = MediaItemMetadata()
-        if image_url := parse_m3u_playlist_image(m3u_data):
+        image_url = parse_m3u_playlist_image(m3u_data)
+        # a local path is artwork written back from the library (such as a generated
+        # collage), which is not ours to serve
+        if image_url and image_url.startswith(REMOTE_IMAGE_PREFIXES):
             metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -858,9 +856,9 @@ class BuiltinProvider(MusicProvider):
         Resolve an image from an image path.
 
         Returns raw bytes for a bundled image, a remote URL / data URI fetched from
-        elsewhere, or a local file inside our own directories (bundled assets and
-        generated collages). Any other local path is user-supplied and refused: it would
-        let the image route read an arbitrary server file.
+        elsewhere, or a bundled provider asset inside our own package directory. Any other
+        local path is user-supplied and refused: it would let the image route read an
+        arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
@@ -874,14 +872,11 @@ class BuiltinProvider(MusicProvider):
             return str(icons_base.joinpath(icon_name))
         if path.startswith(REMOTE_IMAGE_PREFIXES):
             return path
-        # generated collages and bundled provider assets (e.g. the AI Radio cover) are
-        # local files served through this provider; every other local path is
-        # user-supplied and refused, so it can not read an arbitrary server file
+        # bundled provider assets (e.g. the AI Radio cover) are local files served through
+        # this provider; every other local path is user-supplied and refused, so it can not
+        # read an arbitrary server file
         package_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        collage_dir = os.path.join(self.mass.cache_path, "collage_images")
-        if Path(path).is_absolute() and any(
-            is_safe_path(path, d) for d in (package_dir, collage_dir)
-        ):
+        if Path(path).is_absolute() and is_safe_path(path, package_dir):
             return path
         raise FileNotFoundError(f"Invalid image reference: {path}")
 

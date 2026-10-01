@@ -107,3 +107,43 @@ async def test_page_cache_key_separates_only_a_forced_global_session() -> None:
         call("me/tracks", limit=50, offset=0, use_global_session=True),
         call("me/tracks", limit=50, offset=0, use_global_session=False),
     ]
+
+
+def _spotify_playlist(playlist_id: str, name: str) -> dict[str, Any]:
+    """Return the minimum Spotify playlist payload accepted by the parser."""
+    return {
+        "id": playlist_id,
+        "name": name,
+        "owner": {"id": "owner", "display_name": "Owner"},
+        "collaborative": False,
+        "external_urls": {"spotify": f"https://open.spotify.com/playlist/{playlist_id}"},
+        "images": [],
+    }
+
+
+async def test_library_playlists_request_every_page() -> None:
+    """The library playlists skip the page cache, so a rename on a later page is seen."""
+    provider, cache, get_data = _make_provider()
+    provider._sp_user = {"id": "user", "display_name": "User"}
+    pages = {
+        0: [_spotify_playlist(f"playlist{index}", f"Playlist {index}") for index in range(50)],
+        50: [_spotify_playlist("playlist50", "Old name")],
+    }
+
+    async def get_page(_endpoint: str, *, offset: int, **_kwargs: Any) -> dict[str, Any]:
+        return {"total": 51, "items": pages[offset]}
+
+    get_data.side_effect = get_page
+
+    first_read = {item.item_id: item.name async for item in provider.get_library_playlists()}
+    pages[50] = [_spotify_playlist("playlist50", "New name")]
+    second_read = {item.item_id: item.name async for item in provider.get_library_playlists()}
+
+    assert (first_read["playlist50"], second_read["playlist50"]) == ("Old name", "New name")
+    page_requests = [
+        call("me/playlists", limit=50, offset=0, use_global_session=True),
+        call("me/playlists", limit=50, offset=50, use_global_session=True),
+    ]
+    assert get_data.await_args_list == page_requests * 2
+    cache.get.assert_not_awaited()
+    cache.set.assert_not_awaited()

@@ -354,9 +354,16 @@ class UniversalPlayerProvider(PlayerProvider):
                 if other_config.get("provider") == "universal_player":
                     continue
                 other_values = other_config.get("values") or {}
-                if protocol_id in (other_values.get(CONF_LINKED_PROTOCOL_IDS) or []):
-                    native_claims[protocol_id] = other_player_id
-                    break
+                if protocol_id not in (other_values.get(CONF_LINKED_PROTOCOL_IDS) or []):
+                    continue
+                # A native that already owns a protocol of the same domain can't take
+                # ours as well (one output per domain), so its entry is a stale leftover.
+                if self._owns_domain_of_protocols(
+                    other_player_id, valid_protocol_ids, all_player_configs
+                ):
+                    continue
+                native_claims[protocol_id] = other_player_id
+                break
         if native_claims:
             # Members are same-device by construction, so members not claimed by
             # any native follow the first claimer (keeps the cascade-disable
@@ -500,6 +507,27 @@ class UniversalPlayerProvider(PlayerProvider):
                 player_id,
             )
         return valid_protocol_ids
+
+    def _owns_domain_of_protocols(
+        self,
+        native_id: str,
+        protocol_ids: list[str],
+        all_player_configs: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Check if a native player already owns a protocol from one of these protocols' domains."""
+        domains = {
+            str(config.get("provider", "")).split("--", 1)[0]
+            for protocol_id in protocol_ids
+            if (config := all_player_configs.get(protocol_id)) and config.get("provider")
+        }
+        for player_id, config in all_player_configs.items():
+            if player_id in protocol_ids or config.get("player_type") != "protocol":
+                continue
+            if (config.get("values") or {}).get(CONF_PROTOCOL_PARENT_ID) != native_id:
+                continue
+            if str(config.get("provider", "")).split("--", 1)[0] in domains:
+                return True
+        return False
 
     async def _reparent_protocols_to_native(
         self, native_parent_id: str, protocol_ids: list[str]

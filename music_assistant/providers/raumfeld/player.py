@@ -135,12 +135,12 @@ class RaumfeldPlayer(Player):
         self._line_in: tuple[str, str] | None = provider.line_in(renderer_uuid)
         if renderer_uuid:
             self._attr_device_info.add_identifier(IdentifierType.UUID, renderer_uuid)
-        # Only add the IP identifier when the renderer lives on its own device. The
-        # Raumfeld host hosts several virtual UPnP renderers on a single IP, so adding
-        # that shared IP would make MA's IP-fallback matching link all of them to the one
-        # room whose renderer runs on the host (the TV room here) - cluttering it with
-        # unrelated DLNA outputs. There the unique renderer UUID is the only safe link.
-        if renderer_ip and renderer_ip != provider.host_address:
+        # The IP is also needed for the room whose renderer runs on the host: its Chromecast
+        # and Sendspin outputs share no UUID with the renderer, so without it they end up
+        # in a universal player of their own, which this player can then not take over.
+        # The host's other renderers on that IP are its virtual zone renderers, which the
+        # DLNA provider ignores, so they can no longer be linked to this room.
+        if renderer_ip:
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,

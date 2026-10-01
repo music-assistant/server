@@ -392,6 +392,24 @@ def test_check_item_playable_rejects_a_provider_item_on_a_hidden_source() -> Non
         controller.check_item_playable_for_user(item, _user(USER_A))
 
 
+def test_check_item_playable_accepts_a_url_on_a_legacy_builtin_instance() -> None:
+    """A url of the builtin provider plays when its instance id is not its domain."""
+    controller = _controller_with_sources({"builtin--legacy": None, PROV_B: _private(USER_B)})
+    url = "https://example.com/news.mp3"
+    item = Track(
+        item_id=url,
+        provider="builtin",
+        name="News",
+        provider_mappings={
+            ProviderMapping(
+                item_id=url, provider_domain="builtin", provider_instance="builtin--legacy"
+            )
+        },
+    )
+
+    controller.check_item_playable_for_user(item, _user(USER_A))
+
+
 def test_check_item_playable_accepts_a_shared_account_of_an_own_service() -> None:
     """An item browsed on another member's account plays through the user's own account."""
     controller = _controller_with_sources(
