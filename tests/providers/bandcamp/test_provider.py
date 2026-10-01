@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -742,6 +742,49 @@ async def test_search_api_error(provider: BandcampProvider) -> None:
         pytest.raises(InvalidDataError, match="Bandcamp search failed: API Error"),
     ):
         await provider.search("test query", [MediaType.TRACK])
+
+
+async def _drain(generator: AsyncGenerator[object]) -> list[object]:
+    """Collect every item of an async generator."""
+    return [item async for item in generator]
+
+
+@pytest.mark.parametrize(
+    ("client_method", "call_provider"),
+    [
+        pytest.param("search", lambda p: p.search("query", [MediaType.TRACK]), id="search"),
+        pytest.param("get_artist", lambda p: p.get_artist("123"), id="artist"),
+        pytest.param("get_artist", lambda p: p.get_artist("123:performer"), id="synthetic_artist"),
+        pytest.param("get_album", lambda p: p.get_album("123-456"), id="album"),
+        pytest.param("get_album", lambda p: p.get_album_tracks("123-456"), id="album_tracks"),
+        pytest.param("get_album", lambda p: p._fetch_api_track("123-456-789"), id="album_track"),
+        pytest.param("get_track", lambda p: p._fetch_api_track("123-0-789"), id="single_track"),
+        pytest.param(
+            "get_artist_discography", lambda p: p.get_artist_albums("123"), id="artist_albums"
+        ),
+        pytest.param(
+            "get_collection_items", lambda p: _drain(p.get_library_albums()), id="library_albums"
+        ),
+        pytest.param(
+            "get_collection_items", lambda p: _drain(p.get_library_artists()), id="library_artists"
+        ),
+    ],
+)
+async def test_unusable_answer_gives_the_translated_error(
+    provider: BandcampProvider,
+    client_method: str,
+    call_provider: Callable[[BandcampProvider], Awaitable[object]],
+) -> None:
+    """Every Bandcamp call turns an answer that is not usable JSON into the translated error."""
+    error = BandcampUnexpectedResponseError("not usable JSON (HTTP 200)")
+    with (
+        patch.object(provider._client, client_method, side_effect=error),
+        pytest.raises(InvalidDataError) as exc,
+    ):
+        await call_provider(provider)
+    assert exc.value.translation_key == "unusable_answer"
+    assert exc.value.translation_owner == "provider.bandcamp"
+    assert exc.value.__cause__ is error
 
 
 async def test_get_artist_success(provider: BandcampProvider) -> None:
@@ -2052,7 +2095,7 @@ async def test_fetch_api_track_login_error(provider: BandcampProvider) -> None:
             "get_album",
             side_effect=BandcampMustBeLoggedInError("Must be logged in"),
         ),
-        pytest.raises(LoginFailed, match=r"login is invalid or expired"),
+        pytest.raises(LoginFailed, match=r"Wrong Bandcamp identity token"),
     ):
         await provider._fetch_api_track("123-456-789")
 
@@ -2382,6 +2425,13 @@ async def test_map_api_errors_generic_api_error(provider: BandcampProvider) -> N
     with pytest.raises(MediaNotFoundError, match="my custom context: Something went wrong"):
         async with provider._map_api_errors("my custom context"):
             raise BandcampAPIError("Something went wrong")
+
+
+async def test_map_api_errors_not_found_message(provider: BandcampProvider) -> None:
+    """Test _map_api_errors gives an unknown item its own message."""
+    with pytest.raises(MediaNotFoundError, match=r"^Album 1-2 not found on Bandcamp$"):
+        async with provider._map_api_errors("Failed", not_found="Album 1-2 not found on Bandcamp"):
+            raise BandcampNotFoundError("No such album")
 
 
 async def test_map_api_errors_no_exception(provider: BandcampProvider) -> None:

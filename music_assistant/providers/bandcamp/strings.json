@@ -26,6 +26,9 @@
       "followers": { "name": "Followers" }
     }
   },
+  "errors": {
+    "unusable_answer": "Bandcamp did not send the data, often because of a robot check. Try again in a few minutes."
+  },
   "manifest": {
     "description": "Stream music from Bandcamp's catalog."
   }
