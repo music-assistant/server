@@ -46,6 +46,7 @@ from music_assistant_models.errors import (
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -862,7 +863,7 @@ class BandcampProvider(MusicProvider):
                 for album_track in await self.get_album_tracks(f"{artist_id}-{album_id}"):
                     if split_id(album_track.item_id)[2] == track_id:
                         return album_track
-            # Tracks without a streaming URL are absent from that listing.
+            # The track is not in that listing, or Bandcamp did not find the listing.
         api_track, api_album = await self._fetch_api_track(prov_track_id)
         if api_album:
             artist_item_id = await self._resolve_artist_item_id(
@@ -924,8 +925,8 @@ class BandcampProvider(MusicProvider):
                 tralbum_artist=api_album.tralbum_artist,
                 artist_item_id=artist_item_id,
             )
+            # A track without a streaming URL stays in the listing, marked unavailable
             for track in api_album.tracks
-            if track.streaming_url  # Only include tracks with streaming URLs
         ]
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
@@ -1396,7 +1397,8 @@ class BandcampProvider(MusicProvider):
             api_track.streaming_url or {}
         )
         if not streaming_url:
-            raise MediaNotFoundError(f"No streaming URL found for track {item_id}")
+            # The track exists, but Bandcamp gives no stream: a hidden or a preorder track
+            raise UnplayableMediaError(f"No streaming URL found for track {item_id}")
 
         return StreamDetails(
             item_id=item_id,

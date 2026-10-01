@@ -278,6 +278,8 @@ class BandcampConverters:
                         content_type=content_type,
                         bit_rate=bitrate,
                     ),
+                    # A hidden or a preorder track has no streaming URL
+                    available=bool(track.streaming_url),
                 )
             },
         )

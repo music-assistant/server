@@ -35,6 +35,7 @@ from music_assistant_models.errors import (
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnplayableMediaError,
 )
 from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
 from music_assistant_models.streamdetails import StreamDetails
@@ -1317,6 +1318,57 @@ async def test_get_album_tracks_prefers_the_track_cover(provider: BandcampProvid
     ]
 
 
+def _album_with_a_hidden_track() -> Mock:
+    """Build an album of band 123 with a streamable track 789 and a hidden track 790."""
+    hidden = _api_track(None)
+    hidden.id = 790
+    hidden.streaming_url = None
+    api_album = Mock()
+    api_album.tracks = [_api_track(None), hidden]
+    api_album.id = 456
+    api_album.title = "Album"
+    api_album.art_url = "http://example.com/album.jpg"
+    api_album.artist.id = 123
+    api_album.artist.name = "Test Band"
+    api_album.tralbum_artist = None
+    return api_album
+
+
+async def test_get_album_tracks_keeps_a_track_without_a_stream(provider: BandcampProvider) -> None:
+    """A hidden track stays in the album listing, marked unavailable, like the references do."""
+    with patch.object(
+        provider._client,
+        "get_album",
+        new_callable=AsyncMock,
+        return_value=_album_with_a_hidden_track(),
+    ):
+        result = await provider.get_album_tracks("123-456")
+
+    assert [(track.item_id, track.available) for track in result] == [
+        ("123-456-789", True),
+        ("123-456-790", False),
+    ]
+
+
+async def test_get_track_finds_a_hidden_track_in_the_album_listing(
+    provider: BandcampProvider,
+) -> None:
+    """A hidden track comes from the cached album listing, with no request of its own."""
+    with (
+        patch.object(
+            provider._client,
+            "get_album",
+            new_callable=AsyncMock,
+            return_value=_album_with_a_hidden_track(),
+        ),
+        patch.object(provider, "_fetch_api_track", new_callable=AsyncMock) as mock_fetch,
+    ):
+        result = await provider.get_track("123-456-790")
+
+    assert (result.item_id, result.available) == ("123-456-790", False)
+    mock_fetch.assert_not_awaited()
+
+
 async def test_get_track_album_fallback_prefers_the_track_cover(provider: BandcampProvider) -> None:
     """A track that the album listing lacks keeps its own cover on the fresh path."""
     api_album = Mock()
@@ -1923,7 +1975,7 @@ async def test_get_stream_details_no_streaming_url(provider: BandcampProvider) -
     with patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album:
         mock_get_album.return_value = mock_api_album
 
-        with pytest.raises(MediaNotFoundError, match=r"No streaming URL found"):
+        with pytest.raises(UnplayableMediaError, match=r"No streaming URL found"):
             await provider.get_stream_details("123-456-789", MediaType.TRACK)
 
 
@@ -1938,7 +1990,7 @@ async def test_get_stream_details_none_streaming_url(provider: BandcampProvider)
     with patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album:
         mock_get_album.return_value = mock_api_album
 
-        with pytest.raises(MediaNotFoundError, match=r"No streaming URL found"):
+        with pytest.raises(UnplayableMediaError, match=r"No streaming URL found"):
             await provider.get_stream_details("123-456-789", MediaType.TRACK)
 
 

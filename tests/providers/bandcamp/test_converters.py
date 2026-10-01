@@ -180,6 +180,31 @@ def test_track_from_api(converters: BandcampConverters) -> None:
     assert artist.name == "Test Artist"
 
 
+@pytest.mark.parametrize(
+    ("streaming_url", "available"),
+    [
+        pytest.param({"mp3-128": "https://example.com/track.mp3"}, True, id="stream"),
+        pytest.param({}, False, id="empty"),
+        pytest.param(None, False, id="hidden"),
+    ],
+)
+def test_track_from_api_availability(
+    converters: BandcampConverters, streaming_url: dict[str, str] | None, available: bool
+) -> None:
+    """A track without a streaming URL is unavailable, so the core does not try to play it."""
+    track = BCTrack(
+        id=789,
+        title="Track",
+        artist=BCArtist(id=123, name="Test Band"),
+        streaming_url=streaming_url,
+    )
+
+    result = converters.track_from_api(track=track, album_id=456)
+
+    assert result.available is available
+    assert [mapping.available for mapping in result.provider_mappings] == [available]
+
+
 def test_track_from_api_label_release_uses_synthetic_artist_id(
     converters: BandcampConverters,
 ) -> None:
