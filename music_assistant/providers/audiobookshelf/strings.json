@@ -49,7 +49,9 @@
       "recent_series": { "name": "Recent series" },
       "newest_authors": { "name": "Newest authors" },
       "newest_episodes": { "name": "Newest episodes" },
-      "discover": { "name": "Discover" }
+      "discover": { "name": "Discover" },
+      "library": { "name": "Library" },
+      "libraries": { "name": "Libraries" }
     }
   },
   "manifest": {

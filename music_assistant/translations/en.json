@@ -1159,6 +1159,8 @@
   "provider.audiobookshelf.media.folder.series_singular.name": "Series",
   "provider.audiobookshelf.media.recommendations.discover.name": "Discover",
   "provider.audiobookshelf.media.recommendations.in_progress_series.name": "Continue series...",
+  "provider.audiobookshelf.media.recommendations.libraries.name": "Libraries",
+  "provider.audiobookshelf.media.recommendations.library.name": "Library",
   "provider.audiobookshelf.media.recommendations.listen_again.name": "Listen again",
   "provider.audiobookshelf.media.recommendations.newest_authors.name": "Newest authors",
   "provider.audiobookshelf.media.recommendations.newest_episodes.name": "Newest episodes",
