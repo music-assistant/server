@@ -10,8 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers import auth_middleware, auth_providers
@@ -101,6 +104,7 @@ def _ingress_request(
     request = make_mocked_request("GET", "/", headers=headers, app=app)
     with (
         patch.object(auth_middleware, "is_request_from_ingress", return_value=from_ingress),
+        patch.object(websocket_client, "is_request_from_ingress", return_value=from_ingress),
         patch.object(mass, "get_provider", return_value=hass_provider),
     ):
         yield request
@@ -125,7 +129,8 @@ async def _create_user(
     if ha_user_id:
         await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
     if disabled:
-        set_current_user(await auth_manager.create_user(username="admin", role=UserRole.ADMIN))
+        admin = await auth_manager.create_user(username=f"{username}_admin", role=UserRole.ADMIN)
+        set_current_user(admin)
         await auth_manager.disable_user(user.user_id)
     return user
 
@@ -154,6 +159,35 @@ def _oauth_provider(mass: MusicAssistant) -> HomeAssistantOAuthProvider:
     """
     ha_config: HomeAssistantProviderConfig = {"ha_url": "http://ha.local:8123"}
     return HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
+
+
+async def _ha_login_callback(
+    mass: MusicAssistant,
+    ha_user_id: str,
+    details: tuple[str | None, str | None, str | None],
+) -> AuthResult:
+    """
+    Complete a Home Assistant login for the given HA user and return its result.
+
+    :param mass: The server the user signs in to.
+    :param ha_user_id: The Home Assistant user id the login resolves to.
+    :param details: The (username, display_name, avatar_url) Home Assistant returns for the user.
+    """
+    provider = _oauth_provider(mass)
+    provider._oauth_sessions["login_state"] = None
+    hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
+    with (
+        patch.object(mass, "get_provider", return_value=hass_provider),
+        patch.object(
+            auth_providers, "get_token", AsyncMock(return_value={"access_token": "ha_token"})
+        ),
+        patch.object(
+            provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value=ha_user_id)
+        ),
+    ):
+        return await provider.handle_oauth_callback(
+            "ha_code", "login_state", "http://ma.local:8095/auth/callback"
+        )
 
 
 @pytest.mark.parametrize(
@@ -364,6 +398,30 @@ async def test_ingress_websocket_signs_in_the_linked_user_unless_disabled(
     assert (client._events_unsub_callback is None) == disabled
 
 
+async def test_ingress_websocket_without_user_headers_subscribes_after_token_auth(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An Ingress websocket connection without HA user headers gets events only after token auth."""
+    token = await auth_manager.get_homeassistant_system_user_token()
+
+    with _ingress_request(auth_manager.mass, {}) as request:
+        client = WebsocketClientHandler(auth_manager.webserver, request)
+        await client._handle_ingress_auth()
+        signed_in_before_auth = client._authenticated_user
+        subscribed_before_auth = client._events_unsub_callback is not None
+
+        with patch.object(client, "_send_message", AsyncMock()):
+            await client._handle_auth_command(
+                CommandMessage(message_id="1", command="auth", args={"token": token})
+            )
+
+    assert signed_in_before_auth is None
+    assert not subscribed_before_auth
+    assert client._authenticated_user is not None
+    assert client._authenticated_user.username == HOMEASSISTANT_SYSTEM_USER
+    assert client._events_unsub_callback is not None
+
+
 async def test_ha_login_resolves_a_disabled_linked_user_under_another_username(
     auth_manager: AuthenticationManager,
 ) -> None:
@@ -428,25 +486,24 @@ async def test_ha_login_callback_refuses_a_disabled_user(
 
     :param display_name: The display name Home Assistant returns for the user, if any.
     """
-    mass = auth_manager.mass
     await _create_user(auth_manager, "alice", ha_user_id="ha_alice", disabled=True)
-    provider = _oauth_provider(mass)
-    provider._oauth_sessions["login_state"] = None
-    hass_provider = _ready_hass_provider(
-        mass, "ha_alice", admin=False, details=("alice", display_name, None)
-    )
 
-    with (
-        patch.object(mass, "get_provider", return_value=hass_provider),
-        patch.object(
-            auth_providers, "get_token", AsyncMock(return_value={"access_token": "ha_token"})
-        ),
-        patch.object(
-            provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value="ha_alice")
-        ),
-    ):
-        result = await provider.handle_oauth_callback(
-            "ha_code", "login_state", "http://ma.local:8095/auth/callback"
-        )
+    result = await _ha_login_callback(auth_manager.mass, "ha_alice", ("alice", display_name, None))
 
     assert result == AuthResult(success=False, error="User account is disabled")
+
+
+async def test_ha_login_callback_signs_in_an_enabled_linked_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """The HA login callback signs in the linked user and refreshes its display name."""
+    linked = await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+
+    result = await _ha_login_callback(
+        auth_manager.mass, "ha_alice", ("alice", "Alice from HA", None)
+    )
+
+    assert result.success
+    assert result.user is not None
+    assert result.user.user_id == linked.user_id
+    assert result.user.display_name == "Alice from HA"

@@ -519,7 +519,7 @@ class WebsocketClientHandler:
         await self._send_message(SuccessResultMessage(msg.message_id, {"locale": locale}))
 
     async def _handle_ingress_auth(self) -> None:
-        """Handle authentication for Ingress connections (auto-create/link user)."""
+        """Handle authentication for Ingress connections (auto-create/link user, subscribe)."""
         if user := await resolve_ingress_user(self.mass, self.request.headers):
             self._authenticated_user = user
             self._logger.debug("Ingress user authenticated: %s", user.username)
@@ -527,7 +527,7 @@ class WebsocketClientHandler:
         else:
             # No (enabled) HA user - allow homeassistant system user to connect with token
             # This allows the Home Assistant integration to connect via the internal network
-            # The token authentication happens in _handle_auth_message
+            # The token authentication happens in _handle_auth_command
             self._logger.debug("Ingress connection without a signed-in user, expecting token auth")
 
     def _is_own_private_player(self, object_id: str | None) -> bool:
