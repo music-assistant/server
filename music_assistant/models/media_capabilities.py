@@ -231,10 +231,11 @@ class AudioStreamMixin(Provider):
         Return the (custom) audio stream for an item owned by this provider.
 
         Will only be called when the StreamDetails returned by get_stream_details has
-        ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in the PCM format
-        declared by ``streamdetails.decoded_audio_format``, falling back to ``audio_format``
-        when the provider delivers its source untouched. Release any per-session state in a
-        ``try/finally``: the consumer closes the generator when playback ends.
+        ``stream_type=StreamType.CUSTOM``. The yielded bytes arrive in the format
+        ``streamdetails.decoded_audio_format`` declares when the provider decodes the source
+        itself, otherwise in ``streamdetails.audio_format``, which may be an encoded format
+        that Music Assistant decodes. Release any per-session state in a ``try/finally``: the
+        consumer closes the generator when playback ends.
 
         :param streamdetails: The StreamDetails previously returned by get_stream_details.
         :param seek_position: Position in seconds to start from; ignored for live sources.
