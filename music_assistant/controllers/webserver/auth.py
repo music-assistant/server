@@ -97,6 +97,7 @@ BUILTIN_ROLE_NAMES = {
     UserRole.SERVICE: "Service",
 }
 ROLE_NAME_MAX_LENGTH = 50
+USERNAME_MIN_LENGTH = 2
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 12
@@ -1197,7 +1198,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 2 characters).
+        :param username: The username (minimum 2 characters, must not be in use).
         :param password: The password (minimum 8 characters).
         :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
@@ -1206,8 +1207,7 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 2:
-            raise InvalidDataError("Username must be at least 2 characters")
+        username = await self._validate_username(username)
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
@@ -1536,7 +1536,7 @@ class AuthenticationManager:
         The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
-        :param username: New username (optional).
+        :param username: New username (optional, minimum 2 characters, must not be in use).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
@@ -1566,6 +1566,8 @@ class AuthenticationManager:
 
         if username is not None or password or role:
             _refuse_system_user(target_user.username)
+        if username is not None:
+            username = await self._validate_username(username, target_user)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -2255,6 +2257,30 @@ class AuthenticationManager:
                 f"A role named {name} already exists", translation_key="role_name_taken"
             )
         return name
+
+    async def _validate_username(self, username: str, user: User | None = None) -> str:
+        """
+        Return the normalized form of the given username, raise if the user can not have it.
+
+        :param username: The username to validate.
+        :param user: The user the username is for, None for a new user.
+        """
+        username = normalize_username(username)
+        if user and username == user.username:
+            return username
+        if len(username) < USERNAME_MIN_LENGTH:
+            raise InvalidDataError(
+                f"Username must be at least {USERNAME_MIN_LENGTH} characters",
+                translation_key="username_too_short",
+                translation_args=[USERNAME_MIN_LENGTH],
+            )
+        if username == HOMEASSISTANT_SYSTEM_USER or await self.get_user_by_username(
+            username, include_disabled=True
+        ):
+            raise InvalidDataError(
+                f"The username {username} is already in use", translation_key="username_taken"
+            )
+        return username
 
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """

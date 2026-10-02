@@ -1071,6 +1071,78 @@ async def test_the_system_user_keeps_its_username_role_and_password(
     )
 
 
+async def test_update_user_profile_refuses_a_too_short_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that a too short username is refused without applying the rest of the update."""
+    admin = await auth_manager.create_user(username="shortadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="shortuser", display_name="Short User")
+    set_current_user(admin)
+
+    for username in ("", "   ", "a"):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.update_user_profile(
+                user_id=user.user_id, username=username, display_name="Renamed", role="admin"
+            )
+        assert excinfo.value.translation_key == "username_too_short"
+
+    unchanged_user = await auth_manager.get_user(user.user_id)
+    assert unchanged_user is not None
+    assert unchanged_user.username == "shortuser"
+    assert unchanged_user.display_name == "Short User"
+    assert unchanged_user.role == UserRole.USER
+
+
+async def test_update_user_profile_refuses_a_username_in_use(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that the username of another account, or of the system account, is refused."""
+    admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
+    await auth_manager.create_user(username="taken")
+    disabled_user = await auth_manager.create_user(username="disabled")
+    user = await auth_manager.create_user(username="renamer")
+    set_current_user(admin)
+    await auth_manager.disable_user(disabled_user.user_id)
+    # the system username is reserved, also before that account exists
+    assert await auth_manager.get_user_by_username(HOMEASSISTANT_SYSTEM_USER) is None
+
+    set_current_user(user)
+    for username in ("Taken", "disabled", HOMEASSISTANT_SYSTEM_USER):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.update_user_profile(username=username)
+        assert excinfo.value.translation_key == "username_taken"
+
+    unchanged_user = await auth_manager.get_user(user.user_id)
+    assert unchanged_user is not None
+    assert unchanged_user.username == "renamer"
+
+
+async def test_update_user_profile_keeps_an_existing_short_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that an account with a too short username can still save its profile."""
+    user = await auth_manager.create_user(username="x")
+    set_current_user(user)
+
+    for username, display_name in (("x", "Ex"), ("X", "Ex Again")):
+        updated_user = await auth_manager.update_user_profile(
+            username=username, display_name=display_name
+        )
+        assert updated_user.username == "x"
+        assert updated_user.display_name == display_name
+
+
+async def test_update_user_profile_renames_a_user(auth_manager: AuthenticationManager) -> None:
+    """Test that a user can take a free username, which is stored normalized."""
+    user = await auth_manager.create_user(username="oldname")
+    set_current_user(user)
+
+    updated_user = await auth_manager.update_user_profile(username=" NewName ")
+
+    assert updated_user.username == "newname"
+    assert await auth_manager.get_user_by_username("oldname") is None
+
+
 async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     """
     Test getting user's tokens.
@@ -1354,11 +1426,12 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
     set_current_user(admin)
 
     # Test username too short
-    with pytest.raises(InvalidDataError, match="Username must be at least 2 characters"):
+    with pytest.raises(InvalidDataError, match="Username must be at least 2 characters") as excinfo:
         await auth_manager.create_user_with_api(
             username="a",
             password="password123",
         )
+    assert excinfo.value.translation_key == "username_too_short"
 
     # Test 2-character username is accepted (minimum allowed)
     user_2char = await auth_manager.create_user_with_api(
@@ -1373,6 +1446,19 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
             username="validuser",
             password="short",
         )
+
+
+async def test_create_user_api_refuses_a_username_in_use(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that create_user_with_api refuses a username in use or reserved for the system."""
+    admin = await auth_manager.create_user(username="createadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+
+    for username in ("CreateAdmin", HOMEASSISTANT_SYSTEM_USER):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.create_user_with_api(username=username, password="password123")
+        assert excinfo.value.translation_key == "username_taken"
 
 
 async def test_logout(auth_manager: AuthenticationManager) -> None:
