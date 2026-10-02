@@ -1,5 +1,6 @@
 """Tests for the scrobbler helpers."""
 
+import asyncio
 import logging
 from unittest import mock
 
@@ -222,6 +223,39 @@ async def test_it_propagates_unexpected_scrobble_exceptions() -> None:
 
     with pytest.raises(ValueError, match="unexpected bug"):
         await handler._on_mass_media_item_played(create_report(duration=180, seconds_played=176))
+
+
+class SlowHandler(DummyHandler):
+    """Handler whose _scrobble blocks until released, to test concurrent dispatch."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        """Initialize with events to control and observe the in-flight submission."""
+        super().__init__(logger)
+        self.entered_scrobble = asyncio.Event()
+        self.release_scrobble = asyncio.Event()
+
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        self.entered_scrobble.set()
+        await self.release_scrobble.wait()
+        self._tracked += 1
+
+
+async def test_it_does_not_double_submit_concurrent_reports_for_the_same_track() -> None:
+    """A report for a track that is still being submitted is skipped."""
+    handler = SlowHandler(logging.getLogger())
+    report = create_report(duration=180, seconds_played=176)
+
+    first = asyncio.create_task(handler._on_mass_media_item_played(report))
+    await handler.entered_scrobble.wait()  # first call is now awaiting its submission
+
+    second = asyncio.create_task(handler._on_mass_media_item_played(report))
+    await asyncio.sleep(0)  # let the second call run its should_scrobble() check
+
+    handler.release_scrobble.set()
+    await first
+    await second
+
+    assert handler._tracked == 1
 
 
 def test_it_only_offers_playback_capable_scrobble_players() -> None:
