@@ -13,7 +13,7 @@ aiohttp-socks==0.11.0
 aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
-aiosendspin[server] @ git+https://github.com/Sendspin/aiosendspin@main
+aiosendspin[server] @ git+https://github.com/Sendspin/aiosendspin@ca1de5627fb870f20e406c50e0c1d4d323e1ec34
 aioslimproto==3.2.2
 aiosonos==0.1.13
 aiosqlite==0.22.1
