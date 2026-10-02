@@ -121,14 +121,18 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
         if request is None:  # pragma: no cover - raising direct authorization is contractual
             raise ResourceError("Resource is not permitted")
         from .resource_authorization import (  # noqa: PLC0415
+            bind_ma_request_context,
             bind_resource_request,
+            reset_ma_request_context,
             reset_resource_request,
         )
 
         token = bind_resource_request(request)
+        ma_context = bind_ma_request_context(request)
         try:
             return await call_next(context)
         finally:
+            reset_ma_request_context(ma_context)
             reset_resource_request(token)
 
     async def on_get_prompt(

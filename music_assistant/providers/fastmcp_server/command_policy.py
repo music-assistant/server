@@ -287,6 +287,14 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
         _READ_ANNOTATIONS,
         frozenset({str(Capability.QUERY_LIBRARY)}),
     ),
+    **{
+        command: CommandDecision(_READ_ANNOTATIONS, frozenset({str(Capability.QUERY_METADATA)}))
+        for command in (
+            "music/recommendations",
+            "music/recommendations/items",
+            "music/recently_played_items",
+        )
+    },
     "players/tts_engines": CommandDecision(
         _READ_ANNOTATIONS,
         frozenset({str(Capability.QUERY_PLAYERS)}),

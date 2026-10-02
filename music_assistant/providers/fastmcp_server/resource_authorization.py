@@ -251,6 +251,42 @@ def reset_resource_request(token: ContextToken[AuthorizedResourceRequest | None]
     _current_resource_request.reset(token)
 
 
+def bind_ma_request_context(request: AuthorizedResourceRequest) -> list[tuple[Any, Any]]:
+    """
+    Run the resource handler as the request's MA user, token and client.
+
+    MA controllers treat a missing user as a trusted internal caller and skip
+    per-user visibility checks, so resource reads must carry the identity.
+
+    :param request: Authorized resource request whose identity is bound.
+    :return: Context tokens for :func:`reset_ma_request_context`.
+    """
+    from music_assistant.controllers.webserver.helpers import (  # noqa: PLC0415
+        auth_middleware,
+    )
+
+    values = {
+        "current_user": request.user,
+        "current_token": getattr(request.token, "token", None),
+        "current_client_id": getattr(request.token, "client_id", None),
+    }
+    return [
+        (variable, variable.set(value))
+        for name, value in values.items()
+        if (variable := getattr(auth_middleware, name, None)) is not None
+    ]
+
+
+def reset_ma_request_context(tokens: list[tuple[Any, Any]]) -> None:
+    """
+    Restore the MA request context saved by :func:`bind_ma_request_context`.
+
+    :param tokens: Context tokens returned by the bind call.
+    """
+    for variable, token in reversed(tokens):
+        variable.reset(token)
+
+
 def current_resource_request() -> AuthorizedResourceRequest | None:
     """Return the task-local request seal for result filtering."""
     return _current_resource_request.get()

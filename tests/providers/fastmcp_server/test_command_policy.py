@@ -667,3 +667,14 @@ async def test_network_share_without_password_needs_no_secret_capability() -> No
 
     assert preflight.additional_required == frozenset()
     assert revalidated.additional_required == frozenset()
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["music/recommendations", "music/recommendations/items", "music/recently_played_items"],
+)
+def test_former_metadata_tools_keep_the_metadata_capability(command: str) -> None:
+    """Recommendations and recent playback stay behind query:metadata, not query:library."""
+    decision = resolve_command_policy(command, Scope.LIBRARY_READ, None)
+
+    assert decision.required_capabilities == frozenset({str(Capability.QUERY_METADATA)})

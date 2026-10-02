@@ -8,19 +8,26 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth.auth import AccessToken
 from music_assistant_models.auth import Scope
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_token,
+    get_current_user,
+)
 from music_assistant.providers.fastmcp_server.audit import AuditRecord
 from music_assistant.providers.fastmcp_server.auth import LOOKUP_FAILURE_CLIENT_ID
 from music_assistant.providers.fastmcp_server.capabilities import Capability
+from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 from music_assistant.providers.fastmcp_server.policy import (
     PolicyMode,
     PolicyProfile,
     policy_snapshot,
 )
 from music_assistant.providers.fastmcp_server.resource_authorization import ResourceAuthorizer
+from music_assistant.providers.fastmcp_server.server import build_tag_lookup
 from music_assistant.providers.fastmcp_server.target_filters import filter_collection_result
 from music_assistant.providers.fastmcp_server.token_identity import TokenIdentityRegistry
 
@@ -284,3 +291,29 @@ async def test_library_resource_provider_filter_accepts_one_allowed_mapping() ->
         provider_mappings=(SimpleNamespace(provider_instance="spotify--1"),),
     )
     assert request.library_item_allowed(item) is True
+
+
+async def test_resource_handlers_run_as_the_authenticated_ma_user() -> None:
+    """MA controllers see the request user, so private-playlist checks are not skipped."""
+    user = _user()
+    seen: list[tuple[Any, Any]] = []
+    mcp = FastMCP("t")
+
+    @mcp.resource("library://playlist/{playlist_id}", tags={str(Capability.QUERY_LIBRARY)})  # type: ignore[untyped-decorator, unused-ignore]
+    async def playlist(playlist_id: str) -> str:
+        """Record which MA user the controller would see."""
+        seen.append((get_current_user(), get_current_token()))
+        return playlist_id
+
+    mcp.add_middleware(
+        TagFilterMiddleware(
+            build_tag_lookup(mcp),
+            lambda: _policy(**{str(Capability.QUERY_LIBRARY): PolicyMode.ALLOW}),
+            resource_authorizer=_authorizer(user=user),
+        )
+    )
+    async with Client(mcp) as client:
+        await client.read_resource("library://playlist/42")
+
+    assert seen == [(user, "bearer")]
+    assert get_current_user() is None
