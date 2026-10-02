@@ -195,6 +195,7 @@ class SetupSession:
         last_step: bool | None = None,
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> dict[str, ConfigValueType]:
         """
         Show a form to the user and wait for the submitted (validated) values.
@@ -207,6 +208,7 @@ class SetupSession:
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step translations.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.FORM,
@@ -216,6 +218,7 @@ class SetupSession:
             last_step=last_step,
             translation_params=translation_params,
             expires_in=expires_in,
+            copy_text=copy_text,
         )
         for key, error in (errors or {}).items():
             if isinstance(error, SetupFlowError) and error.translation_key:
@@ -268,6 +271,7 @@ class SetupSession:
         step_id: str = "auth",
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> _T:
         """
         Show an external "Open URL" step that completes when ``awaitable`` resolves.
@@ -284,6 +288,7 @@ class SetupSession:
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step
             translations, e.g. a device code the user has to read off the screen.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.EXTERNAL,
@@ -291,6 +296,7 @@ class SetupSession:
             url=url,
             expires_in=expires_in,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
         self._publish_step(step)
         return await self._await_with_deadline(awaitable, expires_in)
@@ -566,6 +572,7 @@ class SetupSession:
         result: dict[str, str] | None = None,
         reason: str | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
         expires_in: float | None = None,
     ) -> SetupFlowStep:
         """Build a SetupFlowStep for this flow, stamping owner and absolute deadline."""
@@ -586,6 +593,7 @@ class SetupSession:
             reason=reason,
             translation_owner=self._translation_owner,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
 
     def _prepare_entries(self, entries: list[ConfigEntry]) -> list[ConfigEntry]:
