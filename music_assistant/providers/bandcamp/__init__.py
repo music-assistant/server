@@ -133,6 +133,11 @@ def split_track_id(id_: str) -> tuple[int, int, int]:
     return artist_id, album_id, track_id
 
 
+def _has_stream(track: Track) -> bool:
+    """Return whether Bandcamp streams the track, also while the provider reloads."""
+    return any(mapping.available for mapping in track.provider_mappings)
+
+
 def _retry_transport_errors[ProviderT, **P, R](
     func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
 ) -> Callable[Concatenate[ProviderT, P], Awaitable[R]]:
@@ -867,7 +872,7 @@ class BandcampProvider(MusicProvider):
                         return album_track
             # The track is not in that listing, or Bandcamp did not find the listing.
         track = await self._get_fetched_track_monthly(prov_track_id)
-        if track.available:
+        if _has_stream(track):
             return track
         # A track without a stream can open any day, for example a preorder single, so such
         # a track takes its details from a one-day cache
@@ -876,7 +881,7 @@ class BandcampProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         tracks = await self._get_album_tracks_monthly(prov_album_id)
-        if all(track.available for track in tracks):
+        if all(_has_stream(track) for track in tracks):
             return tracks
         # A track without a stream can open any day, for example a preorder track before
         # or on its release, so such an album takes its listing from a one-day cache
@@ -1011,10 +1016,9 @@ class BandcampProvider(MusicProvider):
         albums = await self.get_artist_albums(prov_artist_id)
         albums.sort(key=lambda album: (album.year is None, album.year or 0), reverse=True)
         for album in albums:
-            # A track without a stream, for example of a preorder, must not take the place
-            # of a playable top track
+            # Only a track with a stream takes a top track place
             album_tracks = await self.get_album_tracks(album.item_id)
-            tracks.extend(track for track in album_tracks if track.available)
+            tracks.extend(track for track in album_tracks if _has_stream(track))
             if len(tracks) >= self.top_tracks_limit:
                 break
 

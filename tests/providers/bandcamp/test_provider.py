@@ -43,6 +43,7 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnplayableMediaError,
 )
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, Artist, BrowseFolder, ProviderMapping, Track
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -1221,7 +1222,7 @@ async def test_get_track_success(provider: BandcampProvider) -> None:
         patch.object(provider._converters, "track_from_api") as mock_converter,
     ):
         mock_get_album.return_value = mock_album
-        mock_converter.return_value = Mock(item_id="123-456-789")
+        mock_converter.return_value = _mapped_track("123-456-789")
 
         result = await provider.get_track("123-456-789")
 
@@ -1250,7 +1251,7 @@ async def test_get_track_standalone(provider: BandcampProvider) -> None:
         patch.object(provider._converters, "track_from_api") as mock_converter,
     ):
         mock_get_track.return_value = mock_api_track
-        mock_converter.return_value = Mock()
+        mock_converter.return_value = _mapped_track("123-456-789")
 
         result = await provider.get_track("123-0-789")
 
@@ -1282,7 +1283,7 @@ async def test_get_track_standalone_no_album(provider: BandcampProvider) -> None
         patch.object(provider._converters, "track_from_api") as mock_converter,
     ):
         mock_get_track.return_value = mock_api_track
-        mock_converter.return_value = Mock()
+        mock_converter.return_value = _mapped_track("123-0-789")
 
         result = await provider.get_track("123-0-789")
 
@@ -1530,8 +1531,13 @@ async def test_get_album_tracks_takes_a_changing_album_from_the_daily_listing(
     provider: BandcampProvider, second_track_streams: bool, from_daily_listing: bool
 ) -> None:
     """An album with a track without a stream comes from the listing of one day."""
-    monthly = [Mock(available=True), Mock(available=second_track_streams)]
-    daily = [Mock(available=True), Mock(available=True)]
+    monthly = [
+        _mapped_track("123-456-789"),
+        _mapped_track("123-456-790", available=second_track_streams),
+    ]
+    daily = [_mapped_track("123-456-789"), _mapped_track("123-456-790")]
+    # the choice reads the Bandcamp mapping, so a provider reload does not change it
+    await set_global_cache_values({"available_providers": {"other_instance"}})
 
     with (
         patch.object(
@@ -1650,9 +1656,10 @@ async def test_get_track_follows_its_album_listing_when_a_track_opens(
 async def test_get_track_takes_a_fetched_track_without_a_stream_from_the_daily_cache(
     provider: BandcampProvider, track_streams: bool, from_daily_cache: bool
 ) -> None:
-    """A single without a stream comes from the cache of one day, like a changing album."""
-    monthly = Mock(available=track_streams)
-    daily = Mock(available=True)
+    """A single without a stream comes from the one-day cache, also while the provider reloads."""
+    monthly = _mapped_track("123-0-789", available=track_streams)
+    daily = _mapped_track("123-0-789")
+    await set_global_cache_values({"available_providers": {"other_instance"}})
 
     with (
         patch.object(
@@ -1767,7 +1774,7 @@ async def test_get_track_album_path_falls_back_when_track_missing(
     ):
         mock_album_tracks.return_value = [Mock(item_id="123-456-788")]
         mock_get_album.return_value = mock_album
-        mock_converter.return_value = Mock(item_id="123-456-789")
+        mock_converter.return_value = _mapped_track("123-456-789")
 
         result = await provider.get_track("123-456-789")
 
@@ -1977,7 +1984,7 @@ async def test_get_album_tracks_success(provider: BandcampProvider) -> None:
         patch.object(provider._converters, "track_from_api") as mock_converter,
     ):
         mock_get_album.return_value = mock_album
-        mock_converter.return_value = Mock()
+        mock_converter.return_value = _mapped_track("123-456-789")
 
         result = await provider.get_album_tracks("123-456")
 
@@ -2470,15 +2477,14 @@ async def test_get_stream_details_standalone_track(provider: BandcampProvider) -
 
 async def test_get_artist_toptracks_success(provider: BandcampProvider) -> None:
     """Test successful artist top tracks retrieval."""
-    mock_album = Mock()
-    mock_track = Mock()
+    album = Mock(item_id="123-456", year=2024)
 
     with (
         patch.object(provider, "get_artist_albums", new_callable=AsyncMock) as mock_get_albums,
         patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_get_tracks,
     ):
-        mock_get_albums.return_value = [mock_album]
-        mock_get_tracks.return_value = [mock_track]
+        mock_get_albums.return_value = [album]
+        mock_get_tracks.return_value = [_mapped_track("123-456-789")]
 
         result = await provider.get_artist_toptracks("123")
 
@@ -2509,6 +2515,7 @@ async def test_get_artist_toptracks_skips_tracks_without_a_stream(
     """Tracks without a stream do not take the places of playable top tracks."""
     preorder = Mock(item_id="1-20", year=2026)
     older = Mock(item_id="1-10", year=2024)
+    oldest = Mock(item_id="1-5", year=2020)
     listings = {
         "1-20": [
             _mapped_track("1-20-1"),
@@ -2516,23 +2523,50 @@ async def test_get_artist_toptracks_skips_tracks_without_a_stream(
             _mapped_track("1-20-3", available=False),
         ],
         "1-10": [_mapped_track("1-10-1"), _mapped_track("1-10-2"), _mapped_track("1-10-3")],
+        "1-5": [_mapped_track("1-5-1")],
     }
     provider.top_tracks_limit = 3
 
     with (
         patch.object(
-            provider, "get_artist_albums", new_callable=AsyncMock, return_value=[older, preorder]
+            provider,
+            "get_artist_albums",
+            new_callable=AsyncMock,
+            return_value=[older, oldest, preorder],
         ),
         patch.object(
             provider,
             "get_album_tracks",
             new_callable=AsyncMock,
             side_effect=lambda album_id: listings[album_id],
-        ),
+        ) as mock_get_tracks,
     ):
         result = await provider.get_artist_toptracks("1")
 
     assert [track.item_id for track in result] == ["1-20-1", "1-10-1", "1-10-2"]
+    # the limit is reached in the second album, so the oldest album is not read
+    assert mock_get_tracks.await_args_list == [call("1-20"), call("1-10")]
+
+
+async def test_get_artist_toptracks_keeps_playable_tracks_while_the_provider_reloads(
+    provider: BandcampProvider,
+) -> None:
+    """Top tracks, cached for 30 days, do not depend on the loaded providers."""
+    album = Mock(item_id="1-10", year=2024)
+    await set_global_cache_values({"available_providers": {"other_instance"}})
+
+    with (
+        patch.object(provider, "get_artist_albums", new_callable=AsyncMock, return_value=[album]),
+        patch.object(
+            provider,
+            "get_album_tracks",
+            new_callable=AsyncMock,
+            return_value=[_mapped_track("1-10-1"), _mapped_track("1-10-2", available=False)],
+        ),
+    ):
+        result = await provider.get_artist_toptracks("1")
+
+    assert [track.item_id for track in result] == ["1-10-1"]
 
 
 async def test_get_library_artists_success(provider: BandcampProvider) -> None:
