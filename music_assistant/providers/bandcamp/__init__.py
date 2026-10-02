@@ -603,26 +603,6 @@ class BandcampProvider(MusicProvider):
             yield artist
             await asyncio.sleep(0)  # Yield control to avoid blocking
 
-    async def _library_release_ids(self) -> tuple[list[str], list[str]]:
-        """Return the provider IDs of the albums and of the single tracks in the own collection."""
-        async with self._map_api_errors(
-            "Failed to get the library collection",
-            not_found="Bandcamp library collection returned no results",
-        ):
-            items = await self._get_all_collection_items(
-                CollectionType.COLLECTION, require_complete=True
-            )
-        # An album bought as a download and again as a package syncs once
-        album_ids = list(
-            dict.fromkeys(album_id for item in items if (album_id := collection_album_id(item)))
-        )
-        track_ids = [
-            f"{item.band_id}-{item.album_id or 0}-{item.item_id}"
-            for item in items
-            if item.item_type == "track"
-        ]
-        return album_ids, track_ids
-
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
@@ -896,51 +876,6 @@ class BandcampProvider(MusicProvider):
         # A track without a stream can open any day, for example a preorder track before
         # or on its release, so such an album takes its listing from a one-day cache
         return await self._get_album_tracks_daily(prov_album_id)
-
-    # An expired listing comes back at once and is fetched again in the background,
-    # as in the album track listings of the other music providers
-    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
-    async def _get_album_tracks_monthly(self, prov_album_id: str) -> list[Track]:
-        """Get the tracks of an album from the cache of an album that does not change."""
-        return await self._fetch_album_tracks(prov_album_id)
-
-    @use_cache(
-        CACHE_CHANGING_LISTING, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
-    )
-    async def _get_album_tracks_daily(self, prov_album_id: str) -> list[Track]:
-        """Get the tracks of an album from the cache of an album that can change soon."""
-        return await self._fetch_album_tracks(prov_album_id)
-
-    @throttle_with_retries
-    @_retry_transport_errors
-    async def _fetch_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Fetch all tracks of an album from Bandcamp."""
-        artist_id, album_id, _ = split_id(prov_album_id)
-        async with self._map_api_errors(
-            f"Failed to get albums tracks for {prov_album_id}",
-            not_found=f"Album tracks for {prov_album_id} not found on Bandcamp",
-        ):
-            api_album = await self._client.get_album(artist_id, album_id)
-        if not api_album.tracks:
-            return []
-        artist_item_id = await self._resolve_artist_item_id(
-            band_id=api_album.artist.id,
-            performer=api_album.tralbum_artist,
-            band_name=api_album.artist.name,
-        )
-        return [
-            self._converters.track_from_api(
-                track=track,
-                album_id=album_id,
-                album_name=api_album.title,
-                # A track can have a cover of its own, which then replaces the album cover.
-                album_image_url=track.art_url or api_album.art_url or "",
-                tralbum_artist=api_album.tralbum_artist,
-                artist_item_id=artist_item_id,
-            )
-            # A track without a streaming URL stays in the listing, marked unavailable
-            for track in api_album.tracks
-        ]
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
@@ -1437,6 +1372,71 @@ class BandcampProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _library_release_ids(self) -> tuple[list[str], list[str]]:
+        """Return the provider IDs of the albums and of the single tracks in the own collection."""
+        async with self._map_api_errors(
+            "Failed to get the library collection",
+            not_found="Bandcamp library collection returned no results",
+        ):
+            items = await self._get_all_collection_items(
+                CollectionType.COLLECTION, require_complete=True
+            )
+        # An album bought as a download and again as a package syncs once
+        album_ids = list(
+            dict.fromkeys(album_id for item in items if (album_id := collection_album_id(item)))
+        )
+        track_ids = [
+            f"{item.band_id}-{item.album_id or 0}-{item.item_id}"
+            for item in items
+            if item.item_type == "track"
+        ]
+        return album_ids, track_ids
+
+    # An expired listing comes back at once and is fetched again in the background,
+    # as in the album track listings of the other music providers
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
+    async def _get_album_tracks_monthly(self, prov_album_id: str) -> list[Track]:
+        """Get the tracks of an album from the cache of an album that does not change."""
+        return await self._fetch_album_tracks(prov_album_id)
+
+    @use_cache(
+        CACHE_CHANGING_LISTING, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )
+    async def _get_album_tracks_daily(self, prov_album_id: str) -> list[Track]:
+        """Get the tracks of an album from the cache of an album that can change soon."""
+        return await self._fetch_album_tracks(prov_album_id)
+
+    @throttle_with_retries
+    @_retry_transport_errors
+    async def _fetch_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Fetch all tracks of an album from Bandcamp."""
+        artist_id, album_id, _ = split_id(prov_album_id)
+        async with self._map_api_errors(
+            f"Failed to get albums tracks for {prov_album_id}",
+            not_found=f"Album tracks for {prov_album_id} not found on Bandcamp",
+        ):
+            api_album = await self._client.get_album(artist_id, album_id)
+        if not api_album.tracks:
+            return []
+        artist_item_id = await self._resolve_artist_item_id(
+            band_id=api_album.artist.id,
+            performer=api_album.tralbum_artist,
+            band_name=api_album.artist.name,
+        )
+        return [
+            self._converters.track_from_api(
+                track=track,
+                album_id=album_id,
+                album_name=api_album.title,
+                # A track can have a cover of its own, which then replaces the album cover.
+                album_image_url=track.art_url or api_album.art_url or "",
+                tralbum_artist=api_album.tralbum_artist,
+                artist_item_id=artist_item_id,
+            )
+            # A track without a streaming URL stays in the listing, marked unavailable
+            for track in api_album.tracks
+        ]
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_fetched_track_monthly(self, prov_track_id: str) -> Track:
