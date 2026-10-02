@@ -359,7 +359,10 @@ class LibraryRecommendationsProvider(PluginProvider):
         for index, podcast in enumerate(podcasts):
             update_current_task_progress_from_index(index, len(podcasts), podcast.name)
             # every mapping is kept, users may only have access to some of them
-            for mapping in podcast.provider_mappings:
+            for mapping in sorted(
+                podcast.provider_mappings,
+                key=lambda mapping: (mapping.provider_instance, mapping.item_id),
+            ):
                 if mapping.provider_instance not in active_providers:
                     continue
                 if latest := await self._get_latest_episode(
