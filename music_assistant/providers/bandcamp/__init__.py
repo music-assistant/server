@@ -1262,8 +1262,8 @@ class BandcampProvider(MusicProvider):
         seen_ids: set[str] = set()
         for item in items:
             entry: Album | Track
-            if collection_album_id(item):
-                entry = self._converters.album_from_collection(item)
+            if album_id := collection_album_id(item):
+                entry = self._converters.album_from_collection(item, album_id)
             elif item.item_type == "track":
                 entry = self._converters.track_from_collection(item)
             else:

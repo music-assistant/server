@@ -229,9 +229,8 @@ class BandcampConverters:
             )
         return output
 
-    def album_from_collection(self, item: CollectionItem) -> MAAlbum:
-        """Create an Album from an entry of a collection or a wishlist, without an album request."""
-        album_id = collection_album_id(item) or f"{item.band_id}-{item.item_id}"
+    def album_from_collection(self, item: CollectionItem, album_id: str) -> MAAlbum:
+        """Create the Album with this ID from a collection or wishlist entry, without a request."""
         output = MAAlbum(
             item_id=album_id,
             provider=self.instance_id,

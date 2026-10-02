@@ -153,7 +153,7 @@ def test_collection_album_id(item: CollectionItem, expected: str | None) -> None
 
 
 def test_album_from_collection(converters: BandcampConverters) -> None:
-    """A collection entry gives the album ID, title, band, URL and cover of the release."""
+    """A collection entry gives the album its ID, and the title, band, URL and cover."""
     item = CollectionItem(
         item_type="package",
         item_id=4197129855,
@@ -166,7 +166,7 @@ def test_album_from_collection(converters: BandcampConverters) -> None:
         art_url="https://f4.bcbits.com/img/a1234567890_10.jpg",
     )
 
-    result = converters.album_from_collection(item)
+    result = converters.album_from_collection(item, "1772311897-3846833501")
 
     assert (result.item_id, result.name) == (
         "1772311897-3846833501",
@@ -818,7 +818,7 @@ def _api_album(art_url: str | None) -> Mock:
             id="artist_from_following",
         ),
         pytest.param(
-            lambda c: c.album_from_collection(CollectionItem("album", 456, 123)),
+            lambda c: c.album_from_collection(CollectionItem("album", 456, 123), "123-456"),
             id="album_from_collection",
         ),
         pytest.param(
