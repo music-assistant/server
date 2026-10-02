@@ -142,7 +142,6 @@ class FakeSendspinDevice:
         await store.store_pairing_config(
             replace(
                 config,
-                pairing_psk_enabled=self.scenario.pairing_psk,
                 static_pairing_code_enabled=self.scenario.static_pin,
                 dynamic_pairing_code_enabled=self.scenario.dynamic_pin,
                 unpaired_access_enabled=self.scenario.unpaired_access,

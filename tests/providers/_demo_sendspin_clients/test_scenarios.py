@@ -98,7 +98,6 @@ async def test_device_advertises_its_scenario(
 
         store = await FileClientPairingStore.open(tmp_path / f"{scenario.scenario_id}.json")
         config = await store.get_pairing_config()
-        assert config.pairing_psk_enabled is scenario.pairing_psk
         assert config.static_pairing_code_enabled is scenario.static_pin
         assert config.dynamic_pairing_code_enabled is scenario.dynamic_pin
         assert config.unpaired_access_enabled is scenario.unpaired_access
