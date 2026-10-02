@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
@@ -1212,6 +1213,83 @@ def test_select_provider_id_keeps_an_allowed_mapping_next_to_a_hidden_one() -> N
 
     assert provider_instance == "spotify_1"
     assert provider_item == "music_item"
+
+
+@pytest.fixture
+async def non_streaming_gpodder() -> AsyncGenerator[None]:
+    """Mark gpodder_1 as a non-streaming provider in the global cache for the test."""
+    previous = get_global_cache_value("non_streaming_providers")
+    await set_global_cache_values({"non_streaming_providers": {"gpodder_1"}})
+    yield
+    await set_global_cache_values({"non_streaming_providers": previous})
+
+
+@pytest.mark.usefixtures("non_streaming_gpodder")
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_select_provider_id_prefers_highest_priority_mapping(reverse: bool) -> None:
+    """The subscribed non-streaming source wins over a mapping added by provider matching."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_show",
+        ),
+        create_provider_mapping(
+            provider_instance="gpodder_1",
+            provider_domain="gpodder",
+            item_id="gpodder_feed",
+            in_library=True,
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "gpodder_1"
+    assert provider_item == "gpodder_feed"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_select_provider_id_breaks_priority_ties_deterministically(reverse: bool) -> None:
+    """Mappings of equal priority resolve to the same mapping regardless of order."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="tidal_1",
+            provider_domain="tidal",
+            item_id="tidal_item",
+        ),
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_item",
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "spotify_item"
 
 
 async def test_get_library_item_does_not_filter_in_library() -> None:
