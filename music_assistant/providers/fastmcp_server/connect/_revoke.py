@@ -25,6 +25,7 @@ import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as _ma_get_current_user,
 )
@@ -95,19 +96,25 @@ async def list_user_tokens(mass: MusicAssistant, user: User) -> list[AuthToken] 
     List ``user``'s auth tokens via the sanctioned ``auth.get_user_tokens`` API.
 
     Returns typed ``AuthToken`` dataclasses — no raw ``sqlite3.Row``
-    objects leak across the boundary.
-
-    Note: MA core caps the query at 100 rows. A user with > 100 active
-    tokens will see some priors miss our dedup pass — acceptable for the
-    typical case (handful of tokens).
+    objects leak across the boundary. MA returns only the newest
+    ``TOKEN_LIST_LIMIT`` tokens, so a full page is reported as incomplete.
 
     :param mass: MusicAssistant instance.
     :param user: User whose tokens to list (sets the auth context).
-    :return: The user's tokens, or ``None`` when the lookup failed.
+    :return: All of the user's tokens, or ``None`` when the lookup failed or
+        may have been truncated.
     """
     with _as_user(user):
         try:
-            return list(await mass.webserver.auth.get_user_tokens())
+            tokens = list(await mass.webserver.auth.get_user_tokens())
         except Exception:
             LOGGER.exception("Connect Wizard: get_user_tokens failed (user=%s)", user.user_id)
             return None
+    if len(tokens) >= TOKEN_LIST_LIMIT:
+        LOGGER.warning(
+            "Connect Wizard: user %s has at least %d tokens; skipping token rotation",
+            user.user_id,
+            TOKEN_LIST_LIMIT,
+        )
+        return None
+    return tokens

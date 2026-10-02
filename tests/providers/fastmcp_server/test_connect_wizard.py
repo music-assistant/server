@@ -24,6 +24,7 @@ import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
 
+from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
 from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
@@ -739,6 +740,28 @@ async def test_token_endpoint_dedup_lookup_failure_does_not_mint(
     auth.create_token.assert_not_called()
 
 
+async def test_token_endpoint_full_token_page_does_not_mint(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """A token listing that hits MA's cap may hide an older client token, so nothing is minted."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id=f"t{index}", name=f"other {index}", user_id="u1")
+            for index in range(TOKEN_LIST_LIMIT)
+        ]
+    )
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/token",
+        json={"session_token": "sess-1", "client_id": "cursor"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+
+    assert resp.status == 500
+    auth.create_token.assert_not_called()
+
+
 async def test_token_endpoint_no_prior_no_revoke(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
@@ -1013,6 +1036,28 @@ async def test_open_connect_gc_revoke_failure_opens_login_only_wizard(
         ]
     )
     auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
+
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=mock_user,
+        mount_path="/mcp/v1",
+    )
+
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
+
+
+async def test_open_connect_full_token_page_opens_login_only_wizard(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A capped token listing may hide old wizard tokens, so no new bootstrap is minted."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id=f"t{index}", name=f"other {index}", user_id="u1")
+            for index in range(TOKEN_LIST_LIMIT)
+        ]
+    )
 
     url = await handle_open_connect_action(
         wizard_mass,
