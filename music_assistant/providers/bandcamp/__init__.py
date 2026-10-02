@@ -855,49 +855,23 @@ class BandcampProvider(MusicProvider):
             ) from error
         return {str(track_id): text for track_id, text in lyrics.items()}
 
-    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_track_base(self, prov_track_id: str) -> Track:
         """Get full track details by id, without the lyrics layer."""
         artist_id, album_id, track_id = split_track_id(prov_track_id)
         if album_id:
-            # One cached album listing serves every track of that album.
+            # The cached album listing serves every track of that album, so the page of a
+            # track always shows what its album page shows
             with suppress(MediaNotFoundError):
                 for album_track in await self.get_album_tracks(f"{artist_id}-{album_id}"):
                     if split_id(album_track.item_id)[2] == track_id:
                         return album_track
             # The track is not in that listing, or Bandcamp did not find the listing.
-        api_track, api_album = await self._fetch_api_track(prov_track_id)
-        if api_album:
-            artist_item_id = await self._resolve_artist_item_id(
-                band_id=api_album.artist.id,
-                performer=api_album.tralbum_artist,
-                band_name=api_album.artist.name,
-            )
-            return self._converters.track_from_api(
-                track=api_track,
-                album_id=api_album.id,
-                album_name=api_album.title,
-                album_image_url=api_track.art_url or api_album.art_url or "",
-                tralbum_artist=api_album.tralbum_artist,
-                artist_item_id=artist_item_id,
-            )
-        # Standalone tracks (album_id=0) carry the performer credit on
-        # the track itself when fetched directly from tralbum_details.
-        artist_item_id = await self._resolve_artist_item_id(
-            band_id=api_track.artist.id,
-            performer=api_track.tralbum_artist,
-            band_name=api_track.artist.name,
-        )
-        # A track of an album, asked for without its album, gets the album ID of the
-        # album listing, so that one track keeps one ID. A single has no album.
-        return self._converters.track_from_api(
-            track=api_track,
-            album_id=api_track.album_id,
-            album_name=api_track.album_title or "",
-            album_image_url=api_track.art_url or "",
-            tralbum_artist=api_track.tralbum_artist,
-            artist_item_id=artist_item_id,
-        )
+        track = await self._get_fetched_track_monthly(prov_track_id)
+        if track.available:
+            return track
+        # A track without a stream can open any day, for example a preorder single, so such
+        # a track takes its details from a one-day cache
+        return await self._get_fetched_track_daily(prov_track_id)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
@@ -1448,4 +1422,49 @@ class BandcampProvider(MusicProvider):
             path=streaming_url,
             can_seek=True,
             allow_seek=True,
+        )
+
+    @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
+    async def _get_fetched_track_monthly(self, prov_track_id: str) -> Track:
+        """Get a track that no album listing holds, from a cache that lasts 30 days."""
+        return await self._fetch_track(prov_track_id)
+
+    @use_cache(CACHE_CHANGING_LISTING, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
+    async def _get_fetched_track_daily(self, prov_track_id: str) -> Track:
+        """Get a track that no album listing holds, from a cache that lasts one day."""
+        return await self._fetch_track(prov_track_id)
+
+    async def _fetch_track(self, prov_track_id: str) -> Track:
+        """Fetch a track from Bandcamp on its own."""
+        api_track, api_album = await self._fetch_api_track(prov_track_id)
+        if api_album:
+            artist_item_id = await self._resolve_artist_item_id(
+                band_id=api_album.artist.id,
+                performer=api_album.tralbum_artist,
+                band_name=api_album.artist.name,
+            )
+            return self._converters.track_from_api(
+                track=api_track,
+                album_id=api_album.id,
+                album_name=api_album.title,
+                album_image_url=api_track.art_url or api_album.art_url or "",
+                tralbum_artist=api_album.tralbum_artist,
+                artist_item_id=artist_item_id,
+            )
+        # Standalone tracks (album_id=0) carry the performer credit on
+        # the track itself when fetched directly from tralbum_details.
+        artist_item_id = await self._resolve_artist_item_id(
+            band_id=api_track.artist.id,
+            performer=api_track.tralbum_artist,
+            band_name=api_track.artist.name,
+        )
+        # A track of an album, asked for without its album, gets the album ID of the
+        # album listing, so that one track keeps one ID. A single has no album.
+        return self._converters.track_from_api(
+            track=api_track,
+            album_id=api_track.album_id,
+            album_name=api_track.album_title or "",
+            album_image_url=api_track.art_url or "",
+            tralbum_artist=api_track.tralbum_artist,
+            artist_item_id=artist_item_id,
         )

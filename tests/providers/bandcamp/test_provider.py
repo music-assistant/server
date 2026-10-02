@@ -1438,7 +1438,14 @@ class _CacheLookup(Exception):
         pytest.param(lambda p: p.get_artist("123"), PARSED_ITEM_CACHE_CHECKSUM, id="artist"),
         pytest.param(lambda p: p.get_album("123-456"), PARSED_ITEM_CACHE_CHECKSUM, id="album"),
         pytest.param(
-            lambda p: p._get_track_base("123-456-789"), PARSED_ITEM_CACHE_CHECKSUM, id="track"
+            lambda p: p._get_fetched_track_monthly("123-0-789"),
+            PARSED_ITEM_CACHE_CHECKSUM,
+            id="fetched_track",
+        ),
+        pytest.param(
+            lambda p: p._get_fetched_track_daily("123-0-789"),
+            PARSED_ITEM_CACHE_CHECKSUM,
+            id="fetched_track_daily",
         ),
         pytest.param(
             lambda p: p.get_album_tracks("123-456"), PARSED_ITEM_CACHE_CHECKSUM, id="album_tracks"
@@ -1572,6 +1579,114 @@ async def test_album_track_listings_keep_their_cache_time(
 def test_changing_listing_lasts_one_day() -> None:
     """A preorder track can open any day, so the listing of such an album lasts one day."""
     assert CACHE_CHANGING_LISTING == 3600 * 24
+
+
+class _ClockCache:
+    """A dict-backed stand-in for the cache of use_cache, with a clock that the test moves."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.rows: dict[str, tuple[Any, float, str | None]] = {}
+
+    async def get_with_freshness(
+        self, key: str, *, checksum: str | None = None, include_expired: bool = False, **_: Any
+    ) -> tuple[Any, bool, bool]:
+        row = self.rows.get(key)
+        if row is None or row[2] != checksum:
+            return None, False, False
+        data, expires, _checksum = row
+        if expires > self.now:
+            return data, True, True
+        if include_expired:
+            return data, False, True
+        return None, False, False
+
+    async def set(
+        self, key: str, data: Any, *, expiration: int, checksum: str | None = None, **_: Any
+    ) -> None:
+        stored = [item.to_dict() for item in data] if isinstance(data, list) else data.to_dict()
+        self.rows[key] = (stored, self.now + expiration, checksum)
+
+
+async def _let_background_tasks_finish() -> None:
+    """Give the cache writes and refreshes that use_cache starts in the background a turn."""
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+
+async def test_get_track_follows_its_album_listing_when_a_track_opens(
+    provider: BandcampProvider, mass_mock: Mock
+) -> None:
+    """A track that opens plays from its own page once its album listing shows it playable."""
+    cache = _ClockCache()
+    mass_mock.cache.get_with_freshness = cache.get_with_freshness
+    mass_mock.cache.set = cache.set
+    api_album = _album_with_a_hidden_track()
+
+    with patch.object(
+        provider._client, "get_album", new_callable=AsyncMock, return_value=api_album
+    ):
+        before = await provider.get_track("123-456-790")
+        await _let_background_tasks_finish()
+        api_album.tracks[1].streaming_url = {"mp3-128": "http://example.com/opened.mp3"}
+        cache.now += CACHE_CHANGING_LISTING + 60
+        # the first visit after a day serves the expired listing and refreshes it
+        await provider.get_track("123-456-790")
+        await _let_background_tasks_finish()
+        after = await provider.get_track("123-456-790")
+
+    assert before.available is False
+    assert after.available is True
+    assert not [key for key in cache.rows if key.startswith(("_get_track_base", "_get_fetched"))]
+
+
+@pytest.mark.parametrize(
+    ("track_streams", "from_daily_cache"),
+    [
+        pytest.param(True, False, id="the_track_streams"),
+        pytest.param(False, True, id="the_track_has_no_stream"),
+    ],
+)
+async def test_get_track_takes_a_fetched_track_without_a_stream_from_the_daily_cache(
+    provider: BandcampProvider, track_streams: bool, from_daily_cache: bool
+) -> None:
+    """A single without a stream comes from the cache of one day, like a changing album."""
+    monthly = Mock(available=track_streams)
+    daily = Mock(available=True)
+
+    with (
+        patch.object(
+            provider, "_get_fetched_track_monthly", new_callable=AsyncMock, return_value=monthly
+        ),
+        patch.object(
+            provider, "_get_fetched_track_daily", new_callable=AsyncMock, return_value=daily
+        ) as mock_daily,
+    ):
+        result = await provider._get_track_base("123-0-789")
+
+    assert result is (daily if from_daily_cache else monthly)
+    assert mock_daily.await_count == int(from_daily_cache)
+
+
+@pytest.mark.parametrize(
+    ("cached_call", "expiration"),
+    [
+        pytest.param("_get_fetched_track_monthly", CACHE_METADATA, id="monthly"),
+        pytest.param("_get_fetched_track_daily", CACHE_CHANGING_LISTING, id="daily"),
+    ],
+)
+async def test_fetched_tracks_keep_their_cache_time(
+    provider: BandcampProvider, mass_mock: Mock, cached_call: str, expiration: int
+) -> None:
+    """Each cache of a track fetched on its own stores its own cache time."""
+    with patch.object(
+        provider._client, "get_track", new_callable=AsyncMock, return_value=_api_track(None)
+    ):
+        await getattr(provider, cached_call)("123-0-789")
+        await _let_background_tasks_finish()
+
+    stored = mass_mock.cache.set.await_args
+    assert stored.kwargs["expiration"] == expiration
 
 
 async def test_get_track_not_found(provider: BandcampProvider) -> None:
