@@ -2266,7 +2266,8 @@ class AuthenticationManager:
         :param username: The username to check.
         :param user_id: The id of the user the name is for, None for a new user.
         """
-        user_row = await self.database.get_row("users", {"username": normalize_username(username)})
+        username = normalize_username(username)
+        user_row = await self.database.get_row("users", {"username": username})
         if user_row and user_row["user_id"] != user_id:
             raise InvalidDataError(
                 f"The username {username} is already in use", translation_key="username_taken"
