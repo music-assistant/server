@@ -71,7 +71,7 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     # an entry without a position still names its recording: one that a slot already
     # holds must not fall through to the title fallback and be listed twice
     unknown = [track for track in unknown if not usable_isrcs[id(track)].intersection(slot_by_isrc)]
-    slots.extend(_unplaced_additions(titles, unknown))
+    slots.extend(_unplaced_additions(titles, unknown, slots))
     return slots
 
 
@@ -162,12 +162,22 @@ def _preference(track: Track) -> tuple[bool, str, str]:
 
 
 def _unplaced_additions(
-    titles: dict[tuple[int, str, str], list[Track]], unknown: list[Track]
+    titles: dict[tuple[int, str, str], list[Track]], unknown: list[Track], slots: list[Track]
 ) -> list[Track]:
-    """Return the entries without a position that no other listing evidently already holds."""
+    """
+    Return the entries without a position that no other listing evidently already holds.
+
+    A playable one of them takes the slot, and the position, of an unplayable placed
+    entry with its title.
+
+    :param titles: The entries of every listing, library rows included, by title.
+    :param unknown: The provider entries without a position.
+    :param slots: The slots filled so far, a placed entry of which may be replaced.
+    """
     # Title fallback is only safe when each source supplies a single entry and
     # there is at most one known position. Repeated movements remain separate.
     suppressed: set[int] = set()
+    slot_of = {id(track): index for index, track in enumerate(slots)}
     for entries in titles.values():
         missing = [track for track in entries if not track.track_number]
         if not missing:
@@ -176,9 +186,15 @@ def _unplaced_additions(
         positions = {_position(track) for track in entries if track.track_number}
         if max(sources.values()) > 1 or len(positions) > 1:
             continue
-        if not any(track.provider == "library" or track.track_number for track in entries):
+        if not any(track.provider == "library" for track in entries):
             winner = min(missing, key=_preference)
-            missing = [track for track in missing if track is not winner]
+            placed = next((slot_of.get(id(track)) for track in entries if track.track_number), None)
+            if placed is None:
+                missing = [track for track in missing if track is not winner]
+            elif _preference(winner) < _preference(slots[placed]):
+                winner.disc_number = slots[placed].disc_number
+                winner.track_number = slots[placed].track_number
+                slots[placed] = winner
         # Distinct listing rows may compare equal as media items.
         suppressed.update(id(track) for track in missing)
     return [track for track in unknown if id(track) not in suppressed]
