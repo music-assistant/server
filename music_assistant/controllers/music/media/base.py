@@ -2563,7 +2563,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # instance and item id to pick the same mapping every time
         ordered_mappings = sorted(
             library_item.provider_mappings,
-            key=lambda x: (-x.priority, x.provider_instance, x.item_id),
+            key=lambda x: (not x.available, -x.priority, x.provider_instance, x.item_id),
         )
         user = get_current_user()
         visible_sources = visible_music_sources(self.mass, user) if user else None
