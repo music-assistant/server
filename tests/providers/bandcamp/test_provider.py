@@ -746,9 +746,10 @@ async def test_resolve_artist_item_id_falls_back_when_the_lookup_fails(
     ],
 )
 async def test_resolve_artist_item_id_falls_back_after_a_fetch_error(
-    provider: BandcampProvider, error: Exception
+    provider: BandcampProvider, error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A lookup that ends in a fetch error of the core gives the synthetic artist ID."""
+    """A failed lookup gives the synthetic artist ID and logs the reason at debug only."""
+    caplog.set_level(logging.DEBUG, logger=provider.logger.name)
     with patch.object(
         provider, "_lookup_performer_band_id", new_callable=AsyncMock, side_effect=error
     ):
@@ -757,6 +758,10 @@ async def test_resolve_artist_item_id_falls_back_after_a_fetch_error(
         )
 
     assert item_id == make_artist_id(4119123456, "Apollo Brown")
+    lookup_records = [
+        record for record in caplog.records if "performer band lookup failed" in record.message
+    ]
+    assert [record.levelno for record in lookup_records] == [logging.DEBUG]
 
 
 async def test_resolve_artist_item_id_lets_a_programming_error_out(

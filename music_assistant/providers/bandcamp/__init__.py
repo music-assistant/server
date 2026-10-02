@@ -761,8 +761,9 @@ class BandcampProvider(MusicProvider):
             real_band_id = await self._lookup_performer_band_id(performer)
         except (BandcampAPIError, *PROVIDER_FETCH_ERRORS) as error:
             # The lookup only finds the performer's own page, and the album data already
-            # arrived: keep the synthetic id, as the batch lookup does.
-            self.logger.warning("performer band lookup failed for %r: %r", performer, error)
+            # arrived: keep the synthetic id, as the batch lookup does. Log at debug, because
+            # a robot check repeats this for each album of a library sync.
+            self.logger.debug("performer band lookup failed for %r: %r", performer, error)
             real_band_id = None
         if real_band_id is not None:
             return str(real_band_id)
