@@ -101,9 +101,12 @@ def _set_library(
         for episode in result:
             yield episode
 
-    music_provider = Mock(spec=MusicProvider)
-    music_provider.get_podcast_episodes = get_podcast_episodes
-    _mass(provider).get_provider.return_value = music_provider
+    def get_provider(instance_id: str, **_kwargs: object) -> Mock:
+        music_provider = Mock(spec=MusicProvider, instance_id=instance_id, available=True)
+        music_provider.get_podcast_episodes = get_podcast_episodes
+        return music_provider
+
+    _mass(provider).get_provider.side_effect = get_provider
     _mass(provider).music.get_active_provider_instances.return_value = active
     _mass(provider).music.podcasts.iter_library_items = iter_library_items
 
@@ -164,7 +167,7 @@ async def test_refresh_uses_an_available_mapping(provider: LibraryRecommendation
     )
     await provider._refresh_latest_episodes()
     assert [x[1].item_id for x in provider._latest_episodes] == ["e1"]
-    _mass(provider).get_provider.assert_called_once_with("prov")
+    _mass(provider).get_provider.assert_called_once_with("prov", return_unavailable=True)
 
 
 async def test_play_history_wins_over_provider_state(
@@ -228,11 +231,11 @@ async def test_podcast_shown_through_any_mapping_the_user_can_use(
     """A podcast on several providers is kept for each, and shown once through one the user has."""
     episodes = {"mine": _episode("e_mine", "mine", 1), "theirs": _episode("e_theirs", "theirs", 1)}
 
-    def get_provider(instance_id: str) -> Mock:
+    def get_provider(instance_id: str, **_kwargs: object) -> Mock:
         async def get_podcast_episodes(_prov_item_id: str) -> AsyncIterator[PodcastEpisode]:
             yield episodes[instance_id]
 
-        music_provider = Mock(spec=MusicProvider)
+        music_provider = Mock(spec=MusicProvider, instance_id=instance_id, available=True)
         music_provider.get_podcast_episodes = get_podcast_episodes
         return music_provider
 

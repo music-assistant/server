@@ -17,6 +17,7 @@ from music_assistant_models.media_items import PodcastEpisode, RecommendationFol
 
 from music_assistant.controllers.tasks.context import update_current_task_progress_from_index
 from music_assistant.helpers.audio import get_probed_duration
+from music_assistant.helpers.provider_access import exact_provider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
@@ -388,7 +389,7 @@ class LibraryRecommendationsProvider(PluginProvider):
         :param prov_podcast_id: The podcast's item id on that provider.
         :param podcast_name: The podcast's name, for logging.
         """
-        prov = self.mass.get_provider(provider_instance)
+        prov = exact_provider(self.mass, provider_instance)
         if not isinstance(prov, MusicProvider):
             return None
         # read straight from the provider so only its own played state is kept,
