@@ -1375,6 +1375,46 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
         )
 
 
+async def test_create_user_api_refuses_taken_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that creating a user refuses a username another account has, also a disabled one."""
+    admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    disabled = await auth_manager.create_user_with_api(username="gone", password="password123")
+    await auth_manager.disable_user(disabled.user_id)
+
+    for username in (" Taken ", "gone"):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.create_user_with_api(username=username, password="password123")
+        assert excinfo.value.translation_key == "username_taken"
+
+
+async def test_update_user_profile_refuses_taken_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that renaming a user refuses a username another account has."""
+    admin = await auth_manager.create_user(username="renameadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    user = await auth_manager.create_user_with_api(username="renamer", password="password123")
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(
+            user_id=user.user_id, username="Taken", role=UserRole.ADMIN
+        )
+    assert excinfo.value.translation_key == "username_taken"
+    # the refused update leaves the other fields untouched
+    unchanged = await auth_manager.get_user(user.user_id)
+    assert unchanged is not None
+    assert unchanged.role == UserRole.USER
+
+    # the user's own name in another case is not taken
+    renamed = await auth_manager.update_user_profile(user_id=user.user_id, username="Renamer")
+    assert renamed.username == "renamer"
+
+
 async def test_logout(auth_manager: AuthenticationManager) -> None:
     """
     Test logout functionality.
