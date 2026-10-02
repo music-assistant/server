@@ -15,7 +15,10 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import PodcastEpisode, RecommendationFolder, UniqueList
 
-from music_assistant.controllers.tasks.context import update_current_task_progress_from_index
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+)
 from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.provider_access import exact_provider
 from music_assistant.models.music_provider import MusicProvider
@@ -398,6 +401,7 @@ class LibraryRecommendationsProvider(PluginProvider):
             episodes = [x async for x in prov.get_podcast_episodes(prov_podcast_id)]
         except MusicAssistantError as err:
             self.logger.debug("Skipping latest episode of %s: %s", podcast_name, err)
+            report_current_task_failure(f"{podcast_name}: {err}")
             return None
         latest = max(episodes, key=lambda x: x.position, default=None)
         if latest is None:
