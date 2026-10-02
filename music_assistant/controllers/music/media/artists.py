@@ -88,29 +88,43 @@ class ArtistsController(MediaControllerBase[Artist]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/artist_albums", self.albums, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/artist_albums",
+            self.albums,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/artist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_appears_on",
             self.appears_on,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
-            f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/top_tracks",
+            self.top_tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/top_albums", self.top_albums, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/top_albums",
+            self.top_albums,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_audiobooks",
             self.audiobooks,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/similar_artists",

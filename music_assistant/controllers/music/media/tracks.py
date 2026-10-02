@@ -125,10 +125,16 @@ class TracksController(MediaControllerBase[Track]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/track_versions", self.versions, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/track_versions",
+            self.versions,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/track_albums", self.albums, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/track_albums",
+            self.albums,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/preview", self.get_preview_url, required_scope=Scope.LIBRARY_READ

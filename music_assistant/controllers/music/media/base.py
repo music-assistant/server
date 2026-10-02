@@ -294,12 +294,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/get",
+            self.get,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_by_external_id",
             self.get_item_by_external_id,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_collection",
@@ -313,6 +317,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.get,
             required_scope=Scope.LIBRARY_READ,
             alias=True,
+            allow_impersonation=True,
         )
         self._register_update_command()
         self.mass.register_api_command(

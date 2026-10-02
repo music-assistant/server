@@ -314,3 +314,45 @@ async def test_get_item_builtin_playlist_instance_uses_playlist_controller() -> 
         provider_instance_id_or_domain="builtin_1",
         allow_update_metadata=True,
     )
+
+
+async def test_library_item_reads_allow_impersonation(mass: MusicAssistant) -> None:
+    """Every read of a single library item, or of its items, may run on behalf of a user."""
+    media_types = (
+        "artists",
+        "albums",
+        "tracks",
+        "playlists",
+        "radios",
+        "audiobooks",
+        "podcasts",
+        "genres",
+    )
+    commands = [
+        f"music/{plural}/{name}"
+        for plural in media_types
+        for name in ("get", "get_by_external_id", f"get_{plural.removesuffix('s')}")
+    ]
+    commands += [
+        "music/item",
+        "music/item_by_uri",
+        "music/get_library_item",
+        "music/track_by_name",
+        "music/albums/album_tracks",
+        "music/albums/album_versions",
+        "music/artists/artist_albums",
+        "music/artists/artist_tracks",
+        "music/artists/artist_appears_on",
+        "music/artists/top_tracks",
+        "music/artists/top_albums",
+        "music/artists/artist_audiobooks",
+        "music/tracks/track_versions",
+        "music/tracks/track_albums",
+        "music/playlists/playlist_tracks",
+        "music/podcasts/podcast_episodes",
+        "music/podcasts/podcast_episode",
+        "music/podcasts/podcast_versions",
+        "music/audiobooks/audiobook_versions",
+        "music/radios/radio_versions",
+    ]
+    assert [cmd for cmd in commands if not mass.command_handlers[cmd].allow_impersonation] == []

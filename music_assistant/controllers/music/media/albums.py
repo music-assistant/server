@@ -123,10 +123,16 @@ class AlbumsController(MediaControllerBase[Album]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/album_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/album_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/album_versions",
+            self.versions,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
 
     @property

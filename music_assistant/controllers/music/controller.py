@@ -1227,7 +1227,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return result
 
-    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item_by_uri(
         self, uri: str, allow_update_metadata: bool = False
     ) -> MediaItemType | BrowseFolder:
@@ -1254,7 +1254,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return [item for sublist in results_per_provider for item in sublist]
 
-    @api_command("music/item", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/item", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item(
         self,
         media_type: MediaType,
@@ -1341,7 +1341,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/get_library_item", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "music/get_library_item", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def get_library_item_by_prov_id(
         self,
         media_type: MediaType,
@@ -1927,7 +1929,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             await self.database.commit()
 
-    @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_track_by_name(
         self,
         track_name: str,

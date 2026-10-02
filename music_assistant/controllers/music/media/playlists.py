@@ -135,7 +135,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
-            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            "music/playlists/playlist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks",
