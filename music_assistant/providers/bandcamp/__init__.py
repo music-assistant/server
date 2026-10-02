@@ -887,7 +887,14 @@ class BandcampProvider(MusicProvider):
         if _has_stream(track):
             return track
         # A track without a stream can open any day, so it comes from the one-day cache
-        return await self._get_fetched_track_daily(prov_track_id)
+        try:
+            return await self._get_fetched_track_daily(prov_track_id)
+        except PROVIDER_FETCH_ERRORS as error:
+            # The 30-day answer already arrived, so a failed one-day request keeps it
+            self.logger.debug(
+                "Keeping the 30-day track %s: %s", prov_track_id, describe_sync_error(error)
+            )
+            return track
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
@@ -896,7 +903,14 @@ class BandcampProvider(MusicProvider):
             return tracks
         # A track without a stream can open any day, for example a preorder track before
         # or on its release, so such an album takes its listing from a one-day cache
-        return await self._get_album_tracks_daily(prov_album_id)
+        try:
+            return await self._get_album_tracks_daily(prov_album_id)
+        except PROVIDER_FETCH_ERRORS as error:
+            # The 30-day listing already arrived, so a failed one-day request keeps it
+            self.logger.debug(
+                "Keeping the 30-day listing of %s: %s", prov_album_id, describe_sync_error(error)
+            )
+            return tracks
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries

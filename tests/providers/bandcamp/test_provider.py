@@ -1822,6 +1822,71 @@ async def test_get_track_takes_a_fetched_track_without_a_stream_from_the_daily_c
     assert mock_daily.await_count == int(from_daily_cache)
 
 
+DAILY_REQUEST_ERRORS = [
+    pytest.param(InvalidDataError("robot check"), id="unusable_answer"),
+    pytest.param(RetriesExhausted("throttle exhausted"), id="retries_exhausted"),
+    pytest.param(MediaNotFoundError("gone"), id="not_found"),
+]
+
+
+@pytest.mark.parametrize("error", DAILY_REQUEST_ERRORS)
+async def test_get_album_tracks_keeps_the_30_day_listing_when_the_daily_one_fails(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A listing that already arrived is not lost when its one-day request fails."""
+    monthly = [_mapped_track("123-456-789"), _mapped_track("123-456-790", available=False)]
+    with (
+        patch.object(
+            provider, "_get_album_tracks_monthly", new_callable=AsyncMock, return_value=monthly
+        ),
+        patch.object(
+            provider, "_get_album_tracks_daily", new_callable=AsyncMock, side_effect=error
+        ),
+    ):
+        result = await provider.get_album_tracks("123-456")
+
+    assert result is monthly
+
+
+@pytest.mark.parametrize("error", DAILY_REQUEST_ERRORS)
+async def test_get_track_keeps_the_30_day_track_when_the_daily_one_fails(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A single that already arrived is not lost when its one-day request fails."""
+    monthly = _mapped_track("123-0-789", available=False)
+    with (
+        patch.object(
+            provider, "_get_fetched_track_monthly", new_callable=AsyncMock, return_value=monthly
+        ),
+        patch.object(
+            provider, "_get_fetched_track_daily", new_callable=AsyncMock, side_effect=error
+        ),
+    ):
+        result = await provider._get_track_base("123-0-789")
+
+    assert result is monthly
+
+
+async def test_get_album_tracks_lets_a_login_failure_of_the_daily_listing_out(
+    provider: BandcampProvider,
+) -> None:
+    """A login failure is not a passing fault, so it still reaches the caller."""
+    monthly = [_mapped_track("123-456-789", available=False)]
+    with (
+        patch.object(
+            provider, "_get_album_tracks_monthly", new_callable=AsyncMock, return_value=monthly
+        ),
+        patch.object(
+            provider,
+            "_get_album_tracks_daily",
+            new_callable=AsyncMock,
+            side_effect=LoginFailed("expired"),
+        ),
+        pytest.raises(LoginFailed),
+    ):
+        await provider.get_album_tracks("123-456")
+
+
 @pytest.mark.parametrize(
     ("cached_call", "expiration"),
     [
