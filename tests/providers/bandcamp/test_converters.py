@@ -217,6 +217,31 @@ def test_track_from_collection(
     assert album == expected_album
 
 
+@pytest.mark.parametrize(
+    ("num_streamable_tracks", "available"),
+    [
+        pytest.param(0, False, id="no_stream"),
+        pytest.param(1, True, id="streams"),
+        pytest.param(None, True, id="no_count"),
+    ],
+)
+def test_track_from_collection_follows_the_stream_count(
+    converters: BandcampConverters, num_streamable_tracks: int | None, available: bool
+) -> None:
+    """A track entry that Bandcamp does not stream is unavailable, and one without a count is."""
+    item = CollectionItem(
+        item_type="track",
+        item_id=789,
+        band_id=123,
+        item_title="Track",
+        num_streamable_tracks=num_streamable_tracks,
+    )
+
+    result = converters.track_from_collection(item)
+
+    assert [mapping.available for mapping in result.provider_mappings] == [available]
+
+
 def test_artist_from_following(converters: BandcampConverters) -> None:
     """A following entry gives the same ID, name, URL and URI as the band request."""
     item = FollowingItem(

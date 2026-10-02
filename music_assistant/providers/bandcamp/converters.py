@@ -274,6 +274,9 @@ class BandcampConverters:
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=item.item_url,
+                    # Bandcamp counts the tracks that stream, so a hidden or a preorder track
+                    # has 0. An entry without the count stays available.
+                    available=item.num_streamable_tracks != 0,
                 )
             },
         )
