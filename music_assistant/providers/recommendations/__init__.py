@@ -6,12 +6,18 @@ Surfaces library-based discovery rows as recommendations on the Discover page.
 
 from __future__ import annotations
 
+from copy import copy
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.media_items import RecommendationFolder, UniqueList
+from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import PodcastEpisode, RecommendationFolder, UniqueList
 
+from music_assistant.controllers.tasks.context import update_current_task_progress_from_index
+from music_assistant.helpers.audio import get_probed_duration
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -31,6 +37,9 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.RECOMMENDATIONS,
 }
+
+LATEST_EPISODES_TASK_ID: Final[str] = "recommendations_refresh_latest_episodes"
+LATEST_EPISODES_CACHE_KEY: Final[str] = "latest_episodes"
 
 
 class LibraryRowID(StrEnum):
@@ -52,6 +61,7 @@ class LibraryRowID(StrEnum):
     FORGOTTEN_ARTISTS = "forgotten_artists"
     MOST_PLAYED_TRACKS = "most_played_tracks"
     NEVER_PLAYED_TRACKS = "never_played_tracks"
+    LATEST_EPISODES = "latest_episodes"
 
 
 async def setup(
@@ -73,6 +83,30 @@ async def get_config_entries(
 
 class LibraryRecommendationsProvider(PluginProvider):
     """Builtin provider for library-based recommendation rows."""
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        cached = await self.mass.cache.get(
+            LATEST_EPISODES_CACHE_KEY, provider=self.instance_id, base_class=PodcastEpisode
+        )
+        self._latest_episodes: list[PodcastEpisode] = cached or []
+        self.mass.tasks.register_scheduled_task(
+            task_id=LATEST_EPISODES_TASK_ID,
+            name="Refresh latest podcast episodes",
+            handler=self._refresh_latest_episodes,
+            schedule=TaskSchedule.hourly(every=6),
+            # runs this long after startup when the task is overdue or never ran,
+            # giving the podcast providers time to finish loading
+            initial_delay=20,
+            translation_key="refresh_latest_episodes",
+            translation_owner=self.translation_owner,
+        )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider."""
+        self.mass.tasks.unregister_scheduled_task(
+            LATEST_EPISODES_TASK_ID, clear_persisted_state=is_removed
+        )
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get all library recommendation rows, without items."""
@@ -98,6 +132,12 @@ class LibraryRecommendationsProvider(PluginProvider):
                 "Recently added albums",
                 "recently_added_albums",
                 "mdi-album",
+            ),
+            _folder(
+                LibraryRowID.LATEST_EPISODES,
+                "Latest podcast episodes",
+                "latest_episodes",
+                "mdi-podcast",
             ),
             _folder(
                 LibraryRowID.RANDOM_ARTISTS,
@@ -277,9 +317,74 @@ class LibraryRecommendationsProvider(PluginProvider):
                 items = await self.mass.music.tracks.library_items(
                     limit=10, order_by="play_count", reachable_via=providers
                 )
+            case LibraryRowID.LATEST_EPISODES:
+                items = await self._get_latest_episodes(providers)
             case _:
                 items = []
         return UniqueList(items)
+
+    async def _get_latest_episodes(self, providers: list[str] | None) -> list[PodcastEpisode]:
+        """Return the stored latest episodes, with the current user's played state."""
+        allowed = set(self.mass.music.get_active_provider_instances())
+        if providers is not None:
+            allowed.intersection_update(providers)
+        result: list[PodcastEpisode] = []
+        for stored in self._latest_episodes:
+            if stored.provider not in allowed:
+                continue
+            # MA's own play history wins, the state the provider reported at the last
+            # refresh covers progress made outside MA
+            episode = copy(stored)
+            episode.fully_played = None
+            episode.resume_position_ms = None
+            await self.mass.music.podcasts.restore_resume_position(episode, episode.provider)
+            if episode.fully_played is None and not episode.resume_position_ms:
+                episode.fully_played = stored.fully_played
+                episode.resume_position_ms = stored.resume_position_ms
+            result.append(episode)
+        return result
+
+    async def _refresh_latest_episodes(self) -> None:
+        """Store the newest episode of every library podcast, newest release first."""
+        active_providers = set(self.mass.music.get_active_provider_instances())
+        podcasts = [x async for x in self.mass.music.podcasts.iter_library_items()]
+        latest_episodes: list[PodcastEpisode] = []
+        for index, podcast in enumerate(podcasts):
+            update_current_task_progress_from_index(index, len(podcasts), podcast.name)
+            mapping = next(
+                (x for x in podcast.provider_mappings if x.provider_instance in active_providers),
+                None,
+            )
+            if mapping is None:
+                continue
+            prov = self.mass.get_provider(mapping.provider_instance)
+            if not isinstance(prov, MusicProvider):
+                continue
+            # read straight from the provider so only its own played state is kept,
+            # never the playlog of whichever user the controller would fall back to
+            try:
+                episodes = [x async for x in prov.get_podcast_episodes(mapping.item_id)]
+            except MusicAssistantError as err:
+                self.logger.debug("Skipping latest episode of %s: %s", podcast.name, err)
+                continue
+            latest = max(episodes, key=lambda x: x.position, default=None)
+            if latest is None:
+                continue
+            if (
+                not latest.duration
+                and latest.uri
+                and (probed_duration := await get_probed_duration(self.mass, latest.uri))
+            ):
+                latest.duration = probed_duration
+            latest_episodes.append(latest)
+        latest_episodes.sort(key=_release_timestamp, reverse=True)
+        self._latest_episodes = latest_episodes
+        await self.mass.cache.set(
+            LATEST_EPISODES_CACHE_KEY,
+            [x.to_dict() for x in latest_episodes],
+            provider=self.instance_id,
+            persistent=True,
+        )
 
 
 def _folder(
@@ -300,3 +405,9 @@ def _folder(
         uri=f"library://folder/{item_id.value}",
         supports_provider_filter=True,
     )
+
+
+def _release_timestamp(episode: PodcastEpisode) -> float:
+    """Return the release date of an episode as a timestamp, 0 when undated."""
+    release_date = episode.metadata.release_date
+    return release_date.timestamp() if release_date else 0

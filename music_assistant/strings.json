@@ -1074,6 +1074,9 @@
       "in_progress_items": {
         "name": "In progress"
       },
+      "latest_episodes": {
+        "name": "Latest podcast episodes"
+      },
       "random_albums": {
         "name": "Random albums"
       },
