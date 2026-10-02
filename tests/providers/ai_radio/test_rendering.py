@@ -36,6 +36,7 @@ from music_assistant.helpers.tags import AudioTags
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_ALLOW_POST,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
@@ -54,7 +55,7 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_SPEECHNORM_FILTER,
 )
 from music_assistant.providers.ai_radio.models import SessionState
-from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
+from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin, _PostPlan
 
 
 class DummyRenderer(AIRadioRenderMixin):
@@ -347,6 +348,23 @@ async def test_expired_cache_entries_are_pruned_on_the_next_mint() -> None:
     await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
 
     assert set(media_cache) == {"sess_002"}
+
+
+async def test_post_plans_are_pruned_with_their_expired_media(tmp_path: Path) -> None:
+    """A clip whose media died can never air its planned post, so the plan and copy go too."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    _attach_queue(renderer, [_clip_item("sess_001"), _clip_item("sess_002")])
+    staged = tmp_path / "ma_ai_radio_post_expired.wav"
+    staged.write_bytes(b"voice")
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    expired_plan = SimpleNamespace(staged=str(staged))
+    cast("Any", renderer)._post_plans = {"sess_001": expired_plan, "sess_003": None}
+    cast("Any", renderer)._media_cache["sess_001"].minted_at -= CLIP_STREAMDETAILS_EXPIRATION + 1
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert set(cast("Any", renderer)._post_plans) == {"sess_003"}
+    assert not staged.exists()
 
 
 async def test_render_tts_media_passes_the_locale_as_language() -> None:
@@ -1068,6 +1086,37 @@ async def test_the_levelled_clip_does_not_hand_out_the_shared_pcm_format() -> No
 
     assert streamdetails.decoded_audio_format == TTS_CLIP_PCM_FORMAT
     assert streamdetails.decoded_audio_format is not TTS_CLIP_PCM_FORMAT
+
+
+async def test_a_break_planned_to_carry_over_leaves_the_cut_to_the_audio_stage() -> None:
+    """The plan travels with the clip as minted, so the break can still air whole later."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    item = _clip_item("sess_001")
+    item.extra_attributes[ATTR_ALLOW_POST] = True
+    _attach_queue(renderer, [item])
+    _attach_normalization(renderer, target=-14, boost=3)
+    plan = _PostPlan(
+        head=7.6,
+        overlap=11.6,
+        staged="/data/ma_ai_radio_post_staged.wav",
+        queue_id="player_a",
+        clip_item_id="qi_sess_001",
+        track_item_id="qi_song",
+        track_name="Song",
+    )
+    cast("Any", renderer)._plan_post = AsyncMock(return_value=plan)
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    # reported as the length it airs for once cut, which is what it does unless the plan
+    # falls through before the airing
+    assert streamdetails.duration == 8
+    assert streamdetails.stream_type == StreamType.CUSTOM
+    assert streamdetails.decoded_audio_format == TTS_CLIP_PCM_FORMAT
+    assert streamdetails.data.post is plan
+    assert streamdetails.data.path == streamdetails.path
+    assert streamdetails.data.gain_db == pytest.approx(7.0)
 
 
 # verbatim ffmpeg 7.1 output, so the parsing this depends on is covered for real
