@@ -1396,14 +1396,14 @@ class BandcampProvider(MusicProvider):
     # background
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def _get_album_tracks_monthly(self, prov_album_id: str) -> list[Track]:
-        """Get the tracks of an album from the cache of an album that does not change."""
+        """Get the tracks of an album, refreshed every 30 days."""
         return await self._fetch_album_tracks(prov_album_id)
 
     @use_cache(
         CACHE_CHANGING_LISTING, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
     )
     async def _get_album_tracks_daily(self, prov_album_id: str) -> list[Track]:
-        """Get the tracks of an album from the cache of an album that can change soon."""
+        """Get the tracks of an album, refreshed every day."""
         return await self._fetch_album_tracks(prov_album_id)
 
     @throttle_with_retries
@@ -1423,17 +1423,17 @@ class BandcampProvider(MusicProvider):
             performer=api_album.tralbum_artist,
             band_name=api_album.artist.name,
         )
+        # A track can have a cover of its own, which then replaces the album cover. A track
+        # without a streaming URL stays in the listing, marked unavailable.
         return [
             self._converters.track_from_api(
                 track=track,
                 album_id=album_id,
                 album_name=api_album.title,
-                # A track can have a cover of its own, which then replaces the album cover.
                 album_image_url=track.art_url or api_album.art_url or "",
                 tralbum_artist=api_album.tralbum_artist,
                 artist_item_id=artist_item_id,
             )
-            # A track without a streaming URL stays in the listing, marked unavailable
             for track in api_album.tracks
         ]
 
