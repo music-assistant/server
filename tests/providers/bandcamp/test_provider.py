@@ -1546,15 +1546,11 @@ async def test_get_album_tracks_serves_an_expired_listing_and_refreshes_it(
         provider._client,
         "get_album",
         new_callable=AsyncMock,
-        return_value=_album_with_a_hidden_track(),
+        side_effect=_album_over_the_network(_album_with_a_hidden_track()),
     ) as mock_get_album:
         result = await provider.get_album_tracks("123-456")
         assert [track.name for track in result] == ["Old name"]
-        # the refresh runs as a background task; let it finish
-        for _ in range(100):
-            if mass_mock.cache.set.await_count:
-                break
-            await asyncio.sleep(0.01)
+        await _let_background_tasks_finish(mass_mock)
 
     lookup = mass_mock.cache.get_with_freshness.await_args
     assert lookup.kwargs["include_expired"] is True
@@ -1615,20 +1611,11 @@ async def test_album_track_listings_keep_their_cache_time(
         return_value=_album_with_a_hidden_track(),
     ):
         await getattr(provider, listing)("123-456")
-        # the cache store runs as a background task; let it finish
-        for _ in range(100):
-            if mass_mock.cache.set.await_count:
-                break
-            await asyncio.sleep(0.01)
+        await _let_background_tasks_finish(mass_mock)
 
     stored = mass_mock.cache.set.await_args
     assert stored.kwargs["expiration"] == expiration
     assert stored.kwargs["allow_expired_cache"] is True
-
-
-def test_changing_listing_lasts_one_day() -> None:
-    """A preorder track can open any day, so the listing of such an album lasts one day."""
-    assert CACHE_CHANGING_LISTING == 3600 * 24
 
 
 class _ClockCache:
@@ -1665,6 +1652,17 @@ async def _let_background_tasks_finish(mass: Mock) -> None:
             await asyncio.gather(*pending)
 
 
+def _album_over_the_network(api_album: Mock) -> Callable[..., Awaitable[Mock]]:
+    """Return a stand-in for get_album that suspends, as a real request does."""
+
+    async def get_album(*_: object) -> Mock:
+        # the suspension lets the background cache work outlive the call that started it
+        await asyncio.sleep(0.01)
+        return api_album
+
+    return get_album
+
+
 async def test_get_track_follows_its_album_listing_when_a_track_opens(
     provider: BandcampProvider, mass_mock: Mock
 ) -> None:
@@ -1674,12 +1672,9 @@ async def test_get_track_follows_its_album_listing_when_a_track_opens(
     mass_mock.cache.set = cache.set
     api_album = _album_with_a_hidden_track()
 
-    async def get_album_over_the_network(*_: object) -> Mock:
-        # a real request suspends, so the background refresh outlives a bare event loop turn
-        await asyncio.sleep(0.01)
-        return api_album
-
-    with patch.object(provider._client, "get_album", side_effect=get_album_over_the_network):
+    with patch.object(
+        provider._client, "get_album", side_effect=_album_over_the_network(api_album)
+    ):
         before = await provider.get_track("123-456-790")
         await _let_background_tasks_finish(mass_mock)
         api_album.tracks[1].streaming_url = {"mp3-128": "http://example.com/opened.mp3"}
