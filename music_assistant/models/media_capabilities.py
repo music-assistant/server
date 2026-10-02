@@ -146,7 +146,7 @@ class RecommendationsMixin(Provider):
         return UniqueList()
 
 
-class DiscoveryMixin(Provider):
+class RelatedItemsMixin(Provider):
     """
     Methods of a provider that finds items related to a given (library) item.
 

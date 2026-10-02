@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
 
-from .media_capabilities import DiscoveryMixin, RecommendationsMixin
+from .media_capabilities import RecommendationsMixin, RelatedItemsMixin
 from .provider import Provider
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     )
 
 
-class MetadataProvider(RecommendationsMixin, DiscoveryMixin, Provider):
+class MetadataProvider(RecommendationsMixin, RelatedItemsMixin, Provider):
     """
     Base representation of a Metadata Provider (controller).
 
