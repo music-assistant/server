@@ -68,7 +68,11 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    describe_sync_error,
+)
 
 from ._ids import make_artist_id, parse_artist_id, slugify_performer
 from .constants import (
@@ -311,8 +315,17 @@ class BandcampProvider(MusicProvider):
                     # didn't make the cap; re-introducing it here would surface
                     # a band the user wasn't searching for.
                     continue
-                with suppress(*PROVIDER_FETCH_ERRORS):
-                    results.artists = [*results.artists, await self.get_artist(artist_item_id)]
+                try:
+                    artist = await self.get_artist(artist_item_id)
+                except PROVIDER_FETCH_ERRORS as error:
+                    # One failed artist must not discard the rest of the search results
+                    self.logger.debug(
+                        "Skipping artist %s of the search: %s",
+                        artist_item_id,
+                        describe_sync_error(error),
+                    )
+                    continue
+                results.artists = [*results.artists, artist]
 
         if synthetic_artists:
             results.artists = [*results.artists, *synthetic_artists][:limit]

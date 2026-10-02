@@ -764,9 +764,10 @@ async def test_get_album_keeps_a_label_release_when_the_lookup_fails(
 
 @pytest.mark.parametrize("error", LOOKUP_ERRORS)
 async def test_search_keeps_its_results_when_an_artist_fetch_fails(
-    provider: BandcampProvider, error: Exception
+    provider: BandcampProvider, error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A failed fetch of a performer's own page drops only that artist from the search."""
+    """A failed fetch of a performer's own page drops only that artist, and logs why."""
+    caplog.set_level(logging.DEBUG, logger=provider.logger.name)
     label_id = 4119123456
     apollo_band_id = 3658985110
     label_band = _search_artist_mock(artist_id=label_id, name="Hip Dozer", is_label=True)
@@ -791,6 +792,10 @@ async def test_search_keeps_its_results_when_an_artist_fetch_fails(
     artist_ids = {artist.item_id for artist in results.artists}
     assert str(label_id) in artist_ids
     assert str(apollo_band_id) not in artist_ids
+    assert any(
+        f"Skipping artist {apollo_band_id} of the search" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 async def test_search_without_identity(provider: BandcampProvider) -> None:
