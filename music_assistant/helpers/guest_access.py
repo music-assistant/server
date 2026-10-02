@@ -8,10 +8,15 @@ join URL that guests open on their own device.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.models.plugin import GuestSession, PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -19,10 +24,48 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
+GUEST_SESSION_TIMEOUT = 5.0
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.guest_access")
 
 # Owner id prefixes, naming the kind of authorization a credential is bound to
 GUEST_OWNER_PREFIX = "guest-"
 USER_OWNER_PREFIX = "user-"
+
+
+async def get_active_guest_sessions(mass: MusicAssistant) -> list[GuestSession]:
+    """
+    Return active guest sessions from loaded plugins in a stable order.
+
+    A failing plugin is skipped so one optional guest experience cannot break consumers
+    of another one.
+
+    :param mass: MusicAssistant instance.
+    """
+    sessions: list[GuestSession] = []
+    providers = sorted(
+        (
+            provider
+            for provider in mass.providers
+            if isinstance(provider, PluginProvider) and provider.available
+        ),
+        key=lambda provider: provider.instance_id,
+    )
+
+    async def fetch_session(provider: PluginProvider) -> GuestSession | None:
+        """Return one plugin's session without allowing it to break discovery."""
+        try:
+            async with asyncio.timeout(GUEST_SESSION_TIMEOUT):
+                return await provider.get_active_guest_session()
+        except Exception as err:
+            LOGGER.warning(
+                "Could not retrieve guest session from %s: %s", provider.instance_id, err
+            )
+            return None
+
+    for session in await asyncio.gather(*(fetch_session(provider) for provider in providers)):
+        if session is not None:
+            sessions.append(session)
+    return sessions
 
 
 async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_name: str) -> User:
