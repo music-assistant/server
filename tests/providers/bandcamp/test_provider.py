@@ -2371,6 +2371,55 @@ async def test_get_artist_toptracks_success(provider: BandcampProvider) -> None:
         mock_get_albums.assert_called_once_with("123")
 
 
+def _mapped_track(item_id: str, *, available: bool = True) -> Track:
+    """Build a track whose Bandcamp mapping has the given availability."""
+    return Track(
+        item_id=item_id,
+        provider="bandcamp_test",
+        name=item_id,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="bandcamp",
+                provider_instance="bandcamp_test",
+                available=available,
+            )
+        },
+    )
+
+
+async def test_get_artist_toptracks_skips_tracks_without_a_stream(
+    provider: BandcampProvider,
+) -> None:
+    """Tracks without a stream do not take the places of playable top tracks."""
+    preorder = Mock(item_id="1-20", year=2026)
+    older = Mock(item_id="1-10", year=2024)
+    listings = {
+        "1-20": [
+            _mapped_track("1-20-1"),
+            _mapped_track("1-20-2", available=False),
+            _mapped_track("1-20-3", available=False),
+        ],
+        "1-10": [_mapped_track("1-10-1"), _mapped_track("1-10-2"), _mapped_track("1-10-3")],
+    }
+    provider.top_tracks_limit = 3
+
+    with (
+        patch.object(
+            provider, "get_artist_albums", new_callable=AsyncMock, return_value=[older, preorder]
+        ),
+        patch.object(
+            provider,
+            "get_album_tracks",
+            new_callable=AsyncMock,
+            side_effect=lambda album_id: listings[album_id],
+        ),
+    ):
+        result = await provider.get_artist_toptracks("1")
+
+    assert [track.item_id for track in result] == ["1-20-1", "1-10-1", "1-10-2"]
+
+
 async def test_get_library_artists_success(provider: BandcampProvider) -> None:
     """Test successful library artists retrieval."""
     collection_items = [

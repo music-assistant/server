@@ -1037,7 +1037,10 @@ class BandcampProvider(MusicProvider):
         albums = await self.get_artist_albums(prov_artist_id)
         albums.sort(key=lambda album: (album.year is None, album.year or 0), reverse=True)
         for album in albums:
-            tracks.extend(await self.get_album_tracks(album.item_id))
+            # A track without a stream, for example of a preorder, must not take the place
+            # of a playable top track
+            album_tracks = await self.get_album_tracks(album.item_id)
+            tracks.extend(track for track in album_tracks if track.available)
             if len(tracks) >= self.top_tracks_limit:
                 break
 
