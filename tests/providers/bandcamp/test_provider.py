@@ -4274,6 +4274,41 @@ async def test_get_all_collection_items_raises_on_a_token_loop_when_complete(
 
 
 @pytest.mark.parametrize(
+    ("require_complete", "raises"),
+    [
+        pytest.param(True, True, id="library_sync"),
+        pytest.param(False, False, id="browse"),
+    ],
+)
+async def test_get_all_collection_items_without_a_next_page_token(
+    provider: BandcampProvider, require_complete: bool, raises: bool
+) -> None:
+    """A page that has more items but no token fails a library sync and ends a browse list."""
+    page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)], has_more=True, last_token=None
+    )
+
+    with patch.object(
+        provider, "_fetch_collection_page", new_callable=AsyncMock, return_value=page
+    ) as mock_get:
+        if raises:
+            with pytest.raises(ResourceTemporarilyUnavailable, match="no page token"):
+                await provider._get_all_collection_items(
+                    CollectionType.COLLECTION, require_complete=require_complete
+                )
+        else:
+            result = await provider._get_all_collection_items(
+                CollectionType.COLLECTION, require_complete=require_complete
+            )
+            assert len(result) == 1
+
+    assert mock_get.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "last_token", [pytest.param("same_token_forever", id="repeated"), pytest.param(None, id="none")]
+)
+@pytest.mark.parametrize(
     ("library_method", "item_method"),
     [
         ("get_library_artists", "get_artist"),
@@ -4281,14 +4316,14 @@ async def test_get_all_collection_items_raises_on_a_token_loop_when_complete(
         ("get_library_tracks", "get_album_tracks"),
     ],
 )
-async def test_library_sync_stops_on_a_token_loop(
-    provider: BandcampProvider, library_method: str, item_method: str
+async def test_library_sync_stops_on_a_broken_page_token(
+    provider: BandcampProvider, library_method: str, item_method: str, last_token: str | None
 ) -> None:
-    """A library sync fails on a repeated page token, so the core deletes no library item."""
+    """A library sync fails on a repeated or a missing page token, so nothing is deleted."""
     stuck_page = _make_collection_page(
         [Mock(item_type="album", item_id=1, band_id=10)],
         has_more=True,
-        last_token="same_token_forever",
+        last_token=last_token,
     )
 
     with (

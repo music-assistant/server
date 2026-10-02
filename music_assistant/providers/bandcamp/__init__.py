@@ -547,11 +547,12 @@ class BandcampProvider(MusicProvider):
 
         :param collection_type: The type of collection to fetch.
         :param fan_id: Fan ID to query. None = authenticated user.
-        :param require_complete: Raise when Bandcamp repeats a page token, instead of
-            returning the pages fetched so far. A library sync needs this: it takes each
-            item that is missing from a short list as removed from the library.
+        :param require_complete: Raise when Bandcamp repeats a page token or gives none for
+            the next page, instead of returning the pages fetched so far. A library sync
+            needs this: it takes each item that is missing from a short list as removed from
+            the library.
         :raises ResourceTemporarilyUnavailable: If require_complete is set and Bandcamp
-            repeats a page token.
+            repeats a page token or gives no token for the next page.
         """
         all_items: list[CollectionItem | FollowingItem | FanItem] = []
         older_than_token: str | None = None
@@ -567,7 +568,14 @@ class BandcampProvider(MusicProvider):
                 page.last_token,
                 len(all_items),
             )
-            if not page.has_more or not page.last_token:
+            if not page.has_more:
+                break
+            if not page.last_token:
+                if require_complete:
+                    raise ResourceTemporarilyUnavailable(
+                        "Bandcamp gave no page token for the rest of the "
+                        f"{collection_type.value} list, so the list is incomplete"
+                    )
                 break
             if page.last_token in seen_tokens:
                 if require_complete:
