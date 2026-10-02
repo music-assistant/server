@@ -161,6 +161,11 @@ class Music247eProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
 
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a dynamic list of similar artists based on the provided artist."""
+        return await self.media.get_similar_artists(prov_artist_id, limit)
+
     @use_cache(3600 * 24 * 180)  # Cache for 180 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""

@@ -290,6 +290,40 @@ class Music247eMediaManager:
 
         return tracks
 
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a dynamic list of similar artists based on the provided artist."""
+        query = """
+            query similarArtists($id: ID!, $first: Int = 25, $imageSize: Int = 512) {
+                catalog {
+                    artist(id: $id) {
+                        similarArtists(first: $first) {
+                            items {
+                                id
+                                title
+                                cover(size: $imageSize)
+                                share
+                            }
+                        }
+                    }
+                }
+            }
+        """
+
+        variables = {
+            "id": prov_artist_id,
+            "first": limit,
+            "imageSize": IMAGE_SIZE,
+        }
+        result = await self.api.post_graphql(query, variables)
+        artist = result.get("data", {}).get("catalog", {}).get("artist") if result else None
+        if not artist:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+
+        return [
+            parse_artist(self.provider, item)
+            for item in artist.get("similarArtists", {}).get("items", [])
+        ]
+
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         query = """
