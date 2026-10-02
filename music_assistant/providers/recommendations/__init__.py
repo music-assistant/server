@@ -330,7 +330,9 @@ class LibraryRecommendationsProvider(PluginProvider):
             allowed.intersection_update(providers)
         result: list[PodcastEpisode] = []
         for stored in self._latest_episodes:
-            if stored.provider not in allowed:
+            if stored.provider not in allowed and not any(
+                mapping.provider_instance in allowed for mapping in stored.provider_mappings
+            ):
                 continue
             # MA's own play history wins, the state the provider reported at the last
             # refresh covers progress made outside MA
