@@ -21,7 +21,9 @@ frontend-version extraction even if the branch advances during the run.
 Automatic versions come from Git tags, not release records. The workflow validates the
 previous channel tag's relationship to `source_sha` and counts its Git commit range.
 Deleted release records therefore cannot make a tag/version reusable. Stable automatic
-releases continue to increment the patch component only. Nightlies require at least two
+releases continue to increment the patch component only. A stable auto-release fails
+early while an RC newer than the latest stable tag exists; dispatch the next stable
+release manually via the Create Release workflow instead. Nightlies require at least two
 commits after the previous nightly tag.
 
 ## Publishing sequence
