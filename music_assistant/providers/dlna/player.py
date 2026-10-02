@@ -212,7 +212,8 @@ class DLNAPlayer(Player):
                     name="Spotify",
                     passive=True,
                     can_play_pause=self.device.has_pause,
-                    can_seek=self.device.has_seek_rel_time,
+                    # pause/next/previous are force-called, seek follows the live transport actions
+                    can_seek=self.device.can_seek_rel_time,
                     can_next_previous=self.device.has_next and self.device.has_previous,
                 )
             ]

@@ -243,6 +243,7 @@ async def test_spotify_connect_is_exposed_as_controllable_source(capable: bool) 
         has_next=capable,
         has_previous=capable,
         has_seek_rel_time=capable,
+        can_seek_rel_time=capable,
     )
 
     assert player.active_source == "spotify"
@@ -253,6 +254,17 @@ async def test_spotify_connect_is_exposed_as_controllable_source(capable: bool) 
     assert source.can_play_pause
     assert source.can_next_previous is capable
     assert source.can_seek is capable
+
+
+async def test_spotify_seek_follows_live_transport_actions() -> None:
+    """Seek isn't offered while the device leaves Seek out of its current transport actions."""
+    player = await _updated_player(
+        current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+        has_seek_rel_time=True,
+        can_seek_rel_time=False,
+    )
+
+    assert player.source_list[0].can_seek is False
 
 
 async def test_spotify_source_is_dropped_when_the_session_ends() -> None:
