@@ -1212,6 +1212,9 @@ class BandcampProvider(MusicProvider):
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampUnexpectedResponseError as error:
+            if error.status is not None and error.status >= 500:
+                # An error page of Bandcamp or of its proxy: the outage can end, so retry it
+                raise ResourceTemporarilyUnavailable(f"{context}: {error}") from error
             # Most often the robot check page that Bandcamp sends with HTTP 200. The user sees
             # the translated text, and the log keeps the context.
             raise InvalidDataError(

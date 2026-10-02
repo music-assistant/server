@@ -921,6 +921,40 @@ async def test_unusable_answer_gives_the_translated_error(
     assert exc.value.__cause__ is error
 
 
+@pytest.mark.parametrize("status", [500, 503])
+async def test_a_server_error_page_is_temporary(provider: BandcampProvider, status: int) -> None:
+    """An error page of the server can go away, so it gives a temporary error."""
+    error = BandcampUnexpectedResponseError("not usable JSON. Try again later.", status=status)
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc:
+        async with provider._map_api_errors("Failed to get album 456"):
+            raise error
+    assert str(exc.value) == f"Failed to get album 456: {error}"
+    assert exc.value.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome", "attempts"),
+    [
+        pytest.param(503, RetriesExhausted, 5, id="server_error"),
+        pytest.param(None, InvalidDataError, 1, id="robot_check"),
+        pytest.param(404, InvalidDataError, 1, id="client_error"),
+    ],
+)
+async def test_get_album_retries_only_a_server_error_page(
+    provider: BandcampProvider, status: int | None, outcome: type[Exception], attempts: int
+) -> None:
+    """A server error page gets the retries, and a page that repeats on each attempt does not."""
+    error = BandcampUnexpectedResponseError("not usable JSON", status=status)
+    with (
+        patch.object(provider._client, "get_album", side_effect=error) as mock_get_album,
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(outcome),
+    ):
+        await provider.get_album("123-456")
+
+    assert mock_get_album.call_count == attempts
+
+
 async def test_get_artist_success(provider: BandcampProvider) -> None:
     """Test successful artist retrieval."""
     mock_artist = Mock()
