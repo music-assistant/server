@@ -119,10 +119,10 @@ async def test_task_registered_every_six_hours(provider: LibraryRecommendationsP
 
 async def test_cached_row_loaded_at_startup(provider: LibraryRecommendationsProvider) -> None:
     """A cached row is served from startup on."""
-    cached = [_episode("e1", "prov", 1)]
-    _mass(provider).cache.get.return_value = cached
+    episode = _episode("e1", "prov", 1)
+    _mass(provider).cache.get.return_value = [{"podcast_id": "pod", "episode": episode.to_dict()}]
     await provider.handle_async_init()
-    assert provider._latest_episodes == cached
+    assert provider._latest_episodes == [("pod", episode)]
 
 
 async def test_refresh_picks_latest_and_orders_by_release_date(
@@ -142,7 +142,7 @@ async def test_refresh_picks_latest_and_orders_by_release_date(
         },
     )
     await provider._refresh_latest_episodes()
-    assert [x.item_id for x in provider._latest_episodes] == ["n1", "o2", "u2"]
+    assert [x[1].item_id for x in provider._latest_episodes] == ["n1", "o2", "u2"]
 
 
 async def test_refresh_skips_failing_podcast(provider: LibraryRecommendationsProvider) -> None:
@@ -152,7 +152,7 @@ async def test_refresh_skips_failing_podcast(provider: LibraryRecommendationsPro
         {"broken": ProviderUnavailableError("gone"), "ok": [_episode("e1", "prov", 1)]},
     )
     await provider._refresh_latest_episodes()
-    assert [x.item_id for x in provider._latest_episodes] == ["e1"]
+    assert [x[1].item_id for x in provider._latest_episodes] == ["e1"]
 
 
 async def test_refresh_uses_an_available_mapping(provider: LibraryRecommendationsProvider) -> None:
@@ -163,7 +163,7 @@ async def test_refresh_uses_an_available_mapping(provider: LibraryRecommendation
         mappings={"linked": ["down", "prov"], "offline": ["down"]},
     )
     await provider._refresh_latest_episodes()
-    assert [x.item_id for x in provider._latest_episodes] == ["e1"]
+    assert [x[1].item_id for x in provider._latest_episodes] == ["e1"]
     _mass(provider).get_provider.assert_called_once_with("prov")
 
 
@@ -185,8 +185,8 @@ async def test_play_history_wins_over_provider_state(
     assert isinstance(items[0], PodcastEpisode)
     assert (items[0].fully_played, items[0].resume_position_ms) == (False, 5000)
     assert (
-        provider._latest_episodes[0].fully_played,
-        provider._latest_episodes[0].resume_position_ms,
+        provider._latest_episodes[0][1].fully_played,
+        provider._latest_episodes[0][1].resume_position_ms,
     ) == (True, 1000)
 
 
@@ -207,9 +207,9 @@ async def test_providers_filter_and_allowed_providers(
 ) -> None:
     """Only episodes of requested providers that the user may use and that are available."""
     provider._latest_episodes = [
-        _episode("a", "prov_a", 1),
-        _episode("b", "prov_b", 1),
-        _episode("hidden", "prov_hidden", 1),
+        ("pod_a", _episode("a", "prov_a", 1)),
+        ("pod_b", _episode("b", "prov_b", 1)),
+        ("pod_hidden", _episode("hidden", "prov_hidden", 1)),
     ]
     _mass(provider).music.podcasts.restore_resume_position = AsyncMock()
     _mass(provider).music.get_active_provider_instances.return_value = ["prov_a", "prov_b"]
@@ -220,3 +220,34 @@ async def test_providers_filter_and_allowed_providers(
         LibraryRowID.LATEST_EPISODES, providers=["prov_b", "prov_hidden"]
     )
     assert [x.item_id for x in items] == ["b"]
+
+
+async def test_podcast_shown_through_any_mapping_the_user_can_use(
+    provider: LibraryRecommendationsProvider,
+) -> None:
+    """A podcast on several providers is kept for each, and shown once through one the user has."""
+    episodes = {"mine": _episode("e_mine", "mine", 1), "theirs": _episode("e_theirs", "theirs", 1)}
+
+    def get_provider(instance_id: str) -> Mock:
+        async def get_podcast_episodes(_prov_item_id: str) -> AsyncIterator[PodcastEpisode]:
+            yield episodes[instance_id]
+
+        music_provider = Mock(spec=MusicProvider)
+        music_provider.get_podcast_episodes = get_podcast_episodes
+        return music_provider
+
+    async def iter_library_items() -> AsyncIterator[Mock]:
+        yield _podcast("pod", ["theirs", "mine"])
+
+    _mass(provider).get_provider.side_effect = get_provider
+    _mass(provider).music.podcasts.iter_library_items = iter_library_items
+    _mass(provider).music.podcasts.restore_resume_position = AsyncMock()
+    _mass(provider).music.get_active_provider_instances.return_value = ["mine", "theirs"]
+    await provider._refresh_latest_episodes()
+    assert len(provider._latest_episodes) == 2
+
+    items = await provider.get_recommendation_items(LibraryRowID.LATEST_EPISODES)
+    assert len(items) == 1
+    _mass(provider).music.get_active_provider_instances.return_value = ["mine"]
+    items = await provider.get_recommendation_items(LibraryRowID.LATEST_EPISODES)
+    assert [x.item_id for x in items] == ["e_mine"]

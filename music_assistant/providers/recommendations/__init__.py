@@ -39,7 +39,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = {
 }
 
 LATEST_EPISODES_TASK_ID: Final[str] = "recommendations_refresh_latest_episodes"
-LATEST_EPISODES_CACHE_KEY: Final[str] = "latest_episodes"
+LATEST_EPISODES_CACHE_KEY: Final[str] = "latest_episodes_by_podcast"
 
 
 class LibraryRowID(StrEnum):
@@ -86,10 +86,11 @@ class LibraryRecommendationsProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        cached = await self.mass.cache.get(
-            LATEST_EPISODES_CACHE_KEY, provider=self.instance_id, base_class=PodcastEpisode
-        )
-        self._latest_episodes: list[PodcastEpisode] = cached or []
+        cached = await self.mass.cache.get(LATEST_EPISODES_CACHE_KEY, provider=self.instance_id)
+        # library podcast id with the latest episode of one of its provider mappings
+        self._latest_episodes: list[tuple[str, PodcastEpisode]] = [
+            (x["podcast_id"], PodcastEpisode.from_dict(x["episode"])) for x in cached or []
+        ]
         self.mass.tasks.register_scheduled_task(
             task_id=LATEST_EPISODES_TASK_ID,
             name="Refresh latest podcast episodes",
@@ -329,11 +330,15 @@ class LibraryRecommendationsProvider(PluginProvider):
         if providers is not None:
             allowed.intersection_update(providers)
         result: list[PodcastEpisode] = []
-        for stored in self._latest_episodes:
+        seen_podcasts: set[str] = set()
+        for podcast_id, stored in self._latest_episodes:
+            if podcast_id in seen_podcasts:
+                continue
             if stored.provider not in allowed and not any(
                 mapping.provider_instance in allowed for mapping in stored.provider_mappings
             ):
                 continue
+            seen_podcasts.add(podcast_id)
             # MA's own play history wins, the state the provider reported at the last
             # refresh covers progress made outside MA
             episode = copy(stored)
@@ -350,43 +355,56 @@ class LibraryRecommendationsProvider(PluginProvider):
         """Store the newest episode of every library podcast, newest release first."""
         active_providers = set(self.mass.music.get_active_provider_instances())
         podcasts = [x async for x in self.mass.music.podcasts.iter_library_items()]
-        latest_episodes: list[PodcastEpisode] = []
+        latest_episodes: list[tuple[str, PodcastEpisode]] = []
         for index, podcast in enumerate(podcasts):
             update_current_task_progress_from_index(index, len(podcasts), podcast.name)
-            mapping = next(
-                (x for x in podcast.provider_mappings if x.provider_instance in active_providers),
-                None,
-            )
-            if mapping is None:
-                continue
-            prov = self.mass.get_provider(mapping.provider_instance)
-            if not isinstance(prov, MusicProvider):
-                continue
-            # read straight from the provider so only its own played state is kept,
-            # never the playlog of whichever user the controller would fall back to
-            try:
-                episodes = [x async for x in prov.get_podcast_episodes(mapping.item_id)]
-            except MusicAssistantError as err:
-                self.logger.debug("Skipping latest episode of %s: %s", podcast.name, err)
-                continue
-            latest = max(episodes, key=lambda x: x.position, default=None)
-            if latest is None:
-                continue
-            if (
-                not latest.duration
-                and latest.uri
-                and (probed_duration := await get_probed_duration(self.mass, latest.uri))
-            ):
-                latest.duration = probed_duration
-            latest_episodes.append(latest)
-        latest_episodes.sort(key=_release_timestamp, reverse=True)
+            # every mapping is kept, users may only have access to some of them
+            for mapping in podcast.provider_mappings:
+                if mapping.provider_instance not in active_providers:
+                    continue
+                if latest := await self._get_latest_episode(
+                    mapping.provider_instance, mapping.item_id, podcast.name
+                ):
+                    latest_episodes.append((podcast.item_id, latest))
+        latest_episodes.sort(key=lambda x: _release_timestamp(x[1]), reverse=True)
         self._latest_episodes = latest_episodes
         await self.mass.cache.set(
             LATEST_EPISODES_CACHE_KEY,
-            [x.to_dict() for x in latest_episodes],
+            [{"podcast_id": x[0], "episode": x[1].to_dict()} for x in latest_episodes],
             provider=self.instance_id,
             persistent=True,
         )
+
+    async def _get_latest_episode(
+        self, provider_instance: str, prov_podcast_id: str, podcast_name: str
+    ) -> PodcastEpisode | None:
+        """
+        Return the newest episode of a podcast on one provider, None when unavailable.
+
+        :param provider_instance: The provider instance to read the podcast from.
+        :param prov_podcast_id: The podcast's item id on that provider.
+        :param podcast_name: The podcast's name, for logging.
+        """
+        prov = self.mass.get_provider(provider_instance)
+        if not isinstance(prov, MusicProvider):
+            return None
+        # read straight from the provider so only its own played state is kept,
+        # never the playlog of whichever user the controller would fall back to
+        try:
+            episodes = [x async for x in prov.get_podcast_episodes(prov_podcast_id)]
+        except MusicAssistantError as err:
+            self.logger.debug("Skipping latest episode of %s: %s", podcast_name, err)
+            return None
+        latest = max(episodes, key=lambda x: x.position, default=None)
+        if latest is None:
+            return None
+        if (
+            not latest.duration
+            and latest.uri
+            and (probed_duration := await get_probed_duration(self.mass, latest.uri))
+        ):
+            latest.duration = probed_duration
+        return latest
 
 
 def _folder(
