@@ -27,18 +27,21 @@ class TelmoreAuthManager(Music247eAuthManager):
                 "https://musik.telmore.dk/api/token",
                 json={"refresh_token": self._refresh_token},
             ) as refresh_response:
-                refresh_result = await refresh_response.json()
+                refresh_result = (
+                    await refresh_response.json(content_type=None) if refresh_response.ok else {}
+                )
                 if refresh_result.get("status", 4) == 0:
                     access_token = refresh_result["tokenResult"]["access_token"]
 
                     self.logger.debug("Refresh token flow success")
-                    self._access_token = Music247eAccessToken(access_token)
                     self._refresh_token = refresh_result["tokenResult"]["refresh_token"]
-                    return self._access_token
+                    return Music247eAccessToken(access_token)
 
             self.logger.warning(
                 "Refresh token flow failed: status=%s", refresh_result.get("status")
             )
+            # stale refresh token will keep failing, clear it so later logins skip it
+            self._refresh_token = None
 
         async with self.mass.http_session.get(
             "https://musik.telmore.dk/api/delegatedlogin",
@@ -80,7 +83,6 @@ class TelmoreAuthManager(Music247eAuthManager):
             access_token = access_token_re.group(1)
             self._refresh_token = refresh_token_re.group(1)
 
-            self._access_token = Music247eAccessToken(access_token)
             self.logger.debug("Got new auth token")
 
-            return self._access_token
+            return Music247eAccessToken(access_token)
