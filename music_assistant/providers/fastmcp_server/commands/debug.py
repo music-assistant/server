@@ -201,9 +201,10 @@ async def health(
 
 
 async def routes(mass: Any) -> RouteList:
-    """Return the MA webserver route table when that private surface exists."""
+    """Return the MA webserver route table, including dynamically registered routes."""
     try:
-        app = mass.webserver._server.app
+        server = mass.webserver._server
+        app = server._webapp
         result = []
         for route in app.router.routes():
             resource = getattr(route, "resource", None)
@@ -214,6 +215,11 @@ async def routes(mass: Any) -> RouteList:
                     path=path,
                     registered_by=_attribute_route(path),
                 )
+            )
+        for key in sorted(server._dynamic_routes or ()):
+            method, _separator, path = key.partition(".")
+            result.append(
+                RouteEntry(method=method, path=path, registered_by=_attribute_route(path))
             )
         return RouteList(routes=result)
     except AttributeError as exc:

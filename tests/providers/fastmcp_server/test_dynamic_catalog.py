@@ -1376,6 +1376,21 @@ def test_response_normalization_stops_at_each_list_item_cap() -> None:
     assert serialized == [0, 1, 2]
 
 
+def test_small_max_items_limits_rows_without_dropping_their_fields() -> None:
+    """``max_items`` caps list length only; each row keeps fields beyond the first few keys."""
+    row = {f"key_{index:02}": index for index in range(30)} | {"name": "Song", "uri": "x://1"}
+    result = DynamicAPIAdapter._bounded_envelope(
+        "ma_api:test",
+        [dict(row) for _ in range(5)],
+        response_mode="compact",
+        fields=["name", "uri"],
+        max_items=2,
+    )
+
+    assert result["data"] == [{"name": "Song", "uri": "x://1"}] * 2
+    assert result["total_count"] == 5
+
+
 def test_response_normalization_emits_strict_json_scalars() -> None:
     """Surrogates and non-finite floats cannot escape into MCP JSON output."""
     result = DynamicAPIAdapter._bounded_envelope(

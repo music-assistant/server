@@ -106,6 +106,25 @@ def test_request_identity_holds_for_exact_binding() -> None:
     assert request_identity_holds(token, user, identity, lookup_failed=True) is False
 
 
+def test_exact_binding_fails_closed_when_the_live_token_id_disappears() -> None:
+    """A revoked token whose live id lookup now returns nothing cannot keep its exact binding."""
+    token = AccessToken(token="bearer", client_id="tid-1", scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id="tid-1")
+
+    assert request_identity_holds(token, user, identity, live_token_id=None) is False
+    assert request_identity_holds(token, user, identity) is True
+
+
+def test_legacy_binding_accepts_a_missing_live_token_id() -> None:
+    """Legacy hash tokens have no MA token id, so a missing live id is their normal state."""
+    token = AccessToken(token="bearer", client_id=LEGACY_TOKEN_CLIENT_ID, scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id=None)
+
+    assert request_identity_holds(token, user, identity, live_token_id=None) is True
+
+
 @pytest.mark.asyncio
 async def test_token_resolution_failures_are_counted_without_identity_details(
     mock_mass: MagicMock, mock_user: MagicMock

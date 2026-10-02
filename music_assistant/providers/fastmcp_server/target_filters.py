@@ -12,6 +12,8 @@ from typing import Any
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InsufficientPermissions
 
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, _parse_share_url
+
 
 class TargetKind(StrEnum):
     """Kinds of Music Assistant targets constrained by user filters."""
@@ -291,6 +293,7 @@ _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
 _INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "database", "library"})
+_UNRESOLVED_SHARE_URL = "<unresolved share url>"
 
 
 def _filter_rows(result: Any, allowed: set[str], attributes: tuple[str, ...]) -> Any:
@@ -345,16 +348,17 @@ def _attribute_ids(value: Any, attributes: tuple[str, ...]) -> set[str]:
 def _reference_provider_ids(value: Any) -> set[str]:
     """Collect provider ids from one declared URI or media-reference argument."""
     if isinstance(value, str):
-        if value.startswith("https://open."):
-            host_parts = value.split("/", 3)[2].split(".")
-            return {host_parts[1]} if len(host_parts) > 2 and host_parts[1] else set()
-        if value.startswith("https://tidal.com/browse/"):
-            return {"tidal"}
-        if value.startswith("https://music.apple.com/"):
-            return {"apple_music"}
-        if value.startswith(("https://www.deezer.com/", "https://deezer.com/")):
-            return {"deezer"}
-        if value.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+        if value.startswith(("http://", "https://")):
+            # Mirror MA's parse_uri: a streaming share URL belongs to its service, a
+            # known share host with an unparsable path is rejected by MA (deny it
+            # here too), and only other URLs are plain builtin streams.
+            try:
+                share_url = _parse_share_url(value)
+            except KeyError, ValueError, IndexError:
+                return {_UNRESOLVED_SHARE_URL}
+            if share_url is not None:
+                return {share_url[1]}
+        if value.startswith(BUILTIN_URL_SCHEMES):
             return {"builtin"}
         provider, separator, _remainder = value.partition("://")
         if separator and provider:

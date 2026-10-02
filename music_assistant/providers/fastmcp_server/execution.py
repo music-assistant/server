@@ -74,6 +74,7 @@ _ALIASES_BY_COMMAND = aliases_by_command()
 
 _COMPACT_ITEMS = 25
 _FULL_ITEMS = 200
+_MAPPING_KEYS = 200
 _COMPACT_BYTES = 12_288
 _FULL_BYTES = 65_536
 _COMPACT_STRING = 2_048
@@ -1490,6 +1491,7 @@ class DynamicAPIAdapter:
             item_cap=item_cap,
             string_cap=string_cap,
             max_depth=6 if compact else 12,
+            mapping_cap=_MAPPING_KEYS,
         )
         raw = normalized.value
         total_count = normalized.total_count

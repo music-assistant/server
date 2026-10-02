@@ -338,6 +338,47 @@ def test_embedded_provider_references_are_denied(
         enforce_target_filters(MagicMock(), _user(), command, {argument: value})
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+        "https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT",
+        "https://listen.tidal.com/album/123456",
+        "https://www.qobuz.com/us-en/album/some-slug/0634904032432",
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://itunes.apple.com/us/album/name/123456",
+        "https://geo.itunes.apple.com/us/album/name/123456",
+        "https://open.qobuz.com/album/0634904032432",
+        "https://tidal.com/track/123456",
+    ],
+)
+def test_streaming_share_urls_are_attributed_to_their_provider(url: str) -> None:
+    """Share URLs that MA resolves to a streaming provider cannot pass as builtin streams."""
+    with pytest.raises(InsufficientPermissions, match="not permitted"):
+        enforce_target_filters(MagicMock(), _user(), "player_queues/play_media", {"media": [url]})
+
+
+def test_malformed_streaming_share_url_is_denied() -> None:
+    """A known streaming host with an unparsable path fails closed instead of becoming builtin."""
+    with pytest.raises(InsufficientPermissions, match="not permitted"):
+        enforce_target_filters(
+            MagicMock(),
+            _user(),
+            "player_queues/play_media",
+            {"media": ["https://listen.tidal.com/"]},
+        )
+
+
+def test_plain_stream_url_on_an_unknown_host_stays_builtin() -> None:
+    """Ordinary radio or file URLs on non-streaming hosts remain internal builtin references."""
+    enforce_target_filters(
+        MagicMock(),
+        _user(),
+        "player_queues/play_media",
+        {"media": ["https://ice1.somafm.com/groovesalad-128-mp3"]},
+    )
+
+
 def test_embedded_unavailable_instance_is_resolved_exactly() -> None:
     """An unavailable URI instance cannot alias to an allowed instance of its domain."""
     unavailable = SimpleNamespace(instance_id="spotify--down", type=SimpleNamespace(value="music"))

@@ -34,6 +34,7 @@ LOGGER = logging.getLogger(__name__)
 # Bandit B105: this is a non-secret audit category, never credential material.
 LEGACY_TOKEN_CLIENT_ID = "ma-token:legacy"  # nosec B105
 LOOKUP_FAILURE_CLIENT_ID = "ma-token:lookup-failed"
+_LIVE_TOKEN_ID_NOT_CHECKED = object()
 
 
 def request_identity_holds(
@@ -41,10 +42,19 @@ def request_identity_holds(
     user: object,
     identity: object | None,
     *,
-    live_token_id: object = None,
+    live_token_id: object = _LIVE_TOKEN_ID_NOT_CHECKED,
     lookup_failed: bool = False,
 ) -> bool:
-    """Return whether one sealed request identity still matches the live user."""
+    """
+    Return whether one sealed request identity still matches the live user.
+
+    :param token: Request access token.
+    :param user: Live Music Assistant user resolved from the bearer.
+    :param identity: Identity bound to the bearer, or None when unbound.
+    :param live_token_id: Token id MA reports for the bearer right now; omit
+        when no live lookup was performed for this check.
+    :param lookup_failed: Whether the live token-id lookup raised.
+    """
     if user is None or getattr(user, "enabled", True) is False:
         return False
     if identity is None:
@@ -56,7 +66,7 @@ def request_identity_holds(
         return False
     if lookup_failed:
         return False
-    if live_token_id is None:
+    if live_token_id is _LIVE_TOKEN_ID_NOT_CHECKED:
         return True
     return live_token_id == getattr(identity, "token_id", None)
 

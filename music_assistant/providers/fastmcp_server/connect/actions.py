@@ -44,24 +44,21 @@ async def handle_open_connect_action(
     """
     bootstrap: str | None = None
     if current_user is not None:
-        # GC any prior wizard plumbing rows for this user before minting a
-        # new bootstrap, via the sanctioned auth API. Best-effort: a failed
-        # lookup skips GC; individual revoke failures are logged inside
-        # revoke_token_by_id. Per-client tokens (MCP — <Client>) are not
-        # touched.
-        for tok in await list_user_tokens(mass, current_user) or ():
-            if tok.name in _GC_NAMES:
-                await revoke_token_by_id(mass, current_user, tok.token_id)
-
-        try:
-            bootstrap = await mass.webserver.auth.create_token(
-                user=current_user,
-                name="MCP — wizard bootstrap",
-                is_long_lived=False,
-            )
-        except Exception:
-            LOGGER.exception("Connect Wizard: failed to mint bootstrap token")
-            bootstrap = None
+        # Revoke any prior wizard plumbing rows for this user before minting
+        # a new bootstrap, via the sanctioned auth API. If they cannot be
+        # listed or revoked, open the login-only wizard instead of adding a
+        # fresh bootstrap next to still-valid old ones. Per-client tokens
+        # (MCP — <Client>) are not touched.
+        if await _revoke_prior_wizard_tokens(mass, current_user):
+            try:
+                bootstrap = await mass.webserver.auth.create_token(
+                    user=current_user,
+                    name="MCP — wizard bootstrap",
+                    is_long_lived=False,
+                )
+            except Exception:
+                LOGGER.exception("Connect Wizard: failed to mint bootstrap token")
+                bootstrap = None
 
     mount = "/" + mount_path.strip("/")
     if external_base_url:
@@ -93,3 +90,15 @@ async def handle_open_connect_action(
         url = f"{url}#{'&'.join(fragment_params)}"
 
     return url
+
+
+async def _revoke_prior_wizard_tokens(mass: MusicAssistant, user: Any) -> bool:
+    """Revoke the user's previous wizard bootstrap/session tokens; False if any remain."""
+    tokens = await list_user_tokens(mass, user)
+    if tokens is None:
+        return False
+    revoked = True
+    for tok in tokens:
+        if tok.name in _GC_NAMES and not await revoke_token_by_id(mass, user, tok.token_id):
+            revoked = False
+    return revoked

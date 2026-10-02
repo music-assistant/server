@@ -985,20 +985,43 @@ async def test_open_connect_gcs_prior_wizard_tokens(
     )
 
 
-async def test_open_connect_gc_lookup_failure_does_not_block(
+async def test_open_connect_gc_lookup_failure_opens_login_only_wizard(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """A ``get_user_tokens`` exception is swallowed; the new bootstrap mint still happens."""
+    """Prior wizard tokens that cannot be listed are not joined by a fresh bootstrap."""
     auth = wizard_mass.webserver.auth
     auth.get_user_tokens = AsyncMock(side_effect=RuntimeError("api down"))
 
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
     )
 
-    auth.create_token.assert_awaited_once()
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
+
+
+async def test_open_connect_gc_revoke_failure_opens_login_only_wizard(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A prior wizard token that cannot be revoked stays the only bootstrap-capable credential."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id="boot-old", name="MCP — wizard bootstrap", user_id="u1")
+        ]
+    )
+    auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
+
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=mock_user,
+        mount_path="/mcp/v1",
+    )
+
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
 
 
 async def test_open_connect_no_user_skips_gc(wizard_mass: MagicMock) -> None:
@@ -1147,6 +1170,7 @@ async def test_dispatch_detects_ws_client_base_url(
         )
     ]
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
     url = await _dispatch_open_connect(
         mass,
         {"mount_path": "/mcp/v1"},
@@ -1167,6 +1191,7 @@ async def test_dispatch_falls_back_to_config_override(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
     url = await _dispatch_open_connect(
         mass,
         {
@@ -1194,6 +1219,7 @@ async def test_dispatch_rejects_unsafe_override_and_falls_back(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
     url = await _dispatch_open_connect(
         mass,
         {
@@ -1217,6 +1243,7 @@ async def test_dispatch_falls_back_to_path_only_when_nothing_known(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
     url = await _dispatch_open_connect(
         mass,
         {"mount_path": "/mcp/v1"},
@@ -1238,6 +1265,7 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
     mass.webserver.clients = []
     mass.webserver.base_url = "http://192.0.2.20:8095"
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
 
     url = await _dispatch_open_connect(mass, {"mount_path": "/mcp/v1"})
 

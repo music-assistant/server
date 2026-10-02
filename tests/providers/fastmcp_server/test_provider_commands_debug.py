@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -297,7 +298,8 @@ async def test_routes_handles_private_api_absence_and_attributes_known_paths() -
     mass = MagicMock()
     route = SimpleNamespace(method="GET", resource=SimpleNamespace(canonical="/mcp/v1/sse"))
     mass.webserver._server = SimpleNamespace(
-        app=SimpleNamespace(router=SimpleNamespace(routes=lambda: [route]))
+        _webapp=SimpleNamespace(router=SimpleNamespace(routes=lambda: [route])),
+        _dynamic_routes={},
     )
     result = await routes(mass)
     assert result.routes[0].registered_by == "fastmcp_server"
@@ -305,6 +307,33 @@ async def test_routes_handles_private_api_absence_and_attributes_known_paths() -
     mass.webserver._server = None
     with pytest.raises(ToolError, match="routes are unavailable"):
         await routes(mass)
+
+
+async def test_routes_reads_the_live_ma_webserver_including_dynamic_routes() -> None:
+    """The route table comes from MA's real webserver helper, including dynamic MCP routes."""
+    from aiohttp import web  # noqa: PLC0415
+
+    from music_assistant.helpers.webserver import Webserver  # noqa: PLC0415
+
+    server = Webserver(logging.getLogger("test"), enable_dynamic_routes=True)
+
+    async def handler(_request: web.Request) -> web.Response:
+        return web.Response()
+
+    app = web.Application()
+    app.router.add_get("/info", handler)
+    cast("Any", server)._webapp = app
+
+    server.register_dynamic_route("/mcp/v1", handler)
+    mass = MagicMock()
+    mass.webserver._server = server
+
+    result = await routes(mass)
+
+    by_path = {entry.path: entry for entry in result.routes}
+    assert "/info" in by_path
+    assert by_path["/mcp/v1"].method == "*"
+    assert by_path["/mcp/v1"].registered_by == "fastmcp_server"
 
 
 async def test_packages_returns_all_bounded_tracked_versions() -> None:

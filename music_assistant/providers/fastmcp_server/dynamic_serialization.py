@@ -54,14 +54,24 @@ def bounded_json_value(
     item_cap: int,
     string_cap: int,
     max_depth: int,
+    mapping_cap: int | None = None,
 ) -> BoundedJSON:
-    """Normalize one result while bounding lists, strings, and recursive depth."""
+    """
+    Normalize one result while bounding lists, strings, and recursive depth.
+
+    :param value: Native result to normalize.
+    :param item_cap: Maximum number of items kept per list or set.
+    :param string_cap: Maximum length of each string.
+    :param max_depth: Maximum nesting depth.
+    :param mapping_cap: Maximum number of keys kept per mapping; defaults to ``item_cap``.
+    """
     normalized, truncated, total_count = _bounded_json_value(
         value,
         active_ids=set(),
         item_cap=item_cap,
         string_cap=string_cap,
         depth=max_depth,
+        mapping_cap=item_cap if mapping_cap is None else mapping_cap,
     )
     return BoundedJSON(redact_media_previews(normalized), truncated, total_count)
 
@@ -132,6 +142,7 @@ def _bounded_json_value(
     item_cap: int,
     string_cap: int,
     depth: int,
+    mapping_cap: int,
 ) -> tuple[JSONValue, bool, int | None]:
     """Normalize one value without traversing beyond configured response bounds."""
     if value is None or isinstance(value, bool | int):
@@ -148,6 +159,7 @@ def _bounded_json_value(
             item_cap=item_cap,
             string_cap=string_cap,
             depth=depth,
+            mapping_cap=mapping_cap,
         )
     if isinstance(value, datetime | date):
         normalized, truncated = _bounded_string(value.isoformat(), string_cap)
@@ -170,6 +182,7 @@ def _bounded_json_value(
                 item_cap=item_cap,
                 string_cap=string_cap,
                 depth=depth,
+                mapping_cap=mapping_cap,
             )
         if callable(model_dump := getattr(value, "model_dump", None)):
             return _bounded_json_value(
@@ -178,6 +191,7 @@ def _bounded_json_value(
                 item_cap=item_cap,
                 string_cap=string_cap,
                 depth=depth,
+                mapping_cap=mapping_cap,
             )
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             return _bounded_mapping(
@@ -186,6 +200,7 @@ def _bounded_json_value(
                 item_cap=item_cap,
                 string_cap=string_cap,
                 depth=depth,
+                mapping_cap=mapping_cap,
             )
         if isinstance(value, Mapping):
             return _bounded_mapping(
@@ -194,6 +209,7 @@ def _bounded_json_value(
                 item_cap=item_cap,
                 string_cap=string_cap,
                 depth=depth,
+                mapping_cap=mapping_cap,
             )
         if isinstance(value, set | frozenset):
             set_children = [
@@ -203,6 +219,7 @@ def _bounded_json_value(
                     item_cap=item_cap,
                     string_cap=string_cap,
                     depth=depth - 1,
+                    mapping_cap=mapping_cap,
                 )
                 for child in value
             ]
@@ -225,6 +242,7 @@ def _bounded_json_value(
                     item_cap=item_cap,
                     string_cap=string_cap,
                     depth=depth - 1,
+                    mapping_cap=mapping_cap,
                 )
                 sequence_children.append(normalized_child)
                 truncated |= changed
@@ -241,12 +259,13 @@ def _bounded_mapping(
     item_cap: int,
     string_cap: int,
     depth: int,
+    mapping_cap: int,
 ) -> tuple[JSONValue, bool, None]:
     """Normalize mapping-like items while retaining their insertion order."""
     result: dict[str, JSONValue] = {}
     truncated = False
     for index, (key, child) in enumerate(items):
-        if index >= item_cap:
+        if index >= mapping_cap:
             truncated = True
             break
         normalized_key, key_changed = _bounded_string(str(key), None)
@@ -256,6 +275,7 @@ def _bounded_mapping(
             item_cap=item_cap,
             string_cap=string_cap,
             depth=depth - 1,
+            mapping_cap=mapping_cap,
         )
         result[normalized_key] = normalized
         truncated |= key_changed or changed
