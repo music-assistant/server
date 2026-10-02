@@ -2903,6 +2903,137 @@ class TestSessionBoundNativeGrouping:
         assert protocol_domain == "sendspin"
 
 
+class TestRegroupOffUnneededProtocol:
+    """
+    A group that was moved onto a bridge protocol for one member leaves it once that member left.
+
+    The regrouping only happens on a fresh playback start, so running playback is never
+    interrupted.
+    """
+
+    async def _build_left_on_bridge(
+        self, mock_mass: MagicMock
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build two session-bound speakers left grouped on the bridge after the bridge-only member left.
+
+        The bridge-only member joins the native group (moving it onto the bridge) and leaves it
+        again, exactly as the grouping commands do it.
+        """
+        controller, players = TestSessionBoundNativeGrouping()._build_topology(
+            mock_mass, SessionBoundMockPlayer
+        )
+        leader = players["speaker_leader"]
+        for player in players.values():
+            self._update_state_on_set_members(player)
+            player.play_media = AsyncMock()  # type: ignore[method-assign]
+        await leader.set_members(player_ids_to_add=["speaker_member"])
+        leader.set_active_output_protocol("native")
+
+        await controller._handle_set_members_with_protocols(leader, ["bridge_only"], [])
+        await controller._handle_set_members_with_protocols(leader, [], ["bridge_only"])
+
+        assert players["bridge_leader"].group_members == ["bridge_leader", "bridge_member"]
+        assert "speaker_member" not in leader.group_members
+        return controller, players
+
+    @staticmethod
+    def _update_state_on_set_members(player: MockPlayer) -> None:
+        """Recalculate the player's state after each member change, as a real provider does."""
+        set_members = player.set_members
+
+        async def _set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            await set_members(player_ids_to_add, player_ids_to_remove)
+            player.update_state(signal_event=False)
+
+        player.set_members = _set_members  # type: ignore[method-assign]
+
+    @pytest.mark.parametrize("active_protocol", ["bridge_leader", None])
+    async def test_fresh_start_regroups_natively(
+        self, mock_mass: MagicMock, active_protocol: str | None
+    ) -> None:
+        """
+        The remaining speakers are grouped natively again and the group plays natively.
+
+        The leader's active protocol may still point at the bridge, or already be cleared
+        once it went idle.
+        """
+        controller, players = await self._build_left_on_bridge(mock_mass)
+        leader = players["speaker_leader"]
+        leader.set_active_output_protocol(active_protocol)
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("speaker_leader", media)
+
+        assert players["bridge_leader"].group_members == ["bridge_leader"]
+        assert leader.group_members == ["speaker_leader", "speaker_member"]
+        assert players["speaker_member"].active_output_protocol is None
+        assert leader.active_output_protocol == "native"
+        leader.play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+        players["bridge_leader"].play_media.assert_not_awaited()  # type: ignore[attr-defined]
+
+    async def test_group_that_still_needs_the_bridge_is_left_alone(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member that can only be reached through the bridge keeps the group on it."""
+        controller, players = await self._build_left_on_bridge(mock_mass)
+        leader = players["speaker_leader"]
+        await controller._handle_set_members_with_protocols(leader, ["bridge_only"], [])
+        bridge_members = list(players["bridge_leader"].group_members)
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("speaker_leader", media)
+
+        assert players["bridge_leader"].group_members == bridge_members
+        assert set(bridge_members) == {"bridge_leader", "bridge_member", "bridge_only"}
+        assert "speaker_member" not in leader.group_members
+        players["bridge_leader"].play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+        leader.play_media.assert_not_awaited()  # type: ignore[attr-defined]
+
+    async def test_leader_that_prefers_the_bridge_keeps_its_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A leader that plays through its preferred bridge keeps its members on that bridge."""
+        controller, players = await self._build_left_on_bridge(mock_mass)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda player_id, key, default=None: (
+                "bridge_leader"
+                if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "speaker_leader"
+                else default
+            )
+        )
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("speaker_leader", media)
+
+        assert players["bridge_leader"].group_members == ["bridge_leader", "bridge_member"]
+        players["bridge_leader"].play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    async def test_running_playback_is_not_interrupted(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> None:
+        """A group that is playing (or paused) keeps playing through the bridge."""
+        controller, players = await self._build_left_on_bridge(mock_mass)
+        leader = players["speaker_leader"]
+        # the bridge renders the group, so the leader reports its playback state
+        players["bridge_leader"]._attr_playback_state = playback_state
+        players["bridge_leader"].update_state(signal_event=False)
+        leader.refresh_state(signal_event=False)
+        assert leader.state.playback_state == playback_state
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("speaker_leader", media)
+
+        assert players["bridge_leader"].group_members == ["bridge_leader", "bridge_member"]
+        assert "speaker_member" not in leader.group_members
+        players["bridge_leader"].play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+        leader.play_media.assert_not_awaited()  # type: ignore[attr-defined]
+
+
 class TestCanGroupWith:
     """Tests for can_group_with property with three scenarios."""
 

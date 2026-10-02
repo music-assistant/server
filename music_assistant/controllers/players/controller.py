@@ -4410,10 +4410,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # On a fresh start always (re)select: a leftover active protocol from a
         # previous session must not overrule user preference, a grouped protocol
         # or native playback (and it may point at a player that is gone by now).
+        # A group left on a protocol that none of its members need anymore is
+        # regrouped first, as it would otherwise keep that grouped protocol selected.
         target_player: Player | None = None
         output_protocol: OutputProtocol | None = None
+        is_fresh_start = player.state.playback_state not in (
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
+        )
         if (
-            player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            not is_fresh_start
             and player.active_output_protocol
             and player.active_output_protocol != "native"
             and (protocol_player := self.get_player(player.active_output_protocol))
@@ -4423,6 +4429,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if output_protocol is not None:
                 target_player = protocol_player
         if target_player is None:
+            if is_fresh_start:
+                await self._regroup_off_unneeded_protocol(player)
             target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
