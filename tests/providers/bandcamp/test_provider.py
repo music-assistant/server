@@ -1441,7 +1441,7 @@ class _CacheLookup(Exception):
         pytest.param(
             lambda p: p._get_fetched_track_monthly("123-0-789"),
             PARSED_ITEM_CACHE_CHECKSUM,
-            id="fetched_track",
+            id="fetched_track_monthly",
         ),
         pytest.param(
             lambda p: p._get_fetched_track_daily("123-0-789"),
@@ -1614,31 +1614,35 @@ class _ClockCache:
         self.rows[key] = (stored, self.now + expiration, checksum)
 
 
-async def _let_background_tasks_finish() -> None:
-    """Give the cache writes and refreshes that use_cache starts in the background a turn."""
-    for _ in range(50):
-        await asyncio.sleep(0)
+async def _let_background_tasks_finish(mass: Mock) -> None:
+    """Wait until the tasks that use_cache started in the background have finished."""
+    async with asyncio.timeout(5):
+        while pending := [task for task in mass._tracked_tasks.values() if not task.done()]:
+            await asyncio.gather(*pending)
 
 
 async def test_get_track_follows_its_album_listing_when_a_track_opens(
     provider: BandcampProvider, mass_mock: Mock
 ) -> None:
-    """A track that opens plays from its own page once its album listing shows it playable."""
+    """A track page follows its album listing when the track opens."""
     cache = _ClockCache()
     mass_mock.cache.get_with_freshness = cache.get_with_freshness
     mass_mock.cache.set = cache.set
     api_album = _album_with_a_hidden_track()
 
-    with patch.object(
-        provider._client, "get_album", new_callable=AsyncMock, return_value=api_album
-    ):
+    async def get_album_over_the_network(*_: object) -> Mock:
+        # a real request suspends, so the background refresh outlives a bare event loop turn
+        await asyncio.sleep(0.01)
+        return api_album
+
+    with patch.object(provider._client, "get_album", side_effect=get_album_over_the_network):
         before = await provider.get_track("123-456-790")
-        await _let_background_tasks_finish()
+        await _let_background_tasks_finish(mass_mock)
         api_album.tracks[1].streaming_url = {"mp3-128": "http://example.com/opened.mp3"}
         cache.now += CACHE_CHANGING_LISTING + 60
         # the first visit after a day serves the expired listing and refreshes it
         await provider.get_track("123-456-790")
-        await _let_background_tasks_finish()
+        await _let_background_tasks_finish(mass_mock)
         after = await provider.get_track("123-456-790")
 
     assert before.available is False
@@ -1685,15 +1689,16 @@ async def test_get_track_takes_a_fetched_track_without_a_stream_from_the_daily_c
 async def test_fetched_tracks_keep_their_cache_time(
     provider: BandcampProvider, mass_mock: Mock, cached_call: str, expiration: int
 ) -> None:
-    """Each cache of a track fetched on its own stores its own cache time."""
+    """Each cache of a track fetched on its own stores its own cache time, and no stale row."""
     with patch.object(
         provider._client, "get_track", new_callable=AsyncMock, return_value=_api_track(None)
     ):
         await getattr(provider, cached_call)("123-0-789")
-        await _let_background_tasks_finish()
+        await _let_background_tasks_finish(mass_mock)
 
     stored = mass_mock.cache.set.await_args
     assert stored.kwargs["expiration"] == expiration
+    assert stored.kwargs["allow_expired_cache"] is False
 
 
 async def test_get_track_not_found(provider: BandcampProvider) -> None:

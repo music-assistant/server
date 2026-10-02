@@ -822,8 +822,7 @@ class BandcampProvider(MusicProvider):
         """Get full track details by id, with lyrics when the setting is on."""
         track = await self._get_track_base(prov_track_id)
         if self.config.get_value(CONF_GET_LYRICS, False):
-            # Lyrics stay out of the 30-day track cache; provider lookups
-            # follow the toggle at once.
+            # Lyrics stay out of the cached track, so the toggle works at once.
             await self._attach_lyrics(track, prov_track_id)
         return track
 
@@ -864,8 +863,7 @@ class BandcampProvider(MusicProvider):
         """Get full track details by id, without the lyrics layer."""
         artist_id, album_id, track_id = split_track_id(prov_track_id)
         if album_id:
-            # The cached album listing serves every track of that album, so the page of a
-            # track always shows what its album page shows
+            # A track page shows what its album listing shows
             with suppress(MediaNotFoundError):
                 for album_track in await self.get_album_tracks(f"{artist_id}-{album_id}"):
                     if split_id(album_track.item_id)[2] == track_id:
@@ -874,8 +872,7 @@ class BandcampProvider(MusicProvider):
         track = await self._get_fetched_track_monthly(prov_track_id)
         if _has_stream(track):
             return track
-        # A track without a stream can open any day, for example a preorder single, so such
-        # a track takes its details from a one-day cache
+        # A track without a stream can open any day, so it comes from the one-day cache
         return await self._get_fetched_track_daily(prov_track_id)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
