@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
@@ -319,3 +320,47 @@ async def test_skip_is_sent_despite_stale_transport_actions(command: str, action
 
     device._action.assert_any_call("AVT", action_name)
     action.async_call.assert_awaited_once_with(InstanceID=0)
+
+
+@pytest.mark.parametrize(
+    ("command", "args"), [("seek", (83,)), ("next_track", ()), ("previous_track", ())]
+)
+async def test_transport_command_reads_the_new_state_back(
+    command: str, args: tuple[int, ...]
+) -> None:
+    """A device that sends no event for a skip or seek still reports its new track and position."""
+    device = _mock_device(
+        can_next=True,
+        can_previous=True,
+        async_seek_rel_time=AsyncMock(),
+        async_next=AsyncMock(),
+        async_previous=AsyncMock(),
+    )
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the state the command left the device in."""
+        device.media_title = "New Title"
+        device.media_position = 83
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    scheduled: list[tuple[float, Any]] = []
+
+    def _call_later(delay: float, target: Any, *_args: Any, **_kwargs: Any) -> None:
+        # the base player also schedules synchronous media callbacks, which are not polls
+        if inspect.iscoroutinefunction(target):
+            scheduled.append((delay, target))
+
+    player.mass.call_later = _call_later  # type: ignore[method-assign,assignment]
+
+    await getattr(player, command)(*args)
+    assert scheduled
+    for delay, target in scheduled:
+        assert delay < player.poll_interval
+        await target()
+
+    assert player.current_media is not None
+    assert player.current_media.title == "New Title"
+    assert player.elapsed_time == 83.0
