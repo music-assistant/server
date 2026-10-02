@@ -1211,6 +1211,7 @@
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
     "username_taken": "This username is already in use.",
+    "username_too_short": "Username must be at least {0} characters.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
     "role_not_found": "This role does not exist.",
     "role_name_invalid": "A role name must be between 1 and {0} characters long.",
