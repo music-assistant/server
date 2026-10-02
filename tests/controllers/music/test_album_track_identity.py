@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID
+from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.controllers.music.media import album_tracks
 
@@ -45,6 +46,18 @@ def test_unambiguous_cross_provider_title(position: int) -> None:
     """A single missing entry can match a single entry from another source."""
     tracks = [entry("a", "one", 0), entry("b", "two", position)]
     assert len(album_tracks.select_album_tracks([], tracks)) == 1
+
+
+def test_playable_unplaced_copy_takes_an_unplayable_placed_slot() -> None:
+    """Without identifiers, a playable copy replaces an unplayable placed one, at its position."""
+    placed = entry("a", "one", 3)
+    placed.provider_mappings = {
+        ProviderMapping(item_id="one", provider_domain="a", provider_instance="a", available=False)
+    }
+    copy = entry("b", "two", 0)
+    selected = album_tracks.select_album_tracks([], [placed, copy])
+    assert [track.item_id for track in selected] == ["two"]
+    assert (selected[0].disc_number, selected[0].track_number) == (placed.disc_number, 3)
 
 
 def test_unknown_title_does_not_choose_repeated_position() -> None:
