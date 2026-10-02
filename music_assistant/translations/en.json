@@ -1157,6 +1157,7 @@
   "provider.bandcamp.config_entries.identity.label": "Identity token",
   "provider.bandcamp.config_entries.top_tracks_limit.description": "Search limit while getting artist top tracks.",
   "provider.bandcamp.config_entries.top_tracks_limit.label": "Artist Top Tracks search limit",
+  "provider.bandcamp.errors.unusable_answer": "Bandcamp did not send the data, often because of a robot check. Try again in a few minutes.",
   "provider.bandcamp.manifest.description": "Stream music from Bandcamp's catalog.",
   "provider.bandcamp.media.folder.collection.name": "Collection",
   "provider.bandcamp.media.folder.fans.name": "Fans",
