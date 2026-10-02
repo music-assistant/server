@@ -170,15 +170,15 @@ class WebsocketClientHandler:
             await wsock.close()
             return wsock
 
-        # For Ingress connections, auto-create/link user and subscribe to events immediately
-        # For regular connections (and Ingress without a signed-in user), events will be
-        # subscribed after successful authentication
-        if self._is_ingress:
-            await self._handle_ingress_auth()
-
         disconnect_warn = None
 
         try:
+            # For Ingress connections, auto-create/link user and subscribe to events immediately
+            # For regular connections (and Ingress without a signed-in user), events will be
+            # subscribed after successful authentication
+            if self._is_ingress:
+                await self._handle_ingress_auth()
+
             while not wsock.closed:
                 msg = await wsock.receive()
 
