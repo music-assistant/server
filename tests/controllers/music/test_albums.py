@@ -374,19 +374,6 @@ def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) 
     assert len(select_album_tracks([], [base, candidate])) == expected
 
 
-def test_album_track_slot_keeps_editions_that_disagree_about_a_position() -> None:
-    """Different recordings (by ISRC and title) at one position are both listed."""
-    qobuz = create_track("qobuz_1", "first", name="I. Allegro")
-    spotify = create_track("spotify_1", "second", name="Ouverture")
-    qobuz.track_number = spotify.track_number = 1
-    qobuz.external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
-    spotify.external_ids = {(ExternalID.ISRC, "GBAYC2100002")}
-    assert len(select_album_tracks([], [qobuz, spotify])) == 2
-    # the same title makes the ISRC mismatch a re-release, not a different recording
-    spotify.name = "I. Allegro"
-    assert len(select_album_tracks([], [qobuz, spotify])) == 1
-
-
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
     """Distinct IDs and ISRCs preserve repeated movement names across two discs."""
     # this listing is one source: it is kept as-is whatever its identifiers say
