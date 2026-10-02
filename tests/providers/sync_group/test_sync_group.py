@@ -3550,7 +3550,6 @@ class TestStaticMemberRejoin:
         mass.call_later.assert_called_once_with(
             REFORM_DEBOUNCE_SECONDS,
             sgp._rejoin_members,
-            ["display"],
             task_id="sync_group_rejoin_syncgroup_test",
         )
 
@@ -3560,7 +3559,7 @@ class TestStaticMemberRejoin:
         mass = _make_mock_mass()
         sgp, leader, _display = _static_group_with_a_member_away(mass)
 
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
 
         mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
         mass.players._handle_set_members.assert_awaited_once_with(
@@ -3647,11 +3646,25 @@ class TestStaticMemberRejoin:
         mass.players.get_player_lock = _lock_with_side_effect(
             lambda: setattr(sgp, "sync_leader", other)
         )
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
         mass.players._handle_set_members.assert_not_awaited()
 
         sgp.sync_leader = None
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_member_grouped_elsewhere_meanwhile_is_not_rejoined(self) -> None:
+        """A member that joined another group while the re-add was pending is not taken back."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _static_group_with_a_member_away(mass)
+        # the user started that other group between the leader's update and the debounce
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(display.state, "synced_to", "other_leader")
+        )
+
+        await sgp._rejoin_members()
+
         mass.players._handle_set_members.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -3661,7 +3674,7 @@ class TestStaticMemberRejoin:
         sgp, _leader, _display = _static_group_with_a_member_away(mass)
         sgp._attr_group_members = ["leader"]
 
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
 
         assert sgp._attr_group_members == ["leader", "display"]
 
@@ -3673,7 +3686,7 @@ class TestStaticMemberRejoin:
         sgp._attr_static_group_members = ["leader"]
         sgp._attr_group_members = ["leader"]
 
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
 
         mass.players._handle_set_members.assert_not_awaited()
         assert sgp._attr_group_members == ["leader"]
@@ -3686,6 +3699,6 @@ class TestStaticMemberRejoin:
         sgp._attr_group_members = ["leader"]
         mass.players._handle_set_members = AsyncMock(side_effect=PlayerCommandFailed("busy"))
 
-        await sgp._rejoin_members(["display"])
+        await sgp._rejoin_members()
 
         assert sgp._attr_group_members == ["leader"]

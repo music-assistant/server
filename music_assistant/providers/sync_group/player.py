@@ -1542,10 +1542,22 @@ class SyncGroupPlayer(Player):
 
     def _schedule_rejoin_missing_members(self) -> None:
         """Debounce a re-add of the configured members the live leader is not holding."""
-        if (leader := self.sync_leader) is None:
-            return
+        if self.sync_leader is not None and self._missing_members(self.sync_leader):
+            # the leader reports every state change, so the next one is the retry
+            self.mass.call_later(
+                REFORM_DEBOUNCE_SECONDS,
+                self._rejoin_members,
+                task_id=f"sync_group_rejoin_{self.player_id}",
+            )
+
+    def _missing_members(self, leader: Player) -> list[str]:
+        """
+        Return the configured members the leader can group with but is not holding.
+
+        :param leader: The group's live sync leader.
+        """
         grouped = set(self._translate_to_parent_ids(leader.state.group_members))
-        missing = [
+        return [
             member_id
             for member_id in self._attr_static_group_members
             if member_id != leader.player_id
@@ -1560,27 +1572,18 @@ class SyncGroupPlayer(Player):
             and member.state.active_group in (None, self.player_id)
             and all(child_id == member_id for child_id in member.state.group_members)
         ]
-        if missing:
-            # the leader reports every state change, so the next one is the retry
-            self.mass.call_later(
-                REFORM_DEBOUNCE_SECONDS,
-                self._rejoin_members,
-                missing,
-                task_id=f"sync_group_rejoin_{self.player_id}",
-            )
 
-    async def _rejoin_members(self, member_ids: list[str]) -> None:
-        """
-        Re-add returning members to the live leader without touching playback.
-
-        :param member_ids: The configured members to add to the sync leader.
-        """
+    async def _rejoin_members(self) -> None:
+        """Re-add the configured members that returned to the live leader, playback untouched."""
         if (leader := self.sync_leader) is None:
             return
         async with self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
-            # the group may have been saved without a member while the add was pending
-            member_ids = [m for m in member_ids if m in self._attr_static_group_members]
-            if self.sync_leader is not leader or not member_ids:
+            # judged again now rather than when scheduled: in the meantime a member may
+            # have joined another group, which the controller's add would take it from,
+            # or the group may have been saved without it
+            if self.sync_leader is not leader:
+                return
+            if not (member_ids := self._missing_members(leader)):
                 return
             self.logger.info("Re-adding %s to syncgroup %s", member_ids, self.display_name)
             try:
