@@ -403,6 +403,7 @@ class LibraryRecommendationsProvider(PluginProvider):
             and (probed_duration := await get_probed_duration(self.mass, latest.uri))
         ):
             latest.duration = probed_duration
+        latest.provider = prov.instance_id
         return latest
 
 
