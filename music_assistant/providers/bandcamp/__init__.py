@@ -142,14 +142,20 @@ def _has_stream(track: Track) -> bool:
     return any(mapping.available for mapping in track.provider_mappings)
 
 
+def _is_server_error_page(error: BandcampUnexpectedResponseError) -> bool:
+    """Return whether Bandcamp or its proxy answered with an error page of the server."""
+    return error.status is not None and error.status >= 500
+
+
 def _retry_transport_errors[ProviderT, **P, R](
     func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
 ) -> Callable[Concatenate[ProviderT, P], Awaitable[R]]:
-    """Turn a dropped connection into an error that throttle_with_retries retries."""
-    # A library sync makes hundreds of requests, and one dropped connection must not abort
-    # it. A timeout is not retried: a hang repeats on every attempt, and five 120 s waits
-    # would hold a call for about 11 minutes. The timeout check comes first, because
-    # aiohttp's ServerTimeoutError is also a ClientConnectionError.
+    """Turn a dropped connection or a server error page into an error that is retried."""
+    # A library sync makes hundreds of requests, and one dropped connection or one outage
+    # page must not abort it. A robot check page with HTTP 200 repeats on every attempt, so
+    # it is not retried. A timeout is not retried either: a hang repeats on every attempt,
+    # and five 120 s waits would hold a call for about 11 minutes. The timeout check comes
+    # first, because aiohttp's ServerTimeoutError is also a ClientConnectionError.
 
     @functools.wraps(func)
     async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -159,6 +165,10 @@ def _retry_transport_errors[ProviderT, **P, R](
             raise
         except (ClientConnectionError, ClientPayloadError) as error:
             raise ResourceTemporarilyUnavailable(f"Bandcamp request failed: {error!r}") from error
+        except BandcampUnexpectedResponseError as error:
+            if not _is_server_error_page(error):
+                raise
+            raise ResourceTemporarilyUnavailable(f"Bandcamp request failed: {error}") from error
 
     return wrapper
 
@@ -1213,7 +1223,7 @@ class BandcampProvider(MusicProvider):
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampUnexpectedResponseError as error:
-            if error.status is not None and error.status >= 500:
+            if _is_server_error_page(error):
                 # An error page of Bandcamp or of its proxy: the outage can end, so retry it
                 raise ResourceTemporarilyUnavailable(f"{context}: {error}") from error
             # Most often the robot check page that Bandcamp sends with HTTP 200. The user sees

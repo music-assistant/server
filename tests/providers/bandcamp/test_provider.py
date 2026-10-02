@@ -960,6 +960,71 @@ async def test_get_album_retries_only_a_server_error_page(
     assert mock_get_album.call_count == attempts
 
 
+@pytest.mark.parametrize(
+    ("client_method", "call_provider"),
+    [
+        pytest.param(
+            "get_collection_items",
+            lambda p: p._fetch_collection_page(CollectionType.COLLECTION, None, None),
+            id="collection_page",
+        ),
+        pytest.param("get_feed", lambda p: p._fetch_feed(), id="feed"),
+    ],
+)
+async def test_a_request_retries_a_server_error_page(
+    provider: BandcampProvider,
+    client_method: str,
+    call_provider: Callable[[BandcampProvider], Awaitable[object]],
+) -> None:
+    """A request retries a server error page, so a caller without retries gets the answer."""
+    answer = Mock()
+    error = BandcampUnexpectedResponseError("not usable JSON", status=503)
+    with (
+        patch.object(
+            provider._client, client_method, new_callable=AsyncMock, side_effect=[error, answer]
+        ) as mock_client_method,
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        result = await call_provider(provider)
+
+    assert result is answer
+    assert mock_client_method.call_count == 2
+
+
+async def test_a_request_gives_up_a_robot_check_page_at_once(provider: BandcampProvider) -> None:
+    """A robot check page repeats on every attempt, so the request does not retry it."""
+    error = BandcampUnexpectedResponseError("not usable JSON")
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock, side_effect=error
+        ) as mock_get,
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(BandcampUnexpectedResponseError),
+    ):
+        await provider._fetch_collection_page(CollectionType.COLLECTION, None, None)
+
+    assert mock_get.call_count == 1
+
+
+async def test_library_sync_survives_a_server_error_page(provider: BandcampProvider) -> None:
+    """One server error page on the collection list does not end the library sync."""
+    page = _make_collection_page([Mock(item_type="album", item_id=1, band_id=10)])
+    error = BandcampUnexpectedResponseError("not usable JSON", status=503)
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            new_callable=AsyncMock,
+            side_effect=[error, page],
+        ),
+        patch.object(provider, "get_album", new_callable=AsyncMock, return_value=Mock()),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        albums = [album async for album in provider.get_library_albums()]
+
+    assert len(albums) == 1
+
+
 async def test_get_artist_success(provider: BandcampProvider) -> None:
     """Test successful artist retrieval."""
     mock_artist = Mock()
