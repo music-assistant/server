@@ -29,7 +29,7 @@ CACHE_CHANGING_LISTING = 3600 * 24  # 1 day - an album or a single while a track
 # Bump when the converted form of a cached item changes, so that old cache rows are fetched again
 PARSED_ITEM_CACHE_CHECKSUM = "unavailable_tracks_v2"
 
-# Per-request limit like Apple Music and Spotify, keeping aiohttp's 30 s connect limit
+# A time limit for each request, which keeps the 30 s connect limit of aiohttp
 BANDCAMP_TIMEOUT = ClientTimeout(total=120, sock_connect=30)
 
 # Browse path slugs

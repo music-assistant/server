@@ -146,9 +146,10 @@ def _retry_transport_errors[ProviderT, **P, R](
     func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
 ) -> Callable[Concatenate[ProviderT, P], Awaitable[R]]:
     """Turn a dropped connection into an error that throttle_with_retries retries."""
-    # Like Apple Music: a library sync makes hundreds of requests, and one blip must not
-    # abort it. Unlike Apple Music, a timeout is not retried: a hang repeats on every
-    # attempt, and five 120 s waits would hold a call for about 11 minutes.
+    # A library sync makes hundreds of requests, and one dropped connection must not abort
+    # it. A timeout is not retried: a hang repeats on every attempt, and five 120 s waits
+    # would hold a call for about 11 minutes. The timeout check comes first, because
+    # aiohttp's ServerTimeoutError is also a ClientConnectionError.
 
     @functools.wraps(func)
     async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -960,7 +961,6 @@ class BandcampProvider(MusicProvider):
         albums = await self.get_artist_albums(prov_artist_id)
         albums.sort(key=lambda album: (album.year is None, album.year or 0), reverse=True)
         for album in albums:
-            # Only a track with a stream takes a top track place
             album_tracks = await self.get_album_tracks(album.item_id)
             tracks.extend(track for track in album_tracks if _has_stream(track))
             if len(tracks) >= self.top_tracks_limit:
@@ -1253,7 +1253,7 @@ class BandcampProvider(MusicProvider):
         async with self._map_api_errors(context):
             items = await self._get_all_collection_items(collection_type, fan_id=person_id)
         # The list gives the title, the band, the URL and the cover of each entry, so the
-        # entries need no request each, as in the lists of the other music providers
+        # entries need no request each
         results: list[Album | Track] = []
         seen_ids: set[str] = set()
         for item in items:
@@ -1292,7 +1292,7 @@ class BandcampProvider(MusicProvider):
                 CollectionType.FOLLOWING, fan_id=person_id
             )
         # The list gives the name, the URL and the image of each band, so the artists need
-        # no band request each, as in the artist lists of the other music providers
+        # no band request each
         artists = [self._converters.artist_from_following(item) for item in collection]
         await self.mass.cache.set(
             cache_key,
@@ -1389,8 +1389,8 @@ class BandcampProvider(MusicProvider):
         ]
         return album_ids, track_ids
 
-    # An expired listing comes back at once and is fetched again in the background,
-    # as in the album track listings of the other music providers
+    # Both album track listings serve an expired row at once and fetch it again in the
+    # background
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def _get_album_tracks_monthly(self, prov_album_id: str) -> list[Track]:
         """Get the tracks of an album from the cache of an album that does not change."""
