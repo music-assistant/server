@@ -2983,10 +2983,13 @@ class TestRegroupOffUnneededProtocol:
         leader = players["speaker_leader"]
         await controller._handle_set_members_with_protocols(leader, ["bridge_only"], [])
         bridge_members = list(players["bridge_leader"].group_members)
+        bridge_set_members = AsyncMock(wraps=players["bridge_leader"].set_members)
+        players["bridge_leader"].set_members = bridge_set_members  # type: ignore[method-assign]
         media = PlayerMedia(uri="http://test/stream")
 
         await controller._handle_play_media("speaker_leader", media)
 
+        bridge_set_members.assert_not_awaited()
         assert players["bridge_leader"].group_members == bridge_members
         assert set(bridge_members) == {"bridge_leader", "bridge_member", "bridge_only"}
         assert "speaker_member" not in leader.group_members
