@@ -1207,7 +1207,7 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        username = await self._validate_username(username)
+        await self._ensure_valid_username(username)
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
@@ -1567,7 +1567,7 @@ class AuthenticationManager:
         if username is not None or password or role:
             _refuse_system_user(target_user.username)
         if username is not None:
-            username = await self._validate_username(username, target_user)
+            await self._ensure_valid_username(username, target_user.user_id)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -2258,29 +2258,29 @@ class AuthenticationManager:
             )
         return name
 
-    async def _validate_username(self, username: str, user: User | None = None) -> str:
+    async def _ensure_valid_username(self, username: str, user_id: str | None = None) -> None:
         """
-        Return the normalized form of the given username, raise if the user can not have it.
+        Raise when the given username is too short, reserved or held by another user.
 
-        :param username: The username to validate.
-        :param user: The user the username is for, None for a new user.
+        A disabled user still holds its name, and a user can always keep its own.
+
+        :param username: The username to check.
+        :param user_id: The id of the user the name is for, None for a new user.
         """
         username = normalize_username(username)
-        if user and username == user.username:
-            return username
+        user_row = await self.database.get_row("users", {"username": username})
+        if user_row and user_row["user_id"] == user_id:
+            return
         if len(username) < USERNAME_MIN_LENGTH:
             raise InvalidDataError(
                 f"Username must be at least {USERNAME_MIN_LENGTH} characters",
                 translation_key="username_too_short",
                 translation_args=[USERNAME_MIN_LENGTH],
             )
-        if username == HOMEASSISTANT_SYSTEM_USER or await self.get_user_by_username(
-            username, include_disabled=True
-        ):
+        if user_row or username == HOMEASSISTANT_SYSTEM_USER:
             raise InvalidDataError(
                 f"The username {username} is already in use", translation_key="username_taken"
             )
-        return username
 
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """

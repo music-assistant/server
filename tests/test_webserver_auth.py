@@ -1093,25 +1093,23 @@ async def test_update_user_profile_refuses_a_too_short_username(
     assert unchanged_user.role == UserRole.USER
 
 
-async def test_update_user_profile_refuses_a_username_in_use(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """Test that the username of another account, or of the system account, is refused."""
-    admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
-    await auth_manager.create_user(username="taken")
-    disabled_user = await auth_manager.create_user(username="disabled")
+async def test_the_system_username_is_reserved(auth_manager: AuthenticationManager) -> None:
+    """Test that no user can take the system username, also before that account exists."""
+    admin = await auth_manager.create_user(username="reservedadmin", role=UserRole.ADMIN)
     user = await auth_manager.create_user(username="renamer")
-    set_current_user(admin)
-    await auth_manager.disable_user(disabled_user.user_id)
-    # the system username is reserved, also before that account exists
     assert await auth_manager.get_user_by_username(HOMEASSISTANT_SYSTEM_USER) is None
 
-    set_current_user(user)
-    for username in ("Taken", "disabled", HOMEASSISTANT_SYSTEM_USER):
-        with pytest.raises(InvalidDataError) as excinfo:
-            await auth_manager.update_user_profile(username=username)
-        assert excinfo.value.translation_key == "username_taken"
+    set_current_user(admin)
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.create_user_with_api(
+            username=HOMEASSISTANT_SYSTEM_USER, password="password123"
+        )
+    assert excinfo.value.translation_key == "username_taken"
 
+    set_current_user(user)
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(username=HOMEASSISTANT_SYSTEM_USER)
+    assert excinfo.value.translation_key == "username_taken"
     unchanged_user = await auth_manager.get_user(user.user_id)
     assert unchanged_user is not None
     assert unchanged_user.username == "renamer"
@@ -1448,17 +1446,44 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
         )
 
 
-async def test_create_user_api_refuses_a_username_in_use(
+async def test_create_user_api_refuses_taken_username(
     auth_manager: AuthenticationManager,
 ) -> None:
-    """Test that create_user_with_api refuses a username in use or reserved for the system."""
-    admin = await auth_manager.create_user(username="createadmin", role=UserRole.ADMIN)
+    """Test that creating a user refuses a username another account has, also a disabled one."""
+    admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
     set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    disabled = await auth_manager.create_user_with_api(username="gone", password="password123")
+    await auth_manager.disable_user(disabled.user_id)
 
-    for username in ("CreateAdmin", HOMEASSISTANT_SYSTEM_USER):
+    for username in (" Taken ", "gone"):
         with pytest.raises(InvalidDataError) as excinfo:
             await auth_manager.create_user_with_api(username=username, password="password123")
         assert excinfo.value.translation_key == "username_taken"
+
+
+async def test_update_user_profile_refuses_taken_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that renaming a user refuses a username another account has."""
+    admin = await auth_manager.create_user(username="renameadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    user = await auth_manager.create_user_with_api(username="renamer", password="password123")
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(
+            user_id=user.user_id, username="Taken", role=UserRole.ADMIN
+        )
+    assert excinfo.value.translation_key == "username_taken"
+    # the refused update leaves the other fields untouched
+    unchanged = await auth_manager.get_user(user.user_id)
+    assert unchanged is not None
+    assert unchanged.role == UserRole.USER
+
+    # the user's own name in another case is not taken
+    renamed = await auth_manager.update_user_profile(user_id=user.user_id, username="Renamer")
+    assert renamed.username == "renamer"
 
 
 async def test_logout(auth_manager: AuthenticationManager) -> None:
