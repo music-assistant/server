@@ -2458,6 +2458,45 @@ async def test_fetch_api_track_does_not_retry_a_timeout(
     mock_sleep.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("client_method", "call_provider"),
+    [
+        pytest.param(
+            "get_artist_discography", lambda p: p.get_artist_toptracks("123"), id="top_tracks"
+        ),
+        pytest.param(
+            "get_collection_items",
+            lambda p: p._browse_person_content(None, CollectionType.WISHLIST),
+            id="collection_content",
+        ),
+        pytest.param(
+            "get_collection_items", lambda p: p._browse_person_following(None), id="following"
+        ),
+        pytest.param(
+            "get_collection_items",
+            lambda p: p._browse_person_people(CollectionType.FOLLOWERS, "followers"),
+            id="people",
+        ),
+    ],
+)
+async def test_a_dropped_connection_in_a_nested_fetch_ends_in_retries_exhausted(
+    provider: BandcampProvider,
+    client_method: str,
+    call_provider: Callable[[BandcampProvider], Awaitable[object]],
+) -> None:
+    """The method that calls Bandcamp retries a dropped connection, and its caller gets the end."""
+    with (
+        patch.object(
+            provider._client, client_method, side_effect=ClientConnectionError("down")
+        ) as mock_client_method,
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(RetriesExhausted),
+    ):
+        await call_provider(provider)
+
+    assert mock_client_method.call_count == provider.throttler.retry_attempts
+
+
 async def test_fetch_api_track_generic_api_error(provider: BandcampProvider) -> None:
     """Test _fetch_api_track converts generic BandcampAPIError to MediaNotFoundError."""
     with (

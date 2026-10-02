@@ -953,7 +953,6 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     @throttle_with_retries
-    @_retry_transport_errors
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
         tracks: list[Track] = []
@@ -1235,7 +1234,6 @@ class BandcampProvider(MusicProvider):
         raise ValueError(msg)
 
     @throttle_with_retries
-    @_retry_transport_errors
     async def _browse_person_content(
         self, person_id: int | None, collection_type: CollectionType
     ) -> list[Album | Track]:
@@ -1279,7 +1277,6 @@ class BandcampProvider(MusicProvider):
         return results
 
     @throttle_with_retries
-    @_retry_transport_errors
     async def _browse_person_following(self, person_id: int | None) -> list[Artist]:
         """
         Fetch a person's followed artists.
@@ -1306,7 +1303,6 @@ class BandcampProvider(MusicProvider):
         return artists
 
     @throttle_with_retries
-    @_retry_transport_errors
     async def _browse_person_people(
         self,
         collection_type: CollectionType,
