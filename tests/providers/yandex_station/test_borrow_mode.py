@@ -237,6 +237,47 @@ class TestBorrowInitSession:
         assert x_token is not None
         assert x_token.get_secret() == "test-x-ym"
 
+    async def test_waits_for_selected_instance_after_other_instance_is_ready(self) -> None:
+        """A domain-wide readiness signal must not end the selected account's wait."""
+        owner = _ym_owner("test-music-ym", "test-x-ym")
+        provider = _borrow_provider(None)
+        provider.mass.get_provider.side_effect = [None, None, *([owner] * 10)]
+        ready_event = mock.MagicMock()
+        ready_event.wait = mock.AsyncMock(return_value=True)
+        object.__setattr__(
+            provider.mass,
+            "get_provider_ready_event",
+            mock.MagicMock(return_value=ready_event),
+        )
+
+        music_token, x_token = await provider._resolve_borrowed_tokens()
+
+        ready_event.wait.assert_awaited_once()
+        assert provider.mass.get_provider.call_count >= 4
+        assert all(call.args[0] == "ym-1" for call in provider.mass.get_provider.call_args_list)
+        assert music_token.get_secret() == "test-music-ym"
+        assert x_token is not None
+        assert x_token.get_secret() == "test-x-ym"
+
+    async def test_other_instance_ready_does_not_extend_startup_timeout(self) -> None:
+        """A missing selected account remains retryable after the bounded wait."""
+        provider = _borrow_provider(None)
+        ready_event = mock.MagicMock()
+        ready_event.wait = mock.AsyncMock(return_value=True)
+        object.__setattr__(
+            provider.mass,
+            "get_provider_ready_event",
+            mock.MagicMock(return_value=ready_event),
+        )
+
+        with (
+            mock.patch(f"{_MOD}._BORROW_SOURCE_LOAD_TIMEOUT", 0.02),
+            pytest.raises(ResourceTemporarilyUnavailable, match="ym-1"),
+        ):
+            await provider._resolve_borrowed_tokens()
+
+        assert provider.mass.get_provider.call_count >= 2
+
     async def test_passport_failure_is_not_retried_as_provider_startup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

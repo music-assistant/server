@@ -466,10 +466,16 @@ class YandexStationProvider(PlayerProvider):
         except ResourceTemporarilyUnavailable as err:
             ready_event = self.mass.get_provider_ready_event("yandex_music")
             try:
-                await asyncio.wait_for(ready_event.wait(), _BORROW_SOURCE_LOAD_TIMEOUT)
+                async with asyncio.timeout(_BORROW_SOURCE_LOAD_TIMEOUT):
+                    await ready_event.wait()
+                    while True:
+                        try:
+                            _, x_token = self._borrow_source.read_tokens()
+                            break
+                        except ResourceTemporarilyUnavailable:
+                            await asyncio.sleep(0.1)
             except TimeoutError:
                 raise err
-            _, x_token = self._borrow_source.read_tokens()
         music_token = await self._borrow_source.resolve_music_token()
         return music_token, x_token
 
