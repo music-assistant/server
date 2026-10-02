@@ -12,7 +12,7 @@
     "[Sendspin](https://sendspin-audio.com)"
   ],
   "requirements": [
-    "aiosendspin[server] @ git+https://github.com/Sendspin/aiosendspin@ca1de5627fb870f20e406c50e0c1d4d323e1ec34",
+    "aiosendspin[server] @ git+https://github.com/Sendspin/aiosendspin@3f5779428a8ec3fdda69b98c82786ce91f949d1b",
     "av==18.1.0"
   ],
   "builtin": true,
