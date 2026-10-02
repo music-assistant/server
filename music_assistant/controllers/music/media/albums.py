@@ -435,18 +435,27 @@ class AlbumsController(MediaControllerBase[Album]):
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
         lookup_error: Exception | None = None
+        fetched: set[tuple[str, str]] = set()
         for provider_mapping in library_album.provider_mappings:
             if not provider_mapping.available or (
                 allowed_providers is not None
                 and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
-            # an unavailable mapped instance hands the lookup to another account of the service
+            # an unavailable mapped instance hands the lookup to another account of the
+            # service, which would list the album a second time over
             own_instance = self.mass.get_provider(provider_mapping.provider_instance)
             own_lookup = (
                 own_instance is not None
                 and own_instance.instance_id == provider_mapping.provider_instance
             )
+            listing = (
+                own_instance.instance_id if own_instance else provider_mapping.provider_instance,
+                provider_mapping.item_id,
+            )
+            if listing in fetched:
+                continue
+            fetched.add(listing)
             try:
                 provider_tracks = await self._get_provider_album_tracks(
                     provider_mapping.item_id, provider_mapping.provider_instance

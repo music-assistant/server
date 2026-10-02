@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -372,6 +372,40 @@ def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) 
     else:
         expected = position
     assert len(select_album_tracks([], [base, candidate])) == expected
+
+
+async def test_album_tracks_fetch_a_listing_once_per_answering_provider(
+    mass: MusicAssistant,
+) -> None:
+    """Two mappings one available instance answers for are fetched, and listed, once."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_q", provider_domain="qobuz", provider_instance="qobuz_2")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "qobuz_2"}})
+    provider_tracks = [create_track("qobuz_1", "t1", name="One"), create_track("qobuz_1", "t2")]
+    for number, track in enumerate(provider_tracks, start=1):
+        track.track_number = number
+    qobuz = SimpleNamespace(instance_id="qobuz_1")
+    get_provider = mass.get_provider
+
+    def _resolve(provider_id: str, *args: Any, **kwargs: Any) -> Any:
+        # the unavailable second instance is answered for by the first
+        if provider_id in ("qobuz_1", "qobuz_2"):
+            return qobuz
+        return get_provider(provider_id, *args, **kwargs)
+
+    with (
+        patch.object(mass, "get_provider", side_effect=_resolve),
+        patch.object(
+            mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=provider_tracks)
+        ) as fetch,
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    fetch.assert_awaited_once()
+    assert [track.item_id for track in tracks] == ["t1", "t2"]
 
 
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
