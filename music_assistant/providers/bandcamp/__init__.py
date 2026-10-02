@@ -609,7 +609,8 @@ class BandcampProvider(MusicProvider):
         for item in items:
             if item.item_type == "band":
                 band_ids.add(item.item_id)
-            elif collection_album_id(item):
+            elif collection_album_id(item) or item.item_type == "track":
+                # A single track purchase brings its band into the library, as an album does
                 band_ids.add(item.band_id)
 
         for band_id in band_ids:

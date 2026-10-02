@@ -2778,6 +2778,32 @@ async def test_get_library_artists_success(provider: BandcampProvider) -> None:
         assert mock_get_artist.call_count == 2
 
 
+async def test_get_library_artists_adds_the_band_of_a_single_track(
+    provider: BandcampProvider,
+) -> None:
+    """A band whose only purchase is a single track reaches the library artists."""
+    collection_items = [
+        CollectionItem("album", 200, 300),
+        CollectionItem("track", 789, 400),
+        CollectionItem("track", 790, 300),
+    ]
+
+    with (
+        patch.object(
+            provider,
+            "_get_all_collection_items",
+            new_callable=AsyncMock,
+            return_value=collection_items,
+        ),
+        patch.object(
+            provider, "get_artist", new_callable=AsyncMock, return_value=Mock()
+        ) as mock_get_artist,
+    ):
+        _ = [artist async for artist in provider.get_library_artists()]
+
+    assert sorted(call.args[0] for call in mock_get_artist.await_args_list) == ["300", "400"]
+
+
 async def test_get_library_artists_no_identity(provider: BandcampProvider) -> None:
     """Test that library artists returns nothing without identity."""
     provider._client.identity = None
