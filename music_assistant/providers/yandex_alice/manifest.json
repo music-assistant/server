@@ -1,0 +1,18 @@
+{
+    "type": "plugin",
+    "domain": "yandex_alice",
+    "name": "Yandex Alice",
+    "description": "Voice control of Music Assistant via a Yandex Dialogs custom skill (Russian NLU, full command surface).",
+    "codeowners": ["@trudenboy"],
+    "credits": [
+        "[AlexxIT/YandexDialogs](https://github.com/AlexxIT/YandexDialogs)"
+    ],
+    "requirements": [
+        "ya-passport-auth[ma]==1.7.0",
+        "ya-dialogs-api==2.4.0"
+    ],
+    "documentation": "https://github.com/trudenboy/ma-provider-yandex-alice",
+    "stage": "experimental",
+    "multi_instance": false,
+    "builtin": false
+}
