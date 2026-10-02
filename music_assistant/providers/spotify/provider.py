@@ -665,7 +665,7 @@ class SpotifyProvider(MusicProvider):
                 episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
             except MediaNotFoundError:
                 raise NotImplementedError("Episode not found on Spotify")
-            except (ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
+            except (ResourceTemporarilyUnavailable, RetriesExhausted, aiohttp.ClientError) as e:
                 self.logger.debug(f"Error fetching episode {item_id}: {e}")
                 raise NotImplementedError("Unable to fetch episode data from Spotify")
 
