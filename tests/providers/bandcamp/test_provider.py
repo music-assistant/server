@@ -761,6 +761,37 @@ async def test_get_album_keeps_a_label_release_when_the_lookup_fails(
     )
 
 
+@pytest.mark.parametrize("error", LOOKUP_ERRORS)
+async def test_search_keeps_its_results_when_an_artist_fetch_fails(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A failed fetch of a performer's own page drops only that artist from the search."""
+    label_id = 4119123456
+    apollo_band_id = 3658985110
+    label_band = _search_artist_mock(artist_id=label_id, name="Hip Dozer", is_label=True)
+    night_moves = _search_album_mock(artist_id=label_id, artist_name="Apollo Brown", album_id=1)
+    secondary_response = [_search_artist_mock(artist_id=apollo_band_id, name="Apollo Brown")]
+
+    async def fake_search(query: str) -> list[Mock]:
+        if query == "Apollo Brown":
+            return secondary_response
+        return [label_band, night_moves]
+
+    with (
+        patch.object(provider._client, "search", side_effect=fake_search),
+        patch.object(
+            provider._client, "get_artist", new_callable=AsyncMock, side_effect=error
+        ) as mock_get_artist,
+    ):
+        results = await provider.search("Night Moves", [MediaType.ALBUM, MediaType.ARTIST])
+
+    mock_get_artist.assert_awaited_once_with(apollo_band_id)
+    assert len(results.albums) == 1
+    artist_ids = {artist.item_id for artist in results.artists}
+    assert str(label_id) in artist_ids
+    assert str(apollo_band_id) not in artist_ids
+
+
 async def test_search_without_identity(provider: BandcampProvider) -> None:
     """Test search returns empty results without identity token."""
     provider._client.identity = None

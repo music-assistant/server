@@ -306,7 +306,7 @@ class BandcampProvider(MusicProvider):
                     # didn't make the cap; re-introducing it here would surface
                     # a band the user wasn't searching for.
                     continue
-                with suppress(MediaNotFoundError, ResourceTemporarilyUnavailable, RetriesExhausted):
+                with suppress(*PROVIDER_FETCH_ERRORS):
                     results.artists = [*results.artists, await self.get_artist(artist_item_id)]
 
         if synthetic_artists:
