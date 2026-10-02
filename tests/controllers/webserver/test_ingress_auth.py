@@ -422,6 +422,36 @@ async def test_ingress_websocket_without_user_headers_subscribes_after_token_aut
     assert client._events_unsub_callback is not None
 
 
+async def test_ingress_websocket_is_closed_when_the_sign_in_fails(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An Ingress websocket connection whose sign-in raises is closed and cleaned up."""
+    mass = auth_manager.mass
+    # Home Assistant does not know this new user, so looking up its role fails
+    hass_provider = _ready_hass_provider(mass, "ha_someone_else", admin=False)
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    with (
+        _ingress_request(mass, headers, hass_provider=hass_provider) as request,
+        patch.object(mass, "dashboard", MagicMock(), create=True) as dashboard,
+    ):
+        client = WebsocketClientHandler(auth_manager.webserver, request)
+        with (
+            patch.object(client.wsock, "prepare", AsyncMock()),
+            patch.object(client.wsock, "close", AsyncMock()) as close,
+            patch.object(client.wsock, "receive", AsyncMock(side_effect=RuntimeError)) as receive,
+            patch.object(client, "_send_message", AsyncMock()),
+        ):
+            await client.handle_client()
+
+    assert client._authenticated_user is None
+    assert client._writer_task is not None
+    assert client._writer_task.done()
+    receive.assert_not_awaited()
+    close.assert_awaited_once()
+    dashboard.handle_client_disconnected.assert_called_once_with(client.client_id)
+
+
 async def test_ha_login_resolves_a_disabled_linked_user_under_another_username(
     auth_manager: AuthenticationManager,
 ) -> None:
