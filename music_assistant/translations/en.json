@@ -2245,8 +2245,6 @@
   "provider.sendspin.setup_flow.select_method.title": "Pair this device",
   "provider.sendspin.setup_flow.source_input.description": "This device can send its audio (such as a line-in) to Music Assistant. To use the input, the device must be paired.",
   "provider.sendspin.setup_flow.source_input.title": "Audio input available",
-  "provider.sendspin.setup_flow.verify_pin.description": "Enter the device's pairing code to confirm it is the physical device in front of you.",
-  "provider.sendspin.setup_flow.verify_pin.title": "Verify device presence",
   "provider.sendspin_source.config_entries.target_latency.description": "How much source audio to buffer before playback starts. Higher values absorb network jitter at the cost of a longer input-to-speaker delay.",
   "provider.sendspin_source.config_entries.target_latency.label": "Target latency (ms)",
   "provider.sendspin_source.errors.no_audio": "{0} did not start streaming its input.",

@@ -91,7 +91,6 @@ class _FakePinSession:
         self,
         *,
         awaiting_gesture: bool = False,
-        verify: bool = False,
         method: PairMethod = PairMethod.DYNAMIC_PAIRING_CODE,
     ) -> None:
         self.pin_request_event = asyncio.Event()
@@ -105,7 +104,6 @@ class _FakePinSession:
         self.finished = False
         self.error: Exception | None = None
         self.can_retry = False
-        self.verify = verify
         self.method = method
         self.pin_rejected = False
         # None so the flow's post-submit "confirming" wait is skipped in tests.
@@ -185,7 +183,6 @@ class _FakeProvider:
         self.session: _FakePinSession | None = None
         self.start_calls = 0
         self.static: bool | None = None
-        self.verify: bool | None = None
         self.submitted_pins: list[str] = []
         self.tokens: list[str] = []
         self.cancel_calls = 0
@@ -206,12 +203,9 @@ class _FakeProvider:
         if self.session is not None and self.session.finished:
             self.session = None
 
-    async def start_pin_pairing(
-        self, client_id: str, *, verify: bool = False, static: bool = False
-    ) -> _FakePinSession:
+    async def start_pin_pairing(self, client_id: str, *, static: bool = False) -> _FakePinSession:
         self.start_calls += 1
         self.static = static
-        self.verify = verify
         if self.session is not None and self.session.pin_rejected:
             # The attempt is still running, asking for the PIN again.
             return self.session
@@ -226,7 +220,6 @@ class _FakeProvider:
         dynamic_offered = offered.dynamic_pairing_code is not None
         self.session = _FakePinSession(
             awaiting_gesture=self._gesture,
-            verify=verify,
             method=(
                 PairMethod.DYNAMIC_PAIRING_CODE
                 if dynamic_offered and not static
@@ -361,7 +354,6 @@ async def test_select_method_pin_gesture_submit_success() -> None:
     assert collected["values"] == {}
     assert provider.submitted_pins == ["123456"]
     assert provider.static is False
-    assert provider.verify is False
     assert provider.cancel_calls == 0
     assert provider.clear_calls == 1
     steps = _published_steps(mass)
@@ -720,33 +712,15 @@ async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> N
     assert provider.submitted_pins == ["123456"]
 
 
-async def test_verify_presence_on_paired_device() -> None:
-    """Re-running the flow on a paired device runs the dynamic-PIN presence verification."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], psk_category=PskCategory.LONG_TERM)
-    record = SimpleNamespace(pair_methods=[PairMethod.STATIC_PAIRING_CODE])
-    provider = _FakeProvider(api, record=record)
-    session, _mass = _make_session(_ok_finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="verify_pin")
-    assert provider.verify is True
-    assert provider.static is False
-    session.handle_submit({CONF_PAIRING_PIN: "123456"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.submitted_pins == ["123456"]
-
-
-async def test_paired_device_without_verification_aborts() -> None:
-    """A paired device whose presence verification would add nothing aborts as already paired."""
+async def test_paired_device_aborts_as_already_paired() -> None:
+    """A paired device hides its setup flow, which aborts without a pairing attempt."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], psk_category=PskCategory.LONG_TERM)
     record = SimpleNamespace(pair_methods=[PairMethod.DYNAMIC_PAIRING_CODE])
     provider = _FakeProvider(api, record=record)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
+    assert player.setup_flow_available is False
     with pytest.raises(AbortFlow) as excinfo:
         await player.run_setup_flow(session)
     assert excinfo.value.reason == "already_paired"

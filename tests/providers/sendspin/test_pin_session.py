@@ -441,13 +441,12 @@ async def test_retry_resumes_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
     api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     api.outcomes.append(RemotePairingAbortError(PairAbortReason.PAIRING_CODE_MISMATCH))
     provider, refreshed = _make_provider(api, monkeypatch)
-    session = await provider.start_pin_pairing("c", verify=True)
+    session = await provider.start_pin_pairing("c")
     await _submit_and_settle(provider, "000000")
     assert session.can_retry
 
-    same = await provider.start_pin_pairing("c", verify=True)
+    same = await provider.start_pin_pairing("c")
     assert same is session
-    assert session.verify is True
     assert session.method is PairMethod.DYNAMIC_PAIRING_CODE
     assert session.error is None
     assert not session.retryable
@@ -460,22 +459,6 @@ async def test_retry_resumes_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
     assert session.finished
     assert api.initiate_calls == 2
     assert refreshed == ["c"]
-
-
-async def test_parked_mode_mismatch_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stale parked session never resumes under a different mode."""
-    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
-    api.outcomes.append(RemotePairingAbortError(PairAbortReason.PAIRING_CODE_MISMATCH))
-    provider, _refreshed = _make_provider(api, monkeypatch)
-    session = await provider.start_pin_pairing("c", verify=True)
-    await _submit_and_settle(provider, "000000")
-    assert session.can_retry
-
-    fresh = await provider.start_pin_pairing("c")
-    assert fresh is not session
-    assert fresh.verify is False
-    assert api.end_pairing_calls == 1
-    assert api.initiate_calls == 2
 
 
 async def test_parked_static_session_not_resumed_by_default_mode(
@@ -498,13 +481,13 @@ async def test_parked_static_session_not_resumed_by_default_mode(
 
 async def test_running_mode_mismatch_raises_concurrent(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attempt in flight with a different mode cannot be co-opted."""
-    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE))
     provider, _refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c")
     assert session.attempt_running
 
     with pytest.raises(SecurityActionError) as excinfo:
-        await provider.start_pin_pairing("c", verify=True)
+        await provider.start_pin_pairing("c", static=True)
     assert excinfo.value.alert_key == "pairing_error_concurrent"
     assert provider.get_pin_session("c") is session
     await provider.cancel_pin_pairing("c")

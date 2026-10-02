@@ -209,10 +209,6 @@
       "description": "Completing the secure pairing with the device.",
       "progress_text": "Completing pairing with the device..."
     },
-    "verify_pin": {
-      "title": "Verify device presence",
-      "description": "Enter the device's pairing code to confirm it is the physical device in front of you."
-    },
     "abort": {
       "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
       "already_paired": "This device is already securely paired. To pair it afresh, unpair it first from the player settings.",

@@ -156,7 +156,6 @@ class PinPairingSession:
     client_id: str
     method: PairMethod
     pin_future: asyncio.Future[str]
-    verify: bool = False
     static: bool = False
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -760,9 +759,7 @@ class SendspinProvider(PlayerProvider):
             if session.opened_management:
                 self.exit_management(client_id)
 
-    async def start_pin_pairing(
-        self, client_id: str, *, verify: bool = False, static: bool = False
-    ) -> PinPairingSession:
+    async def start_pin_pairing(self, client_id: str, *, static: bool = False) -> PinPairingSession:
         """
         Begin (or retry in place) an operator PIN pairing attempt with a connected client.
 
@@ -770,15 +767,14 @@ class SendspinProvider(PlayerProvider):
         feedback window has elapsed, so the caller's first render reflects whether the
         device-side pairing gesture is still pending. The attempt keeps running until the PIN
         is supplied via submit_pin (or it times out / is cancelled). A session left retryable
-        by a failed attempt is resumed in place, preserving the chosen method and verify mode.
+        by a failed attempt is resumed in place, preserving the chosen method.
 
-        :param verify: Re-verify an already-paired device's presence (dynamic PIN only).
         :param static: Pair with the static PIN even when a dynamic PIN is offered.
         """
         session = self._pin_sessions.get(client_id)
-        if session is not None and (session.verify != verify or session.static != static):
+        if session is not None and session.static != static:
             # a stale session from an earlier run never resumes; the caller's
-            # static/verify choice must win
+            # static choice must win
             if session.attempt_running:
                 raise SecurityActionError("pairing_error_concurrent")
             await self.cancel_pin_pairing(client_id)
@@ -795,12 +791,11 @@ class SendspinProvider(PlayerProvider):
         if info is None:
             raise SecurityActionError("pairing_error_not_connected")
         offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))
-        method = self._pick_pin_method(offered, verify=verify, static=static)
+        method = self._pick_pin_method(offered, static=static)
         session = PinPairingSession(
             client_id=client_id,
             method=method,
             pin_future=self.mass.loop.create_future(),
-            verify=verify,
             static=static,
             opened_management=await self._open_pairing_window(client_id),
         )
@@ -1258,19 +1253,14 @@ class SendspinProvider(PlayerProvider):
         return player
 
     @staticmethod
-    def _pick_pin_method(
-        offered: Collection[PairMethod], *, verify: bool = False, static: bool = False
-    ) -> PairMethod:
+    def _pick_pin_method(offered: Collection[PairMethod], *, static: bool = False) -> PairMethod:
         """
         Select the preferred usable PIN method from the client's offer.
 
-        :param verify: Restrict to dynamic PIN, the only method that proves device presence.
         :param static: Restrict to static PIN, overriding the dynamic-first default.
         """
         wanted: tuple[PairMethod, ...]
-        if verify:
-            wanted = (PairMethod.DYNAMIC_PAIRING_CODE,)
-        elif static:
+        if static:
             wanted = (PairMethod.STATIC_PAIRING_CODE,)
         else:
             wanted = (PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE)
@@ -1353,7 +1343,6 @@ class SendspinProvider(PlayerProvider):
                     pairing_format=PairingCodeFormat.DIGITS
                     if session.method is PairMethod.DYNAMIC_PAIRING_CODE
                     else None,
-                    verify=session.verify,
                     on_pair_pending=on_pair_pending,
                 ),
             )

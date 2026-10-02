@@ -422,7 +422,10 @@ class SendspinBasePlayer(Player):
     @property
     def setup_flow_available(self) -> bool:
         """Whether the flow would do anything but abort: pair, decide, or explain a dead end."""
-        if self._is_bridge_or_web_player or self.api.connection_security is None:
+        security = self.api.connection_security
+        if self._is_bridge_or_web_player or security is None:
+            return False
+        if security.psk_category is PskCategory.LONG_TERM:
             return False
         provider = cast("SendspinProvider", self.provider)
         # needs_setup keeps the flow reachable for a device that offers nothing at all, so
@@ -456,8 +459,8 @@ class SendspinBasePlayer(Player):
         An unapproved device shows a one-time consent step that allows it to play,
         with secure pairing offered as an optional extra; a device whose only pending
         part is its audio input picks between pairing and declining the input.
-        Re-running the flow on a paired device verifies its presence via a dynamic
-        PIN. Pairing succeeds as a side effect of the provider pairing calls;
+        A paired device must be unpaired before it can pair again. Pairing succeeds
+        as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair.
 
@@ -469,9 +472,7 @@ class SendspinBasePlayer(Player):
         provider = cast("SendspinProvider", self.provider)
         record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
         if security.psk_category is PskCategory.LONG_TERM and record is not None:
-            await self._run_verify_presence_flow(session, provider, record)
-            await session.finish({})
-            return
+            raise AbortFlow("already_paired")
         options = self._pairing_method_options(provider)
         wants_pairing = True
         if self._offers_unpaired_consent and (
@@ -1010,25 +1011,11 @@ class SendspinBasePlayer(Player):
         """
         if pin_session.finished and pin_session.error is None:
             return True
-        if pin_session.verify or pin_session.can_retry:
+        if pin_session.can_retry:
             return False
         # a confirm wait that outlived its deadline: a new record is the proof of success
         record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
         return record is not None and record != previous_record
-
-    async def _run_verify_presence_flow(
-        self, session: SetupSession, provider: SendspinProvider, record: ServerPairingRecord
-    ) -> None:
-        """Confirm a paired device's physical presence via its dynamic PIN."""
-        info = self.api.info_or_none
-        pairing_config = provider.pairing_config_snapshot(self.player_id)
-        offers_dynamic_pin = PairMethod.DYNAMIC_PAIRING_CODE in effective_pair_methods(
-            info, pairing_config
-        )
-        # presence proven by a dynamic-PIN pairing itself needs no re-verification
-        if not offers_dynamic_pin or PairMethod.DYNAMIC_PAIRING_CODE in record.pair_methods:
-            raise AbortFlow("already_paired")
-        await self._run_pin_pairing_flow(session, provider, static=False, verify=True)
 
     async def _run_pin_pairing_flow(
         self,
@@ -1036,7 +1023,6 @@ class SendspinBasePlayer(Player):
         provider: SendspinProvider,
         *,
         static: bool,
-        verify: bool = False,
     ) -> None:
         """
         Pair via PIN: the device wait, PIN entry and the retry-in-place loop.
@@ -1047,7 +1033,6 @@ class SendspinBasePlayer(Player):
         still in flight - including when the flow is cancelled.
 
         :param static: Pair with the device's static PIN instead of a dynamic one.
-        :param verify: Verify an already-paired device's presence (dynamic PIN only).
         """
         succeeded = False
         errors: dict[str, str] | None = None
@@ -1057,9 +1042,7 @@ class SendspinBasePlayer(Player):
         try:
             while True:
                 try:
-                    pin_session = await provider.start_pin_pairing(
-                        self.player_id, static=static, verify=verify
-                    )
+                    pin_session = await provider.start_pin_pairing(self.player_id, static=static)
                 except SecurityActionError as err:
                     raise AbortFlow(_pairing_abort_reason(err)) from err
                 await self._await_pin_request(session, pin_session)
@@ -1075,7 +1058,7 @@ class SendspinBasePlayer(Player):
                 try:
                     pin_values = await session.form(
                         self._pin_form_entries(provider, pin_session),
-                        step_id="verify_pin" if verify else "enter_pin",
+                        step_id="enter_pin",
                         errors=errors,
                         expires_in=PAIR_PIN_ENTRY_TIMEOUT,
                     )
