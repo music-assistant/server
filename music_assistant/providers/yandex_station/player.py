@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3, CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from . import protobuf
@@ -280,8 +281,7 @@ class YandexStationPlayer(Player):
             (
                 ConfigValueOption(p.player_id, p.display_name)
                 for p in self.mass.players.all_players(return_unavailable=True)
-                if p.player_id != self.player_id
-                and p.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
+                if p.player_id != self.player_id and p.type in PLAYBACK_TARGET_TYPES
             ),
             key=lambda o: (o.title or "").lower(),
         )
