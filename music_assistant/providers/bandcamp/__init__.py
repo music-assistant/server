@@ -1218,7 +1218,7 @@ class BandcampProvider(MusicProvider):
             raise InvalidDataError(
                 f"{context}: {error}",
                 translation_key="unusable_answer",
-                translation_owner="provider.bandcamp",
+                translation_owner=self.translation_owner,
             ) from error
         except BandcampAPIError as error:
             raise failure(f"{context}: {error}") from error
