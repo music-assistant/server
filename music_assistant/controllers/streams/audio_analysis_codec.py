@@ -1,0 +1,96 @@
+"""
+Packed on-disk codec for AudioAnalysisData.
+
+A record is stored as a small JSON header (every scalar field, ``extra_data`` and an
+index of the arrays) plus one binary payload holding the arrays back to back, so a
+fully analysed track costs tens of kilobytes instead of hundreds.
+Only this module knows the layout.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from typing import Any, Final
+
+from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.models.audio_analysis import AudioAnalysisData
+
+LOGGER = logging.getLogger(__name__)
+
+# list[float] fields of the model, in declaration order; the payload is packed in this order
+ARRAY_FIELDS: Final[tuple[str, ...]] = tuple(
+    field.name
+    for field in dataclasses.fields(AudioAnalysisData)
+    if field.type == "list[float] | None"
+)
+# envelopes (0..1 or Hz, 1800 bins) and the unit-norm embedding tolerate float16; beat
+# timestamps need float32 (float16 resolves only 0.125 s at five minutes)
+F16_FIELDS: Final[frozenset[str]] = frozenset(ARRAY_FIELDS) - {"beats", "downbeats"}
+# little-endian dtype strings, so building the index needs no numpy at import time
+_DTYPES: Final[dict[str, str]] = {"f16": "<f2", "f32": "<f4"}
+_ARRAY_FIELD_SET: Final[frozenset[str]] = frozenset(ARRAY_FIELDS)
+
+
+def encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
+    """
+    Pack an analysis record into its stored form.
+
+    :param analysis: The record to store.
+    :returns: JSON header (scalars, extra_data and the array index) and the binary payload.
+    """
+    # numpy is imported here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
+    doc = {key: value for key, value in analysis.to_dict().items() if value is not None}
+    index: list[list[Any]] = []
+    parts: list[bytes] = []
+    offset = 0
+    for name in ARRAY_FIELDS:
+        values = doc.pop(name, None)
+        if values is None:
+            continue
+        tag = "f16" if name in F16_FIELDS else "f32"
+        with np.errstate(over="ignore"):  # an overflow to inf is detected and handled below
+            arr = np.asarray(values, dtype=_DTYPES[tag])
+            if tag == "f16" and not np.isfinite(arr).all():
+                # a value beyond float16's ~65504 range overflows to inf; keep the whole array
+                # at full precision instead. The per-array dtype in the index makes decode follow
+                tag = "f32"
+                arr = np.asarray(values, dtype=_DTYPES[tag])
+        if not np.isfinite(arr).all():
+            raise ValueError(f"audio analysis array {name} contains non-finite values")
+        raw = arr.tobytes()
+        index.append([name, tag, offset, len(raw)])
+        parts.append(raw)
+        offset += len(raw)
+    doc["arrays"] = index
+    return json_dumps(doc), b"".join(parts)
+
+
+def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
+    """
+    Unpack a stored record.
+
+    :param header: JSON header as written by :func:`encode`.
+    :param payload: Binary payload as written by :func:`encode`.
+    :raises TypeError: When the decoded header is not an object.
+    :raises ValueError: When an array slice in the header is truncated in the payload.
+    """
+    # numpy is imported here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
+    doc = json_loads(header)
+    if not isinstance(doc, dict):
+        raise TypeError("packed audio analysis header must be an object")
+    view = memoryview(payload)
+    for name, tag, offset, nbytes in doc.pop("arrays", []):
+        if name not in _ARRAY_FIELD_SET:
+            LOGGER.warning("Ignoring unknown packed analysis array %s", name)
+            continue
+        chunk = view[offset : offset + nbytes]
+        if len(chunk) != nbytes:
+            raise ValueError(f"packed analysis array {name} is truncated")
+        arr = np.frombuffer(chunk, dtype=_DTYPES[tag])
+        doc[name] = (arr.astype(np.float32) if tag == "f16" else arr).tolist()
+    return AudioAnalysisData.from_dict(doc)

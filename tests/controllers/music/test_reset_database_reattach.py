@@ -28,7 +28,8 @@ async def test_reset_database_keeps_analysis_rows(mass: MusicAssistant) -> None:
             "item_id": "fs-kept",
             "provider": "filesystem_local--AbCd",
             "aa_provider_domain": "loudness_analysis",
-            "analysis_data": "{}",
+            "header": "{}",
+            "payload": b"",
             "analysis_version": 1,
         },
     )
