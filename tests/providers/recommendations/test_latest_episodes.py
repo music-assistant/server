@@ -64,7 +64,9 @@ def provider() -> LibraryRecommendationsProvider:
     config = Mock()
     config.instance_id = "recommendations"
     config.get_value.side_effect = lambda key, default=None: {"log_level": "INFO"}.get(key, default)
-    return LibraryRecommendationsProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider = LibraryRecommendationsProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider._latest_episodes = []
+    return provider
 
 
 def _mass(provider: LibraryRecommendationsProvider) -> Mock:
@@ -101,7 +103,9 @@ def _set_library(
         for episode in result:
             yield episode
 
-    def get_provider(instance_id: str, **_kwargs: object) -> Mock:
+    def get_provider(instance_id: str, **_kwargs: object) -> Mock | None:
+        if instance_id not in active:
+            return None
         music_provider = Mock(spec=MusicProvider, instance_id=instance_id, available=True)
         music_provider.get_podcast_episodes = get_podcast_episodes
         return music_provider
@@ -167,7 +171,21 @@ async def test_refresh_uses_an_available_mapping(provider: LibraryRecommendation
     )
     await provider._refresh_latest_episodes()
     assert [x[1].item_id for x in provider._latest_episodes] == ["e1"]
-    _mass(provider).get_provider.assert_called_once_with("prov", return_unavailable=True)
+
+
+async def test_refresh_keeps_last_known_episode(provider: LibraryRecommendationsProvider) -> None:
+    """A podcast that can not be read keeps its previous episode instead of dropping out."""
+    provider._latest_episodes = [
+        ("broken", _episode("old_broken", "prov", 1)),
+        ("offline", _episode("old_offline", "down", 1)),
+    ]
+    _set_library(
+        provider,
+        {"broken": ProviderUnavailableError("gone"), "offline": []},
+        mappings={"offline": ["down"]},
+    )
+    await provider._refresh_latest_episodes()
+    assert {x[1].item_id for x in provider._latest_episodes} == {"old_broken", "old_offline"}
 
 
 async def test_play_history_wins_over_provider_state(

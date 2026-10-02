@@ -357,7 +357,7 @@ class LibraryRecommendationsProvider(PluginProvider):
 
     async def _refresh_latest_episodes(self) -> None:
         """Store the newest episode of every library podcast, newest release first."""
-        active_providers = set(self.mass.music.get_active_provider_instances())
+        previous = {(x[0], x[1].provider): x[1] for x in self._latest_episodes}
         podcasts = [x async for x in self.mass.music.podcasts.iter_library_items()]
         latest_episodes: list[tuple[str, PodcastEpisode]] = []
         for index, podcast in enumerate(podcasts):
@@ -367,11 +367,16 @@ class LibraryRecommendationsProvider(PluginProvider):
                 podcast.provider_mappings,
                 key=lambda mapping: (mapping.provider_instance, mapping.item_id),
             ):
-                if mapping.provider_instance not in active_providers:
-                    continue
-                if latest := await self._get_latest_episode(
-                    mapping.provider_instance, mapping.item_id, podcast.name
-                ):
+                # the last known episode stays while its provider is down or still loading
+                latest = previous.get((podcast.item_id, mapping.provider_instance))
+                prov = exact_provider(self.mass, mapping.provider_instance)
+                if isinstance(prov, MusicProvider):
+                    try:
+                        latest = await self._get_latest_episode(prov, mapping.item_id)
+                    except MusicAssistantError as err:
+                        self.logger.debug("Keeping last known episode of %s: %s", podcast.name, err)
+                        report_current_task_failure(f"{podcast.name}: {err}")
+                if latest:
                     latest_episodes.append((podcast.item_id, latest))
         latest_episodes.sort(key=lambda x: _release_timestamp(x[1]), reverse=True)
         self._latest_episodes = latest_episodes
@@ -383,26 +388,12 @@ class LibraryRecommendationsProvider(PluginProvider):
         )
 
     async def _get_latest_episode(
-        self, provider_instance: str, prov_podcast_id: str, podcast_name: str
+        self, prov: MusicProvider, prov_podcast_id: str
     ) -> PodcastEpisode | None:
-        """
-        Return the newest episode of a podcast on one provider, None when unavailable.
-
-        :param provider_instance: The provider instance to read the podcast from.
-        :param prov_podcast_id: The podcast's item id on that provider.
-        :param podcast_name: The podcast's name, for logging.
-        """
-        prov = exact_provider(self.mass, provider_instance)
-        if not isinstance(prov, MusicProvider):
-            return None
+        """Return the newest episode of a podcast on one provider, None when it has none."""
         # read straight from the provider so only its own played state is kept,
         # never the playlog of whichever user the controller would fall back to
-        try:
-            episodes = [x async for x in prov.get_podcast_episodes(prov_podcast_id)]
-        except MusicAssistantError as err:
-            self.logger.debug("Skipping latest episode of %s: %s", podcast_name, err)
-            report_current_task_failure(f"{podcast_name}: {err}")
-            return None
+        episodes = [x async for x in prov.get_podcast_episodes(prov_podcast_id)]
         latest = max(episodes, key=lambda x: x.position, default=None)
         if latest is None:
             return None
