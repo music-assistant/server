@@ -9,7 +9,6 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.storage import StorageController, StorageUsage
 from music_assistant.controllers.storage import controller as controller_module
-from music_assistant.controllers.storage.backends import mountinfo
 from tests.controllers.storage.conftest import MountTable, mount_line
 
 
@@ -18,6 +17,7 @@ async def real_data_folder(
     request: pytest.FixtureRequest,
     storage: StorageController,
     mount_table: MountTable,  # noqa: ARG001
+    discoverable_tmp_path: None,  # noqa: ARG001
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
@@ -29,6 +29,7 @@ async def real_data_folder(
     :param request: Pytest request, whose param says how the data directory was given.
     :param storage: The storage controller.
     :param mount_table: The mount table the setup reads.
+    :param discoverable_tmp_path: Lets discovery find mounts in the temporary folder.
     :param tmp_path: Temporary directory for the folders.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
@@ -42,8 +43,6 @@ async def real_data_folder(
         link = tmp_path / "data-link"
         link.symlink_to(real, target_is_directory=True)
         storage.mass.storage_path = str(link)
-    # the temporary folder of the tests may lie below a system path, which discovery leaves out
-    monkeypatch.setattr(mountinfo, "SYSTEM_PATHS", ())
     # outside a container, where a folder can be registered
     monkeypatch.setattr(controller_module, "CONTAINER_MARKER_FILES", (str(tmp_path / "none"),))
     await storage.setup(await storage.mass.config.get_core_config(storage.domain))
