@@ -738,6 +738,45 @@ async def test_resolve_artist_item_id_falls_back_when_the_lookup_fails(
     assert not [key for key in cached_keys if key.startswith("performer_band_id.")]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RetriesExhausted("throttle exhausted"), id="retries_exhausted"),
+        pytest.param(ClientConnectionError("down"), id="dropped_connection"),
+    ],
+)
+async def test_resolve_artist_item_id_falls_back_after_a_fetch_error(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A lookup that ends in a fetch error of the core gives the synthetic artist ID."""
+    with patch.object(
+        provider, "_lookup_performer_band_id", new_callable=AsyncMock, side_effect=error
+    ):
+        item_id = await provider._resolve_artist_item_id(
+            band_id=4119123456, performer="Apollo Brown", band_name="Hip Dozer"
+        )
+
+    assert item_id == make_artist_id(4119123456, "Apollo Brown")
+
+
+async def test_resolve_artist_item_id_lets_a_programming_error_out(
+    provider: BandcampProvider,
+) -> None:
+    """A bug in the performer lookup is not hidden behind the synthetic artist ID."""
+    with (
+        patch.object(
+            provider,
+            "_lookup_performer_band_id",
+            new_callable=AsyncMock,
+            side_effect=AttributeError("bug"),
+        ),
+        pytest.raises(AttributeError, match="bug"),
+    ):
+        await provider._resolve_artist_item_id(
+            band_id=4119123456, performer="Apollo Brown", band_name="Hip Dozer"
+        )
+
+
 @pytest.mark.parametrize("error", LOOKUP_ERRORS)
 async def test_get_album_keeps_a_label_release_when_the_lookup_fails(
     provider: BandcampProvider, error: Exception
