@@ -1213,6 +1213,7 @@ class AuthenticationManager:
             raise InvalidDataError("Password must be at least 8 characters")
 
         self._ensure_role_exists(role)
+        await self._ensure_username_available(username)
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1566,6 +1567,8 @@ class AuthenticationManager:
 
         if username is not None or password or role:
             _refuse_system_user(target_user.username)
+        if username:
+            await self._ensure_username_available(username, target_user.user_id)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -2255,6 +2258,19 @@ class AuthenticationManager:
                 f"A role named {name} already exists", translation_key="role_name_taken"
             )
         return name
+
+    async def _ensure_username_available(self, username: str, user_id: str | None = None) -> None:
+        """
+        Raise when another user, enabled or disabled, already has the given username.
+
+        :param username: The username to check.
+        :param user_id: The id of the user the name is for, None for a new user.
+        """
+        user_row = await self.database.get_row("users", {"username": normalize_username(username)})
+        if user_row and user_row["user_id"] != user_id:
+            raise InvalidDataError(
+                f"The username {username} is already in use", translation_key="username_taken"
+            )
 
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """
