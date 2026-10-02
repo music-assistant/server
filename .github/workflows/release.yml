@@ -82,6 +82,17 @@ jobs:
       sdist_size: ${{ steps.state.outputs.sdist_size }}
       sdist_sha256: ${{ steps.state.outputs.sdist_sha256 }}
     steps:
+      # The dispatch ref picks the release tooling (github.workflow_sha), so keep it on dev.
+      # Under workflow_call, github.ref is the ref the calling workflow ran from.
+      - name: Require dispatch from dev
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from the dev branch, not $DISPATCH_REF. The channel still decides which branch gets released."
+            exit 1
+          fi
+
       - name: Check out release workflow
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
