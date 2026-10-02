@@ -21,7 +21,11 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
@@ -84,6 +88,23 @@ _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
 
+# User-uploaded custom media item images. Uploads travel base64-encoded (about 4/3
+# the size) inside one websocket API message, which must fit aiohttp's default
+# 4 MiB message limit.
+MAX_CUSTOM_IMAGE_BYTES = 2 * 1024 * 1024
+# Pillow only rejects decompression bombs far above this, and a small highly
+# compressed file can still decode to hundreds of MB when thumbnailed.
+MAX_CUSTOM_IMAGE_PIXELS = 25_000_000
+# Only these Pillow decoders are tried for an upload, which keeps formats that need
+# an external decoder (EPS runs Ghostscript) away from untrusted data.
+_CUSTOM_IMAGE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "WEBP", "GIF", "BMP")
+_UNSUPPORTED_IMAGE_MESSAGE = (
+    f"Uploaded data is not a supported image ({', '.join(_CUSTOM_IMAGE_FORMATS)})"
+)
+# Overrides for Pillow format names whose canonical file extension differs from
+# format.lower() (MPO is the multi-picture jpeg variant many phone cameras produce).
+_CUSTOM_IMAGE_FORMAT_EXTENSIONS: dict[str, str] = {"JPEG": "jpg", "MPO": "jpg"}
+
 
 def is_svg_data(data: bytes) -> bool:
     """Return True when the given bytes appear to be an SVG image."""
@@ -111,6 +132,35 @@ def detect_image_content_format(data: bytes) -> str | None:
     if is_svg_data(data):
         return "svg"
     return None
+
+
+def validate_custom_image(data: bytes) -> str:
+    """
+    Validate user-uploaded image bytes and return the canonical file extension.
+
+    Only PNG, JPEG, WebP, GIF and BMP are accepted, and the image is fully
+    decoded (which guarantees the imageproxy can thumbnail it later). The format
+    is detected from the actual content, never from a client-supplied hint. This
+    is blocking CPU work, so call it from an executor thread.
+
+    :param data: Raw image bytes to validate.
+    """
+    if len(data) > MAX_CUSTOM_IMAGE_BYTES:
+        raise InvalidDataError("Image exceeds the size limit")
+    if is_svg_data(data):
+        raise InvalidDataError("SVG images are not supported for custom images")
+    try:
+        with Image.open(BytesIO(data), formats=_CUSTOM_IMAGE_FORMATS) as img:
+            image_format = img.format
+            if img.width * img.height > MAX_CUSTOM_IMAGE_PIXELS:
+                raise InvalidDataError("Image dimensions exceed the limit")
+            # a full decode proves the image can be thumbnailed later
+            img.load()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as err:
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE) from err
+    if not image_format:
+        raise InvalidDataError(_UNSUPPORTED_IMAGE_MESSAGE)
+    return _CUSTOM_IMAGE_FORMAT_EXTENSIONS.get(image_format, image_format.lower())
 
 
 def create_thumb_hash(provider: str, path_or_url: str) -> str:
