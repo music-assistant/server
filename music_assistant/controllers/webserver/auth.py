@@ -60,6 +60,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -319,14 +320,15 @@ class AuthenticationManager:
             return with_derived_provider_filter(self.mass, user)
         return None
 
-    async def get_user(self, user_id: str) -> User | None:
+    async def get_user(self, user_id: str, *, include_disabled: bool = False) -> User | None:
         """
-        Get user by ID, or None if it does not exist or is disabled.
+        Get user by ID, or None if it does not exist (or is disabled, unless included).
 
         :param user_id: The user ID.
+        :param include_disabled: Also return a disabled user.
         """
         user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row or not user_row["enabled"]:
+        if not user_row or not (user_row["enabled"] or include_disabled):
             return None
 
         return User(
@@ -341,11 +343,14 @@ class AuthenticationManager:
             player_filter=json_loads(user_row["player_filter"]),
         )
 
-    async def get_user_by_username(self, username: str) -> User | None:
+    async def get_user_by_username(
+        self, username: str, *, include_disabled: bool = False
+    ) -> User | None:
         """
         Get user by username.
 
         :param username: The username.
+        :param include_disabled: Also return a disabled user.
         :return: User object or None if not found.
         """
         username = normalize_username(username)
@@ -354,16 +359,21 @@ class AuthenticationManager:
         if not user_row:
             return None
 
-        return await self.get_user(user_row["user_id"])
+        return await self.get_user(user_row["user_id"], include_disabled=include_disabled)
 
     async def get_user_by_provider_link(
-        self, provider_type: AuthProviderType, provider_user_id: str
+        self,
+        provider_type: AuthProviderType,
+        provider_user_id: str,
+        *,
+        include_disabled: bool = False,
     ) -> User | None:
         """
         Get user by their provider link.
 
         :param provider_type: The auth provider type.
         :param provider_user_id: The user ID from the provider.
+        :param include_disabled: Also return a disabled user.
         """
         link_row = await self.database.get_row(
             "user_auth_providers",
@@ -375,7 +385,7 @@ class AuthenticationManager:
         if not link_row:
             return None
 
-        return await self.get_user(link_row["user_id"])
+        return await self.get_user(link_row["user_id"], include_disabled=include_disabled)
 
     async def create_user(
         self,
@@ -803,7 +813,8 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT, with an empty
+            token_hash.
         """
         current_user = get_current_user()
         if not current_user:
@@ -826,7 +837,7 @@ class AuthenticationManager:
             order_by="created_at DESC",
             limit=TOKEN_LIST_LIMIT,
         )
-        return [AuthToken.from_dict(dict(row)) for row in token_rows]
+        return [AuthToken.from_dict({**dict(row), "token_hash": ""}) for row in token_rows]
 
     @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
@@ -1077,8 +1088,14 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url.
+        :return: Dictionary with authorization_url, or None plus an error when the provider
+            does not support OAuth or return_url is invalid.
         """
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(return_url, base_url=self.webserver.base_url)
+            if not is_valid:
+                return {"authorization_url": None, "error": "Invalid return_url"}
+
         auth_url = await self.get_authorization_url(provider_id, return_url)
         if not auth_url:
             return {
@@ -1627,7 +1644,7 @@ class AuthenticationManager:
         """
         Get current user's linked authentication providers.
 
-        :return: List of provider links.
+        :return: List of provider links, the builtin link with an empty provider_user_id.
         """
         user = get_current_user()
         if not user:
@@ -1636,6 +1653,10 @@ class AuthenticationManager:
         # Get provider links from database
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        for provider in providers:
+            # the builtin link stores the password hash as its provider user id
+            if provider.provider_type == AuthProviderType.BUILTIN:
+                provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
     @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)

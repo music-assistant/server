@@ -140,6 +140,10 @@ A provider that talks to a music service must therefore:
   service's API and set it to what that service actually tolerates, and put
   [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
   instead of asking again. Back off on a 429 rather than retrying into it.
+  The throttler serves playback first, user actions second and background work last. Background
+  work may use only half of the rate limit and is spread evenly over time, which keeps room free
+  for the user. Music Assistant sets the priority where a request starts, so a provider normally
+  does not have to.
   A provider that hammers a service puts every Music Assistant user's account at risk, not just
   the developer's.
 * **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which

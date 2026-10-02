@@ -35,6 +35,11 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -385,6 +390,24 @@ async def test_fill_sets_eof() -> None:
     buf.fill(_make_source(3), source_name="test")
     await asyncio.sleep(0.1)
     assert buf._eof_received
+
+
+@pytest.mark.asyncio
+async def test_fill_reads_the_source_with_playback_priority() -> None:
+    """The producer reads its source with playback priority, the caller keeps its own."""
+    seen: list[RequestPriority] = []
+
+    async def _source() -> AsyncGenerator[bytes]:
+        seen.append(current_priority())
+        yield _make_chunk(0)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    with request_priority(RequestPriority.NORMAL):
+        buf.fill(_source(), source_name="test")
+        assert current_priority() is RequestPriority.NORMAL
+    await asyncio.sleep(0.1)
+
+    assert seen == [RequestPriority.HIGH]
 
 
 @pytest.mark.asyncio
@@ -1300,6 +1323,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
         prepare_next_audio_buffer=lambda _queue_id, _item_id: None,
         track_fully_buffered=lambda _queue_id, _item_id: None,
         queue_data_or_none=lambda _queue_id: None,
+        has_paused_stream_slot_holder=lambda _provider_instance, _queue_id: False,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal

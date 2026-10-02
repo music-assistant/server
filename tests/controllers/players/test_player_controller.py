@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
@@ -71,6 +72,7 @@ from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_T
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
+    get_current_user,
     sendspin_player_id,
 )
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
@@ -193,9 +195,11 @@ def _mute_natively(player: MockPlayer) -> AsyncMock:
 
 
 @pytest.fixture
-def mock_mass() -> MagicMock:
+def mock_mass() -> Iterator[MagicMock]:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
+    # kept so teardown still sees its calls when a test swaps mass.create_task
+    create_task = mass.create_task = MagicMock()
     mass.closing = False
     mass.loop = None
     mass.config = MagicMock()
@@ -206,7 +210,12 @@ def mock_mass() -> MagicMock:
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
-    return mass
+    yield mass
+    # a mocked create_task never runs what it is handed, so close what no test started
+    for scheduled in create_task.call_args_list:
+        target = scheduled.args[0] if scheduled.args else None
+        if inspect.iscoroutine(target) and inspect.getcoroutinestate(target) == "CORO_CREATED":
+            target.close()
 
 
 @pytest.fixture
@@ -2973,6 +2982,49 @@ class TestExternalSourcePlayPause:
         player.pause.assert_not_called()
 
 
+class TestPlayOnAPausedQueue:
+    """Play on a player that is paused on its own queue."""
+
+    @staticmethod
+    def _paused_on_own_queue(
+        mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> MockPlayer:
+        """Build a player that supports pause and is paused on its own queue."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_supported_features = {PlayerFeature.PAUSE}
+        player._attr_playback_state = PlaybackState.PAUSED
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="player_1"))
+        mock_mass.player_queues.resume = AsyncMock()
+        player.set_active_mass_source("player_1")
+        player.update_state(signal_event=False)
+        controller._handle_cmd_play = AsyncMock()  # type: ignore[method-assign]
+        return player
+
+    @pytest.mark.parametrize("stream_lost", [False, True], ids=["stream-kept", "stream-lost"])
+    async def test_play_unpauses_unless_the_queue_ended_the_stream(
+        self,
+        mock_mass: MagicMock,
+        controller: PlayerController,
+        provider: MockProvider,
+        stream_lost: bool,
+    ) -> None:
+        """A stream the queue ended while the player stayed paused is started again."""
+        self._paused_on_own_queue(mock_mass, controller, provider)
+        mock_mass.player_queues.has_lost_paused_stream = MagicMock(return_value=stream_lost)
+
+        await controller.cmd_play("player_1")
+
+        if stream_lost:
+            mock_mass.player_queues.resume.assert_awaited_once_with("player_1")
+            cast("AsyncMock", controller._handle_cmd_play).assert_not_awaited()
+        else:
+            cast("AsyncMock", controller._handle_cmd_play).assert_awaited_once_with("player_1")
+            mock_mass.player_queues.resume.assert_not_awaited()
+
+
 class TestProtocolOutputPlayPause:
     """Play/pause on a player rendering through a linked output protocol."""
 
@@ -3001,6 +3053,7 @@ class TestProtocolOutputPlayPause:
         # a non-empty queue, so the MA queue source advertises play/pause support
         queue = MagicMock()
         queue.items = [MagicMock()]
+        queue.queue_id = "player_1"
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
@@ -3017,21 +3070,27 @@ class TestProtocolOutputPlayPause:
         player.refresh_state(signal_event=False)
         return player
 
-    async def test_pause_on_protocol_without_pause_falls_back_to_stop(
+    async def test_pause_on_protocol_without_pause_ends_the_queue(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
-        """The native transport has no session to pause while a protocol renders the audio."""
+        """
+        The native transport has no session to pause while a protocol renders the audio.
+
+        The pause falls back to a stop of the player's own queue, which stops the player.
+        """
         player = self._make_player_on_protocol(
             mock_mass, controller, playback_state=PlaybackState.PLAYING
         )
         player.pause = AsyncMock()  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
 
         await controller._handle_cmd_pause("player_1")
 
         player.pause.assert_not_called()
-        # STOP goes to the visible player, not the protocol player
-        controller._handle_cmd_stop.assert_awaited_once_with("player_1")
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        # the queue stop issues the player stop itself
+        controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_play_on_protocol_without_pause_does_not_unpause_natively(
         self, mock_mass: MagicMock, controller: PlayerController
@@ -3048,6 +3107,53 @@ class TestProtocolOutputPlayPause:
         player.play.assert_not_called()
         # the MA queue source is restarted, not some other source
         controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
+
+
+class TestPauseWithoutPauseSupport:
+    """
+    Pause on a player that plays its own queue and can not pause.
+
+    The pause falls back to a stop of the queue, which releases the queue's audio and the
+    music source right away. A later play resumes the queue at the paused position.
+    """
+
+    @staticmethod
+    def _player_on_own_queue(
+        mock_mass: MagicMock, player_type: PlayerType = PlayerType.PLAYER
+    ) -> tuple[PlayerController, MockPlayer]:
+        """
+        Build a playing player without pause support that plays its own queue.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param player_type: The type to register the player as.
+        :return: The controller and the player, with the player and queue stop stubbed.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1", player_type=player_type)
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        queue = _stub_queue("player_1")
+        # a queue with items advertises play/pause on its source
+        queue.items = 1
+        mock_mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: queue if queue_id == "player_1" else None
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues._handle_stop = AsyncMock()
+        return controller, player
+
+    async def test_pause_on_a_group_player_ends_its_queue(self, mock_mass: MagicMock) -> None:
+        """A group player (sync or universal group) can not pause either."""
+        controller, _player = self._player_on_own_queue(mock_mass, PlayerType.GROUP)
+
+        await controller._handle_cmd_pause("player_1")
+
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
 
 
 class TestMirrorsParentMedia:
@@ -7162,8 +7268,36 @@ class TestConfigChangeRestartsPlayback:
 class TestAddCurrentlyPlayingToFavorites:
     """Test who a favorite added from a player belongs to."""
 
-    async def test_favorite_is_recorded_for_the_playback_user(self, mock_mass: MagicMock) -> None:
-        """Without a session user the favorite belongs to the user the queue plays for."""
+    PLAYBACK_USER = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    SERVICE_USER = User(user_id="service", username="service", role=UserRole.SERVICE)
+    OTHER_USER = User(user_id="user-b", username="user-b", role=UserRole.USER)
+    ADMIN_USER = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+
+    @pytest.mark.parametrize(
+        ("session_user", "playback_user", "expected"),
+        [
+            pytest.param(None, PLAYBACK_USER, PLAYBACK_USER, id="no-session-user"),
+            pytest.param(SERVICE_USER, PLAYBACK_USER, PLAYBACK_USER, id="service-account"),
+            pytest.param(SERVICE_USER, None, SERVICE_USER, id="service-account-anonymous-queue"),
+            pytest.param(OTHER_USER, PLAYBACK_USER, OTHER_USER, id="user-session"),
+            pytest.param(ADMIN_USER, PLAYBACK_USER, ADMIN_USER, id="admin-session"),
+        ],
+    )
+    async def test_favorite_owner(
+        self,
+        mock_mass: MagicMock,
+        session_user: User | None,
+        playback_user: User | None,
+        expected: User,
+    ) -> None:
+        """
+        Test that a call without a user, or from a service account, counts for the playback user.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param session_user: The user the command is called as.
+        :param playback_user: The user the queue plays for.
+        :param expected: The user the favorite must be recorded for.
+        """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
         player = MockPlayer(provider, "player1", "Player 1")
@@ -7171,25 +7305,28 @@ class TestAddCurrentlyPlayingToFavorites:
         mock_mass.players = controller
         queue = MagicMock(queue_id="player1")
         queue.current_item.media_item.media_type = MediaType.TRACK
-        playback_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
         acting_users: list[User | None] = []
 
         async def _capture_acting_user(item: Any) -> None:  # noqa: ARG001
-            acting_users.append(current_user.get())
+            acting_users.append(get_current_user())
 
         mock_mass.music.add_item_to_favorites = AsyncMock(side_effect=_capture_acting_user)
 
-        with (
-            patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(
-                players_controller,
-                "resolve_playback_user",
-                AsyncMock(return_value=playback_user),
-            ),
-        ):
-            await controller.add_currently_playing_to_favorites("player1")
+        token = current_user.set(session_user)
+        try:
+            with (
+                patch.object(controller, "get_active_queue", return_value=queue),
+                patch.object(
+                    players_controller,
+                    "resolve_playback_user",
+                    AsyncMock(return_value=playback_user),
+                ),
+            ):
+                await controller.add_currently_playing_to_favorites("player1")
+        finally:
+            current_user.reset(token)
 
-        assert acting_users == [playback_user]
+        assert acting_users == [expected]
 
 
 if __name__ == "__main__":

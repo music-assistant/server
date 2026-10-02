@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import IdentifierType, PlaybackState
 
 from music_assistant.constants import CONF_FLOW_MODE
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
@@ -17,6 +17,7 @@ from music_assistant.providers.raumfeld.player import (
     _map_transport_state,
     _near_track_end,
 )
+from tests.common import MockProvider
 
 if TYPE_CHECKING:
     import hassfeld
@@ -287,3 +288,18 @@ async def test_unload_cancels_both_timers() -> None:
     }
     assert player._advance_armed is False
     assert player._next_media is None
+
+
+def test_room_on_the_host_gets_its_ip_identifier() -> None:
+    """The room whose renderer runs on the host gets its IP, so its other outputs link to it."""
+    provider = MockProvider("raumfeld")
+    provider.resolve_room_renderer = MagicMock(  # type: ignore[attr-defined]
+        return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
+    )
+    provider.line_in = MagicMock(return_value=None)  # type: ignore[attr-defined]
+    player = RaumfeldPlayer(
+        provider,  # type: ignore[arg-type]
+        "raumfeld_5065835ad69f",
+        "TV",
+    )
+    assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"

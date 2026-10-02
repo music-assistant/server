@@ -87,6 +87,12 @@ class DiscoveryController(CoreController):
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
 
+    async def start_zeroconf(self) -> None:
+        """Create the shared zeroconf instance (aiozc) ahead of the setup of this controller."""
+        if self._aiozc is None:
+            config = await self.mass.config.get_core_config(self.domain)
+            self._aiozc = self._create_aiozc(config)
+
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
@@ -336,7 +342,10 @@ class DiscoveryController(CoreController):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue
             if service_type in provider.manifest.mdns_discovery:
-                self.mass.create_task(process_mdns_state_change(provider))
+                self.mass.create_task(
+                    process_mdns_state_change(provider),
+                    task_name=f"mdns_state_change_{provider.instance_id}",
+                )
 
     async def _replay_mdns_discovery(self, provider: ProviderInstanceType) -> None:
         """Replay cached mDNS results for a provider after it loads."""

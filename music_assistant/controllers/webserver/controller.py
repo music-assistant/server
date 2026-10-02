@@ -67,6 +67,7 @@ from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
 )
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
@@ -796,6 +797,7 @@ class WebserverController(CoreController):
         # Check authentication if required
         if error_response := await self._authenticate_api_command(request, handler):
             return error_response
+        set_request_priority(RequestPriority.NORMAL)
 
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
@@ -1111,6 +1113,9 @@ class WebserverController(CoreController):
             token_row = await self.auth.database.get_row("auth_tokens", {"token_hash": token_hash})
             if token_row:
                 await self.auth.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+
+                # Disconnect any WebSocket connections using this token
+                self.disconnect_websockets_for_token(token_row["token_id"])
 
         return web.json_response({"success": True})
 

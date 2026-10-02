@@ -35,6 +35,11 @@ class MetadataProvider(Provider):
         """Priority for this provider (lower = more preferred)."""
         return 50
 
+    @property
+    def rate_limited(self) -> bool:
+        """Whether the provider currently holds its requests back because of a rate limit."""
+        return False
+
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""
         if ProviderFeature.ARTIST_METADATA in self.supported_features:

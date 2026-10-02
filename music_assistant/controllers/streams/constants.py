@@ -82,6 +82,8 @@ class PacingProfile(StrEnum):
     # radio and a Spotify music provider track on its Soloist backend, not Spotify
     # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
     # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
+    # A pace close to playback speed leaves most of that on the server. The burst is
+    # the least a player holds when a fade waits for the next track's source to start.
     NEAR_REALTIME = "near_realtime"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
@@ -90,7 +92,7 @@ class PacingProfile(StrEnum):
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.03", "3"),
+    PacingProfile.NEAR_REALTIME: ("1.01", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 

@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -52,6 +52,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     PRUNE_THRESHOLD,
+    AuthResult,
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
@@ -247,6 +248,34 @@ async def test_authenticate_with_password(auth_manager: AuthenticationManager) -
     assert result.success is False
     assert result.user is None
     assert result.error is not None
+
+
+async def test_authenticate_with_password_refuses_a_disabled_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a disabled user is told so only after giving the right password.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    admin = await auth_manager.create_user(username="disabledloginadmin", role=UserRole.ADMIN)
+    user = await builtin_provider.create_user_with_password(
+        username="disabledlogin", password="secure_password_123"
+    )
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "secure_password_123"}
+    )
+    assert result == AuthResult(success=False, error="User account is disabled")
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "wrong_password"}
+    )
+    assert result == AuthResult(success=False, error="Invalid username or password")
 
 
 async def test_create_token(auth_manager: AuthenticationManager) -> None:
@@ -461,6 +490,38 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     assert enabled_user is not None
 
 
+async def test_user_lookups_include_a_disabled_user_only_on_request(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the user lookups only return a disabled user when asked to include it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="lookupadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="lookupuser", role=UserRole.USER)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    assert await auth_manager.get_user(user.user_id) is None
+    assert await auth_manager.get_user_by_username("lookupuser") is None
+    assert (
+        await auth_manager.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+        is None
+    )
+    for found in (
+        await auth_manager.get_user(user.user_id, include_disabled=True),
+        await auth_manager.get_user_by_username("LookupUser", include_disabled=True),
+        await auth_manager.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, "ha_lookup", include_disabled=True
+        ),
+    ):
+        assert found is not None
+        assert found.user_id == user.user_id
+        assert not found.enabled
+
+
 async def test_cannot_disable_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot disable their own account.
@@ -519,6 +580,33 @@ async def test_link_user_to_provider(auth_manager: AuthenticationManager) -> Non
 
     assert retrieved_user is not None
     assert retrieved_user.user_id == user.user_id
+
+
+async def test_get_my_providers_hides_the_builtin_password_hash(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the provider links listing leaves out the builtin password hash.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    user = await builtin_provider.create_user_with_password(
+        username="providersuser", password="testpassword123", role=UserRole.USER
+    )
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_user_456")
+    set_current_user(user)
+
+    providers = {p["provider_type"]: p for p in await auth_manager.get_my_providers()}
+
+    assert providers[AuthProviderType.BUILTIN]["provider_user_id"] == ""
+    assert providers[AuthProviderType.HOME_ASSISTANT]["provider_user_id"] == "ha_user_456"
+    # the stored link keeps the hash, so the password still works
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "providersuser", "password": "testpassword123"}
+    )
+    assert result.success is True
 
 
 async def test_homeassistant_system_user(auth_manager: AuthenticationManager) -> None:
@@ -1039,6 +1127,25 @@ async def test_get_user_tokens_returns_newest_first(auth_manager: Authentication
     assert f"Old Device {TOKEN_LIST_LIMIT - 1}" not in [token.name for token in tokens]
 
 
+async def test_get_user_tokens_hides_the_token_hash(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the token listing leaves out the token hash.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="tokenhashuser", role=UserRole.USER)
+    set_current_user(user)
+    token = await auth_manager.create_token(user, "Device", is_long_lived=True)
+
+    tokens = await auth_manager.get_user_tokens()
+
+    assert len(tokens) == 1
+    assert tokens[0].token_hash == ""
+    row = await auth_manager.database.get_row("auth_tokens", {"token_id": tokens[0].token_id})
+    assert row is not None
+    assert row["token_hash"] == hashlib.sha256(token.encode()).hexdigest()
+
+
 async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
     """
     Test that the periodic cleanup removes only expired short-lived tokens.
@@ -1174,6 +1281,43 @@ async def test_get_login_providers_ha_provider_without_url(
 
     assert any(p["provider_id"] == "builtin" for p in providers)
     assert not any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+@pytest.fixture
+def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
+    """
+    Register a stub OAuth login provider as "oauth" on the auth manager.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    provider = MagicMock(requires_redirect=True)
+    provider.get_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
+    auth_manager.login_providers["oauth"] = provider
+    return provider
+
+
+@pytest.mark.parametrize("return_url", ["javascript:alert(1)", "https:///no-host"])
+async def test_get_auth_url_rejects_invalid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that an invalid return_url is rejected without asking the provider."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": None, "error": "Invalid return_url"}
+    oauth_provider.get_authorization_url.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "return_url", ["https://music.example.com/#/home", "musicassistant://auth/callback"]
+)
+async def test_get_auth_url_passes_valid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that a valid return_url is passed to the provider and its URL is returned."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": "https://idp.example.com/authorize"}
+    oauth_provider.get_authorization_url.assert_awaited_once_with(ANY, return_url)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:

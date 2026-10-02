@@ -2029,14 +2029,28 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
-        """Create a new task and add it to the manager."""
-        task = self.mass.create_task(coro)
+    def create_task(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> asyncio.Task[None]:
+        """
+        Create a new task and add it to the manager.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
+        task = self.mass.create_task(coro, task_name=task_name)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Create a new task with semaphore limit."""
+    async def create_task_with_limit(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> None:
+        """
+        Create a new task with semaphore limit.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
         assert self._semaphore is not None
 
         def task_done_callback(_task: asyncio.Task[None]) -> None:
@@ -2045,7 +2059,7 @@ class TaskManager:
             self._semaphore.release()
 
         await self._semaphore.acquire()
-        task: asyncio.Task[None] = self.create_task(coro)
+        task: asyncio.Task[None] = self.create_task(coro, task_name)
         task.add_done_callback(task_done_callback)
 
     async def __aenter__(self) -> Self:

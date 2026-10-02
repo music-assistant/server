@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
+import aiohttp
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -18,6 +19,10 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
@@ -26,6 +31,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
     Playlist,
@@ -76,6 +82,18 @@ MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 # skipped id's are resolved back to library id's in batches of this size
 SKIPPED_ITEM_QUERY_LIMIT: Final[int] = 500
+# failures of one provider's fetch that leave the other providers' items playable: a
+# multi-provider caller skips that provider rather than abort on its behalf
+PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    TimeoutError,
+    aiohttp.ClientError,
+)
 
 LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
     MediaType.ARTIST: ProviderFeature.LIBRARY_ARTISTS,
@@ -1677,31 +1695,22 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.add_item_to_library(
                             prov_item
                         )
-                    elif (
-                        self._library_item_needs_update(library_item, prov_item)
-                        # or the supported mediatypes changed
-                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
-                    ):
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif (
-                        prov_item.is_dynamic
-                        and not library_item.is_editable
-                        and (
-                            prov_item.name != library_item.name
-                            or prov_item.metadata.images != library_item.metadata.images
-                        )
-                    ):
-                        # the provider is the sole source of truth for non-editable dynamic
-                        # playlists (e.g. Pandora/personalized-radio stations): overwrite=True
-                        # replaces the full stored record (not just name/images), which is fine
-                        # here since there's no local customization on these to lose. Restricted
-                        # to is_dynamic so static non-editable playlists (e.g. provider
-                        # "favorites") keep their locally-enriched metadata/images.
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item, overwrite=True
-                        )
+                    else:
+                        if (
+                            self._library_item_needs_update(library_item, prov_item)
+                            # or the supported mediatypes changed
+                            or prov_item.supported_mediatypes != library_item.supported_mediatypes
+                        ):
+                            library_item = await self.mass.music.playlists.update_item_in_library(
+                                library_item.item_id, prov_item
+                            )
+                        # the provider owns the playlist's name and its own images; the library
+                        # item is written back (not the provider item) so locally added data,
+                        # such as generated collages and genres, is kept
+                        if update := self._playlist_with_provider_details(library_item, prov_item):
+                            library_item = await self.mass.music.playlists.update_item_in_library(
+                                library_item.item_id, update, overwrite=True
+                            )
                     db_id = int(library_item.item_id)
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
@@ -2008,24 +2017,6 @@ class MusicProvider(Provider):
                 yield track
             page += 1
 
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
-        """Return library generator for given media_type."""
-        if media_type == MediaType.ARTIST:
-            return self.get_library_artists()
-        if media_type == MediaType.ALBUM:
-            return self.get_library_albums()
-        if media_type == MediaType.TRACK:
-            return self.get_library_tracks()
-        if media_type == MediaType.PLAYLIST:
-            return self.get_library_playlists()
-        if media_type == MediaType.RADIO:
-            return self.get_library_radios()
-        if media_type == MediaType.AUDIOBOOK:
-            return self.get_library_audiobooks()
-        if media_type == MediaType.PODCAST:
-            return self.get_library_podcasts()
-        raise NotImplementedError
-
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
@@ -2035,6 +2026,56 @@ class MusicProvider(Provider):
             return True
         # the item's date_added changed on the provider
         return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
+
+    def _playlist_with_provider_details(
+        self, library_item: Playlist, prov_item: Playlist
+    ) -> Playlist | None:
+        """
+        Return the library playlist updated with the provider's name and images.
+
+        Returns None when there is nothing to update.
+
+        :param library_item: The library playlist, which is updated in place.
+        :param prov_item: The same playlist as listed by this provider.
+        """
+        # rows stored before the lookup-key phase-out tag images with the domain, which for
+        # a single-instance provider is its instance id as well
+        own_providers = (self.instance_id, self.domain)
+        library_images: list[MediaItemImage] = library_item.metadata.images or []
+        prov_images: list[MediaItemImage] = prov_item.metadata.images or []
+        prov_types = {img.type for img in prov_images}
+        # an image type the provider does not supply is kept, so an empty image list from
+        # the provider is not taken as a removed cover
+        own_images = [
+            img
+            for img in library_images
+            if img.provider in own_providers and img.type in prov_types
+        ]
+        images_changed = own_images != prov_images
+        # an empty list of name params is stored as None
+        naming_changed = (
+            prov_item.name,
+            prov_item.sort_name,
+            prov_item.translation_key,
+            prov_item.translation_params or None,
+        ) != (
+            library_item.name,
+            library_item.sort_name,
+            library_item.translation_key,
+            library_item.translation_params or None,
+        )
+        if not naming_changed and not images_changed:
+            return None
+        library_item.name = prov_item.name
+        library_item.sort_name = prov_item.sort_name
+        library_item.translation_key = prov_item.translation_key
+        library_item.translation_params = prov_item.translation_params
+        if images_changed:
+            # the provider's images go first so its cover is the one shown
+            library_item.metadata.images = UniqueList(
+                [*prov_images, *(img for img in library_images if img not in own_images)]
+            )
+        return library_item
 
     def _check_provider_mappings(
         self,

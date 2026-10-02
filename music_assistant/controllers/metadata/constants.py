@@ -66,6 +66,9 @@ AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "pro
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 
+# a refresh that a metadata provider failed temporarily is due again after this
+REFRESH_RETRY_INTERVAL = 60 * 60 * 24 * 7  # 7 days
+
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"

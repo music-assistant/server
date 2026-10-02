@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.helpers.util import import_module_in_thread, verify_system_meets_requirements
+from music_assistant_models.errors import UnsupportedSystemError
+
+from music_assistant.helpers.util import (
+    import_module_in_thread,
+    system_meets_requirements,
+    verify_system_meets_requirements,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -23,14 +29,29 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 # reports ~3.8GB after the kernel/firmware reservation) still passes.
 MIN_RAM_GB = 4.0
 MIN_CPU_CORES = 2
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB = 6.0
+RECOMMENDED_CPU_CORES = 4
 
 
 async def setup(
     mass: MusicAssistant,
     manifest: ProviderManifest,
     config: ProviderConfig,
+    *,
+    auto_setup: bool = False,
 ) -> SmartFadesProvider:
     """Set up the Smart Fades provider."""
+    if auto_setup and not system_meets_requirements(
+        min_memory_gb=RECOMMENDED_RAM_GB, min_cpu_cores=RECOMMENDED_CPU_CORES
+    ):
+        # Before the minimum gate, so a refused automatic setup never spawns the ML probe.
+        msg = (
+            f"Smart Fades is not enabled automatically below the recommended hardware "
+            f"({RECOMMENDED_RAM_GB:.0f}GB RAM, {RECOMMENDED_CPU_CORES} CPU cores)"
+        )
+        raise UnsupportedSystemError(msg)
     # Gate before importing the provider module so the heavy torch/beat_this stack is
     # never imported on a host that does not meet the minimal requirements.
     await verify_system_meets_requirements(

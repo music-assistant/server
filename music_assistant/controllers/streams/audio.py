@@ -154,7 +154,7 @@ from music_assistant.helpers.playlists import (
     read_playlist_body,
 )
 from music_assistant.helpers.provider_access import playback_sources
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
@@ -637,12 +637,14 @@ class StreamsAudio:
         reason: str = "",
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
         allow_provider_match: bool = True,
+        stop_paused_queues: bool = True,
     ) -> AudioBuffer:
         """
         Return a ready AudioBuffer for the given queue item.
 
         Compatible provider mappings are reselected while the owning provider has no free
-        source-stream slot. Other AudioErrors propagate as on a direct buffer request.
+        source-stream slot. A paused queue holding that slot is stopped to hand it over.
+        Other AudioErrors propagate as on a direct buffer request.
 
         :param queue_item: Queue item whose source should be buffered.
         :param seek_position_ms: Position in milliseconds to start from.
@@ -650,6 +652,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
+        :param stop_paused_queues: Whether another queue that is paused may be stopped to
+            hand over the slot it holds.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
@@ -658,7 +662,12 @@ class StreamsAudio:
             self._audio_buffer_locks[lock_key] = buffer_lock
         async with buffer_lock:
             return await self._get_audio_buffer(
-                queue_item, seek_position_ms, reason, capacity_wait_timeout, allow_provider_match
+                queue_item,
+                seek_position_ms,
+                reason,
+                capacity_wait_timeout,
+                allow_provider_match,
+                stop_paused_queues,
             )
 
     async def get_media_stream(
@@ -2271,6 +2280,7 @@ class StreamsAudio:
         pcm_format: AudioFormat,
         session_id: str | None = None,
         protocol_player: Player | None = None,
+        consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2285,6 +2295,9 @@ class StreamsAudio:
             Must be the same player that was used to select ``pcm_format`` so
             restart decisions are made against the correct supported sample rates
             and flow mode configuration. Falls back to the queue's player when omitted.
+        :param consumer_connected: Reports whether the consumer of this stream is still
+            connected; once it reports False, the stream ends before its next item and
+            does not report the queue completed.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2310,6 +2323,19 @@ class StreamsAudio:
             )
             return
         queue.flow_mode = True
+
+        def _consumer_left() -> bool:
+            """Return True once the consumer of this stream has disconnected."""
+            if consumer_connected is None or consumer_connected():
+                return False
+            self.logger.debug(
+                "Flow stream for queue %s lost its consumer - exiting", queue.display_name
+            )
+            return True
+
+        # without a consumer, leave the session's play log to the producers still playing it
+        if _consumer_left():
+            return
         # A session can also be handed a second producer, which the session check does not
         # catch: players such as DLNA renderers sometimes open the same flow url twice to
         # probe the audio. Append to the list published here rather than to whatever the
@@ -2366,6 +2392,11 @@ class StreamsAudio:
                         pq_data.session_id,
                     )
                     return
+                # a consumer that left is only noticed when audio is written to it, which never
+                # happens while items produce no audio: end here, without walking the rest of
+                # the queue or reporting it completed
+                if _consumer_left():
+                    return
                 # get (next) queue item to stream
                 if queue_track is None:
                     queue_track = start_queue_item
@@ -2377,6 +2408,9 @@ class StreamsAudio:
                     except QueueEmpty:
                         queue_exhausted = True
                         break
+                    # the consumer may have left while the next item was loading
+                    if _consumer_left():
+                        return
 
                 if self._flow_stream_needs_restart(
                     queue_track,
@@ -2911,6 +2945,9 @@ class StreamsAudio:
                 queue.display_name,
             )
             return
+        # the queue did not play out on a consumer that left, so it is not reported completed
+        if _consumer_left():
+            return
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
             for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
@@ -3169,7 +3206,9 @@ class StreamsAudio:
         if provider is None or provider.type != ProviderType.MUSIC:
             return
         music_prov = cast("MusicProvider", provider)
-        self.mass.create_task(music_prov.on_streamed(streamdetails))
+        # a listening report is background work, whoever streamed
+        with request_priority(RequestPriority.LOW):
+            self.mass.create_task(music_prov.on_streamed(streamdetails))
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
@@ -3461,6 +3500,7 @@ class StreamsAudio:
         reason: str,
         capacity_wait_timeout: float,
         allow_provider_match: bool,
+        stop_paused_queues: bool,
     ) -> AudioBuffer:
         """
         Create or reuse a ready AudioBuffer within one queue-item preparation lock.
@@ -3471,6 +3511,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
+        :param stop_paused_queues: Whether another queue that is paused may be stopped to
+            hand over the slot it holds.
         """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
@@ -3541,12 +3583,24 @@ class StreamsAudio:
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}
             )
+            # a paused queue hands over its slot once an attempt finds none free, so that
+            # attempt has to be a probe rather than a wait behind the paused queue
+            paused_holder = (
+                stop_paused_queues
+                and not final_pass
+                and self.mass.player_queues.has_paused_stream_slot_holder(
+                    streamdetails.provider, queue_item.queue_id
+                )
+            )
             # probe (0s) whenever a reselection can still follow: a free slot is still
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
             source_wait = (
                 0.0
-                if (not final_pass and (alternatives_left or busy_instances or match_pending))
+                if (
+                    not final_pass
+                    and (alternatives_left or busy_instances or match_pending or paused_holder)
+                )
                 else remaining
             )
             # record whose audio this is before it exists: a queue stop releases only the
@@ -3577,6 +3631,12 @@ class StreamsAudio:
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
+                if paused_holder and await self._take_paused_stream_slot(
+                    err.provider_instance, queue_item.queue_id, deadline
+                ):
+                    # the paused queue stopped and its slot comes free: wait for it here
+                    final_pass = True
+                    continue
                 busy_instances.add(err.provider_instance)
                 if final_pass or loop.time() >= deadline:
                     raise
@@ -3614,6 +3674,30 @@ class StreamsAudio:
                 # failure: restore the blocked details and spend the rest of the budget there
                 queue_item.streamdetails = last_failed_streamdetails
                 final_pass = True
+
+    async def _take_paused_stream_slot(
+        self, provider_instance: str, queue_id: str, deadline: float
+    ) -> bool:
+        """
+        Stop a paused queue that holds a slot of the given provider, within the capacity budget.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :param deadline: Event loop time by which the handover has to be done.
+        :return: Whether a paused queue's session was ended, which frees its slot shortly.
+        """
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        try:
+            # the paused queue's lock and its device stop can both take longer than the
+            # budget of the playback waiting for them
+            async with asyncio.timeout(remaining):
+                return await self.mass.player_queues.release_paused_stream_slot(
+                    provider_instance, queue_id
+                )
+        except TimeoutError:
+            return False
 
     def _get_streamdetail_candidates(
         self,
@@ -3850,18 +3934,16 @@ class StreamsAudio:
         last_audio_error: AudioError | None = None
         for mapping, provider in candidates:
             # music and plugin providers share this signature, so either type can own the item
-            token = BYPASS_THROTTLER.set(True)
             try:
                 stream_prov = cast("MusicProvider | PluginProvider", provider)
-                return await stream_prov.get_stream_details(mapping.item_id, media_type)
+                with request_priority(RequestPriority.HIGH):
+                    return await stream_prov.get_stream_details(mapping.item_id, media_type)
             except AudioError as err:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
-            finally:
-                BYPASS_THROTTLER.reset(token)
         if last_audio_error is not None:
             raise last_audio_error
         return None
@@ -5012,9 +5094,10 @@ class StreamsAudio:
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
             stream_prov = cast("MusicProvider | PluginProvider", provider)
-            streamdetails = await stream_prov.get_stream_details(
-                mapping.item_id, MediaType.SOUND_EFFECT
-            )
+            with request_priority(RequestPriority.HIGH):
+                streamdetails = await stream_prov.get_stream_details(
+                    mapping.item_id, MediaType.SOUND_EFFECT
+                )
         except Exception as err:
             self.logger.warning(
                 "Audio overlay source %s is unavailable (%s) - continuing without overlay",

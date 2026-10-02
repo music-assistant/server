@@ -9,6 +9,9 @@ individually testable.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shutil
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
@@ -1084,6 +1087,116 @@ async def migrate_database(  # noqa: PLR0915
             # the column must not be indexed for DROP COLUMN to succeed
             await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")
             await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
+
+    if prev_version <= 61:
+        # playlist rows can still carry the collages the metadata controller drew before the
+        # Playlist Metadata provider took over playlist artwork. Merged images are appended,
+        # so such a collage keeps winning over the newer artwork: drop the collages and their
+        # files. The builtin system playlists keep changing content, so they only show their
+        # static artwork, never generated art.
+        system_playlist_ids = (
+            "all_favorite_tracks",
+            "random_artist",
+            "random_album",
+            "random_tracks",
+            "recently_played",
+            "recently_added_tracks",
+            "infinite_mix",
+            "infinite_mix_favorites",
+        )
+        static_images = [
+            {"type": image_type, "path": path, "provider": "builtin", "remotely_accessible": False}
+            for image_type, path in (("thumb", "logo.png"), ("fanart", "fanart.jpg"))
+        ]
+        system_playlist_item_ids: set[int] = set()
+        if await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
+            limit=1,
+        ):
+            system_playlist_item_ids = {
+                row["item_id"]
+                for row in await database.get_rows_from_query(
+                    f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = 'playlist' AND provider_domain = 'builtin' "
+                    "AND provider_item_id IN :system_playlist_ids",
+                    {"system_playlist_ids": system_playlist_ids},
+                    limit=0,
+                )
+            }
+        playlist_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLISTS})", limit=0
+            )
+        }
+        migrated_playlist_rows = 0
+        # guard against (test) databases with stand-in tables
+        if "metadata" in playlist_columns:
+            async for db_row in database.iter_items(DB_TABLE_PLAYLISTS):
+                is_system_playlist = db_row["item_id"] in system_playlist_item_ids
+                if not isinstance(raw_metadata := db_row["metadata"], str) or not (
+                    is_system_playlist or "/collage/" in raw_metadata
+                ):
+                    continue
+                try:
+                    metadata = json_loads(raw_metadata)
+                except ValueError:
+                    continue
+                images = metadata.get("images") if isinstance(metadata, dict) else None
+                if not isinstance(images, list):
+                    continue
+                kept_images = []
+                lost_collage_thumb = False
+                for image in images:
+                    if not isinstance(image, dict):
+                        kept_images.append(image)
+                        continue
+                    path = image.get("path")
+                    if (
+                        image.get("provider") == "builtin"
+                        and isinstance(path, str)
+                        and path.startswith("/collage/")
+                    ):
+                        lost_collage_thumb |= image.get("type") == "thumb"
+                        continue
+                    if is_system_playlist and image.get("provider") == "playlist_metadata":
+                        continue
+                    kept_images.append(image)
+                if is_system_playlist:
+                    kept_types = {x.get("type") for x in kept_images if isinstance(x, dict)}
+                    kept_images += [x for x in static_images if x["type"] not in kept_types]
+                if kept_images == images:
+                    continue
+                metadata["images"] = kept_images
+                if lost_collage_thumb:
+                    # a playlist without a refresh timestamp gets a new cover on the next scan
+                    metadata.pop("last_refresh", None)
+                await database.update(
+                    DB_TABLE_PLAYLISTS,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                migrated_playlist_rows += 1
+        if migrated_playlist_rows:
+            logger.info("Removed outdated artwork from %d playlist(s)", migrated_playlist_rows)
+        playlog_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+            )
+        }
+        if {"image", "media_type"} <= playlog_columns:
+            # the playlog keeps the image a playlist had when it was played, so a collage
+            # would show as a broken image in the recently played listing
+            await database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%' "
+                "AND image LIKE '%\"builtin\"%'"
+            )
+        await asyncio.to_thread(
+            shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
+        )
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

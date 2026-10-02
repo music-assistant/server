@@ -33,6 +33,11 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -387,6 +392,24 @@ def test_check_item_playable_rejects_a_provider_item_on_a_hidden_source() -> Non
         controller.check_item_playable_for_user(item, _user(USER_A))
 
 
+def test_check_item_playable_accepts_a_url_on_a_legacy_builtin_instance() -> None:
+    """A url of the builtin provider plays when its instance id is not its domain."""
+    controller = _controller_with_sources({"builtin--legacy": None, PROV_B: _private(USER_B)})
+    url = "https://example.com/news.mp3"
+    item = Track(
+        item_id=url,
+        provider="builtin",
+        name="News",
+        provider_mappings={
+            ProviderMapping(
+                item_id=url, provider_domain="builtin", provider_instance="builtin--legacy"
+            )
+        },
+    )
+
+    controller.check_item_playable_for_user(item, _user(USER_A))
+
+
 def test_check_item_playable_accepts_a_shared_account_of_an_own_service() -> None:
     """An item browsed on another member's account plays through the user's own account."""
     controller = _controller_with_sources(
@@ -534,6 +557,40 @@ async def test_a_play_report_moves_to_the_own_account_of_an_own_service() -> Non
     own.on_played.assert_called_once()
     assert own.on_played.call_args.kwargs["prov_item_id"] == "t1"
     housemate.on_played.assert_not_called()
+
+
+async def test_a_play_report_runs_with_low_priority() -> None:
+    """A play report made during playback reaches the provider as background work."""
+    instance = "tidal--mine"
+    prov = _music_source_prov(instance, available=True)
+    controller = _controller_with_sources({instance: _private(USER_A)}, providers=[prov])
+    mass: Any = controller.mass
+    mass.get_provider = Mock(return_value=prov)
+    mass.get_provider_instances = Mock(return_value=[prov])
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(USER_A))
+    seen: list[RequestPriority] = []
+
+    def create_task(coro: Any) -> None:
+        # a task runs in a copy of the context it is created in
+        seen.append(current_priority())
+        coro.close()
+
+    mass.create_task = Mock(side_effect=create_task)
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="tidal", provider_instance=instance)
+        },
+    )
+    controller._resolve_playlog_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+    with request_priority(RequestPriority.HIGH):
+        await controller.mark_item_played(track, is_playing=True, userid=USER_A)
+        assert current_priority() is RequestPriority.HIGH
+
+    assert seen == [RequestPriority.LOW]
 
 
 async def test_a_play_report_never_reaches_another_members_account() -> None:

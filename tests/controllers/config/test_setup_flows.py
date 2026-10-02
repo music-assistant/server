@@ -95,8 +95,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     Provide a minimal server with a fake (flow-capable) provider manifest injected.
 
     Builds on mass_minimal (no webserver/ports bound) and stubs the narrow surface
-    the flow engine touches: the dynamic-route webserver API and the players/music
-    controllers.
+    the flow engine touches: the dynamic-route webserver API, the streams publish IP
+    and the players/music controllers.
     """
     manifest = ProviderManifest(
         type=ProviderType.MUSIC,
@@ -119,6 +119,7 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
         unregister_dynamic_route=lambda path, _method="*": routes.pop(path, None),
         routes=routes,
     )
+    mass_minimal.streams = SimpleNamespace(publish_ip="127.0.0.1")  # type: ignore[assignment]
     mass_minimal.music = MagicMock()
     # awaited at the tail of the real provider load path
     mass_minimal.music.on_provider_loaded = AsyncMock()

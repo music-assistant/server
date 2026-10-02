@@ -25,6 +25,7 @@ from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
 )
 
+from . import RECOMMENDED_CPU_CORES, RECOMMENDED_RAM_GB
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
 from .helpers import (
@@ -55,10 +56,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 ANALYSIS_SAMPLE_RATE = 22050
-# Below the recommended thresholds the provider still runs, but we surface an
-# informational notice (see get_config_entries) as it may be tight under load.
-RECOMMENDED_RAM_GB = 6.0
-RECOMMENDED_CPU_CORES = 4
 # Beat This predicts a long track as fixed windows. These are the values the model was trained
 # and released with (30s at 50 fps, plus the loss-border frames its predictions are unreliable
 # on), so a windowed prediction is identical to a whole-track one. Do not tune them: a window

@@ -70,7 +70,12 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    request_priority,
+    set_request_priority,
+    with_request_priority,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -295,6 +300,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.next_item = self.get_next_item(queue_id, first_added_index)
         self.signal_update(queue_id)
 
+    # playback has priority over other requests that may be happening in the background
+    @with_request_priority(RequestPriority.HIGH)
     async def _load_item(
         self,
         queue_item: QueueItem,
@@ -312,11 +319,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_id = queue_item.queue_id
         queue = self._queue_data[queue_id].queue
-
-        # we use a contextvar to bypass the throttler for this asyncio task/context
-        # this makes sure that playback has priority over other requests that may be
-        # happening in the background
-        BYPASS_THROTTLER.set(True)
 
         self.logger.debug(
             "(pre)loading (next) item for queue %s...",
@@ -389,6 +391,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
+        if (
+            isinstance(queue_item.media_item, PodcastEpisode)
+            and queue_item.media_item.metadata.chapters is None
+        ):
+            # episode listings skip the chapter download, so look the episode up once
+            self.mass.create_task(
+                self._load_episode_chapters(queue_id, queue_item.media_item),
+                task_id=f"episode_chapters_{queue_item.queue_item_id}",
+            )
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -483,6 +494,21 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if duration := await get_probed_duration(self.mass, uri):
             self._set_missing_duration(queue_item, duration)
+
+    async def _load_episode_chapters(self, queue_id: str, episode: PodcastEpisode) -> None:
+        """Fill in the chapters of a queued podcast episode from its full details."""
+        # extra metadata must not compete with the playback requests of the same item
+        set_request_priority(RequestPriority.LOW)
+        # an empty list marks the episode as looked up, so a seek does not repeat it
+        episode.metadata.chapters = []
+        try:
+            details = await self.mass.music.podcasts.episode(episode.item_id, episode.provider)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not look up the chapters of %s: %s", episode.name, err)
+            return
+        if details.metadata.chapters:
+            episode.metadata.chapters = details.metadata.chapters
+            self.signal_update(queue_id, items_changed=True)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """
@@ -739,10 +765,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._set_transitioning(queue_id, False)
-        # we use a contextvar to bypass the throttler for this asyncio task/context
-        # this makes sure that playback has priority over other requests that may be
-        # happening in the background
-        BYPASS_THROTTLER.set(True)
         if not (queue := self.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         queue_data = self._queue_data[queue_id]
@@ -903,14 +925,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # a dynamic playlist/station supplies its own tracks on demand; just mark it
                     # played. The queue goes dynamic below and the bounded pool seeds its batch from
                     # all sources, so there is no need to fetch a batch here.
-                    self.mass.create_task(
-                        self.mass.music.mark_item_played(
-                            media_item,
-                            userid=playback_userid,
-                            queue_id=queue_id,
-                            user_initiated=True,
+                    # a play report is background work
+                    with request_priority(RequestPriority.LOW):
+                        self.mass.create_task(
+                            self.mass.music.mark_item_played(
+                                media_item,
+                                userid=playback_userid,
+                                queue_id=queue_id,
+                                user_initiated=True,
+                            )
                         )
-                    )
                 elif already_dynamic and not plays_next_track:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):

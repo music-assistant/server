@@ -747,6 +747,7 @@ class SonosPlayer(Player):
                 player_ids_to_add=player_ids_to_add,
                 player_ids_to_remove=player_ids_to_remove,
             )
+            await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
 
     async def ungroup(self) -> None:
         """
@@ -962,8 +963,8 @@ class SonosPlayer(Player):
         output_protocol: OutputProtocol,
     ) -> None:
         """Handle callback when playback starts on a protocol output."""
-        # Only handle AirPlay protocol
-        if output_protocol.protocol_domain != "airplay":
+        # Only handle AirPlay, directly or as the base of a derived transport (e.g. Sendspin bridge)
+        if not self._streams_over_airplay(output_protocol):
             return
 
         # Only if this player is a coordinator with group members
@@ -1074,7 +1075,9 @@ class SonosPlayer(Player):
                         self.update_state()
                         self.reconnect(5)
 
-            self._listen_task = self.mass.create_task(_listener())
+            self._listen_task = self.mass.create_task(
+                _listener(), task_name=f"sonos_listener_{self.player_id}"
+            )
             listen_task = self._listen_task
         # wait for the initial state fetch outside the lock: a listener that dies mid-init
         # never sets init_ready, and the reconnect it schedules needs the lock again
@@ -1203,6 +1206,37 @@ class SonosPlayer(Player):
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
         media.uri = await self.mass.streams.resolve_stream_url(self.player_id, media)
         return media
+
+    def _streams_over_airplay(self, output_protocol: OutputProtocol) -> bool:
+        """Return whether the output protocol reaches this speaker over AirPlay."""
+        if output_protocol.protocol_domain == "airplay":
+            return True
+        derived_from = output_protocol.derived_from
+        if not derived_from or derived_from == "native":
+            return False
+        base_player = self.mass.players.get_player(derived_from)
+        return base_player is not None and base_player.provider.domain == "airplay"
+
+    async def _wait_for_group_members(
+        self, player_ids_to_add: list[str], player_ids_to_remove: list[str]
+    ) -> None:
+        """Wait until the Sonos group reports the requested members, or give up after a timeout."""
+        removed = set(player_ids_to_remove) - {self.player_id}
+
+        def _reported() -> bool:
+            members = set(self.client.player.group_members)
+            return members.issuperset(player_ids_to_add) and members.isdisjoint(removed)
+
+        try:
+            async with asyncio.timeout(5):
+                while not _reported():
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            self.logger.debug(
+                "Timed out waiting for the Sonos group of %s to report members %s",
+                self.name,
+                player_ids_to_add,
+            )
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

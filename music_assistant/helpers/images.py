@@ -24,7 +24,7 @@ from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image, UnidentifiedImageError
 
-from music_assistant.constants import APPLICATION_NAME
+from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
@@ -460,7 +460,11 @@ async def _fetch_source_image(
     elif (
         not path_or_url.startswith(("http", "data:image"))
         and not Path(path_or_url).is_absolute()
-        and mass.get_provider(provider, return_unavailable=True)
+        and (
+            mass.get_provider(provider, return_unavailable=True)
+            # configured but not loaded (yet), e.g. a source on a network share at startup
+            or mass.config.get(f"{CONF_PROVIDERS}/{provider}") is not None
+        )
     ):
         # a relative path means only the provider can say what it is relative to, so a
         # registered provider that is momentarily down leaves nothing to try: the routes

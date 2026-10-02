@@ -20,7 +20,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, Scope, User
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -38,19 +38,20 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
     player_access_filter,
     resolve_command_impersonation,
+    resolve_ingress_user,
     set_current_client_id,
     set_current_token,
     set_current_user,
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -170,10 +171,10 @@ class WebsocketClientHandler:
             return wsock
 
         # For Ingress connections, auto-create/link user and subscribe to events immediately
-        # For regular connections, events will be subscribed after successful authentication
+        # For regular connections (and Ingress without a signed-in user), events will be
+        # subscribed after successful authentication
         if self._is_ingress:
             await self._handle_ingress_auth()
-            self._subscribe_to_events()
 
         disconnect_warn = None
 
@@ -268,6 +269,7 @@ class WebsocketClientHandler:
         set_current_user(self._authenticated_user)
         set_current_token(self._current_token)
         set_sendspin_player_id(self._sendspin_player_id)
+        set_request_priority(RequestPriority.NORMAL)
 
         # Check authentication if required
         if handler.authenticated or handler.required_scope:
@@ -517,58 +519,16 @@ class WebsocketClientHandler:
         await self._send_message(SuccessResultMessage(msg.message_id, {"locale": locale}))
 
     async def _handle_ingress_auth(self) -> None:
-        """Handle authentication for Ingress connections (auto-create/link user)."""
-        ingress_user_id = self.request.headers.get("X-Remote-User-ID")
-        ingress_username = self.request.headers.get("X-Remote-User-Name")
-        ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
-
-        if ingress_user_id and ingress_username:
-            # Try to find existing user linked to this HA user ID
-            user = await self.webserver.auth.get_user_by_provider_link(
-                AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-            if not user:
-                # Check if a user with this username already exists
-                user = await self.webserver.auth.get_user_by_username(ingress_username)
-
-                if not user:
-                    # New user - fetch details from HA
-                    ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                        self.mass, ingress_user_id
-                    )
-                    # Auto-create user for Ingress (they're already authenticated by HA)
-                    role = await get_ha_user_role(self.mass, ingress_user_id)
-                    user = await self.webserver.auth.create_user(
-                        username=ha_username or ingress_username,
-                        role=role,
-                        display_name=ha_display_name or ingress_display_name,
-                        avatar_url=avatar_url,
-                    )
-
-                # Link to Home Assistant provider (or create the link if user already existed)
-                await self.webserver.auth.link_user_to_provider(
-                    user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-                )
-
-            # Update user with HA details if available (HA is source of truth)
-            # Fall back to ingress headers if API lookup doesn't return values
-            _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
-            final_display_name = ha_display_name or ingress_display_name
-            if final_display_name or avatar_url:
-                user = await self.webserver.auth.update_user(
-                    user,
-                    display_name=final_display_name,
-                    avatar_url=avatar_url,
-                )
-
+        """Handle authentication for Ingress connections (auto-create/link user, subscribe)."""
+        if user := await resolve_ingress_user(self.mass, self.request.headers):
             self._authenticated_user = user
             self._logger.debug("Ingress user authenticated: %s", user.username)
+            self._subscribe_to_events()
         else:
-            # No HA user headers - allow homeassistant system user to connect with token
+            # No (enabled) HA user - allow homeassistant system user to connect with token
             # This allows the Home Assistant integration to connect via the internal network
-            # The token authentication happens in _handle_auth_message
-            self._logger.debug("Ingress connection without user headers, expecting token auth")
+            # The token authentication happens in _handle_auth_command
+            self._logger.debug("Ingress connection without a signed-in user, expecting token auth")
 
     def _is_own_private_player(self, object_id: str | None) -> bool:
         """

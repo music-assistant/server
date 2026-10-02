@@ -59,7 +59,6 @@ from music_assistant.controllers.music.constants import (
 from music_assistant.controllers.storage import StorageKind, StorageLocation, StorageUsage
 from music_assistant.controllers.storage import controller as storage_controller_module
 from music_assistant.controllers.storage.backends import local_mount as local_mount_module
-from music_assistant.controllers.storage.backends import mountinfo as mountinfo_module
 from music_assistant.controllers.storage.backends import supervisor as supervisor_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
@@ -75,7 +74,6 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.tags import AudioTags
-from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -985,21 +983,15 @@ async def test_the_owner_may_use_the_network_share_the_supervisor_mounts(
     assert location.backend == MountBackend.SUPERVISOR
 
 
-@pytest.mark.usefixtures("reconcile")
+@pytest.mark.usefixtures("reconcile", "discoverable_tmp_path")
 async def test_the_owner_may_use_the_mount_home_assistant_has(
     mass: MusicAssistant, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A source on a share added in Home Assistant reads the location of that mount."""
     supervisor.add_mount("nas_music", type="cifs", server="nas.local", share="Music")
-    # the app sees the mounts of the Supervisor in its own mount table, and runs in a container;
-    # the temporary folder of the test may lie below /tmp, which discovery leaves out
+    # the app sees the mounts of the Supervisor in its own mount table, and runs in a container
     monkeypatch.setattr(
         storage_controller_module, "read_mountinfo", lambda: supervisor.mount_table.text
-    )
-    monkeypatch.setattr(
-        mountinfo_module,
-        "SYSTEM_PATHS",
-        tuple(path for path in mountinfo_module.SYSTEM_PATHS if path != "/tmp"),  # noqa: S108
     )
     monkeypatch.setattr(mass.storage, "_in_container", True)
     # the mount is there when the server starts
@@ -1705,10 +1697,8 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     """
     The media items a converted source cached are removed, as they name its old domain.
 
-    So are the search results combined over all sources. The rest of what it cached stays:
-    the items of its last sync, which the next sync needs and which share their category with
-    the artists, and what holds no domain. So does everything other sources cached, and the
-    image ids.
+    So are the search results combined over all sources. The rest of what it cached holds no
+    domain and stays. So does everything other sources cached, and the image ids.
     """
     _store_source(mass, SMB_ID, SMB_SETUP)
     _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
@@ -1726,7 +1716,6 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
         ("jazz-track-25", CACHE_CATEGORY_SEARCH_RESULTS, {"tracks": [track.to_dict()]}),
     ]
     kept: list[tuple[str, int, Any]] = [
-        ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS, [1, 2, 3]),
         ("Artist", CACHE_CATEGORY_FOLDER_IMAGES, [image.to_dict()]),
         ("Books/Book.m4b", CACHE_CATEGORY_AUDIOBOOK_CHAPTERS, [["Books/Book.m4b", 60.0]]),
         ("Podcasts/Show", CACHE_CATEGORY_PODCAST_METADATA, {"title": "Show"}),
@@ -1801,8 +1790,6 @@ async def test_album_and_artist_cached_before_a_restart_keep_the_domain_of_local
         await mass.cache.set(
             key, item.to_dict(), provider=SMB_ID, category=category, expiration=120
         )
-    # the items of the last sync share their category with the artists
-    await mass.cache.set("album", [1], provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS)
 
     await consolidate_filesystem_sources(mass)
 
@@ -1837,9 +1824,6 @@ async def test_album_and_artist_cached_before_a_restart_keep_the_domain_of_local
         (SMB_ID, "filesystem_local", "album", "Artist/Album"),
         (SMB_ID, "filesystem_local", "artist", "Artist"),
     ]
-    assert await mass.cache.get(
-        "album", provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS
-    ) == [1]
 
 
 @pytest.mark.usefixtures("reconcile")
@@ -1911,12 +1895,7 @@ async def test_a_source_converts_on_the_first_start_before_the_providers_load(
 async def test_a_source_converts_and_mounts_in_a_start_under_a_supervisor(
     tmp_path: Path,
 ) -> None:
-    """
-    Under a Supervisor a start converts a source and mounts its share through the Supervisor.
-
-    The conversion asks the Supervisor for its mounts through the http session of the server,
-    which the server can create only once its discovery controller is set up.
-    """
+    """Under a Supervisor a start converts a source and mounts its share through the Supervisor."""
     storage_path = tmp_path / "data"
     storage_path.mkdir(parents=True)
     (storage_path / "settings.json").write_text(
