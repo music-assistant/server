@@ -54,15 +54,16 @@ def test_unknown_title_does_not_choose_repeated_position() -> None:
 
 
 @pytest.mark.parametrize("order", list(permutations(range(3))))
-def test_editions_at_one_position_collapse_whichever_is_listed_first(
-    order: tuple[int, ...],
-) -> None:
-    """Re-releases at one position share a slot even when a different recording holds it too."""
-    other = entry("a", "one", 1, "GBAYC2100001")
-    other.name = "Adagio"
-    editions = [other, entry("b", "two", 1, "GBAYC2100002"), entry("c", "three", 1, "GBAYC2100003")]
+def test_sources_at_one_position_collapse_in_any_order(order: tuple[int, ...]) -> None:
+    """Entries of different sources at one position share a slot, whatever order they come in."""
+    editions = [
+        entry("a", "one", 1, "GBAYC2100001"),
+        entry("b", "two", 1, "GBAYC2100002"),
+        entry("c", "three", 1, "GBAYC2100003"),
+    ]
     tracks = [editions[index] for index in order]
-    assert len(album_tracks.select_album_tracks([], tracks)) == 2
+    selected = album_tracks.select_album_tracks([], tracks)
+    assert [track.item_id for track in selected] == ["one"]
 
 
 def test_repeated_isrc_within_a_listing_identifies_nothing() -> None:

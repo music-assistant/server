@@ -29,16 +29,16 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     usable_isrcs = _unique_isrcs_per_source(library + providers)
     library_isrcs = {isrc for track in library for isrc in usable_isrcs[id(track)]}
     titles: dict[tuple[int, str, str], list[Track]] = defaultdict(list)
-    title_of: dict[int, tuple[int, str, str]] = {}
     for track in library + providers:
-        title_of[id(track)] = title = _title(track)
-        titles[title].append(track)
+        titles[_title(track)].append(track)
     slots: list[Track] = []
     slot_sources: list[set[str]] = []
     slot_by_isrc: dict[str, int] = {}
-    slots_by_position: dict[tuple[int, int], list[int]] = defaultdict(list)
+    slot_by_position: dict[tuple[int, int], int] = {}
     unknown: list[Track] = []
-    for track in providers:
+    # the slot an identifier names is the one of the first entry carrying it, so the
+    # entries are taken in a fixed order rather than the order the providers answered in
+    for track in sorted(providers, key=_preference):
         if library_ids.intersection(_ids(track)):
             continue
         isrcs = usable_isrcs[id(track)]
@@ -53,18 +53,7 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         if slot is None:
             if position in occupied:
                 continue
-            # join the edition already listed at this position that this entry does not
-            # contradict; editions that disagree about a position are all listed rather
-            # than let one hide another, whichever of them was listed first
-            slot = next(
-                (
-                    candidate
-                    for candidate in slots_by_position[position]
-                    if track.provider not in slot_sources[candidate]
-                    and not _different_recording(slots[candidate], track, usable_isrcs, title_of)
-                ),
-                None,
-            )
+            slot = slot_by_position.get(position)
         if slot is not None and track.provider in slot_sources[slot]:
             # a source's own listing is authoritative: two of its entries stay two
             slot = None
@@ -75,8 +64,7 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         elif _preference(track) < _preference(slots[slot]):
             slots[slot] = track
         slot_sources[slot].add(track.provider)
-        if slot not in slots_by_position[position]:
-            slots_by_position[position].append(slot)
+        slot_by_position.setdefault(position, slot)
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
 
@@ -206,18 +194,3 @@ def _unique_isrcs_per_source(tracks: list[Track]) -> dict[int, set[str]]:
         id(track): {isrc for isrc in isrcs_of[id(track)] if seen[track.provider][isrc] == 1}
         for track in tracks
     }
-
-
-def _different_recording(
-    holder: Track,
-    candidate: Track,
-    usable_isrcs: dict[int, set[str]],
-    title_of: dict[int, tuple[int, str, str]],
-) -> bool:
-    """Return whether two entries at one position are evidently different recordings."""
-    holder_isrcs, candidate_isrcs = usable_isrcs[id(holder)], usable_isrcs[id(candidate)]
-    if not holder_isrcs or not candidate_isrcs or holder_isrcs.intersection(candidate_isrcs):
-        return False
-    # a recording gets a new ISRC with every re-release, so a mismatch alone is not
-    # a contradiction: only a mismatch on the title as well is
-    return title_of[id(holder)][1:] != title_of[id(candidate)][1:]
