@@ -17,9 +17,7 @@ from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import RepeatMode, SourceControl
-    from music_assistant_models.media_items import (
-        AudioSource,
-    )
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.streamdetails import StreamDetails
 

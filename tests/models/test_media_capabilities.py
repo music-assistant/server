@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ProviderFeature, ProviderType
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import Artist
 
 from music_assistant.models.media_capabilities import (
@@ -19,6 +21,9 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.models.provider import Provider
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
 
 ALL_MIXINS = {MediaCatalogMixin, RecommendationsMixin, MusicDiscoveryMixin, AudioStreamMixin}
 
@@ -73,3 +78,28 @@ async def test_resolve_image_is_available_on_every_provider() -> None:
     """The image resolver lives on the base class and returns the path untouched by default."""
     player_provider = _make_provider(PlayerProvider, ProviderType.PLAYER)
     assert await player_provider.resolve_image("artwork/1.jpg") == "artwork/1.jpg"
+
+
+def test_music_provider_keeps_its_own_browse() -> None:
+    """The music provider's library-driven browse wins over the catalog stub."""
+    assert "browse" in MusicProvider.__dict__
+
+
+async def test_gated_defaults_on_a_music_provider() -> None:
+    """A feature-gated method is inert until its feature is declared."""
+    provider = _make_provider(MusicProvider, ProviderType.MUSIC)
+    assert not (await provider.search("query", [MediaType.TRACK])).tracks
+    assert await provider.get_recommendations() == []
+
+    provider = _make_provider(MusicProvider, ProviderType.MUSIC, {ProviderFeature.SEARCH})
+    with pytest.raises(NotImplementedError):
+        await provider.search("query", [MediaType.TRACK])
+
+
+async def test_audio_stream_stub_raises_before_yielding() -> None:
+    """The stream stub stays an async generator and fails without emitting a chunk."""
+    assert inspect.isasyncgenfunction(AudioStreamMixin.get_audio_stream)
+    provider = _make_provider(PluginProvider, ProviderType.PLUGIN)
+    stream = provider.get_audio_stream(cast("StreamDetails", MagicMock()))
+    with pytest.raises(NotImplementedError):
+        await anext(stream)

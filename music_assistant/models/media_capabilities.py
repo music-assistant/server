@@ -4,8 +4,10 @@ Capability mixins shared by the provider base classes.
 Each mixin holds the methods of one capability that more than one provider type can offer, so
 a controller that works by capability (it checks the provider's features) can type the provider
 by the mixin instead of by a union of provider classes. A mixin only declares the contract: a
-provider implements the methods for the features it declares, the defaults are inert. The
-mixins derive from Provider, so a provider typed by a capability still carries its identity.
+provider implements the methods for the features it declares. A feature-gated default returns
+an empty result until the feature is declared; a lookup of a single item raises
+NotImplementedError. The mixins derive from Provider, so a provider typed by a capability still
+carries its identity.
 """
 
 from __future__ import annotations
@@ -215,11 +217,12 @@ class AudioStreamMixin(Provider):
         """
         Return StreamDetails for a playable item owned by this provider.
 
-        MUST be side-effect-free: Music Assistant calls this from the streaming path as
-        well as from queue preload, so claiming a source or a session belongs in the
-        stream itself (or, for a plugin's AudioSource, in ``on_source_selected``).
+        Music Assistant calls this from the streaming path as well as from queue preload, so
+        it should stay free of side effects: a plugin claims an exclusive AudioSource in
+        ``on_source_selected``, a music provider reports playback in ``on_streamed``.
 
-        :param item_id: The provider-scoped id of the item requested for playback.
+        :param item_id: The provider-scoped id of the item requested for playback, for a
+            plugin also an ``AudioSource.item_id``.
         :param media_type: The media type of the requested item.
         """
         raise NotImplementedError
@@ -235,7 +238,7 @@ class AudioStreamMixin(Provider):
         ``streamdetails.decoded_audio_format`` declares when the provider decodes the source
         itself, otherwise in ``streamdetails.audio_format``, which may be an encoded format
         that Music Assistant decodes. Release any per-session state in a ``try/finally``: the
-        consumer closes the generator when playback ends.
+        consumer closes the generator when playback ends or another queue takes over.
 
         :param streamdetails: The StreamDetails previously returned by get_stream_details.
         :param seek_position: Position in seconds to start from; ignored for live sources.
