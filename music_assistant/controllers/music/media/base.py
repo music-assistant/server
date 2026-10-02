@@ -92,8 +92,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.media_capabilities import MediaCatalogMixin
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzRelease
     from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
@@ -1229,13 +1229,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
         ):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        provider = cast("MusicProvider | PluginProvider", provider)
+        catalog_prov = cast("MediaCatalogMixin", provider)
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
                 if self.media_type == MediaType.PLAYLIST:
-                    return cast("ItemCls", await provider.get_playlist(item_id))
+                    return cast("ItemCls", await catalog_prov.get_playlist(item_id))
                 if self.media_type == MediaType.RADIO:
-                    return cast("ItemCls", await provider.get_radio(item_id))
+                    return cast("ItemCls", await catalog_prov.get_radio(item_id))
                 music_prov = cast("MusicProvider", provider)
                 if self.media_type == MediaType.ARTIST:
                     return cast("ItemCls", await music_prov.get_artist(item_id))

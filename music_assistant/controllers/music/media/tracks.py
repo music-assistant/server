@@ -76,8 +76,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import DiscoveryMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +550,7 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
-            cross_prov = cast("MetadataProvider | PluginProvider", prov)
+            cross_prov = cast("DiscoveryMixin", prov)
             result, error = await self._get_similar_tracks_from_provider(
                 cross_prov, ref_item, limit
             )
@@ -1778,7 +1777,7 @@ class TracksController(MediaControllerBase[Track]):
 
     async def _get_similar_tracks_from_provider(
         self,
-        provider: MusicProvider | MetadataProvider | PluginProvider,
+        provider: MusicProvider | DiscoveryMixin,
         ref_item: Track,
         limit: int,
         provider_track_id: str | None = None,

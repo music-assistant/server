@@ -6,23 +6,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import SearchResults, UniqueList
 
+from .media_capabilities import (
+    AudioStreamMixin,
+    DiscoveryMixin,
+    MediaCatalogMixin,
+    RecommendationsMixin,
+)
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Sequence
-
-    from music_assistant_models.enums import MediaType, RepeatMode, SourceControl
+    from music_assistant_models.enums import RepeatMode, SourceControl
     from music_assistant_models.media_items import (
         AudioSource,
-        BrowseFolder,
-        ItemMapping,
-        MediaItemType,
-        Playlist,
-        Radio,
-        RecommendationFolder,
-        Track,
     )
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.streamdetails import StreamDetails
@@ -71,7 +67,9 @@ class TTSEngine(PluginEngine):
     """An engine that renders speech, invoked through ``PluginProvider.get_tts_message``."""
 
 
-class PluginProvider(Provider):
+class PluginProvider(
+    MediaCatalogMixin, RecommendationsMixin, DiscoveryMixin, AudioStreamMixin, Provider
+):
     """
     Base representation of a Plugin for Music Assistant.
 
@@ -87,6 +85,18 @@ class PluginProvider(Provider):
         May change over time (e.g. when a paired hardware device adds/removes
         favorites). Each AudioSource is a regular MediaItem and will be browsable
         under the global "Live Inputs" node and playable via the standard play_media flow.
+
+        Streaming contract for AudioSources: ``get_stream_details`` must stay side-effect-free
+        (MA also calls it from queue preload), so an exclusive source is claimed in
+        ``on_source_selected``, paired with ``on_source_unselected``. In the returned
+        StreamDetails ``audio_format`` describes the source, ``decoded_audio_format`` the PCM
+        actually delivered (set it when the plugin decodes the source itself) and
+        ``stream_metadata`` the initial live metadata, updated at runtime through
+        ``mass.players.update_source_metadata``. The consuming player needs a continuous byte
+        flow: for ``StreamType.CUSTOM`` the server wraps ``get_audio_stream`` with a silence
+        keepalive, so the plugin can simply stop yielding while the upstream device is paused;
+        for ``StreamType.NAMED_PIPE`` the producing process itself must keep writing silence
+        during pause (shairport-sync and librespot do by default) or the player disconnects.
 
         :return: A list of AudioSource items. Return an empty list if the plugin
             currently has no sources to expose (e.g. hardware is offline).
@@ -110,77 +120,6 @@ class PluginProvider(Provider):
         :param player_id: The player to return the bound AudioSources for.
         """
         return None
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """
-        Return StreamDetails for a streamable item owned by this plugin.
-
-        Called for a playable item this plugin exposes; ``media_type`` says which kind.
-        AudioSource items require ProviderFeature.AUDIO_SOURCE to be declared.
-
-        MUST be side-effect-free. MA calls this from both the streaming path
-        and from queue preload (``_load_item``); claiming ownership here would
-        let a preload accidentally reserve an exclusive source and block a
-        subsequent cross-queue handoff at the actual stream request. Ownership
-        is claimed in ``on_source_selected`` (which fires only on the real
-        stream request, paired with ``on_source_unselected`` in the finally).
-
-        The returned StreamDetails uses the standard fields:
-        ``stream_type`` selects between a custom async generator and a path
-        (e.g. NAMED_PIPE); ``audio_format`` describes the source for display and
-        ``decoded_audio_format`` the PCM actually delivered, which a plugin that
-        decoded the source itself has to set; ``stream_metadata`` carries the initial
-        live metadata (and can be updated at runtime via
-        ``mass.players.update_source_metadata(player_id, ...)``).
-
-        Silence-during-pause contract:
-        the player consuming the stream needs a continuous byte flow or it will
-        disconnect after a few seconds. The server keeps the connection alive
-        differently depending on ``stream_type``:
-
-        - ``StreamType.CUSTOM`` — the server wraps ``get_audio_stream`` with a
-          silence-keepalive so a paused upstream device (no bytes yielded) does
-          NOT cause the player to drop out. The plugin can just stop yielding
-          while paused; the wrapper inserts silence frames at the declared PCM
-          format.
-        - ``StreamType.NAMED_PIPE`` — the underlying process MUST keep writing
-          silence to the pipe during pause states (shairport-sync and librespot
-          in pipe/passthrough mode both do this by default). If the producer
-          binary actually stops writing, the consuming ffmpeg will block and
-          the player will eventually disconnect.
-
-        :param item_id: The provider-scoped id of the item requested for playback:
-            an ``AudioSource.item_id`` or the id of another item this plugin owns.
-        :param media_type: The media type of the requested item.
-        """
-        raise NotImplementedError
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
-        """
-        Return the (custom) audio stream for an AudioSource.
-
-        Will only be called when the StreamDetails returned by get_stream_details
-        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in the PCM
-        format declared by ``streamdetails.decoded_audio_format``, falling back to
-        ``audio_format`` when the plugin delivers its source untouched.
-
-        Pausing is fine: when the upstream device is paused the plugin can stop
-        yielding bytes. The server wraps this generator with a silence-keepalive
-        that keeps the player connected by inserting silence at the declared PCM
-        format during quiet periods. The plugin should release any per-session
-        state in a ``try/finally`` — the consumer closes the generator when
-        playback ends or another queue takes over.
-
-        :param streamdetails: The StreamDetails previously returned by get_stream_details.
-        :param seek_position: Ignored for live AudioSources (no seek through the bytestream).
-        """
-        raise NotImplementedError
-        # unreachable, but the yield keeps this method an async generator
-        # so an unimplemented provider fails deterministically without emitting
-        # a stray empty chunk to the downstream consumer first.
-        yield b""  # type: ignore[unreachable]
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool | None:
         """
@@ -414,121 +353,3 @@ class PluginProvider(Provider):
         :return: The AI response as a string.
         """
         raise NotImplementedError
-
-    async def search(
-        self,
-        search_query: str,
-        media_types: list[MediaType],
-        limit: int = 5,
-    ) -> SearchResults:
-        """
-        Perform a search on this plugin.
-
-        Will only be called if ProviderFeature.SEARCH is declared.
-
-        :param search_query: Search query.
-        :param media_types: A list of media_types to include.
-        :param limit: Number of items to return in the search (per type).
-        """
-        if ProviderFeature.SEARCH in self.supported_features:
-            raise NotImplementedError
-        return SearchResults()
-
-    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """
-        Retrieve a list of similar tracks for the given track.
-
-        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
-
-        :param track: The reference track.
-        :param limit: Maximum number of similar tracks to return.
-        """
-        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this plugin's available recommendation rows, without items.
-
-        Must be fast: return static or cached row descriptors only, without
-        live backend calls. The items for a row are fetched separately
-        through get_recommendation_items.
-
-        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        Live backend fetches belong here. Will only be called if
-        ProviderFeature.RECOMMENDATIONS is declared.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return UniqueList()
-
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Browse this plugin's contents.
-
-        Will only be called if ProviderFeature.BROWSE is declared.
-
-        :param path: The path to browse, in the form ``<instance_id>://<sub_path>``.
-        """
-        if ProviderFeature.BROWSE in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """
-        Return details of a single playlist owned by this plugin.
-
-        :param prov_playlist_id: Provider-scoped playlist id.
-        """
-        raise NotImplementedError
-
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """
-        Return a page of tracks for a playlist owned by this plugin.
-
-        :param prov_playlist_id: Provider-scoped playlist id.
-        :param page: Zero-based page index for paginated results.
-        """
-        raise NotImplementedError
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """
-        Return details of a single radio station owned by this plugin.
-
-        :param prov_radio_id: Provider-scoped radio id.
-        """
-        raise NotImplementedError
-
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
-        """
-        Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
-
-        Return an empty batch to signal the station's feed is exhausted; the queue then
-        plays out its remaining items and ends.
-
-        :param prov_radio_id: Provider-scoped radio id.
-        """
-        raise NotImplementedError
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        """
-        return path
