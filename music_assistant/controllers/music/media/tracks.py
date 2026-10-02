@@ -76,7 +76,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.media_capabilities import RelatedItemsMixin
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,7 +550,7 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
-            cross_prov = cast("RelatedItemsMixin", prov)
+            cross_prov = cast("MusicDiscoveryMixin", prov)
             result, error = await self._get_similar_tracks_from_provider(
                 cross_prov, ref_item, limit
             )
@@ -1777,7 +1777,7 @@ class TracksController(MediaControllerBase[Track]):
 
     async def _get_similar_tracks_from_provider(
         self,
-        provider: MusicProvider | RelatedItemsMixin,
+        provider: MusicProvider | MusicDiscoveryMixin,
         ref_item: Track,
         limit: int,
         provider_track_id: str | None = None,

@@ -10,8 +10,8 @@ from music_assistant_models.enums import ProviderFeature
 from .media_capabilities import (
     AudioStreamMixin,
     MediaCatalogMixin,
+    MusicDiscoveryMixin,
     RecommendationsMixin,
-    RelatedItemsMixin,
 )
 from .provider import Provider
 
@@ -68,7 +68,7 @@ class TTSEngine(PluginEngine):
 
 
 class PluginProvider(
-    MediaCatalogMixin, RecommendationsMixin, RelatedItemsMixin, AudioStreamMixin, Provider
+    MediaCatalogMixin, RecommendationsMixin, MusicDiscoveryMixin, AudioStreamMixin, Provider
 ):
     """
     Base representation of a Plugin for Music Assistant.

@@ -11,8 +11,8 @@ from music_assistant_models.media_items import Artist
 from music_assistant.models.media_capabilities import (
     AudioStreamMixin,
     MediaCatalogMixin,
+    MusicDiscoveryMixin,
     RecommendationsMixin,
-    RelatedItemsMixin,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -20,7 +20,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.models.provider import Provider
 
-ALL_MIXINS = {MediaCatalogMixin, RecommendationsMixin, RelatedItemsMixin, AudioStreamMixin}
+ALL_MIXINS = {MediaCatalogMixin, RecommendationsMixin, MusicDiscoveryMixin, AudioStreamMixin}
 
 
 def _make_provider[ProviderT: Provider](
@@ -46,7 +46,7 @@ def _make_provider[ProviderT: Provider](
     [
         (MusicProvider, {MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin}),
         (PluginProvider, ALL_MIXINS),
-        (MetadataProvider, {RecommendationsMixin, RelatedItemsMixin}),
+        (MetadataProvider, {RecommendationsMixin, MusicDiscoveryMixin}),
         (PlayerProvider, set()),
     ],
 )

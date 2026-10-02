@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Container, Mapping, Sequence
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.media_capabilities import RelatedItemsMixin
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
@@ -686,7 +686,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
-            fetches.append(cast("RelatedItemsMixin", prov).get_artist_toptracks(ref_item))
+            fetches.append(cast("MusicDiscoveryMixin", prov).get_artist_toptracks(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[Track]] = []
@@ -776,7 +776,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
-            fetches.append(cast("RelatedItemsMixin", prov).get_artist_topalbums(ref_item))
+            fetches.append(cast("MusicDiscoveryMixin", prov).get_artist_topalbums(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[Album]] = []
@@ -1020,7 +1020,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
             fetches.append(
-                cast("RelatedItemsMixin", prov).get_similar_artists(ref_item, limit=limit)
+                cast("MusicDiscoveryMixin", prov).get_similar_artists(ref_item, limit=limit)
             )
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
