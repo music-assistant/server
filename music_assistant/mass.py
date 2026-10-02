@@ -94,6 +94,7 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.provider import Provider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -133,7 +134,7 @@ PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
 PROVIDER_RETRY_JITTER = 3
 
 _R = TypeVar("_R")
-_ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
+_ProviderT = TypeVar("_ProviderT", bound=Provider)
 
 
 def is_music_provider(provider: ProviderInstanceType) -> TypeGuard[MusicProvider]:

@@ -171,8 +171,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.media_capabilities import AudioStreamMixin
     from music_assistant.models.player import Player
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
@@ -3933,9 +3933,9 @@ class StreamsAudio:
         """
         last_audio_error: AudioError | None = None
         for mapping, provider in candidates:
-            # music and plugin providers share this signature, so either type can own the item
+            # any provider that streams its own items can own the mapping
             try:
-                stream_prov = cast("MusicProvider | PluginProvider", provider)
+                stream_prov = cast("AudioStreamMixin", provider)
                 with request_priority(RequestPriority.HIGH):
                     return await stream_prov.get_stream_details(mapping.item_id, media_type)
             except AudioError as err:
@@ -4391,16 +4391,15 @@ class StreamsAudio:
                     seek_position=seek_position if streamdetails.can_seek else 0,
                 )
             else:
-                # MusicProvider and PluginProvider both expose get_audio_stream with the same
-                # shape. Pin the exact instance: a domain fallback would stream from a sibling
+                # Pin the exact instance: a domain fallback would stream from a sibling
                 # account while the source-stream slot is charged to the issuing instance.
                 provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
                 if provider is None or not provider.available:
                     raise ProviderUnavailableError(
                         f"Provider {streamdetails.provider} for stream is no longer available"
                     )
-                provider = cast("MusicProvider | PluginProvider", provider)
-                audio_source = provider.get_audio_stream(
+                stream_prov = cast("AudioStreamMixin", provider)
+                audio_source = stream_prov.get_audio_stream(
                     streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
                 )
             return audio_source, 0 if streamdetails.can_seek else seek_position, extra_input_args
@@ -4487,8 +4486,8 @@ class StreamsAudio:
                 raise ProviderUnavailableError(
                     f"Provider {streamdetails.provider} for stream is no longer available"
                 )
-            provider = cast("MusicProvider | PluginProvider", provider)
-            audio_source = provider.get_audio_stream(
+            stream_prov = cast("AudioStreamMixin", provider)
+            audio_source = stream_prov.get_audio_stream(
                 streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
             )
             return audio_source_silence_keepalive(
@@ -5093,7 +5092,7 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            stream_prov = cast("AudioStreamMixin", provider)
             with request_priority(RequestPriority.HIGH):
                 streamdetails = await stream_prov.get_stream_details(
                     mapping.item_id, MediaType.SOUND_EFFECT
