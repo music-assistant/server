@@ -287,3 +287,23 @@ async def test_seek_sends_relative_time() -> None:
     await player.seek(83)
 
     device.async_seek_rel_time.assert_awaited_once_with(timedelta(seconds=83))
+
+
+@pytest.mark.parametrize(
+    ("command", "action_name"), [("next_track", "Next"), ("previous_track", "Previous")]
+)
+async def test_skip_is_sent_despite_stale_transport_actions(command: str, action_name: str) -> None:
+    """A device whose CurrentTransportActions omits Next/Previous still gets the raw action."""
+    action = MagicMock(async_call=AsyncMock())
+    device = _mock_device(
+        can_next=False, can_previous=False, async_next=AsyncMock(), async_previous=AsyncMock()
+    )
+    device._action = MagicMock(
+        side_effect=lambda _service, name: action if name == action_name else None
+    )
+    player = _player(device)
+
+    await getattr(player, command)()
+
+    device._action.assert_any_call("AVT", action_name)
+    action.async_call.assert_awaited_once_with(InstanceID=0)

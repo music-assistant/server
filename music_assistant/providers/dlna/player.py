@@ -321,25 +321,28 @@ class DLNAPlayer(Player):
 
         # Some devices expose Pause but report stale CurrentTransportActions.
         # Force-call Pause when action exists; otherwise fallback to Stop.
-        pause_action = self.device._action("AVT", "Pause")
-        if pause_action is not None:
-            await pause_action.async_call(InstanceID=0)
-            return
-        stop_action = self.device._action("AVT", "Stop")
-        if stop_action is not None:
-            await stop_action.async_call(InstanceID=0)
+        if not await self._force_avt_action("Pause"):
+            await self._force_avt_action("Stop")
 
     @catch_request_errors
     async def next_track(self) -> None:
         """Send NEXT TRACK command to given player."""
         assert self.device is not None  # for type checking
-        await self.device.async_next()
+        if self.device.can_next:
+            await self.device.async_next()
+            return
+        # Some devices expose Next but report stale CurrentTransportActions.
+        await self._force_avt_action("Next")
 
     @catch_request_errors
     async def previous_track(self) -> None:
         """Send PREVIOUS TRACK command to given player."""
         assert self.device is not None  # for type checking
-        await self.device.async_previous()
+        if self.device.can_previous:
+            await self.device.async_previous()
+            return
+        # Some devices expose Previous but report stale CurrentTransportActions.
+        await self._force_avt_action("Previous")
 
     @catch_request_errors
     async def seek(self, position: int) -> None:
@@ -710,3 +713,12 @@ class DLNAPlayer(Player):
             self.set_available(False)
             await old_device.async_unsubscribe_services()
         self.update_state()
+
+    async def _force_avt_action(self, name: str) -> bool:
+        """Call an AVTransport action regardless of CurrentTransportActions; False if absent."""
+        assert self.device is not None  # for type checking
+        action = self.device._action("AVT", name)
+        if action is None:
+            return False
+        await action.async_call(InstanceID=0)
+        return True
