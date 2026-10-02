@@ -13,9 +13,9 @@ flow, stored per instance):
   sink (`music_assistant/helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
   as s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API.
 
-Source capacity is **2** on librespot (two parallel fetches) and **1** on Soloist: the
-account's single stream. The queue's prefetch takes the freed slot the moment an item
-has fully arrived.
+Source capacity is **3** on librespot (two playing queues plus a prebuffer) and **1**
+on Soloist: the account's single stream. The queue's prefetch takes the freed slot the
+moment an item has fully arrived.
 
 The provider itself (`provider.py`) stays backend-agnostic: it owns the Web API,
 parsing, StreamDetails and the audiobook chapter logic, and hands canonical

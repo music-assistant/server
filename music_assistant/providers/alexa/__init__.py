@@ -55,7 +55,7 @@ ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
-    "play_audio_nl-NL": "speel audio af op music assistant",
+    "play_audio_nl-NL": "speel music assistant",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -202,6 +202,15 @@ async def api_request(
     )
 
 
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Return text parsed as a JSON object, or an empty dict if it isn't one."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class AlexaDevice:
     """Representation of an Alexa Device."""
 
@@ -237,6 +246,10 @@ class AlexaPlayer(Player):
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
         self._last_stream_url: str | None = None
+        # Set once the skill shows it keeps its player screen open across commands.
+        self._skill_keeps_screen_open = False
+        # Requests to the skill go out one at a time, so it gets them in the order of the commands.
+        self._skill_request_lock = asyncio.Lock()
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -264,8 +277,9 @@ class AlexaPlayer(Player):
         """Handle PLAY command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("resume"):
+            utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -274,8 +288,9 @@ class AlexaPlayer(Player):
         """Handle PAUSE command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("pause"):
+            utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
@@ -298,13 +313,20 @@ class AlexaPlayer(Player):
             "imageUrl": media.image_url,
         }
 
-        await api_request(
-            self.provider,
-            "/ma/push-url",
-            method="POST",
-            json_data=payload,
-            timeout=10,
-        )
+        async with self._skill_request_lock:
+            answer = _parse_json_object(
+                await api_request(
+                    self.provider,
+                    "/ma/push-url",
+                    method="POST",
+                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    timeout=10,
+                )
+            )
+        # Only a skill that keeps its screen open answers with pageLive (true or false).
+        if "pageLive" in answer:
+            self._skill_keeps_screen_open = True
+        screen_handled = bool(answer.get("pageLive"))
 
         # Save last pushed stream url so metadata updates can reuse it
         self._last_stream_url = stream_url
@@ -326,7 +348,8 @@ class AlexaPlayer(Player):
             ALEXA_LANGUAGE_COMMANDS[ask_command_key],
         )
 
-        await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
+        if not screen_handled:
+            await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -375,7 +398,36 @@ class AlexaPlayer(Player):
             # store last pushed values
             self._last_meta_checksum = meta_checksum
 
-        self.mass.create_task(_upload_metadata())
+        self.mass.create_task(
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+        )
+
+    async def _send_to_open_screen(self, command: str) -> bool:
+        """Send pause/resume to the skill's open screen; return True if the screen handled it."""
+        # Waits for a new track still being sent, so the skill gets the track first.
+        async with self._skill_request_lock:
+            # An older skill has no /ma/control: only try once it has shown it keeps its screen open.
+            if not self._skill_keeps_screen_open:
+                return False
+            try:
+                resp = await api_request(
+                    self.provider,
+                    "/ma/control",
+                    method="POST",
+                    json_data={
+                        "playerId": self.player_id,
+                        "command": command,
+                        "canSkipSpeech": True,
+                    },
+                    timeout=5,
+                )
+            except ActionUnavailable, aiohttp.ClientError, TimeoutError:
+                # Don't try again until the skill confirms with its next pageLive answer.
+                self._skill_keeps_screen_open = False
+                return False
+        # pageLive: true means the skill has taken the command over. The skill must apply these
+        # in the order it got them, e.g. a pause right after a new track pauses the new track.
+        return bool(_parse_json_object(resp).get("pageLive"))
 
 
 class AlexaProvider(PlayerProvider):

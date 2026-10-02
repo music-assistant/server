@@ -94,7 +94,7 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
@@ -103,7 +103,7 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
     ctrl._smart_shuffle.windows = Mock(return_value=WINDOWS)
-    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items: list(items))
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items, **_kw: list(items))
     ctrl._managed_pool = ManagedPool(ctrl)
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     # a carved-out NEXT track is expanded through the media resolver like on a linear queue;

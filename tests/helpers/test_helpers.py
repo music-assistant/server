@@ -210,6 +210,57 @@ def test_with_handling_in_titles() -> None:
     assert version == "Remix"
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Great Song (with John Smith)", ("John Smith",)),
+        ("Great Song [with Jane Doe]", ("Jane Doe",)),
+        ("Great Song - with John Smith (Duet)", ("John Smith",)),
+        ("Rockin' Around (With You)", ()),
+        ("The Catastrophe (Good Luck with That Man)", ()),
+        # Title-word exceptions must protect arbitrary continuations too.
+        ("Example Song (With You Tonight)", ()),
+        ("Great Song (feat:Alice)", ("Alice",)),
+        # Bare leading markers are part of the title, not a credit.
+        ("Featuring Alice", ()),
+        ("Featuring Bob", ()),
+        ("Ft Bob", ()),
+    ],
+)
+def test_extract_title_artist_credits(title: str, expected: tuple[str, ...]) -> None:
+    """Embedded artist credits use the same title-word exceptions as title parsing."""
+    assert util.extract_title_artist_credits(title) == expected
+
+
+def test_with_artist_credit_preserves_trailing_title_content() -> None:
+    """Search normalization removes the credit without consuming later title content."""
+    assert util.parse_title_and_version(
+        "Great Song - with John Smith (Duet)",
+        strip_for_search=True,
+    ) == ("Great Song (Duet)", "")
+
+
+def test_bare_colon_feature_credit_stripped_for_search() -> None:
+    """A bare, unbracketed colon-form featured credit is stripped like the other forms."""
+    assert util.parse_title_and_version(
+        "Great Song feat:Alice",
+        strip_for_search=True,
+    ) == ("Great Song", "")
+
+
+def test_bare_credit_marker_without_leading_title_is_not_stripped() -> None:
+    """A title that starts with a bare credit marker keeps its full text, not an empty title."""
+    assert util.parse_title_and_version(
+        "Featuring Alice",
+        strip_for_search=True,
+    ) == ("Featuring Alice", "")
+    # Distinct leading-marker titles must stay distinct after normalization.
+    assert util.parse_title_and_version(
+        "Featuring Bob",
+        strip_for_search=True,
+    ) == ("Featuring Bob", "")
+
+
 async def test_uri_parsing() -> None:
     """Test parsing of URI."""
     # test regular uri
@@ -251,6 +302,12 @@ async def test_uri_parsing() -> None:
     # test invalid uri
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("invalid://blah")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://open.spotify.com")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://open.spotify.com/track/")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://tidal.com/browse/track/")
 
 
 async def test_apple_music_uri_parsing() -> None:

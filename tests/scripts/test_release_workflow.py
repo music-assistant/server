@@ -665,8 +665,17 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert "No added version pin found" in diff_check
     availability_check = steps["Wait for package availability on PyPI"]["run"]
     assert "python3 -m pip download --no-deps" in availability_check
+    assert "--ignore-requires-python" in availability_check
     assert "--approve" in steps["Auto-approve PR"]["run"]
-    assert "--auto --squash" in steps["Enable auto-merge"]["run"]
+    enqueue = steps["Add to merge queue"]["run"]
+    assert "--auto" in enqueue
+    assert "--squash" not in enqueue
+
+    discover = workflow["jobs"]["discover-stale"]["steps"][0]["run"]
+    assert "--json mergeable" in discover
+    assert '[ "$MERGEABLE" != "UNKNOWN" ] && break' in discover
+    assert 'if [ "$MERGEABLE" != "CONFLICTING" ]; then' in discover
+    assert "behind_by" not in discover
 
     refresh_steps = {step["name"]: step for step in workflow["jobs"]["refresh-stale"]["steps"]}
     identity_check = refresh_steps["Verify GitHub App identity"]["run"]

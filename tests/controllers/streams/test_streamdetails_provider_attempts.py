@@ -2,7 +2,7 @@
 Tests that resolving streamdetails asks each provider mapping at most once.
 
 ``get_stream_details`` builds its candidates once: mappings in quality order, the instances
-that can serve each mapping within it, and the providers the user's filter steers to ahead of
+that can serve each mapping within it, and the music sources the playback user owns ahead of
 the rest. Every (instance, item id) pair appears at most once, so a mapping that failed is not
 asked again -- which for a just-in-time renderer like AI Radio would mean a second full
 text-to-speech render.
@@ -13,11 +13,14 @@ candidates are reached in is fixed rather than left to the iteration order of a 
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ContentType, MediaType, ProviderSharing, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
@@ -25,10 +28,12 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.models.music_provider import MusicProvider
+from tests.common import set_music_source_access
 
 INSTANCE = "ai_radio--abc"
 OTHER_INSTANCE = "tidal--xyz"
 ITEM_ID = "session123_0"
+USER_ID = "user1"
 
 
 def _mapping(
@@ -80,15 +85,14 @@ def _streamdetails(item_id: str, media_type: MediaType, provider: str) -> Stream
     )
 
 
-def _audio(
-    providers: dict[str, MagicMock], provider_filter: list[str] | None = None
-) -> StreamsAudio:
+def _audio(providers: dict[str, MagicMock], owned: list[str] | None = None) -> StreamsAudio:
     """
     Build a StreamsAudio whose mass resolves the given provider instances.
 
     :param providers: The provider instances the mass should hand back, by instance id.
-    :param provider_filter: The playback user's provider steering, omit for no playback user
-        (which makes every mapping on the item count as preferred).
+    :param owned: The music sources the playback user owns, which are steered to first. The
+        other instances stay household sources, so they are usable but not preferred. Omit
+        for no playback user at all.
     """
     mass = MagicMock()
     for instance_id, provider in providers.items():
@@ -101,10 +105,19 @@ def _audio(
     # no other loaded instances to widen a mapping to
     mass.providers = []
     mass.player_queues.queue_data_or_none.return_value = (
-        MagicMock(userid="user1") if provider_filter else None
+        MagicMock(userid=USER_ID) if owned else None
     )
     mass.webserver.auth.get_user = AsyncMock(
-        return_value=MagicMock(provider_filter=provider_filter) if provider_filter else None
+        return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER) if owned else None
+    )
+    set_music_source_access(
+        mass,
+        {
+            instance_id: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE)
+            if instance_id in (owned or ())
+            else None
+            for instance_id in providers
+        },
     )
     mass.streams.get_config_value.return_value = -17
     return StreamsAudio(mass)
@@ -128,7 +141,7 @@ async def test_a_failing_provider_is_asked_only_once() -> None:
     assert calls == [ITEM_ID]
 
 
-async def test_the_widening_pass_still_reaches_a_provider_the_filter_held_back() -> None:
+async def test_the_widening_pass_still_reaches_a_provider_the_steering_held_back() -> None:
     """A mapping the steering skipped in the first pass is tried by the second."""
     calls: list[str] = []
 
@@ -145,7 +158,7 @@ async def test_the_widening_pass_still_reaches_a_provider_the_filter_held_back()
     working = MagicMock()
     working.get_stream_details = _succeed
     # steer to the failing instance so the working one is only reachable via the second pass
-    audio = _audio({INSTANCE: failing, OTHER_INSTANCE: working}, provider_filter=[INSTANCE])
+    audio = _audio({INSTANCE: failing, OTHER_INSTANCE: working}, owned=[INSTANCE])
 
     streamdetails = await audio.get_stream_details(
         # the steered mapping also sorts first, so a repeat of it would land before the
@@ -227,10 +240,7 @@ async def test_busy_instance_preserves_playback_user_steering_order() -> None:
     available_instance = "tidal--fallback"
     busy = _music_provider(busy_instance, has_slot=False)
     available = _music_provider(available_instance)
-    audio = _audio(
-        {busy_instance: busy, available_instance: available},
-        provider_filter=[busy_instance],
-    )
+    audio = _audio({busy_instance: busy, available_instance: available}, owned=[busy_instance])
 
     streamdetails = await audio.get_stream_details(
         queue_item=_queue_item(
@@ -292,8 +302,7 @@ async def test_playback_user_steers_compatible_instance_within_mapping() -> None
     primary = _music_provider(primary_instance)
     preferred = _music_provider(preferred_instance)
     audio = _audio(
-        {primary_instance: primary, preferred_instance: preferred},
-        provider_filter=[preferred_instance],
+        {primary_instance: primary, preferred_instance: preferred}, owned=[preferred_instance]
     )
     cast("MagicMock", audio.mass).providers = [primary, preferred]
 
@@ -314,7 +323,7 @@ async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     preferred = _music_provider(preferred_instance)
     audio = _audio(
         {high_quality_instance: high_quality, preferred_instance: preferred},
-        provider_filter=[preferred_instance],
+        owned=[preferred_instance],
     )
 
     streamdetails = await audio.get_stream_details(
@@ -327,3 +336,29 @@ async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     assert streamdetails.provider == preferred_instance
     preferred.get_stream_details.assert_awaited_once()
     high_quality.get_stream_details.assert_not_awaited()
+
+
+async def test_concurrent_callers_for_one_queue_item_share_one_resolution() -> None:
+    """Two callers resolving the same queue item at once ask the provider only once."""
+    calls: list[str] = []
+    release = asyncio.Event()
+
+    async def _slow(item_id: str, media_type: MediaType) -> StreamDetails:
+        calls.append(item_id)
+        await release.wait()
+        return _streamdetails(item_id, media_type, INSTANCE)
+
+    provider = MagicMock()
+    provider.get_stream_details = _slow
+    audio = _audio({INSTANCE: provider})
+    queue_item = _queue_item(_mapping(INSTANCE))
+
+    first = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    second = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    await asyncio.sleep(0)
+    release.set()
+    first_details, second_details = await asyncio.gather(first, second)
+
+    assert calls == [ITEM_ID]
+    assert first_details is second_details
+    assert queue_item.streamdetails is first_details

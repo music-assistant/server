@@ -73,6 +73,9 @@ class VocalCollisionPolicy(Policy):
         """Judge one candidate against the shared per-transition context."""
         if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
             return Verdict.ok()
+        if not ctx.vocal_collision_reliable:
+            # saturated masks on both decks leave nothing to discriminate on
+            return Verdict.ok()
         metrics = candidate.metrics
         if (
             metrics.collision_seconds >= self.collision_seconds_limit

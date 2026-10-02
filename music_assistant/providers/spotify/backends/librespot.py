@@ -105,7 +105,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         librespot_uri = spotify_uri.replace("spotify:", "spotify://", 1)
         self.logger.log(VERBOSE_LOG_LEVEL, "Start streaming %s using librespot", spotify_uri)
         if not self._librespot_bin:
-            raise AudioError("Librespot binary not available")
+            raise AudioError("Spotify playback could not be set up")
 
         args = [
             self._librespot_bin,
@@ -174,7 +174,8 @@ class LibrespotBackend(SpotifyPlaybackBackend):
 
             if librespot_proc.returncode != 0:
                 raise AudioError(
-                    f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
+                    f"Spotify stopped playing this track unexpectedly "
+                    f"(exit code {librespot_proc.returncode})"
                 )
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

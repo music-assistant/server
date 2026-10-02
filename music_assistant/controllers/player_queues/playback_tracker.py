@@ -20,6 +20,8 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    ProviderFeature,
+    ProviderType,
 )
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -27,8 +29,10 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemType,
+    PodcastEpisode,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -36,6 +40,7 @@ from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
@@ -50,6 +55,7 @@ from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -58,10 +64,10 @@ if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
-# media types that never put a queue in the ended state: a live source has no natural end, so it
-# going idle means the source stopped and not that the queue ran out (marking it ended would strand
-# a later resume), and a sound effect is a one-off that leaves the queue as it found it.
-UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT)
+# media types that never put a queue in the ended state: a live source has no natural end,
+# so it going idle means the source stopped and not that the queue ran out (marking it
+# ended would strand a later resume)
+UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 
 
 class PlaybackTrackerMixin(_PlayerQueuesBase):
@@ -486,6 +492,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
+                    dynamic_tracks = await without_disliked_tracks(
+                        self.mass, queue_data.userid, dynamic_tracks
+                    )
                     if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
                         return
@@ -543,7 +552,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     queue.queue_id, queue.current_index
                 ):
                     return
-                self.mass.create_task(_settle_or_resume_delayed())
+                self.mass.create_task(
+                    _settle_or_resume_delayed(),
+                    task_name=f"settle_or_resume_{queue.queue_id}",
+                )
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -553,7 +565,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -562,7 +577,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
 
     def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
         """
@@ -692,6 +710,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     else None,
                 )
             )
+            if not is_playing and isinstance(media_item, Audiobook | PodcastEpisode):
+                # a later pass over the queue resumes from this, not from the enqueue-time bookmark
+                media_item.resume_position_ms = 0 if fully_played else seconds_played * 1000
             if fully_played and not is_playing:
                 if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(
@@ -699,47 +720,65 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     )
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
-        # signal 'media item played' event,
-        # which is useful for plugins that want to do scrobbling
         artists: list[Artist | ItemMapping] = getattr(media_item, "artists", [])
         artists_names = [a.name for a in artists]
+        report = MediaItemPlaybackProgressReport(
+            uri=media_item.uri,
+            media_type=media_item.media_type,
+            name=media_item.name,
+            version=getattr(media_item, "version", None),
+            artist=(
+                getattr(media_item, "artist_str", None) or artists_names[0]
+                if artists_names
+                else None
+            ),
+            artists=artists_names,
+            artist_mbids=[a.mbid for a in artists if a.mbid] if artists else None,
+            album=album.name if album else None,
+            album_mbid=album.mbid if album else None,
+            album_artist=(album.artist_str if isinstance(album, Album) else None),
+            album_artist_mbids=(
+                [a.mbid for a in album.artists if a.mbid] if isinstance(album, Album) else None
+            ),
+            image_url=(
+                self.mass.metadata.get_image_url(
+                    item_to_report.media_item.image, prefer_proxy=False
+                )
+                if item_to_report.media_item.image
+                else None
+            ),
+            duration=duration,
+            mbid=(getattr(media_item, "mbid", None)),
+            seconds_played=seconds_played,
+            fully_played=fully_played,
+            is_playing=is_playing,
+            userid=queue_data.userid,
+            player_id=queue.queue_id,
+        )
+        # signal 'media item played' event for external clients (e.g. Home Assistant);
+        # scrobbler plugins receive the same report through their own hook
         self.mass.signal_event(
             EventType.MEDIA_ITEM_PLAYED,
             object_id=media_item.uri,
-            data=MediaItemPlaybackProgressReport(
-                uri=media_item.uri,
-                media_type=media_item.media_type,
-                name=media_item.name,
-                version=getattr(media_item, "version", None),
-                artist=(
-                    getattr(media_item, "artist_str", None) or artists_names[0]
-                    if artists_names
-                    else None
-                ),
-                artists=artists_names,
-                artist_mbids=[a.mbid for a in artists if a.mbid] if artists else None,
-                album=album.name if album else None,
-                album_mbid=album.mbid if album else None,
-                album_artist=(album.artist_str if isinstance(album, Album) else None),
-                album_artist_mbids=(
-                    [a.mbid for a in album.artists if a.mbid] if isinstance(album, Album) else None
-                ),
-                image_url=(
-                    self.mass.metadata.get_image_url(
-                        item_to_report.media_item.image, prefer_proxy=False
-                    )
-                    if item_to_report.media_item.image
-                    else None
-                ),
-                duration=duration,
-                mbid=(getattr(media_item, "mbid", None)),
-                seconds_played=seconds_played,
-                fully_played=fully_played,
-                is_playing=is_playing,
-                userid=queue_data.userid,
-                player_id=queue.queue_id,
-            ),
+            data=report,
         )
+        self._report_to_scrobblers(report)
+
+    def _report_to_scrobblers(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Hand a playback progress report to every loaded scrobbler plugin."""
+        if self.mass.closing:
+            return
+        for scrobbler in self.mass.get_providers_supporting_feature(
+            ProviderFeature.SCROBBLE, priority=(ProviderType.PLUGIN,)
+        ):
+            if not isinstance(scrobbler, PluginProvider):
+                # the lookup returns plugins only; this narrows the type for mypy
+                continue
+            if scrobbler.unloading:
+                # its clients may already be torn down
+                continue
+            # one task per plugin, so a slow or failing scrobbler never holds up the others
+            self.mass.create_task(scrobbler.on_media_item_played(report))
 
     def _claim_enqueued_album_credit(
         self, queue_data: PlayerQueueData, media_item: MediaItemType

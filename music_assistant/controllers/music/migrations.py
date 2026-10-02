@@ -9,6 +9,9 @@ individually testable.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shutil
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
@@ -23,6 +26,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -39,6 +43,7 @@ from music_assistant.constants import (
     MEDIA_ITEM_DB_TABLES,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
@@ -269,10 +274,10 @@ async def migrate_database(  # noqa: PLR0915
 
         genre_insert_sql = (
             f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
-            "(name, sort_name, translation_key, description, favorite, "
+            "(name, sort_name, translation_key, description, "
             "metadata, genre_aliases, play_count, last_played, "
             "search_name, search_sort_name) "
-            "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
+            "VALUES (?, ?, ?, NULL, ?, ?, 0, 0, ?, ?)"
         )
         genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
 
@@ -1001,6 +1006,197 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
+
+    if prev_version <= 58:
+        # the access record (owner + sharing) of a Music Assistant playlist; NULL for every
+        # existing row, which keeps them household playlists
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN [access] json")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 59:
+        # a library item mapping has no provider of its own, but was briefly stored as a
+        # self-referential mapping with the literal string "None" as domain and instance.
+        # Such a mapping never resolves and makes the item page query a provider that does
+        # not exist, so drop it.
+        provider_mappings_table_exists = await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
+            limit=1,
+        )
+        if provider_mappings_table_exists:
+            await database.execute(
+                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE provider_domain = 'None' OR provider_instance = 'None'"
+            )
+
+    if prev_version <= 60:
+        # favorites move from one shared column on every media item table to a row per user
+        # in the favorites table. Whose like an existing favorite becomes depends on the
+        # owners of the music sources and on the users, and neither is known here: the
+        # access records are migrated and the auth database opened only once the webserver
+        # is up. Every favorite is parked under a placeholder user id, which
+        # FavoritesStore.settle_pending() hands out on that same start.
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [item_id] INTEGER NOT NULL,
+                [favorite] BOOLEAN,
+                [timestamp] INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, media_type, item_id));"""
+        )
+        await database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_FAVORITES}_item_idx "
+            f"on {DB_TABLE_FAVORITES}(media_type,item_id);"
+        )
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            table_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA table_info({table})", limit=0
+                )
+            }
+            if "favorite" not in table_columns:
+                # a table (re)created by an earlier migration step already has the column gone
+                continue
+            # the moment of the favorite is unknown; the item's last change is the best guess
+            timestamp = (
+                f"COALESCE({table}.timestamp_modified, 0)"
+                if "timestamp_modified" in table_columns
+                else "0"
+            )
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+                "(user_id, media_type, item_id, favorite, timestamp) "
+                f"SELECT :user_id, :media_type, {table}.item_id, 1, {timestamp} "
+                f"FROM {table} WHERE {table}.favorite = 1",
+                {"user_id": PENDING_USER_ID, "media_type": media_type.value},
+            )
+            # the column must not be indexed for DROP COLUMN to succeed
+            await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")
+            await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
+
+    if prev_version <= 61:
+        # playlist rows can still carry the collages the metadata controller drew before the
+        # Playlist Metadata provider took over playlist artwork. Merged images are appended,
+        # so such a collage keeps winning over the newer artwork: drop the collages and their
+        # files. The builtin system playlists keep changing content, so they only show their
+        # static artwork, never generated art.
+        system_playlist_ids = (
+            "all_favorite_tracks",
+            "random_artist",
+            "random_album",
+            "random_tracks",
+            "recently_played",
+            "recently_added_tracks",
+            "infinite_mix",
+            "infinite_mix_favorites",
+        )
+        static_images = [
+            {"type": image_type, "path": path, "provider": "builtin", "remotely_accessible": False}
+            for image_type, path in (("thumb", "logo.png"), ("fanart", "fanart.jpg"))
+        ]
+        system_playlist_item_ids: set[int] = set()
+        if await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
+            limit=1,
+        ):
+            system_playlist_item_ids = {
+                row["item_id"]
+                for row in await database.get_rows_from_query(
+                    f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = 'playlist' AND provider_domain = 'builtin' "
+                    "AND provider_item_id IN :system_playlist_ids",
+                    {"system_playlist_ids": system_playlist_ids},
+                    limit=0,
+                )
+            }
+        playlist_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLISTS})", limit=0
+            )
+        }
+        migrated_playlist_rows = 0
+        # guard against (test) databases with stand-in tables
+        if "metadata" in playlist_columns:
+            async for db_row in database.iter_items(DB_TABLE_PLAYLISTS):
+                is_system_playlist = db_row["item_id"] in system_playlist_item_ids
+                if not isinstance(raw_metadata := db_row["metadata"], str) or not (
+                    is_system_playlist or "/collage/" in raw_metadata
+                ):
+                    continue
+                try:
+                    metadata = json_loads(raw_metadata)
+                except ValueError:
+                    continue
+                images = metadata.get("images") if isinstance(metadata, dict) else None
+                if not isinstance(images, list):
+                    continue
+                kept_images = []
+                lost_collage_thumb = False
+                for image in images:
+                    if not isinstance(image, dict):
+                        kept_images.append(image)
+                        continue
+                    path = image.get("path")
+                    if (
+                        image.get("provider") == "builtin"
+                        and isinstance(path, str)
+                        and path.startswith("/collage/")
+                    ):
+                        lost_collage_thumb |= image.get("type") == "thumb"
+                        continue
+                    if is_system_playlist and image.get("provider") == "playlist_metadata":
+                        continue
+                    kept_images.append(image)
+                if is_system_playlist:
+                    kept_types = {x.get("type") for x in kept_images if isinstance(x, dict)}
+                    kept_images += [x for x in static_images if x["type"] not in kept_types]
+                if kept_images == images:
+                    continue
+                metadata["images"] = kept_images
+                if lost_collage_thumb:
+                    # a playlist without a refresh timestamp gets a new cover on the next scan
+                    metadata.pop("last_refresh", None)
+                await database.update(
+                    DB_TABLE_PLAYLISTS,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                migrated_playlist_rows += 1
+        if migrated_playlist_rows:
+            logger.info("Removed outdated artwork from %d playlist(s)", migrated_playlist_rows)
+        playlog_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+            )
+        }
+        if {"image", "media_type"} <= playlog_columns:
+            # the playlog keeps the image a playlist had when it was played, so a collage
+            # would show as a broken image in the recently played listing
+            await database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%' "
+                "AND image LIKE '%\"builtin\"%'"
+            )
+        await asyncio.to_thread(
+            shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
+        )
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

@@ -8,14 +8,16 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.media_items import MediaItemImage, UniqueList
+from plexapi.exceptions import PlexApiException
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
 from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH
@@ -142,6 +144,75 @@ def extract_library_name(conf_value: str) -> str:
     return conf_value.strip()
 
 
+class PlexServerAccessError(Exception):
+    """The signed-in Plex account has no verified access token for the Plex server."""
+
+
+def resolve_server_auth_token(
+    auth_token: str,
+    plex_url: str,
+    session: requests.Session,
+    myplex_account: MyPlexAccount | None = None,
+) -> str:
+    """
+    Return the token to authenticate directly against this specific Plex server.
+
+    The account-level MyPlex token only authenticates against servers this account owns.
+    A server shared with the account (e.g. through a Plex Home managed/shared user) needs
+    that resource's own access token instead - see
+    https://github.com/music-assistant/support/issues/4892.
+
+    The server is matched to the account's resources by the machine identifier it reports
+    itself, so it doesn't matter which address it was configured with. A shared server is
+    never reached with the account token: the server rejects it (401) or, for a request
+    from a network allowed without authentication, treats it as the server owner - so the
+    connection would silently run as another Plex user. Without a verified token this fails.
+
+    Blocking IO: run in an executor thread.
+
+    :param auth_token: The account-level MyPlex token.
+    :param plex_url: Base URL of the Plex server, e.g. http://192.168.1.77:32400.
+    :param session: The requests session used to reach the server.
+    :param myplex_account: An already-authenticated MyPlexAccount to reuse, if available.
+    :raises PlexServerAccessError: No verified token for this server exists for the account.
+    :raises requests.RequestException: The server could not be reached.
+    """
+    # /identity is served without authentication
+    response = session.get(
+        f"{plex_url}/identity", headers={"Accept": "application/json"}, timeout=10
+    )
+    response.raise_for_status()
+    try:
+        machine_id = response.json()["MediaContainer"]["machineIdentifier"]
+    except (ValueError, LookupError, TypeError) as err:
+        raise PlexServerAccessError("The Plex server did not report its identity") from err
+    try:
+        account = myplex_account or MyPlexAccount(token=auth_token)
+        resources = account.resources()
+    except PlexApiException as err:
+        raise PlexServerAccessError("plex.tv did not list the servers of this account") from err
+    resource = next(
+        (
+            r
+            for r in resources
+            if r.clientIdentifier == machine_id and "server" in (r.provides or "")
+        ),
+        None,
+    )
+    if resource is None:
+        raise PlexServerAccessError("This Plex account has no access to this Plex server")
+    if resource.owned:
+        return auth_token
+    if not resource.accessToken:
+        raise PlexServerAccessError("plex.tv returned no access token for this Plex server")
+    LOGGER.debug(
+        "Plex server %s is shared with this account (not owned) - "
+        "using its own access token instead of the account token",
+        plex_url,
+    )
+    return str(resource.accessToken)
+
+
 async def get_section_info(
     mass: MusicAssistant,
     auth_token: str | None,
@@ -166,19 +237,35 @@ async def get_section_info(
     """
     cache_key = "plex_section_info"
     cache_provider = instance_id or local_server_ip
+    session = requests.Session()
+    session.verify = local_server_verify_cert
+    local_server_protocol = "https" if local_server_ssl else "http"
+    plex_url = f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
+    server_token = auth_token
+    if auth_token and auth_token != AUTH_TOKEN_UNAUTH:
+        # verify the account's access to this server before trusting a cached result: the
+        # cache is keyed on the verified server token, so it's only reused while it holds
+        try:
+            server_token = await asyncio.to_thread(
+                resolve_server_auth_token, auth_token, plex_url, session
+            )
+        except requests.exceptions.ConnectionError as err:
+            LOGGER.warning(
+                "Could not connect to Plex server at %s:%s: %s",
+                local_server_ip,
+                local_server_port,
+                err,
+            )
+            return []
 
     def _get_section_info() -> list[PlexSectionInfo]:
-        session = requests.Session()
-        session.verify = local_server_verify_cert
-        local_server_protocol = "https" if local_server_ssl else "http"
         plex_server: PlexServer
-        plex_url = f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
         try:
-            if not auth_token or auth_token == AUTH_TOKEN_UNAUTH:
+            if not server_token or server_token == AUTH_TOKEN_UNAUTH:
                 # local (unauthenticated) connection, not via plex.tv
                 plex_server = PlexServer(plex_url, session=session)
             else:
-                plex_server = PlexServer(plex_url, auth_token, session=session)
+                plex_server = PlexServer(plex_url, server_token, session=session)
         except requests.exceptions.ConnectionError as err:
             LOGGER.warning(
                 "Could not connect to Plex server at %s:%s: %s",
@@ -202,7 +289,7 @@ async def get_section_info(
             )
         return results
 
-    if cache := await mass.cache.get(cache_key, checksum=auth_token, provider=cache_provider):
+    if cache := await mass.cache.get(cache_key, checksum=server_token, provider=cache_provider):
         if isinstance(cache, list) and cache and all(isinstance(item, dict) for item in cache):
             try:
                 return [PlexSectionInfo(**item) for item in cache]
@@ -215,7 +302,7 @@ async def get_section_info(
     await mass.cache.set(
         cache_key,
         [dataclasses.asdict(section) for section in result],
-        checksum=auth_token,
+        checksum=server_token,
         expiration=3600,
         provider=cache_provider,
     )
@@ -265,19 +352,26 @@ def get_thumbnail_images(
     return None
 
 
-def get_favorite_from_rating(plex_media: PlexObject, threshold: float) -> bool | None:
+def get_favorite_from_rating(
+    plex_media: PlexObject, threshold: float, unlike_rating: float
+) -> bool | None:
     """
-    Derive favorite status from the user rating of a Plex object.
+    Derive the favorite state from the user rating of a Plex object.
 
-    Returns None if the object has no user rating.
+    Returns None if the object has no user rating, or one that is neither a like nor a dislike.
 
     :param plex_media: The Plex object to read the user rating from.
-    :param threshold: Minimum rating (0.0-10.0) to consider the item a favorite.
+    :param threshold: Minimum rating (0.0-10.0) to consider the item a like.
+    :param unlike_rating: Maximum rating (0.0-10.0) to consider the item a dislike.
     """
     rating = getattr(plex_media, "userRating", None)
     if rating is None:
         return None
-    return float(rating) >= threshold
+    if float(rating) >= threshold:
+        return True
+    if float(rating) <= unlike_rating:
+        return False
+    return None
 
 
 def get_explicit(plex_media: PlexObject) -> bool | None:
@@ -320,12 +414,42 @@ def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
     """
     if not content or not content.strip():
         return None
-    # Sniff the payload shape: structured JSON, then timestamped LRC, then plain text.
-    if (parsed := _lyrics_from_plex_json(content)) is not None:
-        return parsed
+    # A recognized Plex lyrics envelope is authoritative: an empty `Lyrics` list means
+    # the track has no lyrics, and the raw JSON must not be re-sniffed as plain text.
+    if _is_plex_lyrics_json(content):
+        return _lyrics_from_plex_json(content)
     if _LRC_TIMESTAMP_RE.search(content):
         return content.strip(), True
     return content.strip(), False
+
+
+def is_library_scan_finished(notification: dict[str, Any]) -> bool:
+    """
+    Return whether a Plex server notification reports that a library scan finished.
+
+    :param notification: A decoded message from the Plex notification websocket.
+    """
+    container = notification.get("NotificationContainer", {})
+    if container.get("type") != "activity":
+        return False
+    return any(
+        entry.get("event") == "ended"
+        and entry.get("Activity", {}).get("type") == "library.update.section"
+        for entry in container.get("ActivityNotification", [])
+    )
+
+
+def _is_plex_lyrics_json(content: str) -> bool:
+    """
+    Check whether content is a Plex ``MediaContainer`` lyrics envelope.
+
+    :param content: The raw lyric stream body to sniff.
+    """
+    try:
+        data = json.loads(content)
+    except ValueError, TypeError:
+        return False
+    return isinstance(data, dict) and isinstance(data.get("MediaContainer"), dict)
 
 
 def _lyrics_from_plex_json(content: str) -> tuple[str, bool] | None:

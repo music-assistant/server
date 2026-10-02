@@ -7,9 +7,10 @@ import json
 import logging
 import os
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,6 +40,20 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 # the slash is also a common splitter but causes collisions with
 # artists actually containing a slash in the name, such as AC/DC
 TAG_SPLITTER = ";"
+
+# Date tags in preference order, original before the reissue and full dates before bare years.
+# ffmpeg maps the common date fields onto "date" for us, but has no mapping for the two ID3 frames
+# holding the original release, so TDOR (ID3v2.4) and TORY (ID3v2.3) arrive under their raw names.
+_RELEASE_DATE_TAGS = ("originaldate", "tdor", "originalyear", "tory", "date")
+
+# The album carries the date of the release itself, so the reissue date comes first here and the
+# original release is only a fallback. This is the reverse of the track order above.
+_ALBUM_DATE_TAGS = ("date", "originaldate", "tdor", "originalyear", "tory")
+
+# Audiobook tag names in preference order, normalized so any casing/separator matches.
+# ffprobe surfaces these but keeps only the first value, so we read them with mutagen instead.
+_NARRATOR_TAGS = ("narrator", "narratedby")
+_WRITER_TAGS = ("writers", "writer")
 
 
 def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
@@ -378,6 +393,38 @@ class AudioTags:
         return ()
 
     @property
+    def authors(self) -> tuple[str, ...]:
+        """Return author(s) of an audiobook."""
+        if names := self.writers or self.album_artists:
+            return names
+        # the artists fallback invents a name from the filename, which is no author
+        if self.tags.get("artists") or self.tags.get("artist"):
+            return self.artists
+        return ()
+
+    @property
+    def narrators(self) -> tuple[str, ...]:
+        """Return narrator(s) of an audiobook."""
+        for key in ("narrators", "narrator", "narratedby", "composer"):
+            if tag := self.tags.get(key):
+                return split_items(tag)
+        return ()
+
+    @property
+    def series(self) -> str | None:
+        """Return the series an audiobook belongs to."""
+        return self.tags.get("series")
+
+    @property
+    def series_part(self) -> float | str | None:
+        """Return the audiobook's position within its series."""
+        if not (tag := self.tags.get("seriespart")):
+            return None
+        with suppress(ValueError):
+            return float(tag)
+        return str(tag)
+
+    @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # Preferred path when unambiguously separated album artist names are available
@@ -443,13 +490,18 @@ class AudioTags:
 
     @property
     def year(self) -> int | None:
-        """Return album's year if present, parsed from date."""
-        if tag := self.tags.get("originalyear"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("originaldate"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("date"):
-            return try_parse_int(tag.split("-")[0], None)
+        """Return the year the album was released, if present."""
+        for tag_name in _ALBUM_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed.year
+        return None
+
+    @property
+    def release_date(self) -> datetime | None:
+        """Return the date the track was originally released, if present."""
+        for tag_name in _RELEASE_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed
         return None
 
     @property
@@ -644,6 +696,10 @@ class AudioTags:
         if audio_stream is None:
             msg = "No audio stream found"
             raise InvalidDataError(msg)
+        if not audio_stream.get("channels"):
+            # ffprobe reports zero channels when it cannot decode the file
+            msg = "No audio channels found, file is probably corrupt"
+            raise InvalidDataError(msg)
         has_cover_image = any(
             x for x in raw["streams"] if x.get("codec_name", "") in ("mjpeg", "png")
         )
@@ -655,16 +711,14 @@ class AudioTags:
             if stream.get("codec_type") == "video":
                 continue
             for key, value in stream.get("tags", {}).items():
-                alt_key = key.lower()
-                for char in [" ", "_", "-", "/"]:
-                    alt_key = alt_key.replace(char, "")
+                alt_key = _normalize_tag_key(key)
                 if alt_key in tags:
                     continue
                 tags[alt_key] = value
         return AudioTags(
             raw=raw,
             sample_rate=int(audio_stream.get("sample_rate", 44100)),
-            channels=audio_stream.get("channels", 2),
+            channels=int(audio_stream["channels"]),
             bits_per_sample=int(
                 audio_stream.get("bits_per_raw_sample", audio_stream.get("bits_per_sample")) or 16
             ),
@@ -851,6 +905,84 @@ def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
     return result
 
 
+def _normalize_tag_key(key: str) -> str:
+    """
+    Return a tag name in the lowercase, separator-free form used throughout the tags dict.
+
+    :param key: The raw tag name as written by the tagger.
+    """
+    key = key.lower()
+    for char in (" ", "_", "-", "/"):
+        key = key.replace(char, "")
+    return key
+
+
+def _store_audiobook_tags(
+    result: dict[str, Any],
+    narrators: list[str] | None,
+    writers: list[str] | None,
+    composers: list[str] | None,
+) -> None:
+    """
+    Store the audiobook author/narrator tags, using the plural key for multiple names.
+
+    :param result: Dictionary to store parsed tags.
+    :param narrators: Values of the narrator tag.
+    :param writers: Values of the writer tag.
+    :param composers: Values of the composer tag.
+    """
+    if narrators:
+        result["narrators" if len(narrators) > 1 else "narrator"] = (
+            narrators if len(narrators) > 1 else narrators[0]
+        )
+    if writers:
+        result["writers" if len(writers) > 1 else "writer"] = (
+            writers if len(writers) > 1 else writers[0]
+        )
+    if composers:
+        # the narrator property splits this itself, so a list is fine here
+        result["composer"] = composers if len(composers) > 1 else composers[0]
+
+
+def _normalized_tag_values(
+    keys: Iterable[str], get_values: Callable[[str], list[str] | None]
+) -> dict[str, list[str]]:
+    """
+    Return the values of the given tags, keyed by their normalized tag name.
+
+    :param keys: The raw tag names present in the file.
+    :param get_values: Lookup returning all values of a tag name.
+    """
+    return {_normalize_tag_key(key): values for key in keys if (values := get_values(key))}
+
+
+def _store_series_tags(result: dict[str, Any], values_by_key: dict[str, list[str]]) -> None:
+    """
+    Store the series an audiobook belongs to and its position within it.
+
+    :param result: Dictionary to store parsed tags.
+    :param values_by_key: Tag values keyed by normalized tag name.
+    """
+    for key in ("series", "seriespart"):
+        if values := values_by_key.get(key):
+            result[key] = values[0]
+
+
+def _first_present(
+    get_values: Callable[[str], list[str] | None], keys: Iterable[str]
+) -> list[str] | None:
+    """
+    Return the values of the first of the given tag names that is present.
+
+    :param get_values: Lookup returning all values of a tag name.
+    :param keys: Tag names to look for, in order of preference.
+    """
+    for key in keys:
+        if values := get_values(key):
+            return values
+    return None
+
+
 def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     """
     Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
@@ -966,6 +1098,28 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
             tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
         )
 
+    # the original release date and the audiobook credits have no atom of their own, so taggers
+    # store them as freeform tags in whatever casing they favour, and ffprobe keeps only the
+    # first value of a freeform tag
+    freeform: dict[str, list[str]] = {}
+    for atom, values in tags.items():  # type: ignore[no-untyped-call]
+        if not atom.startswith("----:com.apple.iTunes:"):
+            continue
+        name = _normalize_tag_key(atom.removeprefix("----:com.apple.iTunes:"))
+        freeform[name] = _decode_mp4_freeform_list(values)
+    for name in ("originaldate", "originalyear"):
+        if values := freeform.get(name):
+            result[name] = values[0]
+
+    # audiobooks name the narrator in the composer atom when they carry no narrator tag
+    _store_audiobook_tags(
+        result,
+        _first_present(freeform.get, _NARRATOR_TAGS),
+        _first_present(freeform.get, _WRITER_TAGS),
+        list(tags["©wrt"]) if "©wrt" in tags else None,
+    )
+    _store_series_tags(result, freeform)
+
     return result
 
 
@@ -982,7 +1136,7 @@ def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     return None
 
 
-def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
     """
     Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 
@@ -1066,6 +1220,21 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:
         if frame.type == 1 and frame.format == 2 and frame.text:
             result["synchronizedlyrics"] = frame.text
             break
+
+    # audiobook credits live in user defined frames in whatever casing the tagger favours,
+    # and ffprobe keeps only the first value of these and of the composer frame
+    user_frames: dict[str, list[str]] = {
+        _normalize_tag_key(frame.desc): list(frame.text)
+        for frame in tags.getall("TXXX")  # type: ignore[no-untyped-call]
+        if frame.text
+    }
+    _store_audiobook_tags(
+        result,
+        _first_present(user_frames.get, _NARRATOR_TAGS),
+        _first_present(user_frames.get, _WRITER_TAGS),
+        list(composer) if (composer := _id3_get_tag_text(tags, "TCOM")) else None,
+    )
+    _store_series_tags(result, user_frames)
 
     return result
 
@@ -1211,6 +1380,19 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if albumsort := _vorbis_get_single(tags, "ALBUMSORT"):
         result["albumsort"] = albumsort
 
+    # Audiobook credits and series, under whatever casing/separator the tagger favours
+    audiobook_tags = _normalized_tag_values(
+        tags.keys(),  # type: ignore[no-untyped-call]
+        lambda key: _vorbis_get_multi(tags, key),
+    )
+    _store_audiobook_tags(
+        result,
+        _first_present(audiobook_tags.get, _NARRATOR_TAGS),
+        _first_present(audiobook_tags.get, _WRITER_TAGS),
+        audiobook_tags.get("composer"),
+    )
+    _store_series_tags(result, audiobook_tags)
+
     return result
 
 
@@ -1351,6 +1533,19 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
         result["titlesort"] = titlesort
     if albumsort := _apev2_get_single(tags, "ALBUMSORT"):
         result["albumsort"] = albumsort
+
+    # Audiobook credits and series, under whatever casing/separator the tagger favours
+    audiobook_tags = _normalized_tag_values(
+        tags.keys(),  # type: ignore[no-untyped-call]
+        lambda key: _apev2_get_multi(tags, key),
+    )
+    _store_audiobook_tags(
+        result,
+        _first_present(audiobook_tags.get, _NARRATOR_TAGS),
+        _first_present(audiobook_tags.get, _WRITER_TAGS),
+        audiobook_tags.get("composer"),
+    )
+    _store_series_tags(result, audiobook_tags)
 
     return result
 
@@ -1779,3 +1974,19 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     except Exception as err:
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
+
+
+def _parse_release_date(value: str) -> datetime | None:
+    """Return a date tag as a datetime, or None if it does not hold a date."""
+    value = value.strip()
+    with suppress(ValueError):
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    # a date can be tagged to the month or to the year alone, which taggers write through as is
+    if len(value) >= 7:
+        with suppress(ValueError):
+            return datetime.strptime(value[:7], "%Y-%m").replace(tzinfo=UTC)
+    if len(value) >= 4 and (year := try_parse_int(value[:4], None)):
+        with suppress(ValueError):
+            return datetime(year, 1, 1, tzinfo=UTC)
+    return None

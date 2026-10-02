@@ -37,7 +37,11 @@ from ya_passport_auth.ma import BorrowedCredentialSource
 
 from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    ThrottlerManager,
+    request_priority,
+)
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .auth import refresh_music_token
@@ -770,15 +774,15 @@ class YandexYnisonProvider(PluginProvider):
         # dropping a stream the user is actively trying to play is
         # worse than risking another captcha. Prefetch deliberately
         # stays throttled (see `_prefetch_format_for_track`).
-        bypass_token = BYPASS_THROTTLER.set(True)
         try:
-            stream_details = await self._get_stream_details_with_retry(track_id, provider=provider)
+            with request_priority(RequestPriority.HIGH):
+                stream_details = await self._get_stream_details_with_retry(
+                    track_id, provider=provider
+                )
         except Exception:
             self.logger.exception("Failed to get stream details for track %s", track_id)
             self._stream_stop_event.set()
             return
-        finally:
-            BYPASS_THROTTLER.reset(bypass_token)
 
         if not self._linked_provider_is_current(provider):
             self.logger.warning(
@@ -1637,7 +1641,7 @@ class YandexYnisonProvider(PluginProvider):
         so that audio and credentials come from the same account. In own mode,
         accept any yandex_music music-provider (prior behavior).
         """
-        for provider in self.mass.get_providers():
+        for provider in self.mass.providers:
             if provider.domain != "yandex_music" or provider.type != ProviderType.MUSIC:
                 continue
             if self._ym_instance_id is not None and provider.instance_id != self._ym_instance_id:
@@ -1944,7 +1948,9 @@ class YandexYnisonProvider(PluginProvider):
                 # sees upcoming tracks and enables the "next" button.
                 await self._update_queue_list(result)
 
-        self._prefetch_task = self.mass.create_task(_do_prefetch())
+        self._prefetch_task = self.mass.create_task(
+            _do_prefetch(), task_name=f"ynison_prefetch_{self.instance_id}"
+        )
 
     async def _signal_track_completion(self) -> None:
         """

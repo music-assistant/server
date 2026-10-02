@@ -100,6 +100,7 @@ CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
     ("Google Inc.", "Google Nest Mini"): 427,
     ("Google Inc.", "Chromecast Audio"): 335,
     ("Google Inc.", "Google Nest Hub"): 188,
+    ("LG Electronics", "LG SPx"): 370,
 }
 CAST_FALLBACK_STATIC_DELAY = 330
 

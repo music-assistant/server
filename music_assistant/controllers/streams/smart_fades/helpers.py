@@ -368,6 +368,38 @@ def db_ramp(
     ]
 
 
+def camelot_affinity(
+    key_a: str | None, mode_a: str | None, key_b: str | None, mode_b: str | None
+) -> float | None:
+    """
+    Return a graded harmonic affinity between two keys on the Camelot wheel.
+
+    1.0 same key, 0.9 one step or relative major/minor, 0.55 two steps in the
+    same mode (energy boost), 0.45 one step with a mode switch, 0.1 for a clash.
+    Returns None when either key is unknown so callers pick their own neutral.
+    """
+    a = _camelot_code(key_a, mode_a)
+    b = _camelot_code(key_b, mode_b)
+    if a is None or b is None:
+        return None
+    num_a, major_a = a
+    num_b, major_b = b
+    steps = min((num_a - num_b) % 12, (num_b - num_a) % 12)
+    if major_a == major_b:
+        if steps == 0:
+            return 1.0
+        if steps == 1:
+            return 0.9
+        if steps == 2:
+            return 0.55
+        return 0.1
+    if steps == 0:
+        return 0.9
+    if steps == 1:
+        return 0.45
+    return 0.1
+
+
 def keys_compatible(
     key_a: str | None, mode_a: str | None, key_b: str | None, mode_b: str | None
 ) -> bool:

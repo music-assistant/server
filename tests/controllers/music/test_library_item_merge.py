@@ -21,6 +21,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
@@ -33,6 +34,9 @@ from music_assistant.controllers.music.media.base import (
     MediaControllerBase,
 )
 from music_assistant.mass import MusicAssistant
+
+# the user whose like a merge has to carry over to the surviving item
+MERGE_USER = "merge-user"
 
 
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
@@ -181,7 +185,6 @@ async def test_mapping_conflict_merges_albums_without_deleting_tracks(
         DB_TABLE_ALBUMS,
         {"item_id": int(target.item_id)},
         {
-            "favorite": False,
             "play_count": 2,
             "last_played": 20,
             "timestamp_added": 20,
@@ -192,13 +195,14 @@ async def test_mapping_conflict_merges_albums_without_deleting_tracks(
         DB_TABLE_ALBUMS,
         {"item_id": int(source.item_id)},
         {
-            "favorite": True,
             "play_count": 3,
             "last_played": 30,
             "timestamp_added": 10,
             "timestamp_modified": 30,
         },
     )
+    # only the source album is liked, by one of the users
+    await mass.music.favorites.set(MediaType.ALBUM, int(source.item_id), True, [MERGE_USER])
     genre = await mass.music.genres.add_item_to_library(
         Genre(item_id="0", provider="library", name="Merge Genre", provider_mappings=set())
     )
@@ -789,7 +793,13 @@ async def _assert_album_merge_result(
     assert await mass.music.tracks.get_library_item(shared_track.item_id)
     assert await mass.music.tracks.get_library_item(source_track.item_id)
     merged = await mass.music.albums.get_library_item(target.item_id)
-    assert merged.favorite is True
+    assert [
+        row["user_id"]
+        for row in await mass.music.database.get_rows(
+            DB_TABLE_FAVORITES,
+            {"media_type": MediaType.ALBUM.value, "item_id": int(target.item_id)},
+        )
+    ] == [MERGE_USER]
     merged_row = await mass.music.database.get_row(
         DB_TABLE_ALBUMS, {"item_id": int(target.item_id)}
     )

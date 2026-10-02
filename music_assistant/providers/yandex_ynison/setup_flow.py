@@ -60,7 +60,7 @@ async def run_setup(session: SetupSession) -> None:
         default_source = YM_INSTANCE_OWN
     default_player = prefill.get(CONF_MASS_PLAYER_ID)
 
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -92,7 +92,7 @@ async def run_setup(session: SetupSession) -> None:
                 await session.finish({CONF_YM_INSTANCE: source, **identity})
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
                 default_source = source
                 continue
         # own credentials: QR login
@@ -115,7 +115,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _qr_login(session: SetupSession) -> Credentials:

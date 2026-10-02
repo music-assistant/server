@@ -21,7 +21,14 @@ import unicodedata
 import urllib.error
 import urllib.request
 import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
@@ -141,6 +148,31 @@ def get_total_system_memory() -> float:
     return min(host_gb, cgroup_gb)
 
 
+def get_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
+    """
+    Return the process's cgroup path from /proc/self/cgroup, or None.
+
+    :param proc_cgroup: Path to the process cgroup file.
+    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
+        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
+    """
+    try:
+        with open(proc_cgroup) as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                hierarchy_id, controllers, path = parts
+                if controller is None:
+                    if hierarchy_id == "0" and controllers == "":
+                        return path or "/"
+                elif controller in controllers.split(","):
+                    return path or "/"
+    except OSError:
+        return None
+    return None
+
+
 def _get_host_memory_gb() -> float:
     """Return host physical RAM in GB via sysconf, or 0.0 when unavailable."""
     try:
@@ -170,14 +202,14 @@ def _get_cgroup_memory_limit_gb(
 
 def _read_cgroup_v2_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
     """Read the effective cgroup v2 memory limit in GB, or None."""
-    rel = _read_self_cgroup_path(proc_cgroup, controller=None)
+    rel = get_self_cgroup_path(proc_cgroup, controller=None)
     return _min_hierarchical_limit(cgroup_root, rel, "memory.max")
 
 
 def _read_cgroup_v1_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
     """Read the effective cgroup v1 memory limit in GB, or None."""
     # On v1 the memory controller is conventionally mounted at <root>/memory.
-    rel = _read_self_cgroup_path(proc_cgroup, controller="memory")
+    rel = get_self_cgroup_path(proc_cgroup, controller="memory")
     return _min_hierarchical_limit(
         os.path.join(cgroup_root, "memory"), rel, "memory.limit_in_bytes"
     )
@@ -231,31 +263,6 @@ def _read_cgroup_limit_file(path: str) -> float | None:
     if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
         return None
     return limit_bytes / (1024**3)
-
-
-def _read_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
-    """
-    Return the process's cgroup path from /proc/self/cgroup, or None.
-
-    :param proc_cgroup: Path to the process cgroup file.
-    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
-        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
-    """
-    try:
-        with open(proc_cgroup) as fh:
-            for line in fh:
-                parts = line.strip().split(":", 2)
-                if len(parts) != 3:
-                    continue
-                hierarchy_id, controllers, path = parts
-                if controller is None:
-                    if hierarchy_id == "0" and controllers == "":
-                        return path or "/"
-                elif controller in controllers.split(","):
-                    return path or "/"
-    except OSError:
-        return None
-    return None
 
 
 # cgroup v1 writes a near-INT64_MAX value (PAGE_SIZE * LONG_MAX on most kernels) to
@@ -572,13 +579,30 @@ IGNORE_TITLE_PARTS = (
     "explicit",
 )
 WITH_TITLE_WORDS = (
-    # words that, when following "with", indicate this is part of the song title
-    # not a featuring credit.
+    # first words after "with" that should stay part of the title, not a credit
     "someone",
     "the",
     "u",
     "you",
     "no",
+)
+_TITLE_FEATURED_CREDIT_PATTERN = re.compile(
+    # require preceding title text so titles starting with "Featuring"/"Ft" stay intact
+    r"(?:[(\[]|(?<=\s))\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
+    r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_BRACKETED_WITH_CREDIT_PATTERN = re.compile(
+    r"(?:\(|\[)with\s+(?P<credit>.+?)(?:\)|\])",
+    re.IGNORECASE,
+)
+_TITLE_HYPHEN_WITH_CREDIT_PATTERN = re.compile(
+    r"\s+-\s+with\s+(?P<credit>.+?)(?=\s*(?:\(|\[| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_WITH_CREDIT_PATTERNS = (
+    _TITLE_BRACKETED_WITH_CREDIT_PATTERN,
+    _TITLE_HYPHEN_WITH_CREDIT_PATTERN,
 )
 
 # Keywords for aggressive search cleaning (includes featuring).
@@ -601,15 +625,6 @@ _DISPLAY_STRIP_PATTERN = re.compile(
     r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
     r"[\)\]]$",
     re.IGNORECASE,
-)
-
-# Featuring patterns for stripping from titles (not in parentheses).
-_FEATURING_PATTERNS = (
-    " featuring ",
-    " feat. ",
-    " feat ",
-    " ft. ",
-    " ft ",
 )
 
 
@@ -654,10 +669,12 @@ def try_parse_bool(possible_bool: Any) -> bool:
 
 def try_parse_duration(duration_str: str) -> float:
     """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
+    # SubRip and friends write the fractional seconds after a comma
+    duration_str = duration_str.replace(",", ".")
     milliseconds = (
         float("0." + duration_str.rsplit(".", maxsplit=1)[-1]) if "." in duration_str else 0.0
     )
-    duration_parts = duration_str.split(".", maxsplit=1)[0].split(",", maxsplit=1)[0].split(":")
+    duration_parts = duration_str.split(".", maxsplit=1)[0].split(":")
     if len(duration_parts) == 3:
         seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
     elif len(duration_parts) == 2:
@@ -683,6 +700,30 @@ def normalize_unicode(value: str | None) -> str | None:
 
 
 @functools.lru_cache(maxsize=2048)
+def extract_title_artist_credits(title: str) -> tuple[str, ...]:
+    """Return artist credits embedded in a track title."""
+    matched_credits = [
+        *(
+            (match.start(), match.group(1).strip())
+            for match in _TITLE_FEATURED_CREDIT_PATTERN.finditer(title)
+        ),
+        *(
+            (match.start(), match.group("credit").strip())
+            for pattern in _TITLE_WITH_CREDIT_PATTERNS
+            for match in pattern.finditer(title)
+            if _is_with_artist_credit(match.group("credit"))
+        ),
+    ]
+    return tuple(credit for _, credit in sorted(matched_credits))
+
+
+def _is_with_artist_credit(value: str) -> bool:
+    """Return whether a with-suffix identifies an artist rather than title words."""
+    first_word = value.split(maxsplit=1)[0].casefold().strip(".,:;!?") if value else ""
+    return bool(first_word) and first_word not in WITH_TITLE_WORDS
+
+
+@functools.lru_cache(maxsize=2048)
 def parse_title_and_version(
     title: str,
     track_version: str | None = None,
@@ -702,15 +743,17 @@ def parse_title_and_version(
 
     # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
     if strip_for_search:
+        with_credit_matches = [
+            match for pattern in _TITLE_WITH_CREDIT_PATTERNS for match in pattern.finditer(title)
+        ]
+        for match in sorted(with_credit_matches, key=lambda item: item.start(), reverse=True):
+            if _is_with_artist_credit(match.group("credit")):
+                title = f"{title[: match.start()]}{title[match.end() :]}"
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
-        # Strip bare featuring credits (not in parentheses)
-        title_lower = title.lower()
-        for pattern in _FEATURING_PATTERNS:
-            if pattern in title_lower:
-                idx = title_lower.find(pattern)
-                title = title[:idx]
-                break
+        # Strip bare featuring credits with the same pattern used for extraction.
+        if bare_credit_match := _TITLE_FEATURED_CREDIT_PATTERN.search(title):
+            title = title[: bare_credit_match.start()]
         # Clean up dangling hyphens and extra spaces
         title = re.sub(r"\s*-\s*$", "", title)
         title = re.sub(r"\s+", " ", title).strip()
@@ -742,13 +785,7 @@ def parse_title_and_version(
                 if clean_part.startswith(ignore_str):
                     # Special handling for "with " - check if followed by title words
                     if ignore_str == "with ":
-                        # Extract the word after "with "
-                        after_with = (
-                            clean_part[len("with ") :].split()[0]
-                            if len(clean_part) > len("with ")
-                            else ""
-                        )
-                        if after_with in WITH_TITLE_WORDS:
+                        if not _is_with_artist_credit(clean_part[len("with ") :]):
                             # This is part of the title (e.g., "with you"), don't ignore
                             break
                     # Remove this part from the title
@@ -1270,15 +1307,23 @@ def format_ip_for_url(ip_address: str) -> str:
     return ip_address
 
 
-async def get_folder_size(folderpath: str) -> float:
-    """Return folder size in gb."""
+async def get_folder_size(folderpath: str, exclude: Iterable[str] = ()) -> float:
+    """
+    Return folder size in gb, without following symlinks.
+
+    :param folderpath: The folder to measure.
+    :param exclude: Folders inside it to leave out.
+    """
+    excluded = {os.path.normpath(path) for path in exclude}
 
     def _get_folder_size(folderpath: str) -> float:
         total_size = 0
-        for dirpath, _dirnames, filenames in os.walk(folderpath):
+        for dirpath, dirnames, filenames in os.walk(os.path.normpath(folderpath)):
+            dirnames[:] = [name for name in dirnames if os.path.join(dirpath, name) not in excluded]
             for _file in filenames:
-                _fp = os.path.join(dirpath, _file)
-                total_size += Path(_fp).stat().st_size
+                # a file can vanish while the folder is walked (e.g. a database journal)
+                with suppress(OSError):
+                    total_size += os.lstat(os.path.join(dirpath, _file)).st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -1984,14 +2029,28 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
-        """Create a new task and add it to the manager."""
-        task = self.mass.create_task(coro)
+    def create_task(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> asyncio.Task[None]:
+        """
+        Create a new task and add it to the manager.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
+        task = self.mass.create_task(coro, task_name=task_name)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Create a new task with semaphore limit."""
+    async def create_task_with_limit(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> None:
+        """
+        Create a new task with semaphore limit.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
         assert self._semaphore is not None
 
         def task_done_callback(_task: asyncio.Task[None]) -> None:
@@ -2000,7 +2059,7 @@ class TaskManager:
             self._semaphore.release()
 
         await self._semaphore.acquire()
-        task: asyncio.Task[None] = self.create_task(coro)
+        task: asyncio.Task[None] = self.create_task(coro, task_name)
         task.add_done_callback(task_done_callback)
 
     async def __aenter__(self) -> Self:
@@ -2176,17 +2235,17 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
                 ),
             )
         )
+        # the coroutine is built here rather than passing func and its arguments on: a
+        # wrapped function is free to name a parameter after one of the task options below,
+        # which forwarded kwargs would collide with
         task: asyncio.Task[R] = mass.create_task(
-            func,
-            self,
-            *args,
+            func(self, *args, **kwargs),
             task_id=task_id,
             abort_existing=False,
             eager_start=True,
             # every caller awaits the flight below and so sees the failure itself; the
             # task's own exception log would report a handled error as an unhandled one
             log_exceptions=False,
-            **kwargs,
         )
         return await join_task(task)
 

@@ -289,7 +289,7 @@ class TestSafeRebuild:
         await plugin._safe_rebuild("Traits", _ok)
 
         mock_mass.signal_event.assert_called_once_with(
-            EventType.PROVIDERS_UPDATED, data=mock_mass.get_providers.return_value
+            EventType.PROVIDERS_UPDATED, data=mock_mass.providers
         )
 
     @pytest.mark.asyncio
@@ -303,7 +303,7 @@ class TestSafeRebuild:
         await plugin._safe_rebuild("Traits", _boom)
 
         mock_mass.signal_event.assert_called_once_with(
-            EventType.PROVIDERS_UPDATED, data=mock_mass.get_providers.return_value
+            EventType.PROVIDERS_UPDATED, data=mock_mass.providers
         )
 
 

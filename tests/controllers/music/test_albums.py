@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, ImageType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
+    ItemMapping,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -14,8 +20,7 @@ from music_assistant_models.media_items import (
 from .helpers import create_album, create_track
 
 if TYPE_CHECKING:
-    import pytest
-    from music_assistant_models.media_items import Album
+    from music_assistant_models.media_items import Album, Track
 
     from music_assistant.mass import MusicAssistant
 
@@ -218,3 +223,135 @@ async def test_merge_update_keeps_the_stored_year_and_version(mass: MusicAssista
     refreshed = await mass.music.albums.get_library_item(db_album.item_id)
     assert refreshed.year == 1999
     assert refreshed.version == "Deluxe Edition"
+
+
+def _album_track(provider_instance: str, name: str, track_number: int, available: bool) -> Track:
+    """Return a provider album track, playable or not."""
+    track = create_track(provider_instance, f"{provider_instance}_{track_number}", name=name)
+    track.track_number = track_number
+    for mapping in track.provider_mappings:
+        mapping.available = available
+    return track
+
+
+@pytest.mark.parametrize("unplayable", ["qobuz_1", "spotify_1"])
+async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplayable: str) -> None:
+    """A track one provider cannot play is filled in from another provider that can."""
+    playable = "spotify_1" if unplayable == "qobuz_1" else "qobuz_1"
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+    provider_tracks = {
+        unplayable: [
+            _album_track(unplayable, "Shared", 1, available=False),
+            _album_track(unplayable, "Bonus", 2, available=False),
+        ],
+        playable: [_album_track(playable, "Shared", 1, available=True)],
+    }
+
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=lambda _item_id, instance: provider_tracks[instance]),
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    # whichever provider is asked first, the shared track comes from the one that can play it
+    assert [(track.name, track.provider, track.available) for track in tracks] == [
+        ("Shared", playable, True),
+        ("Bonus", unplayable, False),
+    ]
+
+
+async def test_album_tracks_survive_a_dead_provider_mapping(mass: MusicAssistant) -> None:
+    """A provider that no longer lists the album does not hide the other providers' tracks."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    async def _provider_tracks(_item_id: str, instance: str) -> list[Track]:
+        if instance == "spotify_1":
+            raise MediaNotFoundError("album withdrawn")
+        return [_album_track("qobuz_1", "Shared", 1, available=True)]
+
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(side_effect=_provider_tracks)
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [(track.name, track.provider) for track in tracks] == [("Shared", "qobuz_1")]
+
+
+async def test_album_tracks_raise_when_no_provider_lists_the_album(mass: MusicAssistant) -> None:
+    """With nothing in the library and every provider failing, the caller learns why."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    with (
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+        ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await mass.music.albums.tracks(library_album.item_id, "library")
+
+
+async def test_album_tracks_fall_back_to_the_library_when_every_provider_fails(
+    mass: MusicAssistant,
+) -> None:
+    """The in-library tracks are still listed when no provider answers."""
+    library_album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    track = create_track("qobuz_1", "track_q", name="Kept")
+    track.album = create_album("qobuz_1", "album_q")
+    await mass.music.tracks.add_item_to_library(track)
+    await set_global_cache_values({"available_providers": {"qobuz_1"}})
+
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [track.name for track in tracks] == ["Kept"]
+
+
+def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
+    """A library item mapping has no provider of its own, so it gets no provider mapping."""
+    item = ItemMapping(item_id="42", provider="library", name="Test Album")
+
+    album = mass.music.albums.album_from_item_mapping(item)
+
+    assert album.provider == "library"
+    assert album.item_id == "42"
+    assert album.provider_mappings == set()
+
+
+def test_album_from_provider_item_mapping_keeps_mapping(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider item mapping is converted into a real, resolvable provider mapping."""
+    monkeypatch.setattr(
+        mass,
+        "get_provider",
+        lambda _: SimpleNamespace(domain="spotify", instance_id="spotify_1"),
+    )
+    item = ItemMapping(item_id="abc", provider="spotify_1", name="Test Album")
+
+    album = mass.music.albums.album_from_item_mapping(item)
+
+    assert album.provider_mappings == {
+        ProviderMapping(item_id="abc", provider_domain="spotify", provider_instance="spotify_1")
+    }

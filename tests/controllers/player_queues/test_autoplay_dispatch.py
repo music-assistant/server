@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -262,7 +263,12 @@ def _loader(*items: Any, seeds: list[Any] | None = None) -> Any:
         return_value=SimpleNamespace(queue_id="q1", display_name="Queue", autoplay_enabled=True)
     )
     loader._queue_data = {
-        "q1": SimpleNamespace(items=list(items), enqueued_media_items=seeds or [], userid=None)
+        "q1": SimpleNamespace(
+            queue=loader.get.return_value,
+            items=list(items),
+            enqueued_media_items=seeds or [],
+            userid=None,
+        )
     }
     loader._fill_autoplay_music_tracks = AsyncMock()
     loader._fill_autoplay_next_in_series = AsyncMock()
@@ -625,3 +631,63 @@ async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -
         await settle_coro
 
     tracker._finish_queue.assert_not_called()
+
+
+async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
+    """The refill of a queue started from a dynamic source drops what its user disliked."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = "user-a"
+    tracker.mass.webserver.auth.get_user = AsyncMock(
+        return_value=User(user_id="user-a", username="a", role=UserRole.USER)
+    )
+    tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
+        return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
+    )
+    tracker.load = AsyncMock()
+    tracker.play_index = AsyncMock()
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    def _prov_track(item_id: str) -> Track:
+        return Track(
+            item_id=item_id,
+            provider="spotify--1",
+            name=item_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id, provider_domain="spotify", provider_instance="spotify--1"
+                )
+            },
+        )
+
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(
+        return_value=[_prov_track("disliked"), _prov_track("allowed")]
+    )
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=MagicMock(),
+        ),
+    ):
+        await settle_coro
+
+    loaded = tracker.load.await_args.args[1]
+    assert [x.media_item.item_id for x in loaded] == ["allowed"]

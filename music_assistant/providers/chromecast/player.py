@@ -424,7 +424,9 @@ class ChromecastPlayer(Player):
                     media_controller.send_message, data=msg, inc_session_id=True
                 )
 
-        self.mass.create_task(update_flow_metadata())
+        self.mass.create_task(
+            update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
+        )
 
     @staticmethod
     def _is_google_device(cast_info: ChromecastInfo) -> bool:

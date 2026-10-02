@@ -14,7 +14,11 @@ from music_assistant.helpers.upnp import (
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.bose_soundtouch.const import UPNP_CONTROL_ENDPOINT, UPNP_PORT
+from music_assistant.providers.bose_soundtouch.const import (
+    STRING_ENCODING,
+    UPNP_CONTROL_ENDPOINT,
+    UPNP_PORT,
+)
 
 if TYPE_CHECKING:
     from music_assistant.providers.bose_soundtouch.player import BoseSoundTouchPlayer
@@ -88,11 +92,13 @@ async def _post_soap(
 ) -> aiohttp.ClientResponse:
     """POST a SOAP request and log a warning on 4xx/5xx error responses."""
     headers = get_headers(soap_action)
-    response = await client.post(ctrl_url, headers=headers, data=xml)
+    response = await client.post(ctrl_url, headers=headers, data=xml.encode(STRING_ENCODING))
     if response.status >= 400:
         body_excerpt = ""
         with suppress(aiohttp.ClientError, UnicodeError):
-            body_excerpt = (await response.read())[:300].decode(errors="replace")
+            body_excerpt = (await response.read())[:300].decode(
+                errors="replace", encoding=STRING_ENCODING
+            )
         LOGGER.warning(
             "AVT %s failed: status=%s url=%s body=%s",
             op_name,

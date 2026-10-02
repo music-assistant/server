@@ -608,7 +608,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # on task_id while a load is in flight, and re-attempts after a previous load failed.
         if self._text_encoder is None:
             self.mass.create_task(
-                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+                self._get_text_encoder(), task_id="sonic_similarity_text_encoder_warm"
             )
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)
@@ -696,7 +696,7 @@ class SonicSimilarityPlugin(PluginProvider):
             self._last_rebuild_error[label] = str(err)
         # the status label entries render counts and errors collected above, so nudge
         # listeners to re-fetch the config now that the (background) rebuild is done
-        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""
@@ -1627,7 +1627,7 @@ class SonicSimilarityPlugin(PluginProvider):
                     continue
                 try:
                     raw = json.loads(row["analysis_data"])
-                except json.JSONDecodeError, TypeError:
+                except ValueError, TypeError:
                     continue
                 emb = _parse_clap_embedding(
                     (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)

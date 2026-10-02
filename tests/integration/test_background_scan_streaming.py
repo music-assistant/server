@@ -78,6 +78,7 @@ async def test_streaming_background_scan_loudness_end_to_end() -> None:
     mass = MagicMock()
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock(side_effect=_capture_set)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
 
     manifest = MagicMock()
     manifest.domain = "loudness_analysis"

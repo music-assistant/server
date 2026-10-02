@@ -43,6 +43,9 @@ ACTION_OVERWRITE_PRESET_4 = "action_overwrite_preset_4"
 ACTION_OVERWRITE_PRESET_5 = "action_overwrite_preset_5"
 ACTION_OVERWRITE_PRESET_6 = "action_overwrite_preset_6"
 
+# players do not use the default utf8 encoding
+STRING_ENCODING = "latin-1"
+
 
 class PlayerOptionKeys(StrEnum):
     """PlayerOptionKeys."""

@@ -46,9 +46,7 @@ CONF_COLOR_TINT = "color_tint"
 DEFAULT_COLOR_TINT = True
 # Derived from the model, so a field added upstream is forwarded automatically.
 COLOR_FIELDS = tuple(field.name for field in dataclasses.fields(MediaItemPalette))
-# How far ahead of the audible playhead the tap reads. Viewers schedule frames
-# by timestamp, so a lead is what lets them draw on time; it costs nothing,
-# since this audio is buffered already.
+# How far ahead of audible a frame is released; viewers schedule by timestamp.
 LEAD_SECONDS = 5.0
 # Gap between where the anchor says the playhead is and where the queue reports
 # it that means the audio moved (a seek) rather than the player simply reporting
@@ -65,17 +63,15 @@ IDLE_POLL_SECONDS = 0.5
 # have them stops asking.
 BEAT_RETRY_SECONDS = 3.0
 BEAT_RETRY_ATTEMPTS = 30
-# Frames a tap keeps to replay to a viewer that attaches mid-track, and the
-# ceiling on one viewer's outbound queue. The ring must span far more than
-# LEAD_SECONDS: on a track longer than the buffer's retained window, eviction
-# follows the player's stream pull (readrate 2x for HTTP players, ~30s commit
-# lead for Sendspin), so the tap is forced to read - and stamp - audio well
-# ahead of the audible playhead. The ring bridges that gap for attaching
-# viewers: ~95s at ~43 frames/s of ~1KB each (~4MB per tap). Beyond it the
-# audio is already evicted server-side, so no ring size can help; long tracks
-# spend their pinned phase there and that is an accepted limitation.
-RING_FRAMES = 4096
+# Ceiling on one viewer's outbound queue.
 VIEWER_QUEUE_FRAMES = 1024
+# How far behind now the ring keeps released frames. An attaching viewer draws
+# the newest past frame at once, and the rest of the ring is the lead ahead.
+RING_PAST_SECONDS = 1.0
+# Memory ceiling on frames held back before they are due (~8MB per tap). About
+# 3 min at 44.1kHz and less at higher rates, still far beyond any fetch burst;
+# past it the tap stops reading and accepts a hole.
+PENDING_FRAMES = 8192
 
 # Wire tags, matching the format documented in relay.py.
 WAVE_FRAME_TAG = 22
@@ -93,6 +89,11 @@ def server_now_us() -> int:
 def pack_wave_frame(timestamp_us: int, samples: bytes) -> bytes:
     """Pack one waveform tail for the wire."""
     return struct.pack(">Bq", WAVE_FRAME_TAG, timestamp_us) + samples
+
+
+def wave_frame_timestamp(frame: bytes) -> int:
+    """Return the play-at timestamp of a packed waveform frame."""
+    return int(struct.unpack_from(">q", frame, 1)[0])
 
 
 def pack_beat_frame(timestamp_us: int, is_downbeat: bool) -> bytes:
@@ -227,18 +228,17 @@ class Tap:
         # Beat frames with their scheduled timestamps, so viewers that attach
         # mid-track still receive the rest of the track's downbeats.
         self.beats: deque[tuple[int, bytes]] = deque(maxlen=4096)
-        # Recent packed waveform frames, replayed to a connecting viewer so it
-        # has something to draw before the tap reaches its next chunk.
-        self.ring: deque[bytes] = deque(maxlen=RING_FRAMES)
+        # Frames read ahead, held until within LEAD_SECONDS of audible.
+        self.pending: deque[tuple[int, bytes]] = deque()
+        # Released frames from RING_PAST_SECONDS ago through the release lead,
+        # replayed to a viewer that attaches mid-track.
+        self.ring: deque[bytes] = deque()
         # Latest color@v1 fields, replayed to viewers that attach mid-track.
         self.last_color: dict[str, list[int] | None] = {}
         # Beat analysis already fetched for the current item, so a re-anchor
         # (a seek) rebuilds the schedule without querying again. Positive only:
         # a cached miss would suppress analysis that lands late in the track.
         self.beats_analysis: tuple[str, AudioAnalysisData] | None = None
-        # Set by the relay when a viewer attaches and finds only future-stamped
-        # frames; the reader consumes it by re-anchoring at the playhead.
-        self.realign_requested = False
         self.task: asyncio.Task[None] | None = None
         self.beats_task: asyncio.Task[None] | None = None
 
@@ -252,20 +252,6 @@ class Tap:
         self.last_color = payload
         self.fan_out(dumps({"type": "color", "payload": payload}).decode())
 
-    def has_only_future_frames(self) -> bool:
-        """
-        Return whether every buffered waveform frame is stamped ahead of now.
-
-        True when production is pinned at the buffer's eviction edge, ahead of
-        the audible playhead: the ring then holds nothing a fresh viewer could
-        draw yet, and re-anchoring at the playhead serves it better than a
-        replay would.
-        """
-        if not self.ring:
-            return False
-        timestamp_us: int = struct.unpack_from(">q", self.ring[0], 1)[0]
-        return timestamp_us > server_now_us()
-
     def reset(self, message: str) -> None:
         """Drop everything scheduled from a timeline that no longer applies."""
         # a hydration still in flight would land beats for that dead timeline
@@ -274,6 +260,7 @@ class Tap:
             self.beats_task = None
         self.ring.clear()
         self.beats.clear()
+        self.pending.clear()
         self.fan_out(message)
 
 
@@ -387,23 +374,16 @@ class TapManager:
             return None
         queue, item, buffer = source
         self._sync_color(tap)
-        if tap.realign_requested:
-            # a viewer found only future-stamped frames; drop the cursor so the
-            # re-anchor below restarts at the playhead, but only while that
-            # chunk is still retained (past the edge a realign helps nobody)
-            tap.realign_requested = False
-            if queue.corrected_elapsed_time >= buffer.first_buffered_chunk:
-                cursor = None
         cursor = self._align(
             tap, cursor, item, queue.corrected_elapsed_time, buffer, queue.playback_speed
         )
-        # Stay ahead of the listener, but never behind the buffer's retained
-        # window: a rolling (radio) buffer discards as playback consumes it, and
-        # what it is about to drop is the last chance to read that audio.
-        if (
-            cursor.next_chunk > cursor.playhead() + LEAD_SECONDS
-            and cursor.next_chunk > buffer.first_buffered_chunk
-        ):
+        self._release_due(tap)
+        # Read everything retained as soon as it is: players fetch in gulps, so
+        # the eviction edge jumps, and the cursor must stay well ahead of it.
+        should_read = len(tap.pending) < PENDING_FRAMES and cursor.next_chunk < (
+            buffer.first_buffered_chunk + buffer.seconds_available
+        )
+        if not should_read:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             return cursor
         try:
@@ -414,11 +394,13 @@ class TapManager:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             return cursor
         except AudioBufferDiscarded:
-            # the retained window moved past us (a stalled tap, or a rolling
-            # buffer outrunning it); pick the timeline up again where it is now
+            # the retained window moved past us; _align catches up next pass
             await asyncio.sleep(IDLE_POLL_SECONDS)
-            return None
+            return cursor
         self._emit_chunk(tap, cursor, pcm, buffer.pcm_format)
+        # a resident chunk is read without suspending, so a catch-up burst
+        # would otherwise hold the event loop for its whole length
+        await asyncio.sleep(0)
         return cursor
 
     def _playing_source(self, player_id: str) -> tuple[PlayerQueue, QueueItem, AudioBuffer] | None:
@@ -449,8 +431,8 @@ class TapManager:
         Return a cursor whose timeline still matches what the player is playing.
 
         A new track, a seek, a resume or a speed change re-anchors the media
-        timeline to the relay clock; so does falling behind the buffer's
-        retained window.
+        timeline to the relay clock. Falling behind the buffer's retained
+        window does not: the cursor catches up on the same timeline.
 
         :param tap: The tap being fed.
         :param cursor: The cursor in use, if the tap already has one.
@@ -464,9 +446,10 @@ class TapManager:
             cursor is not None
             and cursor.item_id == item.queue_item_id
             and cursor.speed == speed
-            and cursor.next_chunk >= oldest
             and abs(cursor.playhead() - playhead) <= RESYNC_THRESHOLD_SECONDS * speed
         ):
+            # eviction may have overtaken us; same timeline, so just catch up
+            cursor.next_chunk = max(cursor.next_chunk, oldest)
             return cursor
         start_chunk = max(int(max(0.0, playhead)), oldest)
         cursor = TrackCursor(
@@ -481,10 +464,29 @@ class TapManager:
         self._schedule_beats(tap, item, cursor.anchor_us, speed)
         return cursor
 
+    def _release_due(self, tap: Tap) -> None:
+        """
+        Move pending frames whose play-at time has arrived into the ring and fan them out.
+
+        Also trims the ring to its past window.
+
+        :param tap: The tap whose pending queue to release from.
+        """
+        now_us = server_now_us()
+        threshold_us = now_us + int(LEAD_SECONDS * 1_000_000)
+        while tap.pending and tap.pending[0][0] <= threshold_us:
+            _, frame = tap.pending.popleft()
+            tap.ring.append(frame)
+            tap.fan_out(frame)
+        oldest_us = now_us - int(RING_PAST_SECONDS * 1_000_000)
+        # keep the ring to what an attaching viewer can use
+        while tap.ring and wave_frame_timestamp(tap.ring[0]) < oldest_us:
+            tap.ring.popleft()
+
     def _emit_chunk(
         self, tap: Tap, cursor: TrackCursor, pcm: bytes, pcm_format: AudioFormat
     ) -> None:
-        """Turn one second of PCM into packed waveform frames and fan them out."""
+        """Turn one second of PCM into packed waveform frames and hold them for release."""
         sample_rate = pcm_format.sample_rate
         mono = pcm_to_mono(pcm, pcm_format)
         chunk_media = float(cursor.next_chunk)
@@ -500,9 +502,9 @@ class TapManager:
             quantized = np.rint(np.clip(window, -1.0, 1.0) * 127.0 + 128.0).astype(np.uint8)
             # stamped at the end of the window, the instant it finishes sounding
             end_media = cursor.carry_media + offset / sample_rate
-            frame = pack_wave_frame(cursor.media_to_clock_us(end_media), quantized.tobytes())
-            tap.ring.append(frame)
-            tap.fan_out(frame)
+            timestamp_us = cursor.media_to_clock_us(end_media)
+            frame = pack_wave_frame(timestamp_us, quantized.tobytes())
+            tap.pending.append((timestamp_us, frame))
         cursor.carry = mono[offset:].copy()
         cursor.carry_media += offset / sample_rate
         cursor.next_chunk += 1

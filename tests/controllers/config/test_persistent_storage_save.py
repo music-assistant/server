@@ -37,22 +37,34 @@ async def test_save_rotates_previous_file_to_backup(tmp_path: Path) -> None:
     """A successful save keeps the previous generation as a valid backup."""
     controller = _make_controller(tmp_path)
     controller._data = {"generation": 1}
-    await controller._async_save()
+    await controller.async_save()
     controller._data = {"generation": 2}
-    await controller._async_save()
+    await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 2}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"generation": 1}
     assert not Path(f"{controller.filename}.tmp").is_file()
 
 
+async def test_a_save_of_an_already_written_generation_is_skipped(tmp_path: Path) -> None:
+    """A queued or timer-started save does not rewrite what is already on disk."""
+    controller = _make_controller(tmp_path)
+    controller._data = {"generation": 1}
+    controller._save_requested = 1
+    await controller.async_save()
+    await controller.async_save()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+    assert not Path(f"{controller.filename}.backup").is_file()
+
+
 async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> None:
     """A save that fails mid-write may not corrupt the files already on disk."""
     controller = _make_controller(tmp_path)
     controller._data = {"generation": 1}
-    await controller._async_save()
+    await controller.async_save()
     controller._data = {"generation": 2}
-    await controller._async_save()
+    await controller.async_save()
 
     controller._data = {"generation": 3}
     with (
@@ -62,7 +74,7 @@ async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> No
         ),
         pytest.raises(RuntimeError),
     ):
-        await controller._async_save()
+        await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 2}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"generation": 1}
@@ -83,7 +95,7 @@ async def test_empty_settings_file_does_not_clobber_backup(tmp_path: Path) -> No
     await controller._load()
     assert controller._data == {"recovered": True}
 
-    await controller._async_save()
+    await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
@@ -98,7 +110,7 @@ async def test_corrupt_settings_file_does_not_clobber_backup(tmp_path: Path) -> 
     await controller._load()
     assert controller._data == {"recovered": True}
 
-    await controller._async_save()
+    await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
@@ -112,7 +124,7 @@ async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) ->
         "music_assistant.controllers.config.controller.os.open",
         side_effect=OSError("fsync on directory not supported"),
     ):
-        await controller._async_save()
+        await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
 
@@ -151,7 +163,7 @@ async def test_player_config_summary_read_does_not_rewrite_settings(
     mass.players.get_player.return_value = live_player
 
     configs = await controller.get_player_configs(include_values=False)
-    await controller._async_save()
+    await controller.async_save()
 
     assert configs[0].default_name == "solarium-bath-sl"
     assert controller._data[CONF_PLAYERS][player_id] == raw_config

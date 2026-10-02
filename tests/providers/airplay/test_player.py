@@ -23,6 +23,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -96,12 +97,13 @@ async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    A cold restart only drops the stream it stopped, not one published meanwhile.
+    A cold restart leaves the current publication in place for the new session.
 
     Tearing a group session down awaits every member, which is long enough for a
-    Sendspin bridge to take the speaker and publish its own stream. Dropping that
-    reference would leave the start that follows with nothing to displace and a
-    live process still on the speaker.
+    Sendspin bridge to take the speaker and publish its own stream. The cold path
+    never drops that reference: the new session's start displaces whatever is
+    published under the spawn lock, so nothing is left with a live process on the
+    speaker and nothing to displace.
     """
     old_session = MagicMock()
     old_stream = MagicMock(running=True, superseded=False)
@@ -128,6 +130,56 @@ async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
         await airplay_player.play_media(MagicMock())
 
     assert airplay_player.stream is bridge_stream
+
+
+async def test_play_media_clears_transitioning_when_warm_replace_raises(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A failed warm replacement must not leave the player deaf to prevent-playback.
+
+    _transitioning gates the DACP prevent-playback handler; if a raising replace()
+    left it stuck, the player would ignore every stop from the speaker's own remote
+    until the next successful play_media.
+    """
+    session = MagicMock()
+    session.can_replace = MagicMock(return_value=True)
+    session.replace = AsyncMock(side_effect=RuntimeError("device unreachable"))
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player._transitioning is False
+
+
+async def test_play_media_clears_transitioning_when_cold_start_raises(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A failed cold restart must also clear the transition flag."""
+    old_session = MagicMock()
+    old_session.can_replace = MagicMock(return_value=False)
+    old_session.stop = AsyncMock()
+    airplay_player.stream = MagicMock(running=True, session=old_session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock(side_effect=RuntimeError("start failed"))),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player._transitioning is False
 
 
 def test_has_live_audio_ignores_a_stream_being_torn_down(
@@ -1125,9 +1177,13 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
-def test_player_applies_the_announcement_volume_itself(airplay_player: AirPlayPlayer) -> None:
-    """The clip is mixed into live audio, so the level is moved around it, not before it."""
-    assert airplay_player.applies_announcement_volume is True
+def test_player_reports_its_announcement_features(airplay_player: AirPlayPlayer) -> None:
+    """The clip is mixed into live audio at the requested level, in step across members."""
+    assert airplay_player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.APPLIES_VOLUME,
+        AnnouncementFeature.COORDINATES_START,
+    }
 
 
 def test_volume_reports_are_ignored_while_our_own_level_echoes(

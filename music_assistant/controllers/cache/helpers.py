@@ -25,6 +25,7 @@ from music_assistant.controllers.cache.constants import (
 )
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -139,6 +140,7 @@ def use_cache(
                 # serve stale data and refresh in the background;
                 # task_id deduplicates concurrent refreshes for the same entry
                 async def _background_refresh() -> None:
+                    set_request_priority(RequestPriority.LOW)
                     try:
                         result = await func(self, *args, **kwargs)
                         if cache_none or result is not None:
@@ -153,6 +155,9 @@ def use_cache(
                 self.mass.create_task(
                     _background_refresh(),
                     task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                    # the cache key carries the looked-up arguments, so the name keeps to
+                    # the provider
+                    task_name=f"cache_refresh_{provider_id}",
                 )
                 return _reconstruct(cachedata)
 
@@ -184,7 +189,9 @@ def use_cache(
 
             # task_id folds concurrent callers for this key onto one execution
             flight = self.mass.create_task(
-                _flight(), task_id=f"cache_flight.{provider_id}.{cache_key}"
+                _flight(),
+                task_id=f"cache_flight.{provider_id}.{cache_key}",
+                task_name=f"cache_flight_{provider_id}",
             )
             if flight is asyncio.current_task():
                 # a body that calls back into itself for the same key is handed the very

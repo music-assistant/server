@@ -239,9 +239,11 @@ jobs:
               if grep -q "\"$VERSION\"" /tmp/pypi_response.json; then
                 echo "✅ Package $PACKAGE version $VERSION is available on PyPI"
 
-                # Additional verification: try to download the package
-                if python3 -m pip download --no-deps "$PACKAGE==$VERSION" > /dev/null 2>&1; then
-                  echo "✅ Package $PACKAGE==$VERSION can be installed"
+                # Additional verification: try to download the package.
+                # --ignore-requires-python so the check is not tied to the
+                # runner's Python; we only verify the artifact is fetchable.
+                if python3 -m pip download --no-deps --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                  echo "✅ Package $PACKAGE==$VERSION can be downloaded"
                   exit 0
                 else
                   echo "⚠️  Package found in PyPI API but pip download failed, retrying..."
@@ -277,9 +279,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # The merge must be enabled with the App token: the merge actor is whoever
-      # enabled auto-merge, and GitHub never triggers workflows for pushes made by
-      # GITHUB_TOKEN, so the discover-stale job below would not run on the merge.
+      # Enqueue with the App token: GitHub never triggers workflows for events caused by
+      # GITHUB_TOKEN, so neither the queue's checks nor the discover-stale job below would run.
       - name: Create merge token
         id: merge_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -302,23 +303,23 @@ jobs:
             exit 1
           fi
 
-      # Enable auto-merge with squash
-      - name: Enable auto-merge
+      # The merge queue sets the merge method, and --auto enqueues once required checks pass
+      - name: Add to merge queue
         run: |
-          gh pr merge "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --auto --squash
+          gh pr merge "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --auto
         env:
           GH_TOKEN: ${{ steps.merge_token.outputs.token }}
 
       - name: Comment on success
         if: success()
         run: |
-          gh pr comment "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
+          gh pr comment "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --body "🤖 This PR has been automatically approved and will be added to the merge queue once all checks pass."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Re-cutting raises a synchronize event, which puts the PR back through the job above.
   discover-stale:
-    name: Find stale dependency PRs
+    name: Find conflicting dependency PRs
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -328,7 +329,7 @@ jobs:
       prs: ${{ steps.find.outputs.prs }}
       any: ${{ steps.find.outputs.any }}
     steps:
-      - name: List open bump PRs that are behind dev
+      - name: List open bump PRs that conflict with dev
         id: find
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -348,10 +349,16 @@ jobs:
           for NUMBER in $(echo "$CANDIDATES" | jq -r '.[]'); do
             BRANCH=$(gh pr view "$NUMBER" -R "$REPO" --json headRefName --jq '.headRefName')
 
-            # the branch can vanish when its PR merges, and a 404 body lands on stdout not stderr
-            BEHIND=$(gh api "/repos/$REPO/compare/dev...$BRANCH" --jq '.behind_by' 2>/dev/null || true)
-            if ! [[ "$BEHIND" =~ ^[0-9]+$ ]] || [ "$BEHIND" -eq 0 ]; then
-              echo "PR #$NUMBER is gone or up to date with dev, skipping"
+            # The merge queue handles PRs that are merely behind dev. GitHub computes
+            # mergeability lazily after dev moves, so poll until it settles.
+            MERGEABLE=UNKNOWN
+            for _ in 1 2 3 4 5 6; do
+              MERGEABLE=$(gh pr view "$NUMBER" -R "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo UNKNOWN)
+              [ "$MERGEABLE" != "UNKNOWN" ] && break
+              sleep 10
+            done
+            if [ "$MERGEABLE" != "CONFLICTING" ]; then
+              echo "PR #$NUMBER does not conflict with dev ($MERGEABLE), skipping"
               continue
             fi
 
@@ -367,7 +374,7 @@ jobs:
               continue
             fi
 
-            echo "PR #$NUMBER ($BRANCH) is $BEHIND commit(s) behind dev, queueing refresh"
+            echo "PR #$NUMBER ($BRANCH) conflicts with dev, queueing refresh"
             SELECTED=$(echo "$SELECTED" | jq -c --argjson n "$NUMBER" '. + [$n]')
           done
 

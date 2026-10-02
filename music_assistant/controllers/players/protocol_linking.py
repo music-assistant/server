@@ -645,7 +645,9 @@ class ProtocolLinkingMixin:
                     )
                     break
 
-        self.mass.create_task(_do_save())
+        self.mass.create_task(
+            _do_save(), task_name=f"save_universal_player_{universal_player.player_id}"
+        )
 
     def _get_known_protocol_ids(self, parent: Player) -> list[str]:
         """
@@ -1727,6 +1729,35 @@ class ProtocolLinkingMixin:
             else:
                 # Parent not registered yet — still purge the cached id
                 self._remove_protocol_id_from_cache(parent_id, player.player_id)
+
+    def _unlink_protocol_from_parents(self, protocol_player_id: str) -> None:
+        """
+        Drop a protocol player from every parent that still links it, live or cached.
+
+        Also covers a protocol player that is not registered, which the removal paths
+        that start from a registered player cannot reach.
+
+        :param protocol_player_id: Player id of the protocol player to unlink.
+        """
+        for parent in list(self._players.values()):
+            if parent.state.type == PlayerType.PROTOCOL:
+                continue
+            if protocol_player_id not in self._get_known_protocol_ids(parent):
+                continue
+            self._remove_protocol_ids_from_parent(parent, {protocol_player_id})
+            if (
+                parent.provider.domain == "universal_player"
+                and len(parent.linked_output_protocols) == 0
+            ):
+                # no protocols left to play on, see _unlink_from_protocol_parent
+                self.mass.create_task(
+                    self.mass.players.unregister(parent.player_id, permanent=False)
+                )
+            else:
+                parent.refresh_state()
+        # parents that are not registered only hold the link in their stored config
+        for parent_id in list(self.mass.config.get(CONF_PLAYERS, {})):
+            self._remove_protocol_id_from_cache(parent_id, protocol_player_id)
 
     def _detach_owned_protocols(self, player: Player) -> None:
         """Detach the protocol players a parent owns so they can find a new parent."""
@@ -2972,6 +3003,8 @@ class ProtocolLinkingMixin:
             player_ids_to_remove=filtered_protocol_remove or None,
         )
 
+        self._release_protocol_on_removed_children(filtered_protocol_remove)
+
         if filtered_protocol_add:
             await self._activate_group_output_protocol(
                 parent_player, parent_protocol_player, stranded_native_members
@@ -3005,6 +3038,18 @@ class ProtocolLinkingMixin:
                 child_protocol_id,
             )
             child_player.set_active_output_protocol(child_protocol_id)
+
+    def _release_protocol_on_removed_children(self, protocol_member_ids: list[str]) -> None:
+        """Clear the active output protocol a parent still holds for a protocol member that left."""
+        for child_protocol_id in protocol_member_ids:
+            if not (child_protocol := self.get_player(child_protocol_id)):
+                continue
+            if not child_protocol.protocol_parent_id:
+                continue
+            if not (child_player := self.get_player(child_protocol.protocol_parent_id)):
+                continue
+            if child_player.active_output_protocol == child_protocol_id:
+                child_player.set_active_output_protocol(None)
 
     async def _activate_group_output_protocol(
         self,

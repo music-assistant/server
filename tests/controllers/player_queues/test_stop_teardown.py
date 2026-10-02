@@ -53,7 +53,7 @@ def _fake_controller() -> MagicMock:
         """Stand in for the playback lock the stop is wrapped in."""
         yield
 
-    fake.mass.players.get_player_lock = _no_lock
+    fake.mass.players.get_group_and_player_lock = _no_lock
     # the play-action wrapper flags the queue while the stop runs
     queue.extra_attributes = {}
     return fake

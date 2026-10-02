@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -810,6 +811,44 @@ def test_lost_companion_connection_keeps_external_state() -> None:
     assert player.active_source == "com.netflix.Netflix"
 
 
+@pytest.mark.parametrize("source", ["companion", "mrp"])
+def test_lost_connection_closes_pyatv_facade(source: str) -> None:
+    """A dropped connection closes the facade instead of leaking its aiohttp session."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    if source == "companion":
+        player._companion_device = device
+    else:
+        player._mrp_device = device
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed(source, device)
+
+    device.close.assert_called_once_with()
+
+
+def test_close_callback_for_detached_device_leaves_connection_alone() -> None:
+    """A late callback for an already-replaced device never closes the live one."""
+    player = _make_control_player()
+    detached = MagicMock(spec=AppleTV)
+    connected = MagicMock(spec=AppleTV)
+    player._mrp_device = connected
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection") as schedule_connection,
+    ):
+        player._handle_connection_closed("mrp", detached)
+
+    detached.close.assert_not_called()
+    connected.close.assert_not_called()
+    assert player._mrp_device is connected
+    schedule_connection.assert_not_called()
+
+
 async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
     """A failed MRP monitor leaves an active Companion control channel intact."""
     player = _make_control_player()
@@ -843,6 +882,33 @@ async def test_connection_retains_listener_references() -> None:
     assert player._companion_listener is None
 
 
+async def test_cancelled_connect_closes_the_device_it_creates() -> None:
+    """A cancelled connect still closes the device it ends up with."""
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    device = MagicMock(spec=AppleTV)
+    started = asyncio.Event()
+    connected = asyncio.Event()
+
+    async def _connect(*_args: object, **_kwargs: object) -> AppleTV:
+        started.set()
+        await connected.wait()
+        return device
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect", side_effect=_connect
+    ):
+        task = asyncio.create_task(player._connect_companion())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected.set()
+        await asyncio.sleep(0.01)
+
+    device.close.assert_called_once()
+    assert player._companion_device is None
+
+
 async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     """Playback monitoring connects with pyatv's complete AirPlay credentials."""
     credentials = "ltpk:ltsk:accessory-id:client-id"
@@ -867,6 +933,7 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     service = config.get_service(Protocol.AirPlay)
     assert service is not None
     assert service.credentials == credentials
+    assert connect.await_args.kwargs["session"] is player.mass.http_session
     assert player._mrp_state_listener is not None
     assert player._mrp_push_listener is not None
 

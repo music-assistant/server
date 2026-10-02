@@ -23,6 +23,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
+from tests.common import set_music_source_access
 
 
 def _make_prov(
@@ -49,7 +50,7 @@ def test_get_providers_supporting_feature_orders_by_type_then_priority() -> None
     meta_a = _make_prov("meta_a", ProviderType.METADATA, {ProviderFeature.SIMILAR_TRACKS})
     plugin_a = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_TRACKS})
     unrelated = _make_prov("u", ProviderType.MUSIC, {ProviderFeature.SEARCH})
-    mass.get_providers.return_value = [music_a, music_b, meta_a, plugin_a, unrelated]
+    mass.providers = [music_a, music_b, meta_a, plugin_a, unrelated]
 
     result = MusicAssistant.get_providers_supporting_feature(mass, ProviderFeature.SIMILAR_TRACKS)
 
@@ -61,7 +62,7 @@ def test_get_providers_supporting_feature_skips_unavailable() -> None:
     mass = Mock(spec=MusicAssistant)
     alive = _make_prov("a", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS})
     dead = _make_prov("d", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS}, available=False)
-    mass.get_providers.return_value = [alive, dead]
+    mass.providers = [alive, dead]
 
     result = MusicAssistant.get_providers_supporting_feature(mass, ProviderFeature.SIMILAR_TRACKS)
 
@@ -73,7 +74,7 @@ def test_get_providers_supporting_feature_respects_custom_priority() -> None:
     mass = Mock(spec=MusicAssistant)
     music = _make_prov("m", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS})
     plugin = _make_prov("p", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_TRACKS})
-    mass.get_providers.return_value = [music, plugin]
+    mass.providers = [music, plugin]
 
     result = MusicAssistant.get_providers_supporting_feature(
         mass,
@@ -617,6 +618,8 @@ def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, 
         "connect": bound_plugin,
         "vban": unbound_plugin,
     }.get(instance_id)
+    # no music sources at all, so nothing narrows this listing but the player filter
+    set_music_source_access(mass, {})
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -684,12 +687,9 @@ async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     controller, _bound, _unbound = _audio_source_browse_controller()
     restricted_user = Mock(player_filter=["office"])
 
-    with (
-        patch(
-            "music_assistant.controllers.music.controller.get_current_user",
-            return_value=restricted_user,
-        ),
-        patch("music_assistant.controllers.music.controller.has_scope", return_value=False),
+    with patch(
+        "music_assistant.controllers.music.controller.get_current_user",
+        return_value=restricted_user,
     ):
         unscoped = await controller.browse(path=None)
         hidden_scope = await controller.browse(path=None, player_id="kitchen")

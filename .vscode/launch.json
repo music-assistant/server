@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Music Assistant: Server",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "music_assistant",
+      "justMyCode": false,
+      "args": ["--log-level", "debug"],
+      "env": {
+        "PYTHONDEVMODE": "1",
+        // Bundled provider credentials for core maintainers, read from a checkout of the
+        // private appvars repository next to this one. A missing file just leaves them empty.
+        "MASS_APP_VARS_FILE": "${workspaceFolder}/../appvars/app_vars.json"
+      }
+    },
+    {
+      "name": "Music Assistant: Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "args": ["tests"]
+    },
+    {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
