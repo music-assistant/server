@@ -65,9 +65,20 @@ def test_parse_tags_reports_actionable_ffprobe_error(
         tags.parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE, "timeout": None}
     args = check_output.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
+
+
+def test_parse_tags_timeout_raises_invalid_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stalled ffprobe is killed after the timeout and reported as invalid data."""
+    check_output = MagicMock(side_effect=subprocess.TimeoutExpired(cmd=("ffprobe",), timeout=5))
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError, match="Timed out"):
+        tags.parse_tags("https://stream.test/track.flac", timeout=5)
+
+    assert check_output.call_args.kwargs["timeout"] == 5
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:
