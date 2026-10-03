@@ -79,6 +79,7 @@ from music_assistant.controllers.storage.constants import (
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
     SIZE_DECIMALS,
+    STORAGE_DOCS_URL,
 )
 from music_assistant.controllers.storage.helpers import is_within, share_key
 from music_assistant.controllers.storage.models import (
@@ -122,6 +123,7 @@ class StorageController(CoreController):
         self.manifest.name = "Storage"
         self.manifest.description = "Keeps track of the storage the server can use."
         self.manifest.icon = "harddisk"
+        self.manifest.documentation = STORAGE_DOCS_URL
         self._locations: list[StorageLocation] = []
         self._in_container = False
         # the data and cache directory of the server, as given until setup resolves them
