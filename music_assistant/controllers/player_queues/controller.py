@@ -873,10 +873,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         )
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
-    @handle_play_action
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """
         Handle SKIP command for given queue.
+
+        Quick repeated presses add up into a single jump.
 
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
@@ -887,10 +888,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
         if not current_item.duration:
             raise InvalidCommand("Can not skip in items without duration.")
-        target = self._clamp_skip_target(
-            queue.corrected_elapsed_time + seconds, current_item.duration
-        )
-        await self.seek(queue_id, int(target))
+        queue_data = self._queue_data[queue_id]
+        if queue_data.pending_skip_item_id != current_item.queue_item_id:
+            queue_data.pending_skip_seconds = 0
+        queue_data.pending_skip_item_id = current_item.queue_item_id
+        queue_data.pending_skip_seconds += seconds
+        await self._apply_pending_skip(queue_id)
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
     async def seek(self, queue_id: str, position: int = 10) -> None:
@@ -1972,6 +1975,32 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param duration: Duration of the item being skipped in.
         """
         return max(0.0, min(target, max(0.0, duration - SKIP_END_MARGIN)))
+
+    @handle_play_action
+    async def _apply_pending_skip(self, queue_id: str) -> None:
+        """
+        Seek by the skip seconds collected for the queue's current item, if any.
+
+        :param queue_id: queue_id of the queue to apply the pending skip to.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        # taken before seeking, so a failed seek does not carry its offset into later skips
+        item_id, seconds = queue_data.pending_skip_item_id, queue_data.pending_skip_seconds
+        queue_data.pending_skip_item_id = None
+        queue_data.pending_skip_seconds = 0
+        queue = queue_data.queue
+        if (
+            not seconds
+            or item_id is None
+            or (item := queue.current_item) is None
+            or item.queue_item_id != item_id
+            or not item.duration
+        ):
+            # nothing left to apply, or the item changed while waiting
+            return
+        target = self._clamp_skip_target(queue.corrected_elapsed_time + seconds, item.duration)
+        await self.seek(queue_id, int(target))
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""

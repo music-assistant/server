@@ -67,6 +67,10 @@ class PlayerQueueData:
     prev_state: CompareState | None = None
     transitioning: bool = False
     play_action_refcount: int = 0
+    # skip seconds awaiting the playback lock and the item they apply to; a burst of presses
+    # is merged into one seek
+    pending_skip_seconds: int = 0
+    pending_skip_item_id: str | None = None
     last_counted_play: str | None = None
     # session_id whose flow stream was fully generated
     flow_buffer_completed: str | None = None

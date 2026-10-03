@@ -85,7 +85,7 @@ Supporting modules in `helpers/`:
 
 ### Buffer Modes
 
-- **SEEKABLE** (tracks): Maintains a deque of 1-second PCM chunks with seek support. Old chunks are discarded when the buffer reaches max size
+- **SEEKABLE** (tracks): Maintains a deque of 1-second PCM chunks with seek support. Old chunks are discarded when the buffer reaches max size, keeping up to 60 seconds (a fifth of the window on the smallest setting) of played audio for skipping back
 - **ROLLING** (radio/non-seekable): Short FIFO buffer (~15 seconds) where the consumer pops chunks sequentially
 
 ### Key Methods
