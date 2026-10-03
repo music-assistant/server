@@ -295,6 +295,9 @@ class SmartDJProvider(PluginProvider):
                 )
             return SignalControl(state=str(value), weight=1.0)
 
+        transition_bars = int(raw.get("transition_bars", 8))
+        if transition_bars not in {4, 8, 16, 32}:
+            raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
         control = DJControls(
             bpm=signal("bpm"),
             key=signal("key", "soft" if prefer_keys else "disabled"),
@@ -311,7 +314,7 @@ class SmartDJProvider(PluginProvider):
             max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
             instrumental=str(raw.get("instrumental", "any")),
             explicit=str(raw.get("explicit", "allow")),
-            transition_bars=int(raw.get("transition_bars", 8)),
+            transition_bars=transition_bars,
             automix_enabled=bool(raw.get("automix_enabled", False)),
             smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
             lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),
