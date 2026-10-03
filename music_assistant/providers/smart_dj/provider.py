@@ -78,7 +78,16 @@ class SmartDJProvider(PluginProvider):
                 data = json.loads(raw)
                 now = asyncio.get_running_loop().time()
                 if isinstance(data, dict):
-                    self._cache = {key: (now, value) for key, value in data.items() if isinstance(value, dict)}
+                    loaded: dict[str, tuple[float, dict[str, Any]]] = {}
+                    for key, entry in data.items():
+                        if isinstance(entry, dict) and isinstance(entry.get("value"), dict):
+                            age = float(entry.get("saved_at", 0.0))
+                            timestamp = now - max(0.0, __import__("time").time() - age) if age else now
+                            if now - timestamp < CACHE_TTL:
+                                loaded[key] = (timestamp, entry["value"])
+                        elif isinstance(entry, dict):
+                            loaded[key] = (now, entry)
+                    self._cache = loaded
         except (OSError, ValueError, TypeError) as err:
             self.logger.warning("Could not load Smart DJ cache: %s", err)
 
@@ -86,7 +95,15 @@ class SmartDJProvider(PluginProvider):
         """Persist analysis cache atomically."""
         try:
             await asyncio.to_thread(self._cache_file.parent.mkdir, parents=True, exist_ok=True)
-            payload = {key: value for key, (_timestamp, value) in self._cache.items()}
+            wall_now = __import__("time").time()
+            loop_now = asyncio.get_running_loop().time()
+            payload = {
+                key: {
+                    "saved_at": wall_now - max(0.0, loop_now - timestamp),
+                    "value": value,
+                }
+                for key, (timestamp, value) in self._cache.items()
+            }
             tmp = self._cache_file.with_suffix(".tmp")
             await asyncio.to_thread(tmp.write_text, json.dumps(payload))
             await asyncio.to_thread(tmp.replace, self._cache_file)
