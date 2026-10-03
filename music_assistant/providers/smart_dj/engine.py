@@ -416,4 +416,25 @@ def beam_optimize(
             end = result.pop(end_index)
             result.append({**end, "reasons": [*end.get("reasons", []), "end track"]})
 
-    return result
+    annotated: list[dict[str, Any]] = []
+    previous = current
+    for item in result:
+        analysis = item.get("analysis") if isinstance(item.get("analysis"), dict) else None
+        bpm_change = None
+        energy_delta = None
+        key_affinity = None
+        if isinstance(previous, dict) and isinstance(analysis, dict):
+            if isinstance(previous.get("bpm"), (int, float)) and isinstance(analysis.get("bpm"), (int, float)):
+                bpm_change = float(analysis["bpm"]) - float(previous["bpm"])
+            if isinstance(previous.get("energy"), (int, float)) and isinstance(analysis.get("energy"), (int, float)):
+                energy_delta = float(analysis["energy"]) - float(previous["energy"])
+            key_affinity = camelot_affinity(previous.get("camelot"), analysis.get("camelot"))
+        annotated.append({
+            **item,
+            "bpm_change": bpm_change,
+            "energy_delta": energy_delta,
+            "key_affinity": key_affinity,
+            "transition_bars": controls.transition_bars,
+        })
+        previous = analysis
+    return annotated
