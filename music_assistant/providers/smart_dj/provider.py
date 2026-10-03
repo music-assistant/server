@@ -26,6 +26,19 @@ MUSICAE_HOST = "dj-track-audio-analysis-api.p.rapidapi.com"
 MUSICAE_BASE = f"https://{MUSICAE_HOST}"
 CACHE_TTL = 86400.0
 
+def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
+    """Convert Music Assistant key/mode to Camelot notation."""
+    if not key or not mode:
+        return None
+    minor = mode.lower() in {"minor", "min", "m"}
+    minor_keys = {"Ab": "1A", "Eb": "2A", "Bb": "3A", "F": "4A", "C": "5A", "G": "6A",
+                  "D": "7A", "A": "8A", "E": "9A", "B": "10A", "F#": "11A", "C#": "12A"}
+    major_keys = {"B": "1B", "F#": "2B", "C#": "3B", "Ab": "4B", "Eb": "5B", "Bb": "6B",
+                  "F": "7B", "C": "8B", "G": "9B", "D": "10B", "A": "11B", "E": "12B"}
+    normalized = key.replace("♭", "b").replace("♯", "#")
+    return (minor_keys if minor else major_keys).get(normalized)
+
+
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
@@ -151,6 +164,9 @@ class SmartDJProvider(PluginProvider):
                     "downbeats": analysis.downbeats,
                     "rms_energy": analysis.rms_energy,
                     "spectral_centroid": analysis.spectral_centroid,
+                    "instrumental": (analysis.instrumentalness is not None and analysis.instrumentalness >= 0.5),
+                    "instrumentalness": analysis.instrumentalness,
+                    "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
                     **(metadata or {}),
                 }
@@ -186,6 +202,8 @@ class SmartDJProvider(PluginProvider):
             "downbeats": result.get("downbeats"),
             "rms_energy": result.get("rms_energy") or result.get("waveform"),
             "spectral_centroid": result.get("spectral_centroid"),
+            "instrumental": result.get("instrumental") if isinstance(result.get("instrumental"), bool) else (result.get("instrumentalness") >= 0.5 if isinstance(result.get("instrumentalness"), (int, float)) else None),
+            "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
             "raw": result,
             **(metadata or {}),
