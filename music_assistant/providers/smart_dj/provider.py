@@ -107,7 +107,9 @@ class SmartDJProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
 
-        if provider != "spotify":
+        provider_obj = self.mass.get_provider(provider)
+        provider_domain = getattr(provider_obj, "domain", provider)
+        if provider_domain != "spotify":
             return None
         now = asyncio.get_running_loop().time()
         cached = self._cache.get(item_id)
