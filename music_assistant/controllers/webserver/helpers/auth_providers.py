@@ -449,6 +449,8 @@ class BuiltinLoginProvider(LoginProvider):
         """
         super().__init__(mass, provider_id, config)
         self._rate_limiter = LoginRateLimiter()
+        # Bounds concurrent password hashing, so a flood of logins cannot saturate the CPU
+        self._hash_semaphore = asyncio.Semaphore(2)
 
     @property
     def provider_type(self) -> AuthProviderType:
@@ -490,21 +492,17 @@ class BuiltinLoginProvider(LoginProvider):
         # First, look up user by username to get user_id
         # This is needed to create the password hash with user_id in the salt
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        # Hash for an unknown username too, so the response time does not reveal
-        # whether a username exists
+        # Hash and verify for an unknown username too, so the response time does not
+        # reveal whether a username exists
         user_id = user_row["user_id"] if user_row else UNKNOWN_USER_ID
         password_hash = await self._hash_password(password, user_id)
-        if not user_row:
-            # Record failed attempt even if username doesn't exist
-            await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
 
         # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, password_hash, include_disabled=True
         )
 
-        if not user:
+        if not user_row or not user:
             # Record failed attempt
             await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
@@ -597,9 +595,10 @@ class BuiltinLoginProvider(LoginProvider):
         """
         # Combine user_id (random) and server_id for maximum security
         salt = f"{user_id}:{self.mass.server_id}"
-        hashed = await asyncio.to_thread(
-            hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
-        )
+        async with self._hash_semaphore:
+            hashed = await asyncio.to_thread(
+                hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
+            )
         return hashed.hex()
 
 
