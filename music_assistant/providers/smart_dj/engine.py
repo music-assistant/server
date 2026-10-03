@@ -235,6 +235,8 @@ def _signal_values(
         if control.state != "soft":
             continue
         effective = max(0.0, control.weight) * getattr(w, name)
+        if name == "momentum":
+            effective *= 0.5 + controls.transition_aggressiveness
         total += value * effective
         total_weight += effective
         if value >= 0.85:
