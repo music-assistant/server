@@ -353,7 +353,12 @@ def beam_optimize(
     if controls.end_track_id and controls.end_track_id not in ids:
         raise RuntimeError(f"End track is missing: {controls.end_track_id}")
 
-    fixed_positions = {idx: t for idx, t in enumerate(tracks) if t.get("queue_item_id") in fixed_ids}
+    fixed_positions = {
+        idx: t
+        for idx, t in enumerate(tracks)
+        if t.get("queue_item_id") in fixed_ids
+        or not isinstance(t.get("analysis"), dict)
+    }
     movable = [
         t for idx, t in enumerate(tracks)
         if idx not in fixed_positions and t.get("queue_item_id") not in excluded_ids
@@ -371,8 +376,9 @@ def beam_optimize(
             fixed_data = _merge_track(fixed)
             if fixed.get("queue_item_id") in controls.required_ids:
                 pass
-            result.append({**fixed, "score": 1.0, "reasons": ["fixed track"]})
-            current = fixed_data
+            reason = "analysis unavailable; preserved" if not isinstance(fixed.get("analysis"), dict) else "fixed track"
+            result.append({**fixed, "score": None if reason.startswith("analysis") else 1.0, "reasons": [reason]})
+            current = None if reason.startswith("analysis") else fixed_data
             continue
         # Gather the remaining interval until the next fixed slot.
         if idx < len(tracks):
