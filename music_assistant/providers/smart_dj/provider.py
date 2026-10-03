@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -72,8 +71,7 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/transition_plan", self.transition_plan),
         )
         for command, handler in handlers:
-            scope = Scope.QUEUES_CONTROL if command == "smart_dj/rank_queue" else Scope.QUEUES_READ
-            self._handles.append(self.mass.register_api_command(command, handler, required_scope=scope))
+            self._handles.append(self.mass.register_api_command(command, handler))
 
     async def unload(self, is_removed: bool = False) -> None:
         """Close the HTTP client and unregister commands."""
