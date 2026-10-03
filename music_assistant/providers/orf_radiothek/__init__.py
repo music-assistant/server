@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncGenerator, Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -106,6 +106,9 @@ CONF_CATCHUP_STATIONS = "catchup_stations"  # optional comma-separated station i
 # local-image pseudo scheme (provider-owned)
 LOCAL_IMG_PREFIX = "radiothek://station/"
 CATCHUP_DAYS = 30
+# recent days still change (live/upcoming broadcasts), older days are final
+CATCHUP_RECENT_DAYS_CACHE = 3600
+CATCHUP_PAST_DAYS_CACHE = 3600 * 24 * 7
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
@@ -238,13 +241,33 @@ class RadiothekProvider(MusicProvider):
                 return self._bundle
             raise
 
-    @use_cache(3600 * 24)
-    async def _get_broadcasts_for_day(self, station: str, yyyymmdd: str) -> list[dict[str, Any]]:
-        data = await self._http_get_json(BROADCASTS_URL.format(station=station, yyyymmdd=yyyymmdd))
-        payload = data.get("payload")
-        if not isinstance(payload, list):
+    async def _get_broadcasts_for_day(self, station: str, day: date) -> list[dict[str, Any]]:
+        yyyymmdd = day.strftime("%Y%m%d")
+        cache_key = f"broadcasts.{station}.{yyyymmdd}"
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        if isinstance(cached, list):
+            return cached
+
+        try:
+            data = await self._http_get_json(
+                BROADCASTS_URL.format(station=station, yyyymmdd=yyyymmdd)
+            )
+        except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
+            self.logger.warning("Failed to fetch broadcasts of %s for %s: %s", station, day, err)
             return []
-        return [x for x in payload if isinstance(x, dict)]
+
+        payload = data.get("payload")
+        items = [x for x in payload if isinstance(x, dict)] if isinstance(payload, list) else []
+        # an empty day is not cached: ORF may not have published it yet
+        if items:
+            is_recent = (utc().date() - day).days <= 1
+            await self.mass.cache.set(
+                cache_key,
+                items,
+                expiration=CATCHUP_RECENT_DAYS_CACHE if is_recent else CATCHUP_PAST_DAYS_CACHE,
+                provider=self.instance_id,
+            )
+        return items
 
     @use_cache(3600 * 24)
     async def _get_broadcast_detail(self, station: str, bid: int) -> dict[str, Any]:
@@ -440,6 +463,7 @@ class RadiothekProvider(MusicProvider):
 
         prefix = self.iso_prefix(b.get("niceTime"))
         name = f"{prefix} - {title}" if prefix else title
+        release_date = self._release_date(b.get("niceTime"))
 
         duration_sec: int | None = None
         dur_ms = b.get("duration")
@@ -452,7 +476,7 @@ class RadiothekProvider(MusicProvider):
             name=name,
             item_id=eid,
             provider=self.instance_id,
-            position=0,
+            position=self._position_from_date(release_date),
             duration=duration_sec or 0,
             podcast=ItemMapping(
                 item_id=podcast_id,
@@ -472,7 +496,7 @@ class RadiothekProvider(MusicProvider):
         sub = self._strip_html(b.get("subtitle"))
         if sub:
             ep.metadata.description = sub
-        ep.metadata.release_date = self._release_date(b.get("niceTime"))
+        ep.metadata.release_date = release_date
 
         # best image
         imgs = b.get("images")
@@ -562,6 +586,11 @@ class RadiothekProvider(MusicProvider):
         except TypeError, ValueError:
             return None
 
+    @staticmethod
+    def _position_from_date(release_date: datetime | None) -> int:
+        """Return a sortable episode position (newest highest) for a release date."""
+        return int(release_date.timestamp()) if release_date else 0
+
     def _episode_from_orf_podcast_episode_obj(
         self, ep: OrfPodcastEpisode, podcast: Podcast
     ) -> PodcastEpisode:
@@ -572,6 +601,7 @@ class RadiothekProvider(MusicProvider):
         base_title = ep.title or guid
         prefix = self.iso_prefix(ep.published)
         name = f"{prefix} - {base_title}" if prefix else base_title
+        release_date = self._release_date(ep.published)
 
         duration_sec: int | None = None
         if ep.duration_ms and ep.duration_ms > 0:
@@ -581,7 +611,7 @@ class RadiothekProvider(MusicProvider):
             name=name,
             item_id=eid,
             provider=self.instance_id,
-            position=0,
+            position=self._position_from_date(release_date),
             duration=duration_sec or 0,
             podcast=podcast,
             provider_mappings={
@@ -595,7 +625,7 @@ class RadiothekProvider(MusicProvider):
 
         if ep.description:
             pe.metadata.description = ep.description
-        pe.metadata.release_date = self._release_date(ep.published)
+        pe.metadata.release_date = release_date
 
         # image (episode-level)
         if ep.image:
@@ -782,8 +812,7 @@ class RadiothekProvider(MusicProvider):
         today = utc().date()
         for day_offset in range(CATCHUP_DAYS):
             d = today - timedelta(days=day_offset)
-            yyyymmdd = f"{d.year:04d}{d.month:02d}{d.day:02d}"
-            items = await self._get_broadcasts_for_day(station_id, yyyymmdd)
+            items = await self._get_broadcasts_for_day(station_id, d)
             for b in items:
                 episode = self._episode_from_broadcast_obj(
                     b=b,
