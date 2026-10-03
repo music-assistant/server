@@ -27,6 +27,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from tests.common import MockPlayer, MockProvider
 
@@ -3508,3 +3509,196 @@ class TestReformResumeGate:
         reform.assert_awaited_once()
         assert reform.await_args is not None
         assert reform.await_args.kwargs.get("resume_playback") is False
+
+
+def _static_group_with_a_member_away(
+    mass: MagicMock,
+) -> tuple[SyncGroupPlayer, MagicMock, MagicMock]:
+    """Return a playing static group whose leader holds only itself; its other member is back."""
+    sgp = _make_sync_group(mass)
+    sgp.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: {"dynamic_members": False, "members_filter": []}.get(
+            key, default
+        )
+    )
+    sgp._cache.clear()
+    leader = _make_mock_player("leader", provider_domain="sendspin")
+    display = _make_mock_player("display", provider_domain="sendspin")
+    for player in (leader, display):
+        player.state.active_group = None
+    leader.state.group_members = ["leader"]
+    leader.state.can_group_with = {"display"}
+    sgp._attr_static_group_members = ["leader", "display"]
+    sgp._attr_group_members = ["leader", "display"]
+    sgp.sync_leader = leader
+    mass.players.get_player = _player_lookup({"leader": leader, "display": display})
+    return sgp, leader, display
+
+
+class TestStaticMemberRejoin:
+    """Test re-adding the configured members that return while a static group plays."""
+
+    def test_a_returning_member_is_rejoined_after_a_debounce(self) -> None:
+        """A configured member the leader can group with but does not hold is re-added."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+
+        sgp.on_group_member_updated(
+            leader, {"can_group_with": (frozenset(), frozenset({"display"}))}
+        )
+
+        mass.call_later.assert_called_once_with(
+            REFORM_DEBOUNCE_SECONDS,
+            sgp._rejoin_members,
+            task_id="sync_group_rejoin_syncgroup_test",
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejoin_adds_the_members_to_the_live_leader(self) -> None:
+        """The re-add goes to the leader under its lock, leaving playback alone."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+
+        await sgp._rejoin_members()
+
+        mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+        mass.players._handle_play_media.assert_not_awaited()
+
+    def test_members_the_leader_holds_are_not_rejoined(self) -> None:
+        """A leader update with every member in place schedules nothing."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+        leader.state.group_members = ["leader", "display"]
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+
+    def test_a_member_held_through_its_protocol_player_is_not_rejoined(self) -> None:
+        """A leader listing the member's protocol endpoint holds the member."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        endpoint = _make_mock_player(
+            "display_proto", provider_domain="airplay", player_type=PlayerType.PROTOCOL
+        )
+        endpoint.protocol_parent_id = "display"
+        leader.state.group_members = ["leader", "display_proto"]
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "display": display, "display_proto": endpoint}
+        )
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+
+    def test_a_member_the_leader_can_not_group_with_is_not_rejoined(self) -> None:
+        """A member that is offline or incompatible is not on the leader's list, and left be."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+        leader.state.can_group_with = set()
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("attribute", "value"),
+        [
+            ("synced_to", "other_leader"),
+            ("active_group", "other_group"),
+            ("group_members", ["display", "child"]),
+        ],
+    )
+    def test_a_member_held_elsewhere_is_not_rejoined(self, attribute: str, value: Any) -> None:
+        """A member another group holds, or that leads a group of its own, is not stolen."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _static_group_with_a_member_away(mass)
+        setattr(display.state, attribute, value)
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_not_called()
+
+    def test_a_dynamic_or_leaderless_group_does_not_rejoin(self) -> None:
+        """Only a static group with a live leader has configured members to recover."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _static_group_with_a_member_away(mass)
+        sgp.sync_leader = None
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+        mass.call_later.assert_not_called()
+
+        dynamic = _make_sync_group(mass, "syncgroup_dynamic")
+        dynamic._attr_static_group_members = ["leader", "display"]
+        dynamic._attr_group_members = ["leader", "display"]
+        dynamic.sync_leader = leader
+        dynamic.on_group_member_updated(leader, {"volume_level": (10, 20)})
+        mass.call_later.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejoin_is_dropped_once_the_leader_is_gone(self) -> None:
+        """A re-add scheduled for a leader that changed or left meanwhile is not sent."""
+        mass = _make_mock_mass()
+        sgp, _leader, _display = _static_group_with_a_member_away(mass)
+        other = _make_mock_player("other", provider_domain="sendspin")
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(sgp, "sync_leader", other)
+        )
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+
+        sgp.sync_leader = None
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_member_grouped_elsewhere_meanwhile_is_not_rejoined(self) -> None:
+        """A member that joined another group while the re-add was pending is not taken back."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _static_group_with_a_member_away(mass)
+        # the user started that other group between the leader's update and the debounce
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(display.state, "synced_to", "other_leader")
+        )
+
+        await sgp._rejoin_members()
+
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_rejoined_member_is_tracked_for_the_next_formation(self) -> None:
+        """A member a form dropped as incompatible at the time is tracked again."""
+        mass = _make_mock_mass()
+        sgp, _leader, _display = _static_group_with_a_member_away(mass)
+        sgp._attr_group_members = ["leader"]
+
+        await sgp._rejoin_members()
+
+        assert sgp._attr_group_members == ["leader", "display"]
+
+    @pytest.mark.asyncio
+    async def test_a_member_removed_from_the_group_meanwhile_is_not_rejoined(self) -> None:
+        """A member the group was saved without while the re-add was pending is left out."""
+        mass = _make_mock_mass()
+        sgp, _leader, _display = _static_group_with_a_member_away(mass)
+        sgp._attr_static_group_members = ["leader"]
+        sgp._attr_group_members = ["leader"]
+
+        await sgp._rejoin_members()
+
+        mass.players._handle_set_members.assert_not_awaited()
+        assert sgp._attr_group_members == ["leader"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_rejoin_is_logged_and_left_to_the_next_update(self) -> None:
+        """A leader that refuses the add does not fail the group; the next update retries."""
+        mass = _make_mock_mass()
+        sgp, _leader, _display = _static_group_with_a_member_away(mass)
+        sgp._attr_group_members = ["leader"]
+        mass.players._handle_set_members = AsyncMock(side_effect=PlayerCommandFailed("busy"))
+
+        await sgp._rejoin_members()
+
+        assert sgp._attr_group_members == ["leader"]

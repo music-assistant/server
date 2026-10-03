@@ -77,8 +77,8 @@ def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSyste
     """
     Build a bare filesystem provider that resolves any image path to `resolved_path`.
 
-    A real provider instance is used rather than a mock because the image helpers narrow
-    on the concrete provider types before calling `resolve_image`.
+    A real provider instance is used rather than a mock so the image helpers resolve the
+    path through the provider's own `resolve_image`.
 
     :param instance_id: Instance id to register the provider under.
     :param resolved_path: Absolute path every image path resolves to.
