@@ -2510,6 +2510,37 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             audio_format=audio_format,
         )
 
+    async def mark_provider_mapping_unavailable(
+        self, media_item: MediaItemType, mapping: ProviderMapping
+    ) -> None:
+        """
+        Mark a library item's provider mapping unavailable after its provider did not find it.
+
+        It is marked available again once the provider lists the item or the mapping is found again.
+        Items that are not library items are left untouched.
+
+        :param media_item: The library item that holds the mapping.
+        :param mapping: The provider mapping whose item the provider did not find.
+        """
+        if media_item.provider != "library" or not mapping.available:
+            return
+        self.logger.debug(
+            "Marking %s/%s of %s unavailable: not found on the provider",
+            mapping.provider_instance,
+            mapping.item_id,
+            media_item.uri,
+        )
+        mapping.available = False
+        # the item or its mapping may be gone by now, e.g. removed while it was being played
+        with suppress(MediaNotFoundError):
+            await self.update_provider_mapping(
+                media_item.media_type,
+                media_item.item_id,
+                mapping.provider_instance,
+                mapping.item_id,
+                available=False,
+            )
+
     def queue_provider_mapping_correction_task(self) -> BackgroundTask:
         """Queue the provider mapping correction as a managed background task."""
         self._register_provider_mapping_correction_task()
