@@ -6,7 +6,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
@@ -429,9 +429,11 @@ class DLNAPlayer(Player):
                 # controller resolves the real MAC via ARP during registration
                 # using the IP address extracted below.
                 # Try to extract just the IP from the URL for matching
-                ip_address = self.device.device.presentation_url or self.description_url
+                # presentationURL may be relative (e.g. "/"), resolve it against the description URL
                 with suppress(ValueError):
-                    parsed = urlparse(ip_address)
+                    parsed = urlparse(
+                        urljoin(self.description_url, self.device.device.presentation_url or "")
+                    )
                     if parsed.hostname:
                         self._attr_device_info.add_identifier(
                             IdentifierType.IP_ADDRESS, parsed.hostname
