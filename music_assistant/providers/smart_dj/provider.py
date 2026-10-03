@@ -150,6 +150,7 @@ class SmartDJProvider(PluginProvider):
         if analysis_provider not in {"auto", "music_assistant", "musicae"}:
             raise RuntimeError(f"Unknown analysis provider: {analysis_provider}")
         try:
+            analysis = None
             if analysis_provider != "musicae":
                 analysis = await self.mass.streams.audio_analysis.get_audio_analysis(item_id, provider)
             if analysis:
