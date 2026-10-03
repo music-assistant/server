@@ -459,7 +459,7 @@ class ARDAudiothek(MusicProvider):
                 self.domain,
                 self.instance_id,
                 episode,
-                episode_id,
+                prov_podcast_id,
                 show_title,
                 position,
                 self._get_progress(episode_id),
