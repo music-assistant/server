@@ -145,10 +145,13 @@ class SmartDJProvider(PluginProvider):
                 raise RuntimeError("Musicae returned an invalid response")
             return data
 
-    async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        """Get cached MA analysis first, then Musicae for Spotify-compatible tracks."""
+    async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None, analysis_provider: str = "auto") -> dict[str, Any] | None:
+        """Get analysis using the selected provider policy."""
+        if analysis_provider not in {"auto", "music_assistant", "musicae"}:
+            raise RuntimeError(f"Unknown analysis provider: {analysis_provider}")
         try:
-            analysis = await self.mass.streams.audio_analysis.get_audio_analysis(item_id, provider)
+            if analysis_provider != "musicae":
+                analysis = await self.mass.streams.audio_analysis.get_audio_analysis(item_id, provider)
             if analysis:
                 return {
                     "bpm": analysis.bpm,
@@ -176,6 +179,9 @@ class SmartDJProvider(PluginProvider):
                 }
         except Exception as err:
             self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
+
+        if analysis_provider == "music_assistant":
+            return None
 
         provider_obj = self.mass.get_provider(provider)
         provider_domain = getattr(provider_obj, "domain", provider)
@@ -284,12 +290,12 @@ class SmartDJProvider(PluginProvider):
             })
         return result
 
-    async def analyze(self, queue_id: str, limit: int = 40) -> dict[str, Any]:
+    async def analyze(self, queue_id: str, limit: int = 40, analysis_provider: str = "auto") -> dict[str, Any]:
         """Analyze the active queue and return DJ-ready metadata."""
         items = (await self._queue_snapshot(queue_id))[:max(1, min(limit, 100))]
         analyzed = []
         tasks = [
-            asyncio.create_task(self._analysis(item["item_id"], item["provider"], {k: item[k] for k in ("genre", "genres", "explicit") if k in item}))
+            asyncio.create_task(self._analysis(item["item_id"], item["provider"], {k: item[k] for k in ("genre", "genres", "explicit") if k in item}, analysis_provider))
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -311,12 +317,13 @@ class SmartDJProvider(PluginProvider):
         controls: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Optimize the upcoming queue under an explicit user control contract."""
-        snapshot = await self.analyze(queue_id)
         tracks = snapshot["tracks"]
         if len(tracks) < 2:
             return snapshot
         raw = dict(controls or {})
         apply = bool(raw.pop("apply", False))
+        analysis_provider = str(raw.get("analysis_provider", "auto"))
+        snapshot = await self.analyze(queue_id, analysis_provider=analysis_provider)
 
         def signal(name: str, fallback: str = "soft") -> SignalControl:
             value = raw.get(name, fallback)
@@ -424,6 +431,11 @@ class SmartDJProvider(PluginProvider):
                 "vocal_protection": True,
                 "bass_eq_management": True,
                 "tempo_planning": True,
+            },
+            "analysis_providers": {
+                "music_assistant": analysis_controller is not None,
+                "musicae": bool(self._key()),
+                "fallback_policy": ["music_assistant", "musicae"],
             },
             "user_control": {
                 "states": ["hard", "soft", "disabled"],
