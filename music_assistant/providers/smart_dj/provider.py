@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -82,7 +83,7 @@ class SmartDJProvider(PluginProvider):
                     for key, entry in data.items():
                         if isinstance(entry, dict) and isinstance(entry.get("value"), dict):
                             age = float(entry.get("saved_at", 0.0))
-                            timestamp = now - max(0.0, __import__("time").time() - age) if age else now
+                            timestamp = now - max(0.0, time.time() - age) if age else now
                             if now - timestamp < CACHE_TTL:
                                 loaded[key] = (timestamp, entry["value"])
                         elif isinstance(entry, dict):
@@ -95,7 +96,7 @@ class SmartDJProvider(PluginProvider):
         """Persist analysis cache atomically."""
         try:
             await asyncio.to_thread(self._cache_file.parent.mkdir, parents=True, exist_ok=True)
-            wall_now = __import__("time").time()
+            wall_now = time.time()
             loop_now = asyncio.get_running_loop().time()
             payload = {
                 key: {
