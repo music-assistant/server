@@ -168,7 +168,7 @@ class SmartDJProvider(PluginProvider):
                     "downbeats": analysis.downbeats,
                     "rms_energy": analysis.rms_energy,
                     "spectral_centroid": analysis.spectral_centroid,
-                    "instrumental": (analysis.instrumentalness is not None and analysis.instrumentalness >= 0.5),
+                    "instrumental": (None if analysis.instrumentalness is None else analysis.instrumentalness >= 0.5),
                     "instrumentalness": analysis.instrumentalness,
                     "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
