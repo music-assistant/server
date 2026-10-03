@@ -8,7 +8,8 @@ asked again -- which for a just-in-time renderer like AI Radio would mean a seco
 text-to-speech render.
 
 The mappings below are given distinct qualities wherever order matters, so the order the
-candidates are reached in is fixed rather than left to the iteration order of a set.
+candidates are reached in is fixed rather than left to the iteration order of a set. The
+tiebreak tests are the exception: they tie on quality on purpose.
 """
 
 from __future__ import annotations
@@ -362,3 +363,60 @@ async def test_concurrent_callers_for_one_queue_item_share_one_resolution() -> N
     assert calls == [ITEM_ID]
     assert first_details is second_details
     assert queue_item.streamdetails is first_details
+
+
+async def test_same_quality_mappings_prefer_the_playing_tracks_folder() -> None:
+    """Of two same-quality mappings, the one in the playing track's folder is streamed."""
+    fs_instance = "filesystem_local--main"
+    same_folder = "Various Artists/Compilation/07 Track.flac"
+    other_folder = "Original Artist/Original Album/01 Track.flac"
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    playing = QueueItem(queue_id="q1", queue_item_id="qi0", name="Playing", duration=None)
+    playing.streamdetails = _streamdetails(
+        "Various Artists/Compilation/01 Track.flac", MediaType.SOUND_EFFECT, fs_instance
+    )
+    cast("MagicMock", audio.mass).player_queues.get.return_value = MagicMock(current_item=playing)
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(fs_instance, item_id=other_folder),
+            _mapping(fs_instance, item_id=same_folder),
+        )
+    )
+
+    assert streamdetails.item_id == same_folder
+
+
+@pytest.mark.parametrize(
+    ("item_id", "shared_folders"),
+    [
+        ("Artist/Album/02 Track.flac", 2),
+        ("Artist/Other Album/02 Track.flac", 1),
+        # a folder whose name only starts like the anchor's is a different folder
+        ("Artist/Album 2/02 Track.flac", 1),
+        ("Artist\\Album\\02 Track.flac", 2),
+        ("02 Track.flac", 0),
+    ],
+)
+def test_folder_affinity_counts_whole_shared_folders(item_id: str, shared_folders: int) -> None:
+    """Only complete leading folders count, whichever path separator the item id uses."""
+    mapping = _mapping("filesystem_local--main", item_id=item_id)
+    anchor = ("filesystem_local--main", "Artist/Album/01 Track.flac")
+
+    assert StreamsAudio._folder_affinity(mapping, anchor) == shared_folders
+
+
+def test_folder_affinity_ignores_other_providers_and_a_missing_anchor() -> None:
+    """Item ids of different provider instances are not comparable paths."""
+    mapping = _mapping("filesystem_local--main", item_id="Artist/Album/02 Track.flac")
+
+    assert (
+        StreamsAudio._folder_affinity(mapping, ("filesystem_smb--nas", "Artist/Album/01.flac")) == 0
+    )
+    assert StreamsAudio._folder_affinity(mapping, None) == 0
