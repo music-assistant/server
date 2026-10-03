@@ -8,12 +8,16 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class SignalControl:
+    """Per-signal policy: hard enforcement, soft preference, or disabled."""
+
     state: str = "soft"  # hard | soft | disabled
     weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
 class DJWeights:
+    """Relative weights of the scoring signals for a mode."""
+
     bpm: float = 0.30
     key: float = 0.25
     energy: float = 0.15
@@ -26,6 +30,8 @@ class DJWeights:
 
 @dataclass(frozen=True, slots=True)
 class DJMode:
+    """A named DJ preset: tolerances, preferred energy direction, and weights."""
+
     name: str
     bpm_tolerance: float
     energy_direction: float
@@ -35,6 +41,8 @@ class DJMode:
 
 @dataclass(frozen=True, slots=True)
 class DJControls:
+    """User-facing control surface: per-signal policies plus hard constraints."""
+
     bpm: SignalControl = SignalControl()
     key: SignalControl = SignalControl()
     energy: SignalControl = SignalControl()
@@ -83,6 +91,7 @@ def _norm_delta(a: Any, b: Any, scale: float) -> float:
 
 
 def camelot_affinity(a: str | None, b: str | None) -> float:
+    """Harmonic compatibility of two Camelot notations (0.0-1.0)."""
     if not a or not b:
         return 0.5
     if a == b:
@@ -126,7 +135,7 @@ def _artist_run_length(
     return count
 
 
-def _hard_fail(
+def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
     current: dict[str, Any] | None,
     candidate: dict[str, Any],
     controls: DJControls,
@@ -273,6 +282,11 @@ def score_candidate(
     *,
     artist_run_length: int = 0,
 ) -> tuple[float, list[str], list[str]]:
+    """Score one candidate against the current track.
+
+    Returns (score, reasons, hard violations); an empty violation list means the
+    candidate is allowed under the current hard constraints.
+    """
     if not candidate:
         return 0.0, [], ["missing analysis"]
     violations = _hard_fail(current, candidate, controls, artist_run_length=artist_run_length)
@@ -290,9 +304,10 @@ def track_score(
     mode: DJMode,
     *,
     bpm_tolerance: float | None = None,
-    energy_target: float | None = None,
+    energy_target: float | None = None,  # noqa: ARG001 - public signature contract
     same_artist: bool = False,
 ) -> tuple[float, list[str]]:
+    """Score a candidate with ad-hoc tolerances (no full DJControls needed)."""
     controls = DJControls(bpm=SignalControl("soft", 1.0), key=SignalControl("soft", 1.0))
     if bpm_tolerance is not None:
         mode = DJMode(mode.name, bpm_tolerance, mode.energy_direction, mode.variety, mode.weights)
@@ -337,8 +352,9 @@ def _beam_pass(
                 if violations:
                     continue
                 item = {**candidate, "score": score, "reasons": reasons}
-                next_beams.append((total + score, path + [item],
-                                   [x for x in remaining if x is not candidate]))
+                next_beams.append(
+                    (total + score, [*path, item], [x for x in remaining if x is not candidate])
+                )
         next_beams.sort(key=lambda x: x[0], reverse=True)
         beams = next_beams[:beam_width]
         if not beams:
@@ -365,7 +381,7 @@ def _optimize_segment(
     return optimized
 
 
-def beam_optimize(
+def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
     tracks: list[dict[str, Any]],
     current: dict[str, Any] | None,
     mode: DJMode,

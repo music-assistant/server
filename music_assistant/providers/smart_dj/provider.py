@@ -13,12 +13,21 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.plugin import PluginProvider
 
-from .engine import DJControls, DJMode, MODES, SignalControl, _merge_track, beam_optimize
+from .engine import (
+    MODES,
+    DJControls,
+    DJMode,
+    SignalControl,
+    _merge_track,
+    beam_optimize,
+    camelot_affinity,
+)
 
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
 
 CONF_RAPIDAPI_KEY = "rapidapi_key"
 MUSICAE_HOST = "dj-track-audio-analysis-api.p.rapidapi.com"
@@ -42,6 +51,7 @@ class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig, supported_features: set[Any]) -> None:
+        """Set up the provider and its analysis cache and API handles."""
         super().__init__(mass, manifest, config, supported_features)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -146,13 +156,13 @@ class SmartDJProvider(PluginProvider):
                 raise RuntimeError(f"Musicae request failed ({response.status}): {body[:300]}")
             data = await response.json()
             if not isinstance(data, dict):
-                raise RuntimeError("Musicae returned an invalid response")
+                raise TypeError("Musicae returned an invalid response")
             return data
 
     async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None, analysis_provider: str = "auto") -> dict[str, Any] | None:
         """Get analysis using the selected provider policy."""
         if analysis_provider not in {"auto", "music_assistant", "musicae"}:
-            raise RuntimeError(f"Unknown analysis provider: {analysis_provider}")
+            raise TypeError(f"Unknown analysis provider: {analysis_provider}")
         try:
             analysis = None
             if analysis_provider != "musicae":
@@ -176,10 +186,7 @@ class SmartDJProvider(PluginProvider):
                     "instrumentalness": analysis.instrumentalness,
                     "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
-                    "sources": {
-                        field: "music_assistant"
-                        for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
-                    },
+                    "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "music_assistant"),
                     **(metadata or {}),
                 }
         except Exception as err:
@@ -220,10 +227,7 @@ class SmartDJProvider(PluginProvider):
             "instrumental": result.get("instrumental") if isinstance(result.get("instrumental"), bool) else (result.get("instrumentalness") >= 0.5 if isinstance(result.get("instrumentalness"), (int, float)) else None),
             "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
-            "sources": {
-                field: "musicae"
-                for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
-            },
+            "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "musicae"),
             "raw": result,
             **(metadata or {}),
         }
@@ -264,10 +268,10 @@ class SmartDJProvider(PluginProvider):
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
-        for item, analysis in zip(items, analyses, strict=True):
-            if isinstance(analysis, Exception):
-                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], analysis)
-                analysis = None
+        for item, result in zip(items, analyses, strict=True):
+            analysis = None if isinstance(result, Exception) else result
+            if isinstance(result, Exception):
+                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
             analyzed.append({**item, "analysis": analysis})
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}

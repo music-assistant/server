@@ -1,10 +1,9 @@
 """Focused Smart DJ engine tests."""
 
-import pytest
 
 from music_assistant.providers.smart_dj.engine import (
-    DJControls,
     MODES,
+    DJControls,
     SignalControl,
     beam_optimize,
     score_candidate,
@@ -12,6 +11,7 @@ from music_assistant.providers.smart_dj.engine import (
 
 
 def test_hard_bpm_rule_is_never_violated() -> None:
+    """Hard bpm rule is never violated."""
     score, _reasons, violations = score_candidate(
         {"bpm": 120, "camelot": "8A"},
         {"bpm": 160, "camelot": "8A"},
@@ -23,6 +23,7 @@ def test_hard_bpm_rule_is_never_violated() -> None:
 
 
 def test_disabled_key_does_not_affect_score() -> None:
+    """Disabled key does not affect score."""
     # Use a compatible adjacent key so the default hard key_relation does not
     # ban the candidate before soft scoring is consulted.
     current = {"bpm": 120, "camelot": "8A", "energy": 0.5}
@@ -36,6 +37,7 @@ def test_disabled_key_does_not_affect_score() -> None:
 
 
 def test_missing_analysis_is_preserved_as_a_barrier() -> None:
+    """Missing analysis is preserved as a barrier."""
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "b", "artist": "B", "analysis": None},
@@ -47,6 +49,7 @@ def test_missing_analysis_is_preserved_as_a_barrier() -> None:
 
 
 def test_required_and_excluded_are_enforced() -> None:
+    """Required and excluded are enforced."""
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
@@ -65,6 +68,7 @@ def test_required_and_excluded_are_enforced() -> None:
 
 
 def test_fixed_position_is_preserved() -> None:
+    """Fixed position is preserved."""
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
@@ -80,6 +84,7 @@ def test_fixed_position_is_preserved() -> None:
 
 
 def test_artist_repeat_limit_is_applied() -> None:
+    """Artist repeat limit is applied."""
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "b", "artist": "A", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
@@ -96,6 +101,7 @@ def test_artist_repeat_limit_is_applied() -> None:
 
 
 def test_excluded_track_does_not_consume_fixed_interval() -> None:
+    """Excluded track does not consume fixed interval."""
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "x", "artist": "X", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
