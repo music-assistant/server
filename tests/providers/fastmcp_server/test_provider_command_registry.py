@@ -14,6 +14,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
 from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.errors import AuthenticationRequired, InsufficientPermissions
 
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -1140,23 +1141,35 @@ def _filtered_mass() -> CommandRegistry:
     cast("Any", mass).players = SimpleNamespace(all=lambda: players)
     cast("Any", mass).player_queues = SimpleNamespace(all=lambda: queues)
     cast("Any", mass).providers = [
-        SimpleNamespace(
-            instance_id="spotify--user",
-            domain="spotify",
-            name="Spotify",
-            available=False,
-            enabled=True,
-            last_error="token expired",
-        ),
-        SimpleNamespace(
-            instance_id="qobuz--other",
-            domain="qobuz",
-            name="Qobuz of someone else",
-            available=False,
-            enabled=True,
-            last_error="login failed for other@example.org",
-        ),
+        SimpleNamespace(instance_id="spotify--user", available=False),
+        SimpleNamespace(instance_id="qobuz--other", available=False),
     ]
+    cast("Any", mass).config = SimpleNamespace(
+        get_provider_configs=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    instance_id="spotify--user",
+                    domain="spotify",
+                    type=SimpleNamespace(value="music"),
+                    name="Spotify",
+                    default_name="Spotify",
+                    enabled=True,
+                    last_error=ProviderError(error_code=999, message="token expired"),
+                ),
+                SimpleNamespace(
+                    instance_id="qobuz--other",
+                    domain="qobuz",
+                    type=SimpleNamespace(value="music"),
+                    name="Qobuz of someone else",
+                    default_name="Qobuz",
+                    enabled=True,
+                    last_error=ProviderError(
+                        error_code=999, message="login failed for other@example.org"
+                    ),
+                ),
+            ]
+        )
+    )
     return mass
 
 

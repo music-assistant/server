@@ -475,19 +475,25 @@ def revalidate_preflight_command_sync(
     Reclassify request-dependent state synchronously after final authentication.
 
     A live getter that only returns an awaitable cannot prove that its earlier
-    result survived the final authentication await. Such cases are classified
-    conservatively: reads remain masked and writes require the secret
-    capability. Setup-flow category is required to have a synchronous proof.
+    result survived the final authentication await. MA's config-entry getters
+    are async, so config reads and writes then keep the classification ``preflight``
+    computed from live entries just before the final authentication (a key's entry
+    type is static per provider). Setup-flow category is required to have a
+    synchronous proof.
     """
     if decision.preflight == "config_secret_read":
         secure = _config_value_is_secure_sync(mass, arguments)
-        return CommandPreflight(secure_config_value=True if secure is None else secure)
+        return CommandPreflight(
+            secure_config_value=preflight.secure_config_value if secure is None else secure
+        )
     if decision.preflight == "config_secret_write":
         values = arguments.get("values")
         if not isinstance(values, Mapping):
             return CommandPreflight()
         entries = _config_entries_sync(mass, arguments)
-        requires_secret = entries is None or any(is_secret_key(entries, str(key)) for key in values)
+        if entries is None:
+            return preflight
+        requires_secret = any(is_secret_key(entries, str(key)) for key in values)
         return CommandPreflight(
             additional_required=(
                 frozenset({str(Capability.CONFIG_WRITE_SECRET)}) if requires_secret else frozenset()
@@ -703,20 +709,11 @@ async def _preflight_setup_flow_submit(
     values = arguments.get("values")
     if not isinstance(flow_id, str) or not flow_id or not isinstance(values, Mapping):
         raise ToolError("Invalid setup flow submission")
-    get_scope = getattr(mass.config, "get_setup_flow_required_scope", None)
-    get_flow = getattr(mass.config, "get_setup_flow", None)
-    if not callable(get_scope) or not callable(get_flow):
-        raise ToolError("Unable to authorize setup flow submission")
-    scope = get_scope(flow_id)
-    if inspect.isawaitable(scope):
-        scope = await scope
-    required_capability = _setup_flow_write_capability(scope)
+    required_capability = _setup_flow_write_capability(_setup_flow_scope(mass, flow_id))
     if required_capability is None:
         raise ToolError("Unknown setup flow or unsupported setup flow scope")
     try:
-        step = get_flow(flow_id)
-        if inspect.isawaitable(step):
-            step = await step
+        step = await mass.config.get_setup_flow(flow_id)
     except Exception as exc:
         raise ToolError("Unable to inspect setup flow") from exc
     entries = getattr(step, "entries", None)
@@ -728,16 +725,10 @@ async def _preflight_setup_flow_submit(
     return CommandPreflight(additional_required=frozenset(required))
 
 
-def _setup_flow_scope_sync(mass: Any, flow_id: str) -> Any:
-    """Return a live setup-flow scope only when it is synchronously provable."""
-    getter = getattr(mass.config, "get_setup_flow_required_scope", None)
-    if not callable(getter):
-        raise ToolError("Unable to authorize setup flow")
-    scope = getter(flow_id)
-    if inspect.isawaitable(scope):
-        _close_awaitable(scope)
-        raise ToolError("Unable to synchronously authorize setup flow")
-    return scope
+def _setup_flow_scope(mass: Any, flow_id: str) -> Any:
+    """Return the scope a live (or just finished) setup flow requires, or None if unknown."""
+    access = mass.config.get_setup_flow_access(flow_id)
+    return None if access is None else access.required_scope
 
 
 def _setup_flow_step_sync(mass: Any, flow_id: str) -> Any | None:
@@ -768,7 +759,7 @@ def _revalidate_setup_flow_submit_sync(
     values = arguments.get("values")
     if not isinstance(flow_id, str) or not flow_id or not isinstance(values, Mapping):
         raise ToolError("Invalid setup flow submission")
-    required_capability = _setup_flow_write_capability(_setup_flow_scope_sync(mass, flow_id))
+    required_capability = _setup_flow_write_capability(_setup_flow_scope(mass, flow_id))
     if required_capability is None:
         raise ToolError("Unknown setup flow or unsupported setup flow scope")
     required = {str(required_capability)}
@@ -789,7 +780,7 @@ def _revalidate_setup_flow_abort_sync(
     flow_id = arguments.get("flow_id")
     if not isinstance(flow_id, str) or not flow_id:
         raise ToolError("Invalid setup flow abort")
-    required_capability = _setup_flow_write_capability(_setup_flow_scope_sync(mass, flow_id))
+    required_capability = _setup_flow_write_capability(_setup_flow_scope(mass, flow_id))
     if required_capability is None:
         raise ToolError("Unknown setup flow or unsupported setup flow scope")
     return CommandPreflight(additional_required=frozenset({str(required_capability)}))
@@ -803,13 +794,7 @@ async def _preflight_setup_flow_abort(
     flow_id = arguments.get("flow_id")
     if not isinstance(flow_id, str) or not flow_id:
         raise ToolError("Invalid setup flow abort")
-    get_scope = getattr(mass.config, "get_setup_flow_required_scope", None)
-    if not callable(get_scope):
-        raise ToolError("Unable to authorize setup flow abort")
-    scope = get_scope(flow_id)
-    if inspect.isawaitable(scope):
-        scope = await scope
-    required_capability = _setup_flow_write_capability(scope)
+    required_capability = _setup_flow_write_capability(_setup_flow_scope(mass, flow_id))
     if required_capability is None:
         raise ToolError("Unknown setup flow or unsupported setup flow scope")
     return CommandPreflight(additional_required=frozenset({str(required_capability)}))
@@ -818,7 +803,7 @@ async def _preflight_setup_flow_abort(
 def _setup_flow_write_capability(scope: Any) -> Capability | None:
     """Map a current MA setup-flow scope to its one config write capability."""
     value = str(getattr(scope, "value", scope) or "").casefold()
-    if value == "config.providers.write":
+    if value in {"config.providers.write", "config.providers.own"}:
         return Capability.CONFIG_WRITE_PROVIDER
     if value == "config.players.write":
         return Capability.CONFIG_WRITE_PLAYER

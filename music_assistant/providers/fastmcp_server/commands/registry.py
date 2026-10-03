@@ -39,6 +39,7 @@ from ..target_filters import (
     provider_visible,
     queue_visible,
     user_has_target_filters,
+    with_visible_music_sources,
 )
 from . import authorization, debug, queue
 from .authorization import authorize_extension
@@ -386,7 +387,7 @@ class ProviderCommandSet:
             audit = self._guard(
                 "fastmcp/debug/recent_events", "system.read", Capability.DEBUG_EVENTS
             )
-            user = authorization.current_user()
+            user = with_visible_music_sources(self._mass, authorization.current_user())
             return await self._execute_audited(
                 audit,
                 debug.recent_events(
@@ -407,7 +408,7 @@ class ProviderCommandSet:
 
         async def health() -> HealthSummary:
             audit = self._guard("fastmcp/debug/health", "system.read", Capability.DEBUG_PROVIDERS)
-            user = authorization.current_user()
+            user = with_visible_music_sources(self._mass, authorization.current_user())
             runtime_diagnostics = self._runtime_diagnostics()
             return await self._execute_audited(
                 audit,

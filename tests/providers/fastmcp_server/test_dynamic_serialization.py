@@ -247,3 +247,17 @@ def test_bounded_value_redacts_provider_preview_audio_urls() -> None:
     value: Any = normalized.value
     assert "p.scdn.co" not in repr(value)
     assert value["items"][0]["metadata"]["preview"] is None
+
+
+def test_mapping_keys_obey_the_string_cap_and_keep_colliding_entries() -> None:
+    """Huge keys are truncated like values, and keys that collide after truncation stay distinct."""
+    payload = {"k" * 5000: 1, "k" * 5001: 2, "short": 3}
+
+    normalized = bounded_json_value(payload, item_cap=10, string_cap=8, max_depth=2)
+    value: Any = normalized.value
+
+    assert isinstance(value, dict)
+    assert all(len(key) <= 16 for key in value)
+    assert sorted(value.values()) == [1, 2, 3]
+    assert value["short"] == 3
+    assert normalized.truncated is True

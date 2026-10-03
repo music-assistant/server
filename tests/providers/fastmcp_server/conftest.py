@@ -94,6 +94,19 @@ def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
     return app
 
 
+@pytest.fixture(autouse=True)
+def all_music_sources_visible(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Model a home whose music sources are all shared, unless a test narrows them.
+
+    MA derives each user's visible music sources from provider access records,
+    which the lightweight test ``mass`` doubles do not carry.
+    """
+    from music_assistant.helpers import provider_access
+
+    monkeypatch.setattr(provider_access, "visible_music_sources", lambda _mass, _user: None)
+
+
 @pytest.fixture
 def fake_webserver() -> FakeWebserver:
     """Fresh ``FakeWebserver`` instance per test."""

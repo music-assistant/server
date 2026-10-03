@@ -11,7 +11,6 @@ import pytest
 from fastmcp.server.auth import AccessToken
 
 from music_assistant.providers.fastmcp_server.auth import (
-    LEGACY_TOKEN_CLIENT_ID,
     LOOKUP_FAILURE_CLIENT_ID,
     MASTokenVerifier,
     request_identity_holds,
@@ -79,20 +78,22 @@ async def test_two_tokens_for_one_user_have_distinct_exact_client_ids(
 async def test_non_authoritative_client_ids_do_not_use_user_or_application_identity(
     mock_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """Legacy and lookup-failure states use explicit safe sentinel client IDs."""
+    """A vanished or failed token-id lookup uses the safe lookup-failure client ID."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
         side_effect=[None, RuntimeError("lookup unavailable")]
     )
-    verifier = MASTokenVerifier(mock_mass)
+    registry = TokenIdentityRegistry()
+    verifier = MASTokenVerifier(mock_mass, identity_registry=registry)
 
-    legacy = await verifier.verify_token("legacy")
+    vanished = await verifier.verify_token("revoked-mid-verify")
     failed = await verifier.verify_token("failed")
 
-    assert legacy is not None
+    assert vanished is not None
     assert failed is not None
-    assert legacy.client_id == LEGACY_TOKEN_CLIENT_ID
+    assert vanished.client_id == LOOKUP_FAILURE_CLIENT_ID
     assert failed.client_id == LOOKUP_FAILURE_CLIENT_ID
+    assert registry.lookup("revoked-mid-verify") is None
 
 
 def test_request_identity_holds_for_exact_binding() -> None:
@@ -116,13 +117,14 @@ def test_exact_binding_fails_closed_when_the_live_token_id_disappears() -> None:
     assert request_identity_holds(token, user, identity) is True
 
 
-def test_legacy_binding_accepts_a_missing_live_token_id() -> None:
-    """Legacy hash tokens have no MA token id, so a missing live id is their normal state."""
-    token = AccessToken(token="bearer", client_id=LEGACY_TOKEN_CLIENT_ID, scopes=[])
+def test_binding_without_a_token_id_never_holds() -> None:
+    """MA resolves a token id for every valid token, so an id-less binding is not trusted."""
+    token = AccessToken(token="bearer", client_id=LOOKUP_FAILURE_CLIENT_ID, scopes=[])
     user = MagicMock(user_id="user-1", enabled=True)
     identity = TokenIdentity(user_id="user-1", token_id=None)
 
-    assert request_identity_holds(token, user, identity, live_token_id=None) is True
+    assert request_identity_holds(token, user, identity, live_token_id=None) is False
+    assert request_identity_holds(token, user, identity) is False
 
 
 @pytest.mark.asyncio

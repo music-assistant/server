@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -221,27 +221,34 @@ async def test_event_handlers_return_bounded_empty_results_without_buffer() -> N
 
 async def test_health_rolls_up_state_and_respects_disabled_log_access() -> None:
     """Health reports provider/queue failures without reading disabled logs."""
+    from unittest.mock import AsyncMock  # noqa: PLC0415
+
+    from music_assistant_models.config_entries import ProviderError  # noqa: PLC0415
+
     mass = MagicMock()
-    mass.providers = [
-        SimpleNamespace(
-            instance_id="ok",
-            domain="demo",
-            type=SimpleNamespace(value="music"),
-            name="Demo",
-            available=True,
-            enabled=True,
-            last_error=None,
-        ),
-        SimpleNamespace(
-            instance_id="bad",
-            domain="broken",
-            type=SimpleNamespace(value="player"),
-            name="Broken",
-            available=False,
-            enabled=False,
-            last_error="boom",
-        ),
-    ]
+    mass.providers = [SimpleNamespace(instance_id="ok", available=True)]
+    mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                instance_id="ok",
+                domain="demo",
+                type=SimpleNamespace(value="music"),
+                name="Demo",
+                default_name="Demo",
+                enabled=True,
+                last_error=None,
+            ),
+            SimpleNamespace(
+                instance_id="bad",
+                domain="broken",
+                type=SimpleNamespace(value="player"),
+                name="Broken",
+                default_name="Broken",
+                enabled=False,
+                last_error=ProviderError(error_code=999, message="boom"),
+            ),
+        ]
+    )
     mass.player_queues.all.return_value = [
         SimpleNamespace(state="playing", available=True),
         SimpleNamespace(state="error", available=False),
@@ -270,10 +277,66 @@ async def test_health_rolls_up_state_and_respects_disabled_log_access() -> None:
     assert result.event_buffer_active is False
 
 
+async def test_health_reads_enabled_and_errors_from_ma_provider_configs() -> None:
+    """MA keeps enabled/last_error on ProviderConfig; loaded providers carry neither."""
+    from unittest.mock import AsyncMock  # noqa: PLC0415
+
+    from music_assistant_models.config_entries import ProviderError  # noqa: PLC0415
+
+    mass = MagicMock()
+    mass.providers = [
+        SimpleNamespace(
+            instance_id="ok", domain="demo", type=SimpleNamespace(value="music"), available=True
+        )
+    ]
+    mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                instance_id="ok",
+                domain="demo",
+                type=SimpleNamespace(value="music"),
+                name=None,
+                default_name="Demo",
+                enabled=True,
+                last_error=None,
+            ),
+            SimpleNamespace(
+                instance_id="bad",
+                domain="broken",
+                type=SimpleNamespace(value="player"),
+                name="Broken",
+                default_name="Broken",
+                enabled=True,
+                last_error=ProviderError(error_code=999, message="boom"),
+            ),
+            SimpleNamespace(
+                instance_id="off",
+                domain="idle",
+                type=SimpleNamespace(value="plugin"),
+                name=None,
+                default_name="Idle",
+                enabled=False,
+                last_error=None,
+            ),
+        ]
+    )
+    mass.player_queues.all.return_value = []
+
+    result = await health(mass, buffer=None, logs_enabled=False)
+
+    assert result.providers_loaded == 1
+    assert result.providers_disabled == 1
+    assert result.providers_error == 1
+    assert [(p.instance_id, p.available, p.last_error) for p in result.providers_error_details] == [
+        ("bad", False, "boom")
+    ]
+
+
 async def test_health_reports_actual_active_event_buffer_state() -> None:
     """Event-buffer diagnostics follow the live subscription, not policy intent."""
     mass = MagicMock()
     mass.providers = []
+    mass.config.get_provider_configs = AsyncMock(return_value=[])
     mass.player_queues.all.return_value = []
     buffer = MagicMock()
     buffer.stats.return_value = SimpleNamespace(
@@ -360,6 +423,7 @@ async def test_health_counts_recent_log_errors_off_event_loop(
     mass = MagicMock(storage_path=str(tmp_path))
     mass.storage_path = str(tmp_path)
     mass.providers = []
+    mass.config.get_provider_configs = AsyncMock(return_value=[])
     mass.player_queues.all.return_value = []
     main_thread = threading.current_thread()
     seen: list[threading.Thread] = []

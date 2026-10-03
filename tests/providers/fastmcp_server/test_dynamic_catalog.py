@@ -767,6 +767,68 @@ async def test_unexpected_impersonation_failure_propagates_to_the_sanitizer(
         await adapter._resolve_impersonated_user(None, "listener")
 
 
+async def test_provider_owned_denial_through_call_tool_is_forbidden_and_audited_once() -> None:
+    """A provider command that refuses the caller reports not_found_or_forbidden, not a failure."""
+    records: list[Any] = []
+
+    async def tail_log() -> None:
+        raise InsufficientPermissions("Server-wide diagnostics are not available")
+
+    adapter = _real_adapter(
+        _handler("fastmcp/debug/tail_log", tail_log, "system.read"),
+        allowed_capabilities={str(Capability.DEBUG_LOGS)},
+        audit_sink=records.append,
+    )
+
+    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
+        await adapter.call(
+            "ma_api:fastmcp/debug/tail_log",
+            {},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=MagicMock(),
+        )
+
+    assert [record.outcome for record in records if record.outcome != "execution.succeeded"] == []
+
+
+async def test_music_source_visibility_comes_from_ma_provider_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MA derives a user's visible music sources; collection visibility applies them."""
+    from music_assistant_models.auth import User, UserRole  # noqa: PLC0415
+
+    from music_assistant.helpers import provider_access  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        provider_access, "visible_music_sources", lambda _mass, _user: ["spotify--mine"]
+    )
+
+    async def search(search_query: str) -> dict[str, list[dict[str, str]]]:
+        del search_query
+        return {
+            "tracks": [
+                {"name": "mine", "provider_instance_id": "spotify--mine"},
+                {"name": "theirs", "provider_instance_id": "spotify--theirs"},
+            ]
+        }
+
+    member = User(user_id="u1", username="member", role=UserRole.USER, enabled=True)
+    adapter = _real_adapter(_handler("music/search", search), user=member)
+
+    result = await adapter.call(
+        "ma_api:music/search",
+        {"search_query": "x"},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=MagicMock(),
+    )
+
+    assert [row["name"] for row in result["data"]["tracks"]] == ["mine"]
+
+
 async def test_adapter_discovers_handler_and_compiles_schema() -> None:
     """The runtime registry becomes a canonical ma_api catalog entry."""
 
@@ -2767,7 +2829,9 @@ async def test_flow_category_revoked_during_confirmation_prevents_execution(
         str(Capability.CONFIG_WRITE_PLAYER),
         *({str(Capability.CONFIG_WRITE_PROVIDER)} if state["provider"] else set()),
     }
-    adapter.mass.config.get_setup_flow_required_scope = lambda _flow_id: "config.providers.write"
+    adapter.mass.config.get_setup_flow_access = lambda _flow_id: SimpleNamespace(
+        required_scope="config.providers.write"
+    )
     step = SimpleNamespace(
         entries=[ConfigEntry(key="name", type=ConfigEntryType.STRING, label="Name")]
     )
@@ -2811,7 +2875,9 @@ async def test_player_only_tag_executes_a_player_setup_flow(
         _handler("config/flows/submit", submit_flow),
         allowed_capabilities={str(Capability.CONFIG_WRITE_PLAYER)},
     )
-    adapter.mass.config.get_setup_flow_required_scope = lambda _flow_id: "config.players.write"
+    adapter.mass.config.get_setup_flow_access = lambda _flow_id: SimpleNamespace(
+        required_scope="config.players.write"
+    )
     step = SimpleNamespace(
         entries=[ConfigEntry(key="name", type=ConfigEntryType.STRING, label="Name")]
     )
@@ -2844,7 +2910,9 @@ async def test_provider_setup_flow_rejects_player_only_tag_before_confirmation(
         _handler("config/flows/submit", submit_flow),
         allowed_capabilities={str(Capability.CONFIG_WRITE_PLAYER)},
     )
-    adapter.mass.config.get_setup_flow_required_scope = lambda _flow_id: "config.providers.write"
+    adapter.mass.config.get_setup_flow_access = lambda _flow_id: SimpleNamespace(
+        required_scope="config.providers.write"
+    )
     adapter.mass.config.get_setup_flow = AsyncMock(
         return_value=SimpleNamespace(
             entries=[ConfigEntry(key="name", type=ConfigEntryType.STRING, label="Name")]

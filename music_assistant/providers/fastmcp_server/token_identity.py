@@ -68,7 +68,7 @@ class TokenIdentityRegistry:
         return identity
 
     def token_ids(self) -> frozenset[str]:
-        """Return the currently bound non-legacy Music Assistant token IDs."""
+        """Return the currently bound Music Assistant token IDs."""
         return frozenset(
             identity.token_id
             for identity in self._entries.values()

@@ -19,6 +19,7 @@ from music_assistant.providers.fastmcp_server.catalog import (
     DynamicEntry,
     RequestCatalogContext,
 )
+from music_assistant.providers.fastmcp_server.catalog_pagination import MAX_QUERY_LENGTH
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 from music_assistant.providers.fastmcp_server.constants import DEFAULT_MOUNT_PATH
 from music_assistant.providers.fastmcp_server.meta_discovery import register_meta_discovery
@@ -430,3 +431,13 @@ def test_dynamic_risk_gate_entries_are_removed(mock_mass: Any) -> None:
 def test_dynamic_entry_type_carries_no_classifier_risk_gate() -> None:
     """Discovery descriptors do not expose the removed v1 risk class."""
     assert "risk" not in DynamicEntry.__dataclass_fields__
+
+
+async def test_search_rejects_a_query_too_long_for_a_cursor_up_front() -> None:
+    """An over-long query is refused with invalid_arguments instead of failing on the cursor."""
+    mcp, _adapter = _recording_server()
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError) as raised:
+            await client.call_tool("search_tools", {"query": "music " * MAX_QUERY_LENGTH})
+
+    assert str(raised.value).startswith("[invalid_arguments]")

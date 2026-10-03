@@ -268,7 +268,13 @@ def _bounded_mapping(
         if index >= mapping_cap:
             truncated = True
             break
-        normalized_key, key_changed = _bounded_string(str(key), None)
+        normalized_key, key_changed = _bounded_string(str(key), string_cap)
+        if key_changed and normalized_key in result:
+            # Two keys that only differ past the cap would otherwise overwrite each other.
+            suffix = 2
+            while f"{normalized_key}#{suffix}" in result:
+                suffix += 1
+            normalized_key = f"{normalized_key}#{suffix}"
         normalized, changed, _count = _bounded_json_value(
             child,
             active_ids=active_ids,

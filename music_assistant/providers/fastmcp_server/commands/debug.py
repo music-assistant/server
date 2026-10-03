@@ -119,24 +119,31 @@ async def health(
     queue_visible: Callable[[Any], bool] | None = None,
 ) -> HealthSummary:
     """Roll up provider, queue, event, and permitted log diagnostics."""
-    providers = [
-        provider
+    loaded_ids = {
+        str(provider.instance_id)
         for provider in getattr(mass, "providers", [])
-        if provider_visible is None or provider_visible(provider)
+        if getattr(provider, "available", False)
+    }
+    # MA keeps enabled/last_error on the provider config, not on the loaded instance,
+    # and lists only the configs the calling user may see.
+    configs = [
+        config
+        for config in await mass.config.get_provider_configs()
+        if provider_visible is None or provider_visible(config)
     ]
-    loaded = sum(1 for provider in providers if getattr(provider, "available", False))
-    disabled = sum(1 for provider in providers if not getattr(provider, "enabled", True))
+    loaded = sum(1 for config in configs if config.instance_id in loaded_ids)
+    disabled = sum(1 for config in configs if not config.enabled)
     errors = [
         ProviderSummary(
-            instance_id=getattr(provider, "instance_id", ""),
-            domain=getattr(provider, "domain", ""),
-            type=str(getattr(getattr(provider, "type", None), "value", "unknown")),
-            name=getattr(provider, "name", "") or getattr(provider, "domain", ""),
-            available=bool(getattr(provider, "available", False)),
-            last_error=getattr(provider, "last_error", None),
+            instance_id=config.instance_id,
+            domain=config.domain,
+            type=str(getattr(config.type, "value", config.type)),
+            name=config.name or config.default_name or config.domain,
+            available=config.instance_id in loaded_ids,
+            last_error=config.last_error.message,
         )
-        for provider in providers
-        if getattr(provider, "last_error", None)
+        for config in configs
+        if config.last_error is not None
     ]
     try:
         queues = [

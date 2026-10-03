@@ -20,6 +20,8 @@ CATALOG_DEFAULT_LIMIT = 25
 MAX_PAGE_LIMIT = 50
 CURSOR_VERSION = 1
 MAX_CURSOR_LENGTH = 2048
+# Bound so the worst-case JSON escape (6 bytes per char) still fits in one cursor.
+MAX_QUERY_LENGTH = 200
 
 
 class DiscoveryItem(TypedDict):
@@ -65,6 +67,18 @@ def normalize_query(value: str | None) -> str:
     """Normalize query text for mode selection and cursor comparison."""
     normalized = unicodedata.normalize("NFKC", value or "").casefold()
     return " ".join(normalized.split())
+
+
+def validate_query(query: str) -> None:
+    """
+    Reject a normalized search query too long to carry in a continuation cursor.
+
+    :param query: Query already passed through :func:`normalize_query`.
+    """
+    if len(query) > MAX_QUERY_LENGTH:
+        raise PaginationError(
+            "invalid_arguments", f"query must be at most {MAX_QUERY_LENGTH} characters"
+        )
 
 
 def resolve_limit(mode: DiscoveryMode, limit: int | None) -> int:
@@ -145,6 +159,7 @@ def _validate_state(state: CursorState) -> None:
         and state.mode in ("search", "catalog")
         and isinstance(state.query, str)
         and normalize_query(state.query) == state.query
+        and len(state.query) <= MAX_QUERY_LENGTH
         and type(state.offset) is int
         and state.offset > 0
         and isinstance(state.revision, str)

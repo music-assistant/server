@@ -9,9 +9,11 @@ from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import Any
 
+from music_assistant_models.auth import User
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InsufficientPermissions
 
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, _parse_share_url
 
 
@@ -218,6 +220,23 @@ def filter_collection_result(user: Any, command: str, result: Any) -> Any:
             },
         )
     return _filter_rows(result, allowed, rule.row_attributes)
+
+
+def with_visible_music_sources(mass: Any, user: Any) -> Any:
+    """
+    Return the user with MA's derived music-source visibility as its provider filter.
+
+    MA resolves an authenticated user without ``provider_filter``; visibility comes
+    from provider access records instead. Deriving it here lets collection
+    visibility and target filters apply the same sources MA itself enforces.
+
+    :param mass: Music Assistant instance, or None when no instance is bound.
+    :param user: Authenticated Music Assistant user, or None. An explicit
+        non-empty provider filter is kept as is.
+    """
+    if mass is None or not isinstance(user, User) or user.provider_filter:
+        return user
+    return with_derived_provider_filter(mass, user)
 
 
 def user_has_target_filters(user: Any) -> bool:

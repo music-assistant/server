@@ -62,19 +62,18 @@ async def test_verifier_binds_authenticated_ma_token_id(
 
 
 @pytest.mark.asyncio
-async def test_verifier_records_authenticated_legacy_token(
+async def test_verifier_does_not_bind_a_token_whose_id_vanished(
     mock_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """MA-confirmed absence of a token ID is retained as a legacy identity."""
+    """A token id that disappears right after authentication is a revocation, not an identity."""
     registry = TokenIdentityRegistry()
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value=None)
     verifier = MASTokenVerifier(mock_mass, identity_registry=registry)
 
-    assert await verifier.verify_token("legacy-bearer") is not None
-    identity = registry.lookup("legacy-bearer")
-    assert identity is not None
-    assert identity.token_id is None
+    assert await verifier.verify_token("revoked-bearer") is not None
+    assert registry.lookup("revoked-bearer") is None
+    assert registry.token_resolution_failures == 1
 
 
 @pytest.mark.asyncio

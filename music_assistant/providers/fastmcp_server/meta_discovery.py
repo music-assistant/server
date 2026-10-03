@@ -39,6 +39,7 @@ from .catalog_pagination import (
     encode_cursor,
     normalize_query,
     resolve_limit,
+    validate_query,
 )
 from .dynamic_serialization import COMMAND_ENVELOPE_SCHEMA
 from .errors import ToolFailureCode, tool_failure
@@ -225,6 +226,7 @@ class MetaDiscoveryService:
         """Return one visible ranked-search or alphabetical-catalog page."""
         started = time.perf_counter()
         explicit_query = normalize_query(query)
+        validate_query(explicit_query)
         if include_top_schema and (not explicit_query or cursor is not None):
             raise PaginationError(
                 "invalid_arguments",

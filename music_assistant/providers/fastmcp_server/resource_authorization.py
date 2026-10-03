@@ -23,7 +23,7 @@ from .auth import request_identity_holds
 from .capabilities import Capability
 from .commands.authorization import normalize_scope
 from .policy import PolicyMode, PolicySnapshot
-from .target_filters import TargetKind, collection_row_allowed
+from .target_filters import TargetKind, collection_row_allowed, with_visible_music_sources
 
 if TYPE_CHECKING:
     from fastmcp.server.auth.auth import AccessToken
@@ -177,7 +177,9 @@ class ResourceAuthorizer:
             live_token_id = await self.mass.webserver.auth.get_token_id_from_token(token.token)
         except Exception:
             return _AuthenticationEvidence(user, token_id_lookup_failed=True)
-        return _AuthenticationEvidence(user, live_token_id=live_token_id)
+        return _AuthenticationEvidence(
+            with_visible_music_sources(self.mass, user), live_token_id=live_token_id
+        )
 
     def _authentication_is_valid(
         self,

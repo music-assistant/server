@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from .audit import NO_TOKEN_CLIENT_ID
-from .auth import LEGACY_TOKEN_CLIENT_ID, LOOKUP_FAILURE_CLIENT_ID
+from .auth import LOOKUP_FAILURE_CLIENT_ID
 from .capabilities import Capability
 from .constants import (
     CONF_ENFORCE_AUDIENCE,
@@ -110,7 +110,7 @@ class MCPServerRuntime:
         identity = self._token_identities.lookup(bearer_token)
         if identity is None:
             return LOOKUP_FAILURE_CLIENT_ID
-        return identity.token_id or LEGACY_TOKEN_CLIENT_ID
+        return identity.token_id or LOOKUP_FAILURE_CLIENT_ID
 
     async def start(self) -> None:
         """

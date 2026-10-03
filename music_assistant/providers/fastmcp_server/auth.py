@@ -19,7 +19,7 @@ import base64
 import binascii
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
@@ -31,8 +31,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# Bandit B105: this is a non-secret audit category, never credential material.
-LEGACY_TOKEN_CLIENT_ID = "ma-token:legacy"  # nosec B105
 LOOKUP_FAILURE_CLIENT_ID = "ma-token:lookup-failed"
 _LIVE_TOKEN_ID_NOT_CHECKED = object()
 
@@ -61,8 +59,8 @@ def request_identity_holds(
         return False
     if str(getattr(user, "user_id", "")) != getattr(identity, "user_id", None):
         return False
-    expected = getattr(identity, "token_id", None) or LEGACY_TOKEN_CLIENT_ID
-    if token.client_id != expected:
+    expected = getattr(identity, "token_id", None)
+    if not expected or token.client_id != expected:
         return False
     if lookup_failed:
         return False
@@ -71,7 +69,7 @@ def request_identity_holds(
     return live_token_id == getattr(identity, "token_id", None)
 
 
-def _is_valid_token_id(value: object) -> bool:
+def _is_valid_token_id(value: object) -> TypeGuard[str]:
     """Return whether a lookup result has MA's non-empty URL-safe token-ID shape."""
     return (
         isinstance(value, str)
@@ -195,14 +193,7 @@ class MASTokenVerifier(TokenVerifier):
             self._identity_registry.record_resolution_failure()
             LOGGER.error("MA token identity lookup raised; using Safe queries policy")
         else:
-            if token_id is None:
-                self._identity_registry.bind(
-                    token,
-                    user_id=str(getattr(user, "user_id", "")),
-                    token_id=None,
-                )
-                client_id = LEGACY_TOKEN_CLIENT_ID
-            elif _is_valid_token_id(token_id):
+            if _is_valid_token_id(token_id):
                 self._identity_registry.bind(
                     token,
                     user_id=str(getattr(user, "user_id", "")),
@@ -210,10 +201,12 @@ class MASTokenVerifier(TokenVerifier):
                 )
                 client_id = token_id
             else:
+                # MA resolves an id for every valid token (JWT and hash tokens alike), so a
+                # missing id right after authentication means the token was just revoked.
                 self._identity_registry.discard(token)
                 self._identity_registry.record_resolution_failure()
                 LOGGER.error(
-                    "MA token identity lookup returned invalid data; using Safe queries policy"
+                    "MA token identity lookup returned no valid id; using Safe queries policy"
                 )
 
         # MCP SDK's AccessToken pydantic model has no `claims` field — extras

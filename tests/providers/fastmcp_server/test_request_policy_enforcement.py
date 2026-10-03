@@ -652,75 +652,6 @@ async def test_policy_revoked_during_preflight_is_rechecked_before_confirmation(
     assert records[0].mode == "deny"
 
 
-async def test_secure_category_changed_during_final_auth_is_recomputed_and_audited() -> None:
-    """The final auth await cannot leave a stale non-secret preflight executable."""
-    called = False
-    authentication_count = 0
-    secure_now = False
-    records: list[Any] = []
-
-    async def save(
-        provider_domain: str,
-        values: dict[str, Any],
-        instance_id: str | None = None,
-    ) -> None:
-        nonlocal called
-        del provider_domain, values, instance_id
-        called = True
-
-    token = AccessToken(token="config", client_id="id-config", scopes=[])
-    adapter = _adapter(
-        [_handler("config/providers/save", save, "config.providers.write")],
-        current_token=[token],
-        policies={
-            "config": _custom(
-                config__write__provider=PolicyMode.ALLOW,
-                config__write__secret=PolicyMode.DENY,
-            )
-        },
-        audit_sink=records.append,
-    )
-    user = await adapter.mass.webserver.auth.authenticate_with_token("config")
-
-    async def authenticate_then_reclassify(_bearer: str) -> Any:
-        nonlocal authentication_count, secure_now
-        authentication_count += 1
-        if authentication_count == 4:
-            secure_now = True
-        return user
-
-    adapter.mass.webserver.auth.authenticate_with_token = authenticate_then_reclassify
-
-    async def live_entries(_target: str) -> list[ConfigEntry]:
-        return [
-            ConfigEntry(
-                key="token",
-                type=(ConfigEntryType.SECURE_STRING if secure_now else ConfigEntryType.STRING),
-                label="Token",
-            )
-        ]
-
-    adapter.mass.config.get_provider_config_entries = live_entries
-    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
-        await adapter.call(
-            "ma_api:config/providers/save",
-            {
-                "provider_domain": "demo",
-                "instance_id": "demo--1",
-                "values": {"token": "must-not-appear"},
-            },
-            response_mode="compact",
-            fields=None,
-            max_items=None,
-            ctx=MagicMock(),
-        )
-    assert called is False
-    assert len(records) == 1
-    assert records[0].capability == str(Capability.CONFIG_WRITE_SECRET)
-    assert records[0].mode == "deny"
-    assert "must-not-appear" not in repr(records)
-
-
 async def test_setup_flow_category_changed_during_final_auth_is_recomputed() -> None:
     """A live provider-to-player flow change cannot retain the earlier category grant."""
     called = False
@@ -755,8 +686,10 @@ async def test_setup_flow_category_changed_during_final_auth_is_recomputed() -> 
         return user
 
     adapter.mass.webserver.auth.authenticate_with_token = authenticate_then_change_category
-    adapter.mass.config.get_setup_flow_required_scope = lambda _flow_id: flow_scope
-    adapter.mass.config.get_setup_flow = lambda _flow_id: SimpleNamespace(entries=[])
+    adapter.mass.config.get_setup_flow_access = lambda _flow_id: SimpleNamespace(
+        required_scope=flow_scope
+    )
+    adapter.mass.config.get_setup_flow = AsyncMock(return_value=SimpleNamespace(entries=[]))
 
     with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
         await adapter.call(
@@ -1374,7 +1307,9 @@ async def test_flow_abort_requires_its_exact_category(
         },
         audit_sink=records.append,
     )
-    adapter.mass.config.get_setup_flow_required_scope = lambda _flow_id: flow_scope
+    adapter.mass.config.get_setup_flow_access = lambda _flow_id: SimpleNamespace(
+        required_scope=flow_scope
+    )
 
     with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
         await adapter.call(

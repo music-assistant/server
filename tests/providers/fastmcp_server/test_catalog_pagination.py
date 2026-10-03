@@ -13,6 +13,7 @@ from music_assistant.providers.fastmcp_server.catalog_pagination import (
     CATALOG_DEFAULT_LIMIT,
     MAX_CURSOR_LENGTH,
     MAX_PAGE_LIMIT,
+    MAX_QUERY_LENGTH,
     SEARCH_DEFAULT_LIMIT,
     CursorState,
     PaginationError,
@@ -139,3 +140,16 @@ def test_catalog_revision_changes_for_discovery_or_visibility_changes() -> None:
     assert catalog_revision(fingerprint, (described, hidden)) != revision
     assert catalog_revision(fingerprint, (first,)) != revision
     assert catalog_revision((2, "fake", ()), (first, hidden)) != revision
+
+
+def test_longest_allowed_query_always_fits_in_a_cursor() -> None:
+    """A query at the length limit, made of JSON-escaped characters, still encodes a cursor."""
+    query = normalize_query("\x01" * MAX_QUERY_LENGTH)
+    assert len(query) == MAX_QUERY_LENGTH
+
+    cursor = encode_cursor(
+        CursorState(version=1, mode="search", query=query, offset=99_999, revision="f" * 24)
+    )
+
+    assert len(cursor) <= MAX_CURSOR_LENGTH
+    assert decode_cursor(cursor).query == query

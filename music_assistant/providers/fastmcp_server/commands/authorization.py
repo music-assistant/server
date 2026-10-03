@@ -18,7 +18,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from ..command_policy import resolve_command_policy
 from ..command_profiles import COMMAND_PROFILES
 from ..confirmation_context import capability_was_confirmed
-from ..target_filters import enforce_target_filters
+from ..target_filters import enforce_target_filters, with_visible_music_sources
 
 # removed global capability fallback
 
@@ -101,7 +101,7 @@ def authorize_extension(
     """Require request identity when enabled and always enforce provider policy."""
     from ..policy import PolicyMode  # noqa: PLC0415
 
-    user = get_current_user()
+    user = with_visible_music_sources(mass, get_current_user())
     if require_auth:
         if user is None or not getattr(user, "enabled", False):
             raise AuthenticationRequired("An enabled Music Assistant user is required")
