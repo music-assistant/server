@@ -307,12 +307,15 @@ async def test_password_hashing_runs_at_most_two_at_a_time(
     ]
     for _ in range(2):
         assert await asyncio.to_thread(started.acquire, True, 5)
-    # the third hash must not start while the first two still run
+    # the third hash must not start while the first two still run, also when the caller of
+    # a running hash is cancelled
+    assert not await asyncio.to_thread(started.acquire, True, 0.2)
+    tasks[0].cancel()
     assert not await asyncio.to_thread(started.acquire, True, 0.2)
     assert peak == 2
 
     release.set()
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks[1:])
     assert peak == 2
 
 

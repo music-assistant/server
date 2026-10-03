@@ -21,6 +21,7 @@ from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -595,11 +596,15 @@ class BuiltinLoginProvider(LoginProvider):
         """
         # Combine user_id (random) and server_id for maximum security
         salt = f"{user_id}:{self.mass.server_id}"
-        async with self._hash_semaphore:
-            hashed = await asyncio.to_thread(
+        await self._hash_semaphore.acquire()
+        hash_task = asyncio.ensure_future(
+            asyncio.to_thread(
                 hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
             )
-        return hashed.hex()
+        )
+        # the slot stays taken until the hash is done, also when the caller is cancelled
+        hash_task.add_done_callback(lambda _: self._hash_semaphore.release())
+        return (await join_task(hash_task)).hex()
 
 
 class HomeAssistantOAuthProvider(LoginProvider):
