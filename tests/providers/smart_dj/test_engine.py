@@ -90,3 +90,21 @@ def test_artist_repeat_limit_is_applied() -> None:
         controls=DJControls(max_artist_repeat=1),
     )
     assert [x["queue_item_id"] for x in result] == ["c", "b"]
+
+
+def test_excluded_track_does_not_consume_fixed_interval() -> None:
+    tracks = [
+        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
+        {"queue_item_id": "x", "artist": "X", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
+        {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
+    ]
+    result = beam_optimize(
+        tracks,
+        tracks[0]["analysis"],
+        MODES["ai_dj"],
+        controls=DJControls(
+            fixed_ids=frozenset({"b"}),
+            excluded_ids=frozenset({"x"}),
+        ),
+    )
+    assert [x["queue_item_id"] for x in result] == ["a", "b"]
