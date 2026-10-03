@@ -22,7 +22,11 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3, CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.constants import (
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    create_output_codec_config_entry,
+)
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -259,8 +263,8 @@ class YandexStationPlayer(Player):
         """
         Return player-specific config entries.
 
-        Yandex Station requires Content-Length in HTTP responses (no chunked encoding),
-        so we default to forced_content_length HTTP profile.
+        Default to WAV for prompt queue and live-source playback, with the
+        forced_content_length HTTP profile required by the Station.
         """
         # List players that can receive a redirected track.  We dispatch
         # the handoff via ``mass.player_queues.play_media(queue_id=...)``
@@ -286,7 +290,8 @@ class YandexStationPlayer(Player):
             key=lambda o: (o.title or "").lower(),
         )
         return [
-            CONF_ENTRY_OUTPUT_CODEC,
+            create_output_codec_config_entry(default_value="wav"),
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
             CONF_ENTRY_VOICE_CONTROL,
             ConfigEntry(
