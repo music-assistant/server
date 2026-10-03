@@ -392,7 +392,11 @@ def beam_optimize(
             continue
         segment = movable[movable_cursor:movable_cursor + segment_len]
         movable_cursor += segment_len
-        anchor = _merge_track(result[-1]) if result else current
+        anchor = (
+            None
+            if result and not isinstance(result[-1].get("analysis"), dict)
+            else (_merge_track(result[-1]) if result else current)
+        )
         optimized = _optimize_segment(segment, anchor, mode, controls, beam_width)
         if len(optimized) != len(segment):
             raise RuntimeError("Hard requirements are impossible with the current queue")
