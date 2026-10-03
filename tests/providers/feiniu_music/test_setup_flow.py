@@ -1,15 +1,22 @@
 """Setup secrets, retry behavior and stable device identities."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from music_assistant_models.enums import FlowStepType
 
-from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError
+from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError, SetupSession
 from music_assistant.providers.feiniu_music.client import FeiNiuClient
 from music_assistant.providers.feiniu_music.protocol import PROFILE
 from music_assistant.providers.feiniu_music.setup_flow import run_setup
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.setup_flow import SetupFlowStep
 
 
 @pytest.mark.parametrize(
@@ -58,7 +65,10 @@ async def test_reconfigure_blank_password_preserves_secret_and_device(
     assert session.finish.call_args.args[0]["device_id"] == "a" * 32
 
 
-async def test_reconfigure_failed_replacement_password_restores_saved_secret() -> None:
+@pytest.mark.parametrize("localized", [False, True])
+async def test_reconfigure_failed_replacement_password_restores_saved_secret(
+    localized: bool,
+) -> None:
     """A blank retry uses the saved secret without exposing either password."""
     saved = {
         "url": "http://test.invalid/music/",
@@ -66,9 +76,17 @@ async def test_reconfigure_failed_replacement_password_restores_saved_secret() -
         "password": "old-secret",
         "device_id": "a" * 32,
     }
-    submissions = iter([{"password": "wrong-replacement"}, {"password": ""}])
+    submissions: Iterator[dict[str, ConfigValueType]] = iter(
+        [{"password": "wrong-replacement"}, {"password": ""}]
+    )
     finished: list[dict[str, Any]] = []
     forms = 0
+    error = SetupFlowError(
+        "Login failed",
+        translation_key="connect_failed" if localized else None,
+        translation_args=[saved["url"]] if localized else None,
+        translation_owner="provider.feiniu_music" if localized else None,
+    )
 
     async def form(entries: Any, **kwargs: Any) -> dict[str, Any]:
         nonlocal forms
@@ -80,18 +98,27 @@ async def test_reconfigure_failed_replacement_password_restores_saved_secret() -
             assert next(entry for entry in entries if entry.key == key).value == saved[key]
         assert session.context.setup_data == saved
         if forms == 2:
-            assert kwargs["errors"]
+            assert kwargs["errors"]["base"] is error
             assert all(
                 secret not in str(kwargs["errors"])
                 for secret in ("old-secret", "wrong-replacement")
             )
-        return next(submissions)
+        return await framework_session.form(entries, **kwargs)
+
+    def submit_form(*_args: Any, data: SetupFlowStep, **_kwargs: Any) -> None:
+        assert data.type == FlowStepType.FORM
+        if forms == 2 and localized:
+            translation = data.error_translations["base"]
+            assert translation.key == "connect_failed"
+            assert translation.args == [saved["url"]]
+            assert translation.owner == "provider.feiniu_music"
+        assert framework_session.handle_submit(next(submissions)) is None
 
     async def finish(data: dict[str, Any]) -> None:
         finished.append(dict(data))
         assert session.context.setup_data == saved
         if len(finished) == 1:
-            raise SetupFlowError("Login failed")
+            raise error
 
     session: Any = SimpleNamespace(
         context=SetupFlowContext(
@@ -104,6 +131,9 @@ async def test_reconfigure_failed_replacement_password_restores_saved_secret() -
         form=form,
         finish=finish,
     )
+    mass = Mock()
+    framework_session = SetupSession(mass, "flow-test", session.context, AsyncMock())
+    mass.signal_event.side_effect = submit_form
     await run_setup(session)
     assert forms == 2
     assert finished == [{**saved, "password": "wrong-replacement"}, saved]
