@@ -21,6 +21,7 @@ from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -35,6 +36,8 @@ DEFAULT_DELAY_TIERS: Final[tuple[tuple[int, int], ...]] = ((3, 30), (6, 60), (10
 DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 # Tracked keys before expired ones are swept from the rate limiter's bookkeeping
 PRUNE_THRESHOLD: Final = 128
+# Salt for the password hash of a login with an unknown username
+UNKNOWN_USER_ID: Final = "unknown-user"
 
 
 def normalize_username(username: str) -> str:
@@ -447,6 +450,8 @@ class BuiltinLoginProvider(LoginProvider):
         """
         super().__init__(mass, provider_id, config)
         self._rate_limiter = LoginRateLimiter()
+        # Bounds concurrent password hashing, so a flood of logins cannot saturate the CPU
+        self._hash_semaphore = asyncio.Semaphore(2)
 
     @property
     def provider_type(self) -> AuthProviderType:
@@ -488,23 +493,17 @@ class BuiltinLoginProvider(LoginProvider):
         # First, look up user by username to get user_id
         # This is needed to create the password hash with user_id in the salt
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        if not user_row:
-            # Record failed attempt even if username doesn't exist
-            # This prevents username enumeration timing attacks
-            await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
-
-        user_id = user_row["user_id"]
-
-        # Hash the password using user_id for enhanced security
-        password_hash = self._hash_password(password, user_id)
+        # Hash and verify for an unknown username too, so the response time does not
+        # reveal whether a username exists
+        user_id = user_row["user_id"] if user_row else UNKNOWN_USER_ID
+        password_hash = await self._hash_password(password, user_id)
 
         # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, password_hash, include_disabled=True
         )
 
-        if not user:
+        if not user_row or not user:
             # Record failed attempt
             await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
@@ -545,7 +544,7 @@ class BuiltinLoginProvider(LoginProvider):
         )
 
         # Hash password using user_id for enhanced security
-        password_hash = self._hash_password(password, user.user_id)
+        password_hash = await self._hash_password(password, user.user_id)
         await self.auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, password_hash)
 
         return user
@@ -559,7 +558,7 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Verify old password first using user_id
-        old_password_hash = self._hash_password(old_password, user.user_id)
+        old_password_hash = await self._hash_password(old_password, user.user_id)
         existing_user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, old_password_hash
         )
@@ -568,7 +567,7 @@ class BuiltinLoginProvider(LoginProvider):
             return False
 
         # Update password link with new hash using user_id
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
@@ -583,12 +582,12 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Hash new password using user_id and update provider link
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
 
-    def _hash_password(self, password: str, user_id: str) -> str:
+    async def _hash_password(self, password: str, user_id: str) -> str:
         """
         Hash password with salt combining user ID and server ID.
 
@@ -597,9 +596,15 @@ class BuiltinLoginProvider(LoginProvider):
         """
         # Combine user_id (random) and server_id for maximum security
         salt = f"{user_id}:{self.mass.server_id}"
-        return hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), salt.encode(), iterations=100000
-        ).hex()
+        await self._hash_semaphore.acquire()
+        hash_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
+            )
+        )
+        # the slot stays taken until the hash is done, also when the caller is cancelled
+        hash_task.add_done_callback(lambda _: self._hash_semaphore.release())
+        return (await join_task(hash_task)).hex()
 
 
 class HomeAssistantOAuthProvider(LoginProvider):
