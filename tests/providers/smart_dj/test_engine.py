@@ -85,9 +85,10 @@ def test_artist_repeat_limit_is_applied() -> None:
         {"queue_item_id": "b", "artist": "A", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "c", "artist": "B", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
     ]
+    anchor = {**tracks[0]["analysis"], "artist": tracks[0]["artist"]}
     result = beam_optimize(
         tracks[1:],
-        tracks[0]["analysis"],
+        anchor,
         MODES["ai_dj"],
         controls=DJControls(max_artist_repeat=1),
     )

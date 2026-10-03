@@ -311,15 +311,15 @@ def _merge_track(item: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _optimize_segment(
+def _beam_pass(
     segment: list[dict[str, Any]],
     anchor: dict[str, Any] | None,
     mode: DJMode,
     controls: DJControls,
     beam_width: int,
+    anchor_artist: str | None,
 ) -> list[dict[str, Any]]:
     beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], list(segment))]
-    anchor_artist = anchor.get("artist") if anchor else None
     for _ in range(len(segment)):
         next_beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = []
         for total, path, remaining in beams:
@@ -344,6 +344,25 @@ def _optimize_segment(
         if not beams:
             break
     return beams[0][1] if beams else []
+
+
+def _optimize_segment(
+    segment: list[dict[str, Any]],
+    anchor: dict[str, Any] | None,
+    mode: DJMode,
+    controls: DJControls,
+    beam_width: int,
+) -> list[dict[str, Any]]:
+    anchor_artist = anchor.get("artist") if anchor else None
+    optimized = _beam_pass(segment, anchor, mode, controls, beam_width, anchor_artist)
+    if len(optimized) != len(segment) and anchor_artist is not None:
+        # The anchor boundary can make the artist-run constraint unsatisfiable
+        # (e.g. the queue continues the now-playing artist): no ordering of the
+        # segment can satisfy it, and bailing out fails the whole queue. The
+        # queue is fixed reality; the optimizer only chooses the order. Retry
+        # with the boundary constraint relaxed rather than brick the queue.
+        optimized = _beam_pass(segment, anchor, mode, controls, beam_width, None)
+    return optimized
 
 
 def beam_optimize(

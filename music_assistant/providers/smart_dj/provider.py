@@ -14,7 +14,7 @@ from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
 
-from .engine import DJControls, DJMode, MODES, SignalControl, beam_optimize
+from .engine import DJControls, DJMode, MODES, SignalControl, _merge_track, beam_optimize
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -347,7 +347,7 @@ class SmartDJProvider(PluginProvider):
         )
         optimized = beam_optimize(
             tracks[1:],
-            snapshot["current"],
+            _merge_track(tracks[0]) if tracks else snapshot["current"],
             selected_mode,
             controls=control,
             beam_width=max(4, min(32, control.lookahead * 3)),

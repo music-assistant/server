@@ -24,7 +24,7 @@ def test_hard_bpm_rule_is_never_violated() -> None:
 
 def test_disabled_key_does_not_affect_score() -> None:
     current = {"bpm": 120, "camelot": "8A", "energy": 0.5}
-    candidate = {"bpm": 120, "camelot": "2B", "energy": 0.5}
+    candidate = {"bpm": 120, "camelot": "9A", "energy": 0.5}
     soft, _, _ = score_candidate(current, candidate, MODES["ai_dj"], DJControls())
     disabled, _, _ = score_candidate(
         current, candidate, MODES["ai_dj"], DJControls(key=SignalControl("disabled"))
