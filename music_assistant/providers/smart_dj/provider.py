@@ -233,8 +233,15 @@ class SmartDJProvider(PluginProvider):
         """Analyze the active queue and return DJ-ready metadata."""
         items = (await self._queue_snapshot(queue_id))[:max(1, min(limit, 100))]
         analyzed = []
-        for item in items:
-            analysis = await self._analysis(item["item_id"], item["provider"])
+        tasks = [
+            asyncio.create_task(self._analysis(item["item_id"], item["provider"]))
+            for item in items
+        ]
+        analyses = await asyncio.gather(*tasks, return_exceptions=True)
+        for item, analysis in zip(items, analyses, strict=True):
+            if isinstance(analysis, Exception):
+                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], analysis)
+                analysis = None
             analyzed.append({**item, "analysis": analysis})
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}
