@@ -92,8 +92,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.media_capabilities import MediaCatalogMixin
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzRelease
     from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
@@ -1229,13 +1229,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
         ):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        provider = cast("MusicProvider | PluginProvider", provider)
+        catalog_prov = cast("MediaCatalogMixin", provider)
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
                 if self.media_type == MediaType.PLAYLIST:
-                    return cast("ItemCls", await provider.get_playlist(item_id))
+                    return cast("ItemCls", await catalog_prov.get_playlist(item_id))
                 if self.media_type == MediaType.RADIO:
-                    return cast("ItemCls", await provider.get_radio(item_id))
+                    return cast("ItemCls", await catalog_prov.get_radio(item_id))
                 music_prov = cast("MusicProvider", provider)
                 if self.media_type == MediaType.ARTIST:
                     return cast("ItemCls", await music_prov.get_artist(item_id))
@@ -2558,19 +2558,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "is no longer available on any provider"
             )
             raise MediaNotFoundError(msg)
+        # provider_mappings is a set with no stable iteration order, so rank the mappings
+        # by priority (in_library and non-streaming sources first) and break ties on the
+        # instance and item id to pick the same mapping every time
+        ordered_mappings = sorted(
+            library_item.provider_mappings,
+            key=lambda x: (not x.available, -x.priority, x.provider_instance, x.item_id),
+        )
         user = get_current_user()
         visible_sources = visible_music_sources(self.mass, user) if user else None
         if visible_sources is None:
-            mapping = next(iter(library_item.provider_mappings))
+            mapping = ordered_mappings[0]
             return (mapping.provider_instance, mapping.item_id)
 
         # First prefer music provider mappings that are explicitly allowed for this user.
         # Only the exact instance counts: the domain fallback of get_provider must not
         # serve the item through an account this user may not use.
         allowed_mappings = [
-            mapping
-            for mapping in library_item.provider_mappings
-            if mapping.provider_instance in visible_sources
+            mapping for mapping in ordered_mappings if mapping.provider_instance in visible_sources
         ]
         for mapping in allowed_mappings:
             provider = exact_provider(self.mass, mapping.provider_instance)
@@ -2578,7 +2583,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return (mapping.provider_instance, mapping.item_id)
 
         # If no allowed music mapping exists, fall back to plugin mappings.
-        for mapping in library_item.provider_mappings:
+        for mapping in ordered_mappings:
             provider = exact_provider(self.mass, mapping.provider_instance)
             if provider and provider.type == ProviderType.PLUGIN:
                 return (mapping.provider_instance, mapping.item_id)

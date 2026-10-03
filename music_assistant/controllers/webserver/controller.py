@@ -351,7 +351,6 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/auth/login", self._handle_cors_preflight))
         routes.append(("POST", "/auth/logout", self._handle_auth_logout))
         routes.append(("GET", "/auth/me", self._handle_auth_me))
-        routes.append(("PATCH", "/auth/me", self._handle_auth_me_update))
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
@@ -1126,41 +1125,6 @@ class WebserverController(CoreController):
             return web.Response(status=401, text="Not authenticated")
 
         return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
-
-    async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
-        """Handle request to update current user's profile."""
-        user = await get_authenticated_user(request)
-        if not user:
-            return web.Response(status=401, text="Not authenticated")
-
-        try:
-            if not request.can_read_body:
-                return web.Response(status=400, text="Body required")
-
-            body = await request.json()
-            username = body.get("username")
-            display_name = body.get("display_name")
-            avatar_url = body.get("avatar_url")
-
-            # Update user
-            updated_user = await self.auth.update_user(
-                user,
-                username=username,
-                display_name=display_name,
-                avatar_url=avatar_url,
-            )
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
-                }
-            )
-        except Exception:
-            self.logger.exception("Error updating user profile")
-            return web.json_response(
-                {"success": False, "error": "Failed to update profile"}, status=500
-            )
 
     async def _handle_auth_providers(self, request: web.Request) -> web.Response:
         """Handle request for available login providers."""
