@@ -250,6 +250,28 @@ async def test_authenticate_with_password(auth_manager: AuthenticationManager) -
     assert result.error is not None
 
 
+async def test_authenticate_with_unknown_username_still_hashes_the_password(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that a login with an unknown username costs a password hash like a known one.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    hash_password = AsyncMock(wraps=builtin_provider._hash_password)
+    monkeypatch.setattr(builtin_provider, "_hash_password", hash_password)
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "nosuchuser", "password": "some_password"}
+    )
+
+    assert result == AuthResult(success=False, error="Invalid username or password")
+    hash_password.assert_awaited_once()
+
+
 async def test_authenticate_with_password_refuses_a_disabled_user(
     auth_manager: AuthenticationManager,
 ) -> None:
