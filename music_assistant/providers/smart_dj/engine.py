@@ -369,40 +369,45 @@ def beam_optimize(
     ]
     excluded = [t for t in tracks if t.get("queue_item_id") in excluded_ids]
 
-    # Optimize each interval between fixed anchors so fixed positions remain exact.
+    # Optimize each interval between fixed anchors. Excluded tracks do not occupy
+    # an output slot, so they must not affect segment sizing.
     result: list[dict[str, Any]] = []
-    movable_cursor = 0
-    for idx in range(len(tracks)):
-        if idx in fixed_positions:
-            fixed = fixed_positions[idx]
+    fixed_indices = sorted(fixed_positions)
+    interval_starts = [0, *[idx + 1 for idx in fixed_indices]]
+    interval_ends = [*fixed_indices, len(tracks)]
+    for start, end in zip(interval_starts, interval_ends, strict=True):
+        segment = [
+            track
+            for idx, track in enumerate(tracks[start:end], start=start)
+            if idx not in fixed_positions
+            and track.get("queue_item_id") not in excluded_ids
+        ]
+        if segment:
+            anchor = (
+                None
+                if result and not isinstance(result[-1].get("analysis"), dict)
+                else (_merge_track(result[-1]) if result else current)
+            )
+            optimized = _optimize_segment(segment, anchor, mode, controls, beam_width)
+            if len(optimized) != len(segment):
+                raise RuntimeError("Hard requirements are impossible with the current queue")
+            result.extend(optimized)
+        if end < len(tracks):
+            fixed = fixed_positions[end]
             if fixed.get("queue_item_id") in controls.excluded_ids:
                 raise RuntimeError("A fixed track is excluded")
             fixed_data = _merge_track(fixed)
-            if fixed.get("queue_item_id") in controls.required_ids:
-                pass
-            reason = "analysis unavailable; preserved" if not isinstance(fixed.get("analysis"), dict) else "fixed track"
-            result.append({**fixed, "score": None if reason.startswith("analysis") else 1.0, "reasons": [reason]})
+            reason = (
+                "analysis unavailable; preserved"
+                if not isinstance(fixed.get("analysis"), dict)
+                else "fixed track"
+            )
+            result.append({
+                **fixed,
+                "score": None if reason.startswith("analysis") else 1.0,
+                "reasons": [reason],
+            )
             current = None if reason.startswith("analysis") else fixed_data
-            continue
-        # Gather the remaining interval until the next fixed slot.
-        if idx < len(tracks):
-            next_fixed = min((p for p in fixed_positions if p > idx), default=len(tracks))
-        else:
-            next_fixed = len(tracks)
-        segment_len = next_fixed - idx
-        if segment_len <= 0:
-            continue
-        segment = movable[movable_cursor:movable_cursor + segment_len]
-        movable_cursor += segment_len
-        anchor = (
-            None
-            if result and not isinstance(result[-1].get("analysis"), dict)
-            else (_merge_track(result[-1]) if result else current)
-        )
-        optimized = _optimize_segment(segment, anchor, mode, controls, beam_width)
-        if len(optimized) != len(segment):
-            raise RuntimeError("Hard requirements are impossible with the current queue")
-        result.extend(optimized)
 
     # Excluded tracks are intentionally absent; every other non-fixed track must remain exactly once.
     expected = {str(t.get("queue_item_id")) for t in tracks if t.get("queue_item_id") not in excluded_ids}
@@ -417,7 +422,7 @@ def beam_optimize(
     if controls.end_track_id:
         end_index = next(i for i, item in enumerate(result) if item.get("queue_item_id") == controls.end_track_id)
         if end_index != len(result) - 1:
-            if end_index in fixed_positions:
+            if result[end_index].get("queue_item_id") in fixed_ids:
                 raise RuntimeError("End track is fixed and cannot be moved to the end")
             end = result.pop(end_index)
             result.append({**end, "reasons": [*end.get("reasons", []), "end track"]})
