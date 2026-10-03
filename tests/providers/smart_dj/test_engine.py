@@ -33,14 +33,15 @@ def test_disabled_key_does_not_affect_score() -> None:
     assert soft != disabled
 
 
-def test_missing_analysis_does_not_silently_disappear_when_unconstrained() -> None:
+def test_missing_analysis_is_preserved_as_a_barrier() -> None:
     tracks = [
         {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
         {"queue_item_id": "b", "artist": "B", "analysis": None},
         {"queue_item_id": "c", "artist": "C", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
     ]
-    with pytest.raises(RuntimeError):
-        beam_optimize(tracks, tracks[0]["analysis"], MODES["ai_dj"], controls=DJControls())
+    result = beam_optimize(tracks, tracks[0]["analysis"], MODES["ai_dj"], controls=DJControls())
+    assert [x["queue_item_id"] for x in result] == ["a", "b", "c"]
+    assert "analysis unavailable; preserved" in result[1]["reasons"]
 
 
 def test_required_and_excluded_are_enforced() -> None:
