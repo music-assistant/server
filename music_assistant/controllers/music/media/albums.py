@@ -452,6 +452,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 # one failing provider must not take the whole album down: the tracks
                 # from the library and the other providers are still playable
                 lookup_error = err
+                if isinstance(err, MediaNotFoundError):
+                    await self.mass.music.mark_provider_mapping_unavailable(
+                        library_album, provider_mapping
+                    )
                 self.logger.warning(
                     "Unable to fetch tracks for album %s from provider %s: %s",
                     library_album.name,

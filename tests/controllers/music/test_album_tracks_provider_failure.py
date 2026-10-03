@@ -147,3 +147,40 @@ async def test_album_tracks_raise_when_library_tracks_unavailable(mass: MusicAss
         pytest.raises(MediaNotFoundError),
     ):
         await mass.music.albums.tracks(db_album.item_id, "library")
+
+
+def _streaming_mapping_available(album: Album) -> bool:
+    return next(
+        mapping.available
+        for mapping in album.provider_mappings
+        if mapping.provider_instance == "streaming_inst"
+    )
+
+
+async def test_album_tracks_mark_a_mapping_the_provider_does_not_find(mass: MusicAssistant) -> None:
+    """A provider that no longer finds the album gets its mapping marked unavailable."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        side_effect=_failing_provider_fetch(MediaNotFoundError("Album not found")),
+    ):
+        await mass.music.albums.tracks(db_album.item_id, "library")
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert not _streaming_mapping_available(stored)
+    assert len(stored.provider_mappings) == 2
+
+
+async def test_album_tracks_keep_a_mapping_on_a_transient_failure(mass: MusicAssistant) -> None:
+    """A provider that fails for another reason keeps its mapping available."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        side_effect=_failing_provider_fetch(ProviderPermissionDenied("Not in your region")),
+    ):
+        await mass.music.albums.tracks(db_album.item_id, "library")
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert _streaming_mapping_available(stored)
