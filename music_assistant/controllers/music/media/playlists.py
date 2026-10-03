@@ -135,7 +135,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
-            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            "music/playlists/playlist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks",
@@ -213,6 +216,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             # the access record of a Music Assistant playlist lives on its library row
             self._check_visible(builtin_item)
+        else:
+            provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            )
 
         # Playback/refill requests for dynamic playlists need fresh tracks from the provider.
         # Browse requests may reuse cached tracks.

@@ -125,10 +125,16 @@ class TracksController(MediaControllerBase[Track]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/track_versions", self.versions, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/track_versions",
+            self.versions,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/track_albums", self.albums, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/track_albums",
+            self.albums,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/preview", self.get_preview_url, required_scope=Scope.LIBRARY_READ
@@ -137,6 +143,7 @@ class TracksController(MediaControllerBase[Track]):
             f"music/{api_base}/similar_tracks",
             self.similar_tracks,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
 
     @property
@@ -519,7 +526,15 @@ class TracksController(MediaControllerBase[Track]):
             quality = -(mapping.quality or 0)
             return (preferred, quality)
 
-        sorted_mappings = sorted(ref_item.provider_mappings, key=sort_key)
+        allowed_providers = self._ensure_provider_filter(None)
+        sorted_mappings = sorted(
+            (
+                mapping
+                for mapping in ref_item.provider_mappings
+                if allowed_providers is None or mapping.provider_instance in allowed_providers
+            ),
+            key=sort_key,
+        )
         last_provider_error: MusicAssistantError | ClientError | OSError | TimeoutError | None = (
             None
         )
@@ -673,6 +688,7 @@ class TracksController(MediaControllerBase[Track]):
         return await self.mass.music.albums.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"track_id": db_id},
+            provider_filter=self._ensure_provider_filter(None),
             in_library_only=True,
         )
 

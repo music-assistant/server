@@ -123,10 +123,16 @@ class AlbumsController(MediaControllerBase[Album]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/album_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/album_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/album_versions",
+            self.versions,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
 
     @property
@@ -411,6 +417,9 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
+            provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            )
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
@@ -517,7 +526,9 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance_id_or_domain: str,
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
-        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        album = await self.get_provider_item(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         streaming_search_query = (
             f"{album.artists[0].name} - {album.name}" if album.artists else album.name
         )

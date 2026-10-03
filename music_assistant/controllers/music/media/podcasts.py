@@ -56,10 +56,16 @@ class PodcastsController(MediaControllerBase[Podcast]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/podcast_episodes", self.episodes, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/podcast_episodes",
+            self.episodes,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/podcast_episode", self.episode, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/podcast_episode",
+            self.episode,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_episode_transcript",
@@ -67,7 +73,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
             required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/podcast_versions", self.versions, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/podcast_versions",
+            self.versions,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
 
     @property
@@ -167,6 +176,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
+        else:
+            provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            )
         # podcast episodes are not stored in the db/library
         # so we always need to fetch them from the provider
         async for episode in self._get_provider_podcast_episodes(
@@ -180,7 +193,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider_instance_id_or_domain: str,
     ) -> PodcastEpisode:
         """Return single podcast episode by the given provider podcast id."""
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        prov = self.mass.get_provider(
+            self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
         episode = await prov.get_podcast_episode(item_id)
@@ -212,7 +227,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider_instance_id_or_domain: str,
     ) -> UniqueList[Podcast]:
         """Return all versions of an podcast we can find on all providers."""
-        podcast = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        podcast = await self.get_provider_item(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         search_query = podcast.name
         result: UniqueList[Podcast] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
