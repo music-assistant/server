@@ -172,6 +172,38 @@ def _hard_fail(
     if controls.explicit == "exclude" and candidate.get("explicit"):
         violations.append("explicit track excluded")
 
+    if controls.bpm.state == "hard" and current and bpm is not None:
+        a = current.get("bpm")
+        if isinstance(a, (int, float)) and abs(float(bpm) - float(a)) > float(a) * 0.08:
+            violations.append("hard BPM compatibility")
+
+    if controls.key.state == "hard" and current:
+        a, b = current.get("camelot"), candidate.get("camelot")
+        if a and b and camelot_affinity(a, b) <= 0.0:
+            violations.append("hard key compatibility")
+
+    if controls.energy.state == "hard" and current:
+        a, b = current.get("energy"), candidate.get("energy")
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(float(a) - float(b)) > 0.35:
+            violations.append("hard energy compatibility")
+
+    for field, label, scale in (
+        ("danceability", "danceability", 0.45),
+        ("loudness", "loudness", 8.0),
+    ):
+        control = getattr(controls, field)
+        if control.state == "hard" and current:
+            a, b = current.get(field), candidate.get(field)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(float(a) - float(b)) > scale:
+                violations.append(f"hard {label} compatibility")
+
+    if controls.genre.state == "hard" and current:
+        if current.get("genre") and candidate.get("genre") and current["genre"] != candidate["genre"]:
+            violations.append("hard genre compatibility")
+
+    if controls.artist_spacing.state == "hard" and same_artist:
+        violations.append("hard artist spacing")
+
     if same_artist and controls.max_artist_repeat <= 0:
         violations.append("artist repeat prohibited")
 
