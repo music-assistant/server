@@ -9,13 +9,19 @@ import random
 import secrets
 import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import (
+    LoginFailed,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
@@ -27,6 +33,7 @@ from .constants import (
     RECONNECT_DELAYS,
     WS_CONNECT_TIMEOUT,
     WS_HEARTBEAT,
+    YNISON_DEVICE_SERVER_DISCONNECT,
     YNISON_ORIGIN,
     YNISON_RECONNECT_ERROR_CODES,
     YNISON_REDIRECT_URL,
@@ -47,6 +54,10 @@ class YnisonSendError(ConnectionError):
     Inherits from ``ConnectionError`` so existing broad transport-error
     handlers continue to catch it.
     """
+
+
+class YnisonEmptyRedirectError(ConnectionError):
+    """Raised when the redirector accepts a token but returns no connection ticket."""
 
 
 def make_version_block(device_id: str) -> dict[str, Any]:
@@ -104,6 +115,17 @@ class YnisonDeviceInfo:
     type: str = DEVICE_TYPE_WEB
     app_name: str = DEFAULT_APP_NAME
     app_version: str = DEFAULT_APP_VERSION
+
+
+@dataclass(frozen=True)
+class _StatusWatermark:
+    """Record one successfully sent playing-status update."""
+
+    track_id: str
+    progress_ms: int
+    duration_ms: int
+    paused: bool
+    sent_at: float
 
 
 @dataclass
@@ -194,11 +216,16 @@ class YnisonClient:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session: aiohttp.ClientSession | None = None
         self._send_lock = asyncio.Lock()
+        self._pending_queue: dict[str, Any] | None = None
+        self._pending_queue_until = 0.0
+        self._last_queue_version: int | None = None
+        self._queue_epoch = 0
         self._message_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._connected = False
         self._has_connected_once = False
+        self._status_watermarks: deque[_StatusWatermark] = deque(maxlen=8)
 
         # Latest state from server
         self.state = YnisonState()
@@ -231,6 +258,18 @@ class YnisonClient:
         """Return our Ynison device_id (used when authoring outgoing state)."""
         return self._device_info.device_id
 
+    @property
+    def queue_generation(self) -> int:
+        """Return the generation invalidated by peer replacement or reconnect."""
+        return self._queue_epoch
+
+    def queue_snapshot(self) -> dict[str, Any]:
+        """Return the latest queue base for local navigation and mutations."""
+        queue = self.state.player_state.get("player_queue", {})
+        if self._pending_queue is not None and time.monotonic() < self._pending_queue_until:
+            queue = self._pending_queue
+        return deepcopy(queue)
+
     async def connect(self) -> None:
         """
         Connect to Ynison (redirector → state service).
@@ -239,7 +278,7 @@ class YnisonClient:
         """
         self._stop_event.clear()
         if self._external_session and self._external_session.closed:
-            raise RuntimeError("Provided http_session is closed")
+            raise ResourceTemporarilyUnavailable("Provided http_session is closed")
         self._session = self._external_session or aiohttp.ClientSession()
 
         try:
@@ -254,7 +293,7 @@ class YnisonClient:
         except asyncio.CancelledError:
             await self.disconnect()
             raise
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             # Transient error — schedule reconnect instead of dying
             self._logger.warning("Initial connection failed, scheduling reconnect", exc_info=True)
             self._connected = False
@@ -265,11 +304,15 @@ class YnisonClient:
                 await self._session.close()
             self._session = None
             self._schedule_reconnect()
+        except Exception:
+            await self.disconnect()
+            raise
 
     async def disconnect(self) -> None:
         """Gracefully disconnect from Ynison."""
         self._stop_event.set()
         self._connected = False
+        self._reset_pending_queue()
 
         if self._message_task and not self._message_task.done():
             self._message_task.cancel()
@@ -332,7 +375,18 @@ class YnisonClient:
                 },
             },
         }
-        await self._send(msg, strict=strict)
+        if await self._send(msg, strict=strict):
+            track_id = self.state.current_track_id
+            if track_id is not None:
+                self._status_watermarks.append(
+                    _StatusWatermark(
+                        track_id=track_id,
+                        progress_ms=progress_ms,
+                        duration_ms=duration_ms,
+                        paused=paused,
+                        sent_at=time.monotonic(),
+                    )
+                )
 
     async def update_active_device(self, device_id: str) -> None:
         """Request playback transfer to this device."""
@@ -400,21 +454,36 @@ class YnisonClient:
             Delivery-critical callers (queue advance after track end)
             opt in; queue-list-replenish heartbeats leave the default.
         """
-        queue = player_state.get("player_queue", {})
-        self._logger.info(
-            "→ update_player_state: index=%s queue_len=%d entity_type=%s",
-            queue.get("current_playable_index"),
-            len(queue.get("playable_list", [])),
-            queue.get("entity_type", ""),
-        )
-        msg = {
-            "update_player_state": {
-                "player_state": player_state,
-            },
-            **self._message_meta(),
-        }
-        self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
-        await self._send(msg, strict=strict)
+        await self._send(self._player_state_message(player_state), strict=strict)
+
+    async def mutate_player_state(
+        self,
+        mutation: Callable[[dict[str, Any]], None],
+        *,
+        expected_generation: int | None = None,
+    ) -> None:
+        """
+        Serialize a queue change against the latest successfully sent queue.
+
+        :param mutation: Synchronous edit of a private complete player-state copy.
+        :param expected_generation: Queue generation that an asynchronous result belongs to.
+        """
+        requested_epoch = self._queue_epoch if expected_generation is None else expected_generation
+        async with self._send_lock:
+            if requested_epoch != self._queue_epoch:
+                raise ResourceTemporarilyUnavailable("Ynison queue changed before command was sent")
+            player_state = deepcopy(self.state.player_state)
+            player_state["player_queue"] = self.queue_snapshot()
+            mutation(player_state)
+            queue = player_state.get("player_queue", {})
+            queue["version"] = make_version_block(self.device_id)
+            epoch = self._queue_epoch
+            await self._send_locked(self._player_state_message(player_state), strict=True)
+            if epoch != self._queue_epoch:
+                raise ResourceTemporarilyUnavailable("Ynison queue changed while command was sent")
+            self._pending_queue = deepcopy(queue)
+            self._pending_queue_until = time.monotonic() + 30
+            self._last_queue_version = int(queue["version"]["version"])
 
     async def send_full_state(
         self,
@@ -446,30 +515,46 @@ class YnisonClient:
             "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
         }
 
-    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> bool:
+    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> tuple[bool, bool]:
         """
-        Return True iff `incoming_ps` is our own broadcast round-tripping.
+        Classify an inbound state as an echo and whether its status is stale.
 
-        Uses author check on BOTH queue.version.device_id and
-        status.version.device_id — only an update where every block was
-        authored by us is treated as echo. AND-logic is critical: a peer
-        queue change combined with our own status echo would otherwise
-        be silently swallowed (RC-1 in v1.9.1 live testing).
-
-        Why only `device_id` and not `version` value: Ynison's protobuf
-        comment marks `version.version` as `random(int64)`. The server
-        re-stamps it after every `update_playing_status` (we send blank,
-        server fills in). Comparing inbound `version` against an outbound
-        watermark is therefore meaningless — our own restamped echo can
-        carry any value. `device_id` is unique and preserved end-to-end,
-        so authorship is the only reliable echo signal.
+        Full state broadcasts require both queue and status authorship. Ynison
+        normalizes playing-status heartbeats to an empty/zero version, so a
+        status-only response may instead match one recent successful send.
         """
         own_id = self._device_info.device_id
         queue_block = (incoming_ps.get("player_queue") or {}).get("version") or {}
         status_block = (incoming_ps.get("status") or {}).get("version") or {}
         queue_is_ours = queue_block.get("device_id") == own_id
         status_is_ours = status_block.get("device_id") == own_id
-        return queue_is_ours and status_is_ours
+        if queue_is_ours and status_is_ours:
+            return True, False
+        incoming_queue = incoming_ps.get("player_queue")
+        queue_changed = (
+            incoming_queue is not None
+            and incoming_queue != self.state.player_state.get("player_queue")
+        )
+        if queue_changed or status_block != {
+            "device_id": "",
+            "version": "0",
+            "timestamp_ms": "0",
+        }:
+            return False, False
+
+        status = incoming_ps.get("status") or {}
+        current_track = self.state.current_track_id
+        now = time.monotonic()
+        for watermark in reversed(self._status_watermarks):
+            if (
+                now - watermark.sent_at <= 2.0
+                and current_track == watermark.track_id
+                and abs(int(status.get("progress_ms", -2)) - watermark.progress_ms) <= 1
+                and int(status.get("duration_ms", -1)) == watermark.duration_ms
+                and status.get("paused") is watermark.paused
+            ):
+                return True, True
+        return False, False
 
     # ------------------------------------------------------------------
     # Connection internals
@@ -575,7 +660,7 @@ class YnisonClient:
         session_id = int(data.get("session_id", 0))
 
         if not host or not ticket:
-            raise ConnectionError("Redirector response missing host or ticket")
+            raise YnisonEmptyRedirectError("Redirector response missing host or ticket")
 
         self._logger.debug("Ynison redirect: host=%s, session_id=%d", host, session_id)
         return host, ticket, session_id
@@ -584,6 +669,7 @@ class YnisonClient:
         """Connect to Ynison state service and start message loop."""
         if self._session is None:
             raise RuntimeError("HTTP session not initialized — call connect() first")
+        self._reset_pending_queue()
         url = f"wss://{host}{YNISON_STATE_PATH}"
         headers = self._build_headers(redirect_ticket=ticket, session_id=session_id)
 
@@ -615,7 +701,7 @@ class YnisonClient:
         # are passive. Failure is non-fatal — we just receive more events.
         try:
             await self.update_session_params(mute_events_if_passive=True)
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             self._logger.debug("update_session_params failed", exc_info=True)
 
         self._has_connected_once = True
@@ -677,7 +763,7 @@ class YnisonClient:
                     self._parse_state(data)
                     try:
                         await self._on_state_update(self.state)
-                    except Exception:
+                    except MusicAssistantError:
                         self._logger.exception("Error in Ynison state update callback")
                 elif msg.type == aiohttp.WSMsgType.BINARY:
                     self._logger.debug(
@@ -700,11 +786,11 @@ class YnisonClient:
                     break
         except asyncio.CancelledError:
             return
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             self._logger.exception("Unexpected error in Ynison message loop")
+        finally:
+            self._connected = False
         self._logger.debug("Ynison message loop exited")
-
-        self._connected = False
 
         if not self._stop_event.is_set() and (
             self._reconnect_task is None or self._reconnect_task.done()
@@ -712,9 +798,17 @@ class YnisonClient:
             self._logger.warning("Ynison connection lost, scheduling reconnect")
             self._schedule_reconnect()
 
+    def _reset_pending_queue(self) -> None:
+        """Discard outbound queue edits when a peer or a new connection takes over."""
+        self._pending_queue = None
+        self._pending_queue_until = 0.0
+        self._last_queue_version = None
+        self._queue_epoch += 1
+
     def _parse_state(self, data: dict[str, Any]) -> None:
         """Parse PutYnisonStateResponse into YnisonState."""
         old_track = self.state.current_track_id
+        old_active_device = self.state.active_device_id
         old_index = self.state.player_state.get("player_queue", {}).get(
             "current_playable_index", -1
         )
@@ -730,20 +824,41 @@ class YnisonClient:
             # messages, and stored state is round-tripped via send_full_state
             # (on reconnect) and update_player_state (on queue edits).
             normalize_player_state_timestamps(incoming_ps)
+            is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
+                if key == "player_queue":
+                    version = value.get("version", {})
+                    if version.get("device_id") != self.device_id:
+                        if value != existing_ps.get("player_queue"):
+                            self._reset_pending_queue()
+                    elif self._last_queue_version is not None:
+                        number = str(version.get("version", ""))
+                        if number.isdigit() and int(number) < self._last_queue_version:
+                            continue
+                        self._pending_queue = None
+                if suppress_status and key == "status":
+                    continue
                 existing_ps[key] = value
-            # Echo detection: a state is our echo iff BOTH the queue and
-            # status version-blocks are authored by our `device_id`. See
-            # `_classify_state_as_echo` for why version values are not
-            # part of the check (Ynison documents `version.version` as
-            # `random(int64)` and the server re-stamps it).
-            self.state.last_update_is_echo = self._classify_state_as_echo(incoming_ps)
+            self.state.last_update_is_echo = is_echo
         else:
             self.state.last_update_is_echo = False
-        self.state.active_device_id = data.get(
-            "active_device_id_optional", self.state.active_device_id
+        incoming_status_author = (
+            incoming_ps.get("status", {}).get("version", {}).get("device_id")
+            if isinstance(incoming_ps, dict)
+            else None
         )
+        if (
+            "active_device_id_optional" not in data
+            and incoming_status_author == YNISON_DEVICE_SERVER_DISCONNECT
+        ):
+            self.state.active_device_id = None
+        else:
+            self.state.active_device_id = data.get(
+                "active_device_id_optional", self.state.active_device_id
+            )
+        if self.state.active_device_id != old_active_device:
+            self._reset_pending_queue()
         self.state.devices = data.get("devices", self.state.devices)
 
         new_track = self.state.current_track_id
@@ -781,6 +896,7 @@ class YnisonClient:
         reconnection; a reliable long-running plugin never permanently gives up.
         """
         attempt = 0
+        refresh_attempted = False
         while not self._stop_event.is_set():
             delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
             # Add ±20% jitter to prevent thundering-herd reconnects
@@ -804,7 +920,7 @@ class YnisonClient:
                     if self._external_session is not None:
                         if self._external_session.closed:
                             msg = "External HTTP session is closed"
-                            raise RuntimeError(msg)
+                            raise ResourceTemporarilyUnavailable(msg)
                         self._session = self._external_session
                     else:
                         self._session = aiohttp.ClientSession()
@@ -813,21 +929,46 @@ class YnisonClient:
                 await self._connect_state(host, ticket, session_id)
                 self._logger.info("Ynison reconnected successfully")
                 return
-            except LoginFailed:
+            except LoginFailed, YnisonEmptyRedirectError:
                 self._logger.warning("Ynison reconnect attempt %d failed: auth error", attempt)
-                if self._on_auth_failure:
+                if self._on_auth_failure and not refresh_attempted:
                     try:
                         new_token = await self._on_auth_failure()
                         self._token = new_token
+                        refresh_attempted = True
                         self._logger.info("Token refreshed, will retry with new token")
-                    except Exception:
-                        self._logger.warning("Token refresh failed", exc_info=True)
+                    except ResourceTemporarilyUnavailable:
+                        self._logger.warning(
+                            "Token refresh temporarily unavailable, will retry after backoff",
+                            exc_info=True,
+                        )
+                    except LoginFailed:
+                        refresh_attempted = True
+                        self._logger.warning("Token refresh permanently failed", exc_info=True)
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except aiohttp.ClientError, OSError, TimeoutError, ResourceTemporarilyUnavailable:
                 self._logger.warning("Ynison reconnect attempt %d failed", attempt, exc_info=True)
 
-    async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> None:
+    def _player_state_message(self, player_state: dict[str, Any]) -> dict[str, Any]:
+        """Build a complete queue update envelope."""
+        queue = player_state.get("player_queue", {})
+        self._logger.info(
+            "→ update_player_state: index=%s queue_len=%d entity_type=%s",
+            queue.get("current_playable_index"),
+            len(queue.get("playable_list", [])),
+            queue.get("entity_type", ""),
+        )
+        msg = {
+            "update_player_state": {
+                "player_state": player_state,
+            },
+            **self._message_meta(),
+        }
+        self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
+        return msg
+
+    async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> bool:
         """
         Send a JSON message to the state service (thread-safe).
 
@@ -838,19 +979,25 @@ class YnisonClient:
             log + schedule reconnect + return.
         """
         async with self._send_lock:
-            if self._ws is None or self._ws.closed:
-                self._logger.debug("Cannot send to Ynison — not connected")
-                if strict:
-                    raise YnisonSendError("Ynison WebSocket not connected")
-                return
-            try:
-                await self._ws.send_str(json.dumps(msg))
-            except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
-                self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
-                self._connected = False
-                self._schedule_reconnect()
-                if strict:
-                    raise YnisonSendError("Ynison send failed") from exc
+            return await self._send_locked(msg, strict=strict)
+
+    async def _send_locked(self, msg: dict[str, Any], *, strict: bool) -> bool:
+        """Send one envelope while the caller holds the transport lock."""
+        if self._ws is None or self._ws.closed:
+            self._logger.debug("Cannot send to Ynison — not connected")
+            if strict:
+                raise YnisonSendError("Ynison WebSocket not connected")
+            return False
+        try:
+            await self._ws.send_str(json.dumps(msg))
+            return True
+        except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
+            self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
+            self._connected = False
+            self._schedule_reconnect()
+            if strict:
+                raise YnisonSendError("Ynison send failed") from exc
+            return False
 
     def _schedule_reconnect(self) -> None:
         """

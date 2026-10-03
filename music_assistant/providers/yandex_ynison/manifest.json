@@ -5,7 +5,7 @@
   "name": "Yandex Music Connect (Ynison)",
   "description": "Makes a Music Assistant player appear as a device in the Yandex Music app via the Ynison protocol.",
   "codeowners": ["@TrudenBoy"],
-  "requirements": ["ya-passport-auth[ma]==2.0.1", "segno==1.6.6"],
+  "requirements": ["ya-passport-auth[ma]==2.0.1"],
   "depends_on": "yandex_music",
   "documentation": "https://music-assistant.io/plugins/yandex-ynison/",
   "multi_instance": true

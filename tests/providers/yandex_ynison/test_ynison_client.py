@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
-from typing import Any
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
 
 from music_assistant.providers.yandex_ynison.constants import (
@@ -22,11 +24,19 @@ from music_assistant.providers.yandex_ynison.constants import (
 from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
+    YnisonEmptyRedirectError,
     YnisonSendError,
     YnisonState,
     generate_device_id,
     make_version_block,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures" / "ynison"
+
+
+def _fixture(name: str) -> dict[str, Any]:
+    """Load a sanitized Ynison protocol fixture."""
+    return cast("dict[str, Any]", json.loads((FIXTURES / name).read_text()))
 
 
 @pytest.fixture
@@ -253,6 +263,186 @@ class TestYnisonClientParseState:
         client.state.active_device_id = "old-device"
         client._parse_state({"player_state": {"status": {"paused": True}}})
         assert client.state.active_device_id == "old-device"
+
+    def test_disconnect_sentinel_clears_implicit_active_device(self, client: YnisonClient) -> None:
+        """A disconnect sentinel without an explicit owner clears stale ownership."""
+        client.state.active_device_id = "test-device-id"
+
+        client._parse_state(_fixture("disconnect_sentinel.json"))
+
+        assert client.state.active_device_id is None
+
+    async def test_recent_empty_version_status_is_heartbeat_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """A matching server-normalized status is recognized as our heartbeat."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.last_update_is_echo is True
+
+    async def test_foreign_status_wins_over_matching_heartbeat(self, client: YnisonClient) -> None:
+        """A peer-authored status is authoritative even when its values match."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(180000, 240000, paused=False)
+
+        client._parse_state(_fixture("phone_seek.json"))
+
+        assert client.state.last_update_is_echo is False
+
+    async def test_delayed_heartbeat_does_not_overwrite_newer_phone_seek(
+        self, client: YnisonClient
+    ) -> None:
+        """A pre-seek heartbeat arriving late cannot roll state back."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            },
+            "status": {"paused": False, "progress_ms": "120000", "duration_ms": "240000"},
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("phone_seek.json"))
+
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
+
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
+
+    async def test_queue_update_is_not_hidden_by_matching_status(
+        self, client: YnisonClient
+    ) -> None:
+        """An incoming queue block remains observable beside a matching heartbeat."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        update = _fixture("empty_version_heartbeat.json")
+        update["player_state"]["player_queue"] = {
+            "current_playable_index": 1,
+            "playable_list": [
+                {"playable_id": "TRACK_A"},
+                {"playable_id": "TRACK_B"},
+            ],
+        }
+
+        client._parse_state(update)
+
+        assert client.state.last_update_is_echo is False
+
+    async def test_matching_heartbeat_with_unchanged_queue_is_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """Ynison may attach the complete unchanged queue to a status echo."""
+        queue = {
+            "current_playable_index": 0,
+            "playable_list": [{"playable_id": "TRACK_A"}],
+            "version": {"device_id": "peer", "version": "7", "timestamp_ms": "0"},
+        }
+        client.state.player_state = {"player_queue": queue}
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        update = _fixture("empty_version_heartbeat.json")
+        update["player_state"]["player_queue"] = deepcopy(queue)
+
+        client._parse_state(update)
+
+        assert client.state.last_update_is_echo is True
+
+    def test_fully_authored_queue_advance_applies_reset_status(self, client: YnisonClient) -> None:
+        """A fully authored echo advances canonical queue and resets its status."""
+        client.state.player_state = {
+            "status": {"paused": False, "progress_ms": "90000", "duration_ms": "200000"},
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "A"}, {"playable_id": "B"}],
+            },
+        }
+        authored_version = {
+            "device_id": "test-device-id",
+            "version": "10",
+            "timestamp_ms": "0",
+        }
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "0",
+                        "duration_ms": "0",
+                        "version": authored_version,
+                    },
+                    "player_queue": {
+                        "current_playable_index": 1,
+                        "playable_list": [{"playable_id": "A"}, {"playable_id": "B"}],
+                        "version": authored_version,
+                    },
+                }
+            }
+        )
+
+        assert client.state.last_update_is_echo is True
+        assert client.state.current_track_id == "B"
+        assert client.state.progress_ms == 0
+        assert client.state.duration_ms == 0
+
+    async def test_attached_queue_heartbeat_does_not_overwrite_newer_seek(
+        self, client: YnisonClient
+    ) -> None:
+        """An unchanged attached queue does not make a delayed status authoritative."""
+        queue = {
+            "current_playable_index": 0,
+            "playable_list": [{"playable_id": "TRACK_A"}],
+            "version": {"device_id": "peer", "version": "7", "timestamp_ms": "0"},
+        }
+        client.state.player_state = {"player_queue": queue}
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("phone_seek.json"))
+        delayed = _fixture("empty_version_heartbeat.json")
+        delayed["player_state"]["player_queue"] = deepcopy(queue)
+
+        client._parse_state(delayed)
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
 
     def test_echo_flag_true_only_when_both_authors_ours(self, client: YnisonClient) -> None:
         """AND-logic (1.9.1): both queue.version AND status.version must be ours."""
@@ -567,7 +757,7 @@ class TestReconnectSessionOwnership:
         def stop_after_session_select() -> None:
             client._stop_event.set()
             msg = "stop after session selection"
-            raise RuntimeError(msg)
+            raise OSError(msg)
 
         sleep_path = "music_assistant.providers.yandex_ynison.ynison_client.asyncio.sleep"
         with (
@@ -637,7 +827,7 @@ class TestReconnectSessionOwnership:
             http_session=ext_session,
         )
 
-        with pytest.raises(RuntimeError, match="closed"):
+        with pytest.raises(ResourceTemporarilyUnavailable, match="closed"):
             await client.connect()
 
 
@@ -648,6 +838,20 @@ class TestReconnectSessionOwnership:
 
 class TestConnectTransientError:
     """Tests for connect() scheduling reconnect on transient errors."""
+
+    async def test_invalid_redirect_payload_propagates_without_retry(
+        self, client: YnisonClient
+    ) -> None:
+        """Invalid protocol data is not silently retried as a network outage."""
+        session = AsyncMock(closed=False)
+        ws = AsyncMock(closed=False)
+        ws.receive.return_value = _make_ws_msg(aiohttp.WSMsgType.TEXT, "invalid-json")
+        session.ws_connect.return_value = ws
+        client._external_session = session
+        with pytest.raises(json.JSONDecodeError):
+            await client.connect()
+        assert client._reconnect_task is None
+        ws.close.assert_awaited_once()
 
     async def test_connect_transient_schedules_reconnect(self) -> None:
         """Non-auth error during connect schedules _reconnect task."""
@@ -778,6 +982,89 @@ class TestMessageBuildingMethods:
         assert "rid" in call_data
         assert call_data["activity_interception_type"] == "DO_NOT_INTERCEPT_BY_DEFAULT"
 
+    async def test_concurrent_queue_controls_are_serialized(self, client: YnisonClient) -> None:
+        """A second command includes the first command even while its send is pending."""
+        client.state.player_state = {"player_queue": {"playable_list": []}}
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def send(_data: str) -> None:
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        self.mock_ws.send_str.side_effect = send
+        first = asyncio.create_task(
+            client.mutate_player_state(
+                lambda ps: ps["player_queue"].update(options={"repeat_mode": "ONE"})
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        second = asyncio.create_task(
+            client.mutate_player_state(
+                lambda ps: ps["player_queue"].update(shuffle_optional={"playable_indices": []})
+            )
+        )
+        release.set()
+        await asyncio.gather(first, second)
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        assert sent["player_queue"]["options"]["repeat_mode"] == "ONE"
+        assert "shuffle_optional" in sent["player_queue"]
+
+    async def test_failed_queue_send_is_not_replayed_and_disconnect_clears_pending(
+        self,
+        client: YnisonClient,
+    ) -> None:
+        """Only successfully sent edits survive a failed write, until disconnect."""
+        client.state.player_state = {"player_queue": {"playable_list": []}}
+        await client.mutate_player_state(
+            lambda ps: ps["player_queue"].update(options={"repeat_mode": "ALL"})
+        )
+        self.mock_ws.send_str.side_effect = OSError("write failed")
+        try:
+            with pytest.raises(YnisonSendError):
+                await client.mutate_player_state(
+                    lambda ps: ps["player_queue"].update(shuffle_optional={"playable_indices": []})
+                )
+            self.mock_ws.send_str.side_effect = None
+            client._connected = True
+            await client.mutate_player_state(lambda _ps: None)
+            sent = json.loads(self.mock_ws.send_str.call_args.args[0])["update_player_state"][
+                "player_state"
+            ]
+            assert sent["player_queue"]["options"]["repeat_mode"] == "ALL"
+            assert "shuffle_optional" not in sent["player_queue"]
+            assert "options" not in client.state.player_state["player_queue"]
+        finally:
+            await client.disconnect()
+        client._ws = self.mock_ws
+        client._connected = True
+        await client.mutate_player_state(lambda _ps: None)
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        assert "options" not in sent["player_queue"]
+
+    async def test_unacknowledged_queue_expires(self, client: YnisonClient) -> None:
+        """Missing acknowledgements cannot keep an optimistic queue indefinitely."""
+        client.state.player_state = {"player_queue": {"playable_list": []}}
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic", return_value=100
+        ):
+            await client.mutate_player_state(
+                lambda ps: ps["player_queue"].update(options={"repeat_mode": "ALL"})
+            )
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic", return_value=131
+        ):
+            await client.mutate_player_state(lambda _ps: None)
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        assert "options" not in sent["player_queue"]
+
     async def test_send_full_state_default(self, client: YnisonClient) -> None:
         """send_full_state with no args sends initial state and device dict."""
         await client.send_full_state()
@@ -794,11 +1081,6 @@ class TestMessageBuildingMethods:
         await client.send_full_state(player_state=custom_state)
         call_data = json.loads(self.mock_ws.send_str.call_args[0][0])
         assert call_data["update_full_state"]["player_state"] == custom_state
-
-
-# ------------------------------------------------------------------
-# _get_redirect_ticket
-# ------------------------------------------------------------------
 
 
 class TestGetRedirectTicket:
@@ -880,7 +1162,7 @@ class TestGetRedirectTicket:
             await client._get_redirect_ticket()
 
     async def test_missing_host_ticket(self, client: YnisonClient) -> None:
-        """Missing host/ticket in response raises ConnectionError."""
+        """Missing host/ticket is identified as an authentication-suspect redirect."""
         mock_msg = MagicMock()
         mock_msg.type = aiohttp.WSMsgType.TEXT
         mock_msg.data = json.dumps({"host": "", "redirect_ticket": ""})
@@ -893,7 +1175,7 @@ class TestGetRedirectTicket:
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        with pytest.raises(ConnectionError, match="missing host or ticket"):
+        with pytest.raises(YnisonEmptyRedirectError, match="missing host or ticket"):
             await client._get_redirect_ticket()
 
     async def test_unexpected_msg_type(self, client: YnisonClient) -> None:
@@ -1046,6 +1328,95 @@ def _make_ws_msg(
 class TestMessageLoop:
     """Tests for _message_loop."""
 
+    @pytest.mark.parametrize("during_send", [False, True])
+    async def test_peer_queue_supersedes_command_waiting_for_transport(
+        self,
+        client: YnisonClient,
+        mock_state_callback: AsyncMock,
+        during_send: bool,
+    ) -> None:
+        """A peer replacement rejects queued and in-flight mutations as obsolete."""
+        client.state.player_state = {
+            "player_queue": {
+                "playable_list": [{"playable_id": "old"}],
+                "current_playable_index": 0,
+            }
+        }
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_send(_data: str) -> None:
+            entered.set()
+            await release.wait()
+
+        ws = AsyncMock(closed=False)
+        ws.send_str.side_effect = slow_send
+        client._ws = ws
+        client._connected = True
+        heartbeat = None
+        if not during_send:
+            heartbeat = asyncio.create_task(client.update_playing_status(0, 0, False))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+        command = asyncio.create_task(
+            client.mutate_player_state(
+                lambda ps: ps["player_queue"].update(options={"repeat_mode": "ALL"})
+            )
+        )
+        if during_send:
+            await asyncio.wait_for(entered.wait(), timeout=1)
+        else:
+            await asyncio.sleep(0)
+        mock_state_callback.side_effect = lambda _state: client._stop_event.set()
+        try:
+            await self._run_loop_with_messages(
+                client,
+                [
+                    _make_ws_msg(
+                        aiohttp.WSMsgType.TEXT,
+                        json.dumps(
+                            {
+                                "player_state": {
+                                    "player_queue": {
+                                        "playable_list": [{"playable_id": "peer-new"}],
+                                        "current_playable_index": 0,
+                                        "version": {
+                                            "device_id": "peer",
+                                            "version": "1",
+                                            "timestamp_ms": "0",
+                                        },
+                                    }
+                                }
+                            }
+                        ),
+                    )
+                ],
+            )
+            release.set()
+            if heartbeat is not None:
+                await heartbeat
+            with pytest.raises(ResourceTemporarilyUnavailable, match="queue changed"):
+                await command
+            client._ws.send_str.assert_not_awaited()
+            assert client.state.current_track_id == "peer-new"
+            assert client.queue_snapshot()["playable_list"] == [{"playable_id": "peer-new"}]
+        finally:
+            release.set()
+            tasks = [command] if heartbeat is None else [heartbeat, command]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_callback_programming_error_propagates(
+        self,
+        client: YnisonClient,
+        mock_state_callback: AsyncMock,
+    ) -> None:
+        """A broken state callback stops processing without scheduling a retry."""
+        mock_state_callback.side_effect = ValueError("broken callback")
+        msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps({"player_state": {}}))
+        with pytest.raises(ValueError, match="broken callback"):
+            await self._run_loop_with_messages(client, [msg])
+        assert not client.connected
+        assert client._reconnect_task is None
+
     async def _run_loop_with_messages(
         self,
         client: YnisonClient,
@@ -1059,6 +1430,8 @@ class TestMessageLoop:
 
         mock_ws = MagicMock()
         mock_ws.__aiter__ = _aiter
+        mock_ws.send_str = AsyncMock()
+        mock_ws.closed = False
         mock_ws.exception = MagicMock(return_value=None)
         mock_ws.close_code = None
         client._ws = mock_ws
@@ -1090,6 +1463,84 @@ class TestMessageLoop:
         on_state_update.assert_awaited_once()
         assert client.state.current_track_id == "t1"
         assert client.state.is_paused is False
+
+    @pytest.mark.parametrize("echo", ["older", "latest_then_older", "peer", "unchanged_peer"])
+    async def test_queue_commands_after_incoming_echo(
+        self,
+        client: YnisonClient,
+        mock_state_callback: AsyncMock,
+        echo: str,
+    ) -> None:
+        """Older acknowledgements cannot roll back controls; peer queues take over."""
+        client.state.player_state = {
+            "player_queue": {
+                "playable_list": [{"playable_id": "original"}],
+                "current_playable_index": 0,
+            }
+        }
+        client._ws = AsyncMock(closed=False)
+        client._connected = True
+
+        def repeat(state: dict[str, Any]) -> None:
+            state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+
+        def shuffle(state: dict[str, Any]) -> None:
+            state["player_queue"]["shuffle_optional"] = {"playable_indices": [0]}
+
+        await client.mutate_player_state(repeat)
+        first = json.loads(client._ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        await client.mutate_player_state(shuffle)
+        second = json.loads(client._ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        frames = [first]
+        if echo == "latest_then_older":
+            frames.insert(0, second)
+        elif echo == "unchanged_peer":
+            frames = [deepcopy(client.state.player_state)]
+        elif echo == "peer":
+            frames = [
+                {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "peer-track"}],
+                        "current_playable_index": 0,
+                        "options": {"repeat_mode": "NONE"},
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    }
+                }
+            ]
+        received = 0
+
+        async def on_state(_state: YnisonState) -> None:
+            nonlocal received
+            received += 1
+            if received == len(frames):
+                await client.mutate_player_state(
+                    lambda ps: ps["player_queue"].update(entity_id="next")
+                )
+                client._stop_event.set()
+
+        mock_state_callback.side_effect = on_state
+        await self._run_loop_with_messages(
+            client,
+            [
+                _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps({"player_state": frame}))
+                for frame in frames
+            ],
+        )
+        sent = json.loads(client._ws.send_str.call_args.args[0])["update_player_state"][
+            "player_state"
+        ]
+        queue = sent["player_queue"]
+        if echo == "peer":
+            assert queue["playable_list"] == [{"playable_id": "peer-track"}]
+            assert queue["options"]["repeat_mode"] == "NONE"
+            assert "shuffle_optional" not in queue
+        else:
+            assert queue["options"]["repeat_mode"] == "ALL"
+            assert queue["shuffle_optional"]["playable_indices"] == [0]
 
     async def test_text_message_with_error_field(self, client: YnisonClient) -> None:
         """TEXT message with non-reconnect error logs warning, continues."""
@@ -1185,7 +1636,7 @@ class TestMessageLoop:
     ) -> None:
         """Exception in state callback is caught, loop continues."""
         on_state_update = mock_state_callback
-        on_state_update.side_effect = [ValueError("boom"), None]
+        on_state_update.side_effect = [ResourceTemporarilyUnavailable("busy"), None]
 
         msg1 = _make_ws_msg(
             aiohttp.WSMsgType.TEXT,
@@ -1430,7 +1881,7 @@ class TestReconnect:
         def stop_after_session(*_args: Any, **_kwargs: Any) -> None:
             client._stop_event.set()
             msg = "stop"
-            raise RuntimeError(msg)
+            raise OSError(msg)
 
         with (
             patch(SLEEP_PATH, new_callable=AsyncMock),
@@ -1690,7 +2141,7 @@ class TestTokenRefreshOnReconnect:
         assert client._token == SecretStr("old-token")
 
     async def test_auth_failure_callback_raises(self) -> None:
-        """on_auth_failure raises → logs warning, keeps retrying until stopped."""
+        """An unexpected callback error escapes instead of hiding a programming defect."""
         on_state = AsyncMock()
         on_auth_failure = AsyncMock(side_effect=RuntimeError("refresh failed"))
 
@@ -1705,13 +2156,10 @@ class TestTokenRefreshOnReconnect:
         client._session.closed = False
 
         attempt_count = 0
-        stop_after = 6
 
         async def failing_redirect() -> tuple[str, str, int]:
             nonlocal attempt_count
             attempt_count += 1
-            if attempt_count >= stop_after:
-                client._stop_event.set()
             raise LoginFailed("expired")
 
         with (
@@ -1722,13 +2170,108 @@ class TestTokenRefreshOnReconnect:
                 new_callable=AsyncMock,
                 side_effect=failing_redirect,
             ),
+            pytest.raises(RuntimeError, match="refresh failed"),
         ):
             await client._reconnect()
 
-        # Callback was called on every attempt — no cap
-        assert on_auth_failure.await_count == attempt_count
+        assert on_auth_failure.await_count == 1
         # Token unchanged since callback always fails
         assert client._token == SecretStr("old-token")
+
+    async def test_transient_refresh_failure_is_retried_after_backoff(self) -> None:
+        """A temporary refresh outage preserves the refresh budget for a later retry."""
+        on_auth_failure = AsyncMock(
+            side_effect=[
+                ResourceTemporarilyUnavailable("linked provider not loaded"),
+                SecretStr("new-token"),
+            ]
+        )
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        redirect = AsyncMock(
+            side_effect=[
+                LoginFailed("expired"),
+                LoginFailed("expired"),
+                ("host", "ticket", 1),
+            ]
+        )
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock) as sleep,
+            patch.object(client, "_get_redirect_ticket", redirect),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            await client._reconnect()
+
+        assert on_auth_failure.await_count == 2
+        assert sleep.await_count == 3
+        assert client._token == SecretStr("new-token")
+
+    async def test_permanent_refresh_failure_consumes_budget(self) -> None:
+        """A permanent refresh rejection is attempted only once per reconnect episode."""
+        on_auth_failure = AsyncMock(side_effect=LoginFailed("refresh rejected"))
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        attempts = 0
+
+        async def failing_redirect() -> tuple[str, str, int]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 4:
+                client._stop_event.set()
+            raise LoginFailed("expired")
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock),
+            patch.object(client, "_get_redirect_ticket", side_effect=failing_redirect),
+        ):
+            await client._reconnect()
+
+        assert attempts == 4
+        on_auth_failure.assert_awaited_once()
+        assert client._token == SecretStr("old-token")
+
+    async def test_empty_redirect_triggers_one_token_refresh(self) -> None:
+        """The live invalid-token response shares the bounded refresh budget."""
+        on_auth_failure = AsyncMock(return_value=SecretStr("new-token"))
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        attempts = 0
+
+        async def redirect() -> tuple[str, str, int]:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise YnisonEmptyRedirectError("missing host or ticket")
+            return "host", "ticket", 1
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock),
+            patch.object(client, "_get_redirect_ticket", side_effect=redirect),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            await client._reconnect()
+
+        assert on_auth_failure.await_count == 1
+        assert client._token == SecretStr("new-token")
 
 
 class TestUpdateToken:
