@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "alpha",
+  "domain": "smart_dj",
+  "name": "Smart DJ",
+  "description": "BPM, key, energy and mood-aware queue intelligence.",
+  "codeowners": ["@mattamays-ai"],
+  "requirements": [],
+  "documentation": "https://api.musicae.io/docs/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "disc-player"
+}

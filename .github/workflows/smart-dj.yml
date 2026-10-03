@@ -1,0 +1,19 @@
+name: Smart DJ validation
+
+on:
+  push:
+    branches: ["feat/smart-dj"]
+  pull_request:
+
+jobs:
+  test-smart-dj:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --extra test
+      - run: uv run pytest tests/providers/smart_dj -q
+      - run: uv run ruff check music_assistant/providers/smart_dj tests/providers/smart_dj
+      - run: uv run mypy music_assistant/providers/smart_dj
