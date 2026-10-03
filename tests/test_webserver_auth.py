@@ -272,6 +272,50 @@ async def test_authenticate_with_unknown_username_still_hashes_the_password(
     hash_password.assert_awaited_once()
 
 
+async def test_password_hashing_runs_at_most_two_at_a_time(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that a third password hash waits until one of two running hashes is done.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def blocking_hash(*_args: Any) -> bytes:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        started.release()
+        release.wait(5)
+        with lock:
+            running -= 1
+        return b"hash"
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", blocking_hash)
+    tasks = [
+        asyncio.create_task(builtin_provider._hash_password("password", f"user{idx}"))
+        for idx in range(3)
+    ]
+    for _ in range(2):
+        assert await asyncio.to_thread(started.acquire, True, 5)
+    # the third hash must not start while the first two still run
+    assert not await asyncio.to_thread(started.acquire, True, 0.2)
+    assert peak == 2
+
+    release.set()
+    await asyncio.gather(*tasks)
+    assert peak == 2
+
+
 async def test_authenticate_with_password_refuses_a_disabled_user(
     auth_manager: AuthenticationManager,
 ) -> None:
