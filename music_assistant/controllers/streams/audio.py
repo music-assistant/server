@@ -3385,11 +3385,21 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
+            # same-quality mappings tie-break toward the folder of the track playing now
+            anchor: tuple[str, str] | None = None
+            if (
+                (queue := mass.player_queues.get(queue_item.queue_id))
+                and (current := queue.current_item)
+                and current.queue_item_id != queue_item.queue_item_id
+                and (current_details := current.streamdetails)
+            ):
+                anchor = (current_details.provider, current_details.item_id)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
                 excluded_provider_instances,
                 allowed,
+                anchor,
             )
             if not candidates and allowed is not None:
                 # tell an item blocked by the user's music sources apart from one whose
@@ -3705,6 +3715,7 @@ class StreamsAudio:
         preferred_providers: list[str],
         excluded_provider_instances: set[str],
         allowed: list[str] | None,
+        anchor: tuple[str, str] | None = None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
         Return mapping candidates in steering, quality, and instance-fallback order.
@@ -3713,10 +3724,14 @@ class StreamsAudio:
         :param preferred_providers: Provider instances tried before widening to the rest.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
+        :param anchor: (provider_instance, item_id) of the playing track; same-quality mappings
+            closest to its folder come first.
         :return: Ordered provider mapping candidates.
         """
         ordered_mappings = sorted(
-            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
+            provider_mappings,
+            key=lambda mapping: (mapping.quality or 0, self._folder_affinity(mapping, anchor)),
+            reverse=True,
         )
         preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
         fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
@@ -3739,6 +3754,26 @@ class StreamsAudio:
                 else:
                     fallback_candidates.append(candidate)
         return [*preferred_candidates, *fallback_candidates]
+
+    @staticmethod
+    def _folder_affinity(mapping: ProviderMapping, anchor: tuple[str, str] | None) -> int:
+        """
+        Return how many leading folders a mapping shares with the anchor track.
+
+        :param mapping: Candidate mapping to score.
+        :param anchor: (provider_instance, item_id) of the playing track, or None.
+        """
+        if anchor is None or mapping.provider_instance != anchor[0]:
+            return 0
+        # item ids are paths on file based providers, minus the filename
+        mapping_folders = mapping.item_id.replace("\\", "/").split("/")[:-1]
+        anchor_folders = anchor[1].replace("\\", "/").split("/")[:-1]
+        shared = 0
+        for mapping_folder, anchor_folder in zip(mapping_folders, anchor_folders, strict=False):
+            if mapping_folder != anchor_folder:
+                break
+            shared += 1
+        return shared
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """
