@@ -357,7 +357,10 @@ def beam_optimize(
         idx: t
         for idx, t in enumerate(tracks)
         if t.get("queue_item_id") in fixed_ids
-        or not isinstance(t.get("analysis"), dict)
+        or (
+            not isinstance(t.get("analysis"), dict)
+            and t.get("queue_item_id") not in excluded_ids
+        )
     }
     movable = [
         t for idx, t in enumerate(tracks)
