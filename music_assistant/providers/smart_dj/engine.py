@@ -334,7 +334,6 @@ def beam_optimize(
     beam_width: int = 12,
     fixed_ids: set[str] | None = None,
     excluded_ids: set[str] | None = None,
-    artist_spacing: int = 1,
 ) -> list[dict[str, Any]]:
     """Optimize all movable tracks while preserving fixed positions and hard requirements."""
     controls = controls or DJControls()
