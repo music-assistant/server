@@ -305,7 +305,7 @@ class SmartDJProvider(PluginProvider):
             danceability=signal("danceability"),
             loudness=signal("loudness"),
             genre=signal("genre"),
-            artist_spacing=signal("artist_spacing"),
+            artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
             momentum=signal("momentum"),
             bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
             bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
