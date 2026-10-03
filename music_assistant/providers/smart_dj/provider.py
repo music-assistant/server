@@ -318,13 +318,13 @@ class SmartDJProvider(PluginProvider):
         controls: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Optimize the upcoming queue under an explicit user control contract."""
-        tracks = snapshot["tracks"]
-        if len(tracks) < 2:
-            return snapshot
         raw = dict(controls or {})
         apply = bool(raw.pop("apply", False))
         analysis_provider = str(raw.get("analysis_provider", "auto"))
         snapshot = await self.analyze(queue_id, analysis_provider=analysis_provider)
+        tracks = snapshot["tracks"]
+        if len(tracks) < 2:
+            return snapshot
 
         def signal(name: str, fallback: str = "soft") -> SignalControl:
             value = raw.get(name, fallback)
