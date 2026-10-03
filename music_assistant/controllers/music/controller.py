@@ -1323,7 +1323,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # Sound effects are not library-backed; resolve them live from the
             # owning music provider. Returning the live MediaItem lets play_media
             # create a queue item the standard way.
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            prov = self.mass.get_provider(
+                self.resolve_visible_provider(provider_instance_id_or_domain)
+            )
             if isinstance(prov, MusicProvider) and (
                 ProviderFeature.SOUND_EFFECTS in prov.supported_features
             ):
@@ -2224,6 +2226,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         that are loaded but not currently available.
         """
         return [provider.instance_id for provider in self.providers if provider.available]
+
+    def resolve_visible_provider(self, provider_instance_id_or_domain: str) -> str:
+        """
+        Bind a requested provider to a music source the current user may see.
+
+        A domain resolves to an instance of that domain the user may see, so a same-domain
+        instance outside the user's music sources never serves the read.
+
+        :param provider_instance_id_or_domain: The requested provider instance id or domain.
+        :raises InsufficientPermissions: The user may not see that music source.
+        """
+        user = get_current_user()
+        if (
+            provider_instance_id_or_domain == "library"
+            or user is None
+            or (allowed := visible_music_sources(self.mass, user)) is None
+        ):
+            return provider_instance_id_or_domain
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if provider is not None and provider.type != ProviderType.MUSIC:
+            # metadata and plugin providers are household-wide
+            return provider_instance_id_or_domain
+        if allowed_instance := self._resolve_allowed_provider_instance(
+            provider_instance_id_or_domain, allowed
+        ):
+            return allowed_instance
+        raise InsufficientPermissions(
+            f"{provider_instance_id_or_domain} is not a music source of this user"
+        )
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""

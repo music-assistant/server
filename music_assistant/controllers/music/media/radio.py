@@ -80,6 +80,7 @@ class RadioController(MediaControllerBase[Radio]):
             f"music/{api_base}/radio_tracks",
             self.radio_tracks,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
@@ -110,7 +111,9 @@ class RadioController(MediaControllerBase[Radio]):
         :param provider_instance_id_or_domain: The provider instance id or domain the
             item id belongs to ("library" for a library item).
         """
-        radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        radio = await self.get_provider_item(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         return await self.dynamic_tracks(radio)
 
     async def dynamic_tracks(self, radio: Radio) -> list[Track]:

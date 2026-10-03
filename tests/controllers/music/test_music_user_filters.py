@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -39,6 +40,7 @@ from music_assistant.helpers.throttle_retry import (
     request_priority,
 )
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
 
 GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
@@ -890,3 +892,170 @@ async def test_genre_library_count_ignores_music_sources(
     with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
         assert await counted_mass.music.genres.library_count() == unfiltered_count
     assert unfiltered_count > 0
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        # the denied instance is listed first, so an unbound domain lookup would resolve to it
+        ("spotify", "spotify--TPf9JZ2K"),
+        ("spotify--TPf9JZ2K", "spotify--TPf9JZ2K"),
+        ("library", "library"),
+        ("plugin_inst", "plugin_inst"),
+        ("spotify--AAAAAAAA", None),
+    ],
+)
+@patch("music_assistant.controllers.music.controller.get_current_user")
+def test_resolve_visible_provider(
+    mock_get_user: Mock, requested: str, expected: str | None
+) -> None:
+    """A read is bound to a music source the user may see, or refused."""
+    mock_get_user.return_value = _user(USER_A)
+    controller = _controller_with_sources(
+        {"spotify--AAAAAAAA": _private(USER_B), "spotify--TPf9JZ2K": _private(USER_A)},
+        [
+            _music_source_prov("spotify--AAAAAAAA"),
+            _music_source_prov("spotify--TPf9JZ2K"),
+            _make_prov("plugin_inst", ProviderType.PLUGIN),
+        ],
+    )
+    if expected is None:
+        with pytest.raises(InsufficientPermissions):
+            controller.resolve_visible_provider(requested)
+    else:
+        assert controller.resolve_visible_provider(requested) == expected
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda mass: mass.music.get_item(MediaType.SOUND_EFFECT, "1", PROV_B),
+        lambda mass: mass.music.tracks.get("1", PROV_B),
+        lambda mass: mass.music.albums.tracks("1", PROV_B),
+        lambda mass: mass.music.albums.versions("1", PROV_B),
+        lambda mass: mass.music.artists.tracks("1", PROV_B),
+        lambda mass: mass.music.artists.albums("1", PROV_B),
+        lambda mass: mass.music.artists.top_tracks("1", PROV_B),
+        lambda mass: mass.music.artists.top_albums("1", PROV_B),
+        lambda mass: mass.music.artists.similar_artists("1", PROV_B),
+        lambda mass: mass.music.artists.audiobooks("1", PROV_B),
+        lambda mass: anext(mass.music.playlists.tracks("1", PROV_B)),
+        lambda mass: anext(mass.music.podcasts.episodes("1", PROV_B)),
+        lambda mass: mass.music.podcasts.episode("1", PROV_B),
+        lambda mass: mass.music.podcasts.versions("1", PROV_B),
+        lambda mass: mass.music.audiobooks.versions("1", PROV_B),
+        lambda mass: mass.music.radio.radio_tracks("1", PROV_B),
+    ],
+    ids=[
+        "item",
+        "get",
+        "album_tracks",
+        "album_versions",
+        "artist_tracks",
+        "artist_albums",
+        "top_tracks",
+        "top_albums",
+        "similar_artists",
+        "artist_audiobooks",
+        "playlist_tracks",
+        "podcast_episodes",
+        "podcast_episode",
+        "podcast_versions",
+        "audiobook_versions",
+        "radio_tracks",
+    ],
+)
+async def test_provider_reads_refuse_a_source_the_user_may_not_see(
+    counted_mass: MusicAssistant, read: Callable[[MusicAssistant], Awaitable[Any]]
+) -> None:
+    """A read straight from a loaded provider is refused when the user may not see it."""
+    with (
+        patch.dict(counted_mass._providers, {PROV_B: _music_source_prov(PROV_B)}),
+        patch(GET_CURRENT_USER, return_value=_user(USER_A)),
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=_user(USER_A),
+        ),
+        pytest.raises(InsufficientPermissions),
+    ):
+        await read(counted_mass)
+
+
+async def test_similar_tracks_skip_a_source_the_user_may_not_see(
+    counted_mass: MusicAssistant,
+) -> None:
+    """Similar tracks of a library track never come from a source the user may not see."""
+    track = next(
+        track
+        for track in await counted_mass.music.tracks.library_items(limit=500)
+        if track.name == "Track 03"
+    )
+    assert {mapping.provider_instance for mapping in track.provider_mappings} == {PROV_A, PROV_B}
+    providers = {}
+    for instance_id in (PROV_A, PROV_B):
+        provider = Mock(spec=MusicProvider)
+        provider.instance_id = instance_id
+        provider.type = ProviderType.MUSIC
+        provider.available = True
+        provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+        providers[instance_id] = provider
+    # only the source the user may not see knows similar tracks
+    similar = Track(item_id="similar", provider=PROV_B, name="Similar", provider_mappings=set())
+    with (
+        patch.dict(counted_mass._providers, providers),
+        patch.object(counted_mass.music.tracks, "get", AsyncMock(return_value=track)),
+        patch.object(
+            counted_mass.music.tracks,
+            "_get_similar_tracks_from_provider",
+            AsyncMock(
+                side_effect=lambda prov, *_args, **_kwargs: (
+                    [similar] if prov.instance_id == PROV_B else [],
+                    None,
+                )
+            ),
+        ),
+    ):
+        with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
+            assert await counted_mass.music.tracks.similar_tracks(track.item_id, "library") == [
+                similar
+            ]
+        with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
+            assert await counted_mass.music.tracks.similar_tracks(track.item_id, "library") == []
+
+
+async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:
+    """The library items listed for a genre or a track are the ones the user may see."""
+    mass = counted_mass
+    genre = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Listing Genre", provider_mappings=set())
+    )
+    tracks = await mass.music.tracks.library_items(limit=500)
+    albums = await mass.music.albums.library_items(limit=500)
+    for track in tracks:
+        await mass.music.genres.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id)
+    for album in albums:
+        await mass.music.genres.add_media_mapping(genre.item_id, MediaType.ALBUM, album.item_id)
+    # Track 01 sits on Album 01 (PROV_A), and also appears on Album 02 (PROV_B)
+    track_01 = next(track for track in tracks if track.name == "Track 01")
+    album_02 = next(album for album in albums if album.name == "Album 02")
+    await mass.music.albums._set_album_track(int(album_02.item_id), int(track_01.item_id), track_01)
+    await mass.music.database.commit()
+
+    with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
+        visible_tracks = {track.name for track in await mass.music.tracks.library_items()}
+        visible_albums = {album.name for album in await mass.music.albums.library_items()}
+        genre_tracks = await mass.music.genres.tracks(genre.item_id)
+        genre_albums = await mass.music.genres.albums(genre.item_id)
+        overview = await mass.music.genres.get_overview(genre.item_id)
+        track_albums = await mass.music.tracks.get_library_track_albums(track_01.item_id)
+
+    assert {track.name for track in genre_tracks} == visible_tracks
+    assert {album.name for album in genre_albums} == visible_albums
+    assert {folder.item_id: {item.name for item in folder.items} for folder in overview} == {
+        "genre_track": visible_tracks,
+        "genre_album": visible_albums,
+    }
+    assert {album.name for album in track_albums} == {"Album 01"}
+    # guard against a vacuous pass: the user's music sources must actually exclude something
+    assert {track.name for track in tracks} - visible_tracks
+    assert {album.name for album in albums} - visible_albums

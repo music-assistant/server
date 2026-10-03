@@ -291,7 +291,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider_instance_id_or_domain: str,
     ) -> UniqueList[Audiobook]:
         """Return all versions of an audiobook we can find on all providers."""
-        audiobook = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        audiobook = await self.get_provider_item(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         search_query = audiobook.name
         result: UniqueList[Audiobook] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():

@@ -176,16 +176,19 @@ class GenreController(MediaControllerBase[Genre]):
             "music/genres/overview",
             self.get_overview,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/genres/tracks",
             self.tracks,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/genres/albums",
             self.albums,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/genres/scan_mappings",
@@ -421,6 +424,7 @@ class GenreController(MediaControllerBase[Genre]):
         return await self.mass.music.tracks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"genre_id": int(item_id)},
+            provider_filter=self._ensure_provider_filter(None),
             limit=limit,
             offset=offset,
             order_by=order_by,
@@ -450,6 +454,7 @@ class GenreController(MediaControllerBase[Genre]):
         return await self.mass.music.albums.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"genre_id": int(item_id)},
+            provider_filter=self._ensure_provider_filter(None),
             limit=limit,
             offset=offset,
             order_by=order_by,
@@ -606,6 +611,7 @@ class GenreController(MediaControllerBase[Genre]):
             items = await ctrl.get_library_items_by_query(
                 extra_query_parts=[query, *ctrl.listing_filter(query_params)],
                 extra_query_params=query_params,
+                provider_filter=self._ensure_provider_filter(None),
                 limit=limit,
             )
             if not items:

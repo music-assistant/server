@@ -106,7 +106,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/discography",
+            self.discography,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/top_tracks",
@@ -130,6 +133,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"music/{api_base}/similar_artists",
             self.similar_artists,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/library_artist_types",
@@ -267,7 +271,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_tracks(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_tracks(item_id, provider_instance_id_or_domain)
+        return await self.get_provider_artist_tracks(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
 
     async def albums(
         self,
@@ -289,7 +295,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+        return await self.get_provider_artist_albums(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
 
     async def appears_on(
         self,
@@ -396,7 +404,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_toptracks(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
+        return await self.get_provider_artist_toptracks(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
 
     async def top_albums(
         self,
@@ -418,7 +428,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_topalbums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_topalbums(item_id, provider_instance_id_or_domain)
+        return await self.get_provider_artist_topalbums(
+            item_id, self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
 
     async def similar_artists(
         self,
@@ -446,7 +458,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_similar_artists(
-            item_id, provider_instance_id_or_domain, limit=limit
+            item_id,
+            self.mass.music.resolve_visible_provider(provider_instance_id_or_domain),
+            limit=limit,
         )
 
     if TYPE_CHECKING:
@@ -504,6 +518,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []
         if not library_artist:
+            provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            )
             if artist_type == ArtistType.AUTHOR:
                 return await self.get_provider_author_audiobooks(
                     item_id, provider_instance_id_or_domain
@@ -594,6 +611,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
+            provider_filter=self._ensure_provider_filter(None),
             collapse_collections=collapse_collections,
         )
 

@@ -750,7 +750,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # grab full details from the provider
         return await self.get_provider_item(
             item_id,
-            provider_instance_id_or_domain,
+            self.mass.music.resolve_visible_provider(provider_instance_id_or_domain),
         )
 
     async def search(
