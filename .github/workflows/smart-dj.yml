@@ -5,6 +5,9 @@ on:
     branches: ["feat/smart-dj"]
   pull_request:
 
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
 jobs:
   test-smart-dj:
     runs-on: ubuntu-latest
@@ -13,7 +16,11 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
-      - run: uv sync --extra test
+      - name: Install dependencies
+        # Mirror upstream: .[test] alone is not enough — hass_client and other
+        # runtime deps live in requirements_all.txt and are required by conftest.
+        run: |
+          uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - run: uv run pytest tests/providers/smart_dj -q
       - run: uv run ruff check music_assistant/providers/smart_dj tests/providers/smart_dj
       - run: uv run mypy music_assistant/providers/smart_dj

@@ -101,13 +101,27 @@ def camelot_affinity(a: str | None, b: str | None) -> float:
     return 0.0
 
 
-def _artist_run_length(path: list[dict[str, Any]], artist: str | None) -> int:
+def _artist_run_length(
+    path: list[dict[str, Any]],
+    artist: str | None,
+    *,
+    anchor_artist: str | None = None,
+) -> int:
+    """Count consecutive same-artist tracks at the end of path, including the anchor.
+
+    The anchor (now-playing / previous fixed track) is not in ``path`` but still
+    counts toward the consecutive-run limit. When the entire path is the same
+    artist as the anchor, the run includes the anchor.
+    """
     if not artist:
         return 0
     count = 0
     for item in reversed(path):
         if item.get("artist") != artist:
             break
+        count += 1
+    # If the whole path matches, or the path is empty, fold in the anchor.
+    if count == len(path) and anchor_artist == artist:
         count += 1
     return count
 
@@ -305,13 +319,18 @@ def _optimize_segment(
     beam_width: int,
 ) -> list[dict[str, Any]]:
     beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], list(segment))]
+    anchor_artist = anchor.get("artist") if anchor else None
     for _ in range(len(segment)):
         next_beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = []
         for total, path, remaining in beams:
             current = _merge_track(path[-1]) if path else anchor
             for candidate in remaining:
                 data = _merge_track(candidate)
-                run = _artist_run_length(path, candidate.get("artist"))
+                run = _artist_run_length(
+                    path,
+                    candidate.get("artist"),
+                    anchor_artist=anchor_artist,
+                )
                 score, reasons, violations = score_candidate(
                     current, data, mode, controls, artist_run_length=run
                 )
@@ -363,11 +382,6 @@ def beam_optimize(
             and t.get("queue_item_id") not in excluded_ids
         )
     }
-    movable = [
-        t for idx, t in enumerate(tracks)
-        if idx not in fixed_positions and t.get("queue_item_id") not in excluded_ids
-    ]
-    excluded = [t for t in tracks if t.get("queue_item_id") in excluded_ids]
 
     # Optimize each interval between fixed anchors. Excluded tracks do not occupy
     # an output slot, so they must not affect segment sizing.
@@ -406,7 +420,7 @@ def beam_optimize(
                 **fixed,
                 "score": None if reason.startswith("analysis") else 1.0,
                 "reasons": [reason],
-            )
+            })
             current = None if reason.startswith("analysis") else fixed_data
 
     # Excluded tracks are intentionally absent; every other non-fixed track must remain exactly once.
