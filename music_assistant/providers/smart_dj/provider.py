@@ -13,7 +13,6 @@ from music_assistant_models.enums import ConfigEntryType, CrossfadeMode
 from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.controllers.player_queues.constants import CONF_CROSSFADE_MODE
 
 from .engine import DJControls, DJMode, MODES, SignalControl, beam_optimize
 
