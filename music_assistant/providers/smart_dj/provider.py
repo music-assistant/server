@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, CrossfadeMode
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
@@ -329,12 +329,6 @@ class SmartDJProvider(PluginProvider):
         if not control.smart_reorder_enabled:
             if apply:
                 self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
-                await self.mass.config.save_player_queue_config(
-                    queue_id,
-                    {"crossfade_mode": CrossfadeMode.SMART_CROSSFADE.value}
-                    if control.automix_enabled
-                    else {"crossfade_mode": CrossfadeMode.STANDARD_CROSSFADE.value},
-                )
             return {
                 "queue_id": queue_id,
                 "tracks": tracks[1:],
@@ -378,12 +372,6 @@ class SmartDJProvider(PluginProvider):
                 raise RuntimeError("Queue integrity check failed")
             self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
             self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
-            await self.mass.config.save_player_queue_config(
-                queue_id,
-                {"crossfade_mode": CrossfadeMode.SMART_CROSSFADE.value}
-                if control.automix_enabled
-                else {"crossfade_mode": CrossfadeMode.STANDARD_CROSSFADE.value},
-            )
         return {
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
