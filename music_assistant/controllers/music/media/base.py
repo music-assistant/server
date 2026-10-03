@@ -2426,22 +2426,32 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             db_row_dict["album"] = track_album
             db_row_dict["disc_number"] = track_album["disc_number"]
             db_row_dict["track_number"] = track_album["track_number"]
-            # always prefer album image over track image
-            if (album_images := track_album.get("images")) and (
-                album_thumb := next((x for x in album_images if x["type"] == "thumb"), None)
-            ):
-                # copy album image to itemmapping single image (on the track)
-                db_row_dict["image"] = album_thumb
-                # also set image on the album dict for ItemMapping compatibility
+            album_thumb = None
+            if album_images := track_album.get("images"):
+                album_thumb = next((x for x in album_images if x["type"] == "thumb"), None)
+            if album_thumb is not None:
+                # the track's own image is the first thumb that differs from the
+                # album image (the album image is copied onto tracks, so exclude it)
+                track_images = db_row_dict["metadata"].get("images") or []
+                track_thumb = next(
+                    (x for x in track_images if x["type"] == "thumb" and x != album_thumb),
+                    None,
+                )
+                # prefer the track's own image, fall back to the album image
+                preferred = track_thumb if track_thumb is not None else album_thumb
+                # set the single summary image on the track
+                db_row_dict["image"] = preferred
+                # keep the album's own image on the album dict for ItemMapping compatibility
                 track_album["image"] = album_thumb
-                if db_row_dict["metadata"].get("images"):
-                    # merge album image with existing images
-                    db_row_dict["metadata"]["images"] = [
-                        album_thumb,
-                        *db_row_dict["metadata"]["images"],
-                    ]
-                else:
-                    db_row_dict["metadata"]["images"] = [album_thumb]
+                # order the images so the preferred one comes first, keeping the
+                # other as a fallback, without duplicating entries
+                ordered = [preferred]
+                for img in track_images:
+                    if img != preferred and img not in ordered:
+                        ordered.append(img)
+                if album_thumb != preferred and album_thumb not in ordered:
+                    ordered.append(album_thumb)
+                db_row_dict["metadata"]["images"] = ordered
 
         if audiobook_artists := db_row_dict.get("audiobook_artists"):
             _narrators = []
