@@ -324,6 +324,101 @@ async def test_late_play_command_response_preserves_newer_request(first_fails: b
     assert player._external_playing is True
 
 
+@pytest.mark.parametrize("audio_client", [False, True])
+async def test_cancelled_play_command_clears_active_external_media(audio_client: bool) -> None:
+    """Cancelling a pending send clears its media and propagates cancellation."""
+    player, _ = _make_play_media_player([])
+    vars(player)["_audio_client"] = audio_client
+    media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/cancelled",
+            title="Cancelled Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+    send_started = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def pending_send(_payload: dict[str, Any]) -> dict[str, Any]:
+        send_started.set()
+        await asyncio.Event().wait()
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=pending_send))
+    task = asyncio.create_task(player.play_media(media))
+    await asyncio.wait_for(send_started.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert player._external_media is None
+    assert player._external_playing is False
+    assert vars(player)["_external_audio_client"] is False
+    assert player._external_play_confirmed is False
+    assert vars(player)["_external_stop_observed"] is False
+    assert published_media == []
+
+
+async def test_cancelled_old_play_command_preserves_newer_request() -> None:
+    """Cancelling an older pending send cannot clear its successful replacement."""
+    player, _ = _make_play_media_player([])
+    vars(player)["_audio_client"] = True
+    first_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/old",
+            title="Old Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+    new_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/new",
+            title="New Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+    first_started = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def send_in_order(_payload: dict[str, Any]) -> dict[str, Any]:
+        if not first_started.is_set():
+            first_started.set()
+            await asyncio.Event().wait()
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send_in_order))
+    first_task = asyncio.create_task(player.play_media(first_media))
+    await asyncio.wait_for(first_started.wait(), 1)
+    await player.play_media(new_media)
+    first_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    assert player._external_media is new_media
+    assert player._external_playing is True
+    assert vars(player)["_external_audio_client"] is True
+    assert published_media == ["yandex_music://track/new"]
+
+
 async def test_play_media_falls_back_to_legacy_radio_play() -> None:
     """Old firmware keeps the legacy payload and does not receive a native stop."""
     player, commands = _make_play_media_player([{"status": "ERROR"}])

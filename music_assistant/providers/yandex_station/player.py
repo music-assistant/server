@@ -464,7 +464,7 @@ class YandexStationPlayer(Player):
             )
             _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
             _raise_if_failed(result, directive)
-        except Exception:
+        except Exception, asyncio.CancelledError:
             if self._external_play_generation == generation:
                 self._external_playing = False
                 self._external_audio_client = False
