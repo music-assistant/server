@@ -1991,12 +1991,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data.pending_skip_seconds = 0
         queue = queue_data.queue
         if (
-            item_id is None
+            not seconds
+            or item_id is None
             or (item := queue.current_item) is None
             or item.queue_item_id != item_id
             or not item.duration
         ):
-            # already applied by an earlier press, or the item changed while waiting
+            # nothing left to apply, or the item changed while waiting
             return
         target = self._clamp_skip_target(queue.corrected_elapsed_time + seconds, item.duration)
         await self.seek(queue_id, int(target))

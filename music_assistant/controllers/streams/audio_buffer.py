@@ -600,7 +600,7 @@ class AudioBuffer:
                 )
                 return
 
-            # wait for the consumer to free space when buffer is full
+            # wait for room when the buffer is full
             await self._wait_for_space()
 
             chunk_position = self._discarded_chunks + len(self._chunks)
