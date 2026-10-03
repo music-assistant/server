@@ -114,7 +114,7 @@ class SmartDJProvider(PluginProvider):
                 raise RuntimeError("Musicae returned an invalid response")
             return data
 
-    async def _analysis(self, item_id: str, provider: str) -> dict[str, Any] | None:
+    async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Get cached MA analysis first, then Musicae for Spotify-compatible tracks."""
         try:
             analysis = await self.mass.streams.audio_analysis.get_audio_analysis(item_id, provider)
@@ -134,6 +134,7 @@ class SmartDJProvider(PluginProvider):
                     "rms_energy": analysis.rms_energy,
                     "spectral_centroid": analysis.spectral_centroid,
                     "source": "music_assistant",
+                    **(metadata or {}),
                 }
         except Exception as err:
             self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
@@ -169,6 +170,7 @@ class SmartDJProvider(PluginProvider):
             "spectral_centroid": result.get("spectral_centroid"),
             "source": "musicae",
             "raw": result,
+            **(metadata or {}),
         }
         self._cache[cache_key] = (now, normalized)
         await self._save_cache()
@@ -224,12 +226,17 @@ class SmartDJProvider(PluginProvider):
             item_id = getattr(media, "item_id", None)
             if not provider or not item_id:
                 continue
+            metadata_obj = getattr(media, "metadata", None)
+            genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
             result.append({
                 "queue_item_id": item.queue_item_id,
                 "name": item.name,
-                "artist": getattr(media, "artist", None),
+                "artist": getattr(media, "artist_str", None) or getattr(media, "artist", None),
                 "item_id": item_id,
                 "provider": provider,
+                "genre": genres[0] if genres else None,
+                "genres": list(genres or []),
+                "explicit": getattr(metadata_obj, "explicit", None) if metadata_obj else None,
             })
         return result
 
@@ -238,7 +245,7 @@ class SmartDJProvider(PluginProvider):
         items = (await self._queue_snapshot(queue_id))[:max(1, min(limit, 100))]
         analyzed = []
         tasks = [
-            asyncio.create_task(self._analysis(item["item_id"], item["provider"]))
+            asyncio.create_task(self._analysis(item["item_id"], item["provider"], {k: item[k] for k in ("genre", "genres", "explicit") if k in item}))
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -264,7 +271,8 @@ class SmartDJProvider(PluginProvider):
         tracks = snapshot["tracks"]
         if len(tracks) < 2:
             return snapshot
-        raw = controls or {}
+        raw = dict(controls or {})
+        apply = bool(raw.pop("apply", False))
 
         def signal(name: str, fallback: str = "soft") -> SignalControl:
             value = raw.get(name, fallback)
@@ -317,25 +325,31 @@ class SmartDJProvider(PluginProvider):
             controls=control,
             beam_width=max(4, min(32, control.lookahead * 3)),
         )
-        if not optimized and control.required_ids:
+        if not optimized and tracks[1:]:
             raise RuntimeError("Hard requirements are impossible with the current queue")
 
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            raise RuntimeError(f"Queue not found: {queue_id}")
-        items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
-        by_id = {item.queue_item_id: item for item in items}
-        prefix_len = (queue.current_index or 0) + 1
-        prefix = items[:prefix_len]
-        ranked_ids = [track["queue_item_id"] for track in optimized]
-        ranked = [by_id[item_id] for item_id in ranked_ids if item_id in by_id]
-        ranked_set = set(ranked_ids)
-        remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_set]
-        self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
+        if apply:
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None:
+                raise RuntimeError(f"Queue not found: {queue_id}")
+            items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
+            by_id = {item.queue_item_id: item for item in items}
+            prefix_len = (queue.current_index or 0) + 1
+            prefix = items[:prefix_len]
+            ranked_ids = [track["queue_item_id"] for track in optimized]
+            ranked = [by_id[item_id] for item_id in ranked_ids if item_id in by_id]
+            if len(ranked) != len(ranked_ids):
+                raise RuntimeError("Queue changed while Smart DJ was planning")
+            ranked_set = set(ranked_ids)
+            remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_set]
+            if len(prefix) + len(ranked) + len(remainder) != len(items):
+                raise RuntimeError("Queue integrity check failed")
+            self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
         return {
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
             "tracks": optimized,
+            "applied": apply,
             "settings": {
                 "mode": mode,
                 "bpm_tolerance": bpm_tolerance,
