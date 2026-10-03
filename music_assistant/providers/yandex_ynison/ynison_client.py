@@ -17,7 +17,11 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    LoginFailed,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
@@ -34,12 +38,6 @@ from .constants import (
     YNISON_RECONNECT_ERROR_CODES,
     YNISON_REDIRECT_URL,
     YNISON_STATE_PATH,
-)
-from .queue_model import (
-    YnisonQueueView,
-    insert_shuffle_indices,
-    move_shuffle_index,
-    remove_shuffle_index,
 )
 
 
@@ -218,6 +216,10 @@ class YnisonClient:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session: aiohttp.ClientSession | None = None
         self._send_lock = asyncio.Lock()
+        self._pending_queue: dict[str, Any] | None = None
+        self._pending_queue_until = 0.0
+        self._last_queue_version: int | None = None
+        self._queue_epoch = 0
         self._message_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -256,6 +258,18 @@ class YnisonClient:
         """Return our Ynison device_id (used when authoring outgoing state)."""
         return self._device_info.device_id
 
+    @property
+    def queue_generation(self) -> int:
+        """Return the generation invalidated by peer replacement or reconnect."""
+        return self._queue_epoch
+
+    def queue_snapshot(self) -> dict[str, Any]:
+        """Return the latest queue base for local navigation and mutations."""
+        queue = self.state.player_state.get("player_queue", {})
+        if self._pending_queue is not None and time.monotonic() < self._pending_queue_until:
+            queue = self._pending_queue
+        return deepcopy(queue)
+
     async def connect(self) -> None:
         """
         Connect to Ynison (redirector → state service).
@@ -264,7 +278,7 @@ class YnisonClient:
         """
         self._stop_event.clear()
         if self._external_session and self._external_session.closed:
-            raise RuntimeError("Provided http_session is closed")
+            raise ResourceTemporarilyUnavailable("Provided http_session is closed")
         self._session = self._external_session or aiohttp.ClientSession()
 
         try:
@@ -279,7 +293,7 @@ class YnisonClient:
         except asyncio.CancelledError:
             await self.disconnect()
             raise
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             # Transient error — schedule reconnect instead of dying
             self._logger.warning("Initial connection failed, scheduling reconnect", exc_info=True)
             self._connected = False
@@ -290,11 +304,15 @@ class YnisonClient:
                 await self._session.close()
             self._session = None
             self._schedule_reconnect()
+        except Exception:
+            await self.disconnect()
+            raise
 
     async def disconnect(self) -> None:
         """Gracefully disconnect from Ynison."""
         self._stop_event.set()
         self._connected = False
+        self._reset_pending_queue()
 
         if self._message_task and not self._message_task.done():
             self._message_task.cancel()
@@ -436,149 +454,36 @@ class YnisonClient:
             Delivery-critical callers (queue advance after track end)
             opt in; queue-list-replenish heartbeats leave the default.
         """
-        queue = player_state.get("player_queue", {})
-        self._logger.info(
-            "→ update_player_state: index=%s queue_len=%d entity_type=%s",
-            queue.get("current_playable_index"),
-            len(queue.get("playable_list", [])),
-            queue.get("entity_type", ""),
-        )
-        msg = {
-            "update_player_state": {
-                "player_state": player_state,
-            },
-            **self._message_meta(),
-        }
-        self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
-        await self._send(msg, strict=strict)
+        await self._send(self._player_state_message(player_state), strict=strict)
 
-    async def add_playables_next(self, playables: list[dict[str, Any]]) -> None:
-        """Insert playables immediately after the current queue position."""
-        player_state = deepcopy(self.state.player_state)
-        queue = player_state.get("player_queue")
-        if not isinstance(queue, dict):
-            raise ValueError("Current player state has no queue")  # noqa: TRY004
-        playable_list = queue.get("playable_list")
-        if not isinstance(playable_list, list):
-            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
-        current_index = queue.get("current_playable_index")
-        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
-            raise ValueError("Current playable index is out of range")
+    async def mutate_player_state(
+        self,
+        mutation: Callable[[dict[str, Any]], None],
+        *,
+        expected_generation: int | None = None,
+    ) -> None:
+        """
+        Serialize a queue change against the latest successfully sent queue.
 
-        shuffle = queue.get("shuffle_optional")
-        order = list(YnisonQueueView(queue).order)
-        playable_list[current_index + 1 : current_index + 1] = deepcopy(playables)
-        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
-            shuffle["playable_indices"] = insert_shuffle_indices(
-                order,
-                current_index + 1,
-                len(playables),
-                after_current=current_index,
-            )
-        queue["version"] = make_version_block(self.device_id)
-        await self.update_player_state(player_state, strict=True)
-
-    async def add_playables_last(self, playables: list[dict[str, Any]]) -> None:
-        """Append playables to the current queue."""
-        player_state = deepcopy(self.state.player_state)
-        queue = player_state.get("player_queue")
-        if not isinstance(queue, dict):
-            raise ValueError("Current player state has no queue")  # noqa: TRY004
-        playable_list = queue.get("playable_list")
-        if not isinstance(playable_list, list):
-            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
-        current_index = queue.get("current_playable_index")
-        if not isinstance(current_index, int) or not (
-            (current_index == -1 and not playable_list) or 0 <= current_index < len(playable_list)
-        ):
-            raise ValueError("Current playable index is out of range")
-
-        shuffle = queue.get("shuffle_optional")
-        order = list(YnisonQueueView(queue).order)
-        playable_list.extend(deepcopy(playables))
-        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
-            shuffle["playable_indices"] = insert_shuffle_indices(
-                order, len(playable_list) - len(playables), len(playables)
-            )
-        queue["version"] = make_version_block(self.device_id)
-        await self.update_player_state(player_state, strict=True)
-
-    async def remove_queue_position(self, position: int) -> None:
-        """Remove an original playable-list position from the current queue."""
-        player_state = deepcopy(self.state.player_state)
-        queue = player_state.get("player_queue")
-        if not isinstance(queue, dict):
-            raise ValueError("Current player state has no queue")  # noqa: TRY004
-        playable_list = queue.get("playable_list")
-        if not isinstance(playable_list, list):
-            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
-        if not isinstance(position, int) or not 0 <= position < len(playable_list):
-            raise ValueError("Queue position is out of range")
-        current_index = queue.get("current_playable_index")
-        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
-            raise ValueError("Current playable index is out of range")
-
-        shuffle = queue.get("shuffle_optional")
-        order = list(YnisonQueueView(queue).order)
-        logical_successor = None
-        if position == current_index:
-            logical_position = order.index(current_index)
-            if logical_position + 1 < len(order):
-                logical_successor = order[logical_position + 1]
-        playable_list.pop(position)
-        if position < current_index:
-            queue["current_playable_index"] = current_index - 1
-        elif position == current_index:
-            if logical_successor is not None:
-                queue["current_playable_index"] = (
-                    logical_successor - 1 if logical_successor > position else logical_successor
-                )
-            else:
-                queue["current_playable_index"] = min(current_index, len(playable_list) - 1)
-            status = player_state.get("status")
-            if isinstance(status, dict):
-                status["progress_ms"] = "0"
-                status["duration_ms"] = "0"
-                status["version"] = make_version_block(self.device_id)
-        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
-            shuffle["playable_indices"] = remove_shuffle_index(order, position)
-        queue["version"] = make_version_block(self.device_id)
-        await self.update_player_state(player_state, strict=True)
-
-    async def move_queue_position(self, from_position: int, to_position: int) -> None:
-        """Move a playable between original playable-list positions."""
-        player_state = deepcopy(self.state.player_state)
-        queue = player_state.get("player_queue")
-        if not isinstance(queue, dict):
-            raise ValueError("Current player state has no queue")  # noqa: TRY004
-        playable_list = queue.get("playable_list")
-        if not isinstance(playable_list, list):
-            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
-        if (
-            not isinstance(from_position, int)
-            or not isinstance(to_position, int)
-            or not 0 <= from_position < len(playable_list)
-            or not 0 <= to_position < len(playable_list)
-        ):
-            raise ValueError("Queue position is out of range")
-        current_index = queue.get("current_playable_index")
-        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
-            raise ValueError("Current playable index is out of range")
-
-        shuffle = queue.get("shuffle_optional")
-        order = list(YnisonQueueView(queue).order)
-        playable = playable_list.pop(from_position)
-        playable_list.insert(to_position, playable)
-        if current_index == from_position:
-            queue["current_playable_index"] = to_position
-        elif from_position < current_index <= to_position:
-            queue["current_playable_index"] = current_index - 1
-        elif to_position <= current_index < from_position:
-            queue["current_playable_index"] = current_index + 1
-        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
-            shuffle["playable_indices"] = move_shuffle_index(order, from_position, to_position)
-        queue["version"] = make_version_block(self.device_id)
-        await self.update_player_state(player_state, strict=True)
+        :param mutation: Synchronous edit of a private complete player-state copy.
+        :param expected_generation: Queue generation that an asynchronous result belongs to.
+        """
+        requested_epoch = self._queue_epoch if expected_generation is None else expected_generation
+        async with self._send_lock:
+            if requested_epoch != self._queue_epoch:
+                raise ResourceTemporarilyUnavailable("Ynison queue changed before command was sent")
+            player_state = deepcopy(self.state.player_state)
+            player_state["player_queue"] = self.queue_snapshot()
+            mutation(player_state)
+            queue = player_state.get("player_queue", {})
+            queue["version"] = make_version_block(self.device_id)
+            epoch = self._queue_epoch
+            await self._send_locked(self._player_state_message(player_state), strict=True)
+            if epoch != self._queue_epoch:
+                raise ResourceTemporarilyUnavailable("Ynison queue changed while command was sent")
+            self._pending_queue = deepcopy(queue)
+            self._pending_queue_until = time.monotonic() + 30
+            self._last_queue_version = int(queue["version"]["version"])
 
     async def send_full_state(
         self,
@@ -764,6 +669,7 @@ class YnisonClient:
         """Connect to Ynison state service and start message loop."""
         if self._session is None:
             raise RuntimeError("HTTP session not initialized — call connect() first")
+        self._reset_pending_queue()
         url = f"wss://{host}{YNISON_STATE_PATH}"
         headers = self._build_headers(redirect_ticket=ticket, session_id=session_id)
 
@@ -795,7 +701,7 @@ class YnisonClient:
         # are passive. Failure is non-fatal — we just receive more events.
         try:
             await self.update_session_params(mute_events_if_passive=True)
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             self._logger.debug("update_session_params failed", exc_info=True)
 
         self._has_connected_once = True
@@ -857,7 +763,7 @@ class YnisonClient:
                     self._parse_state(data)
                     try:
                         await self._on_state_update(self.state)
-                    except Exception:
+                    except MusicAssistantError:
                         self._logger.exception("Error in Ynison state update callback")
                 elif msg.type == aiohttp.WSMsgType.BINARY:
                     self._logger.debug(
@@ -880,11 +786,11 @@ class YnisonClient:
                     break
         except asyncio.CancelledError:
             return
-        except Exception:
+        except aiohttp.ClientError, OSError, TimeoutError:
             self._logger.exception("Unexpected error in Ynison message loop")
+        finally:
+            self._connected = False
         self._logger.debug("Ynison message loop exited")
-
-        self._connected = False
 
         if not self._stop_event.is_set() and (
             self._reconnect_task is None or self._reconnect_task.done()
@@ -892,9 +798,17 @@ class YnisonClient:
             self._logger.warning("Ynison connection lost, scheduling reconnect")
             self._schedule_reconnect()
 
+    def _reset_pending_queue(self) -> None:
+        """Discard outbound queue edits when a peer or a new connection takes over."""
+        self._pending_queue = None
+        self._pending_queue_until = 0.0
+        self._last_queue_version = None
+        self._queue_epoch += 1
+
     def _parse_state(self, data: dict[str, Any]) -> None:
         """Parse PutYnisonStateResponse into YnisonState."""
         old_track = self.state.current_track_id
+        old_active_device = self.state.active_device_id
         old_index = self.state.player_state.get("player_queue", {}).get(
             "current_playable_index", -1
         )
@@ -913,6 +827,16 @@ class YnisonClient:
             is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
+                if key == "player_queue":
+                    version = value.get("version", {})
+                    if version.get("device_id") != self.device_id:
+                        if value != existing_ps.get("player_queue"):
+                            self._reset_pending_queue()
+                    elif self._last_queue_version is not None:
+                        number = str(version.get("version", ""))
+                        if number.isdigit() and int(number) < self._last_queue_version:
+                            continue
+                        self._pending_queue = None
                 if suppress_status and key == "status":
                     continue
                 existing_ps[key] = value
@@ -933,6 +857,8 @@ class YnisonClient:
             self.state.active_device_id = data.get(
                 "active_device_id_optional", self.state.active_device_id
             )
+        if self.state.active_device_id != old_active_device:
+            self._reset_pending_queue()
         self.state.devices = data.get("devices", self.state.devices)
 
         new_track = self.state.current_track_id
@@ -994,7 +920,7 @@ class YnisonClient:
                     if self._external_session is not None:
                         if self._external_session.closed:
                             msg = "External HTTP session is closed"
-                            raise RuntimeError(msg)
+                            raise ResourceTemporarilyUnavailable(msg)
                         self._session = self._external_session
                     else:
                         self._session = aiohttp.ClientSession()
@@ -1021,8 +947,26 @@ class YnisonClient:
                         self._logger.warning("Token refresh permanently failed", exc_info=True)
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except aiohttp.ClientError, OSError, TimeoutError, ResourceTemporarilyUnavailable:
                 self._logger.warning("Ynison reconnect attempt %d failed", attempt, exc_info=True)
+
+    def _player_state_message(self, player_state: dict[str, Any]) -> dict[str, Any]:
+        """Build a complete queue update envelope."""
+        queue = player_state.get("player_queue", {})
+        self._logger.info(
+            "→ update_player_state: index=%s queue_len=%d entity_type=%s",
+            queue.get("current_playable_index"),
+            len(queue.get("playable_list", [])),
+            queue.get("entity_type", ""),
+        )
+        msg = {
+            "update_player_state": {
+                "player_state": player_state,
+            },
+            **self._message_meta(),
+        }
+        self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
+        return msg
 
     async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> bool:
         """
@@ -1035,21 +979,25 @@ class YnisonClient:
             log + schedule reconnect + return.
         """
         async with self._send_lock:
-            if self._ws is None or self._ws.closed:
-                self._logger.debug("Cannot send to Ynison — not connected")
-                if strict:
-                    raise YnisonSendError("Ynison WebSocket not connected")
-                return False
-            try:
-                await self._ws.send_str(json.dumps(msg))
-                return True
-            except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
-                self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
-                self._connected = False
-                self._schedule_reconnect()
-                if strict:
-                    raise YnisonSendError("Ynison send failed") from exc
-                return False
+            return await self._send_locked(msg, strict=strict)
+
+    async def _send_locked(self, msg: dict[str, Any], *, strict: bool) -> bool:
+        """Send one envelope while the caller holds the transport lock."""
+        if self._ws is None or self._ws.closed:
+            self._logger.debug("Cannot send to Ynison — not connected")
+            if strict:
+                raise YnisonSendError("Ynison WebSocket not connected")
+            return False
+        try:
+            await self._ws.send_str(json.dumps(msg))
+            return True
+        except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
+            self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
+            self._connected = False
+            self._schedule_reconnect()
+            if strict:
+                raise YnisonSendError("Ynison send failed") from exc
+            return False
 
     def _schedule_reconnect(self) -> None:
         """

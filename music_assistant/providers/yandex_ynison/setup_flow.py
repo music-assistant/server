@@ -30,7 +30,8 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: Setup session that presents and persists the provider form.
     """
-    if not session.mass.players.all_players(False, False):
+    player_entry = create_player_selector(session.mass, CONF_MASS_PLAYER_ID)
+    if not player_entry.options:
         raise AbortFlow("no_players")
 
     ym_instances = list_yandex_music_instances(session.mass)
@@ -50,8 +51,9 @@ async def run_setup(session: SetupSession) -> None:
         else None
     )
     selected_player = prefill.get(CONF_MASS_PLAYER_ID) or prefill.get("player")
+    legacy_keys = (*LEGACY_AUTH_KEYS, "player", "publish_name")
     legacy_present = existing_source == LEGACY_YM_INSTANCE_OWN or any(
-        key in setup_data or key in original_values for key in LEGACY_AUTH_KEYS
+        key in setup_data or key in original_values for key in legacy_keys
     )
 
     errors: dict[str, str | SetupFlowError] | None = None
@@ -72,7 +74,7 @@ async def run_setup(session: SetupSession) -> None:
             CONF_MASS_PLAYER_ID: selected_player,
         }
         if legacy_present:
-            collected.update(dict.fromkeys(LEGACY_AUTH_KEYS))
+            collected.update(dict.fromkeys(legacy_keys))
         try:
             await session.finish(collected)
             return

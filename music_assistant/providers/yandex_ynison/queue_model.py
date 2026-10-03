@@ -19,26 +19,6 @@ def insert_shuffle_indices(
     return [*shifted[:logical_position], *inserted, *shifted[logical_position:]]
 
 
-def remove_shuffle_index(order: list[int], position: int) -> list[int]:
-    """Return a shuffle permutation after removing one original-list position."""
-    return [index - 1 if index > position else index for index in order if index != position]
-
-
-def move_shuffle_index(order: list[int], from_position: int, to_position: int) -> list[int]:
-    """Return a shuffle permutation after moving one original-list position."""
-
-    def transform(index: int) -> int:
-        if index == from_position:
-            return to_position
-        if from_position < index <= to_position:
-            return index - 1
-        if to_position <= index < from_position:
-            return index + 1
-        return index
-
-    return [transform(index) for index in order]
-
-
 class YnisonQueueView:
     """Expose validated logical navigation over an Ynison player queue."""
 

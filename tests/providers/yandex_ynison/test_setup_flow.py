@@ -208,7 +208,25 @@ async def test_reconfigure_clears_legacy_auth_and_drops_legacy_identity() -> Non
         CONF_YM_INSTANCE: "ym-main",
         CONF_MASS_PLAYER_ID: "living-room",
         **dict.fromkeys(LEGACY_AUTH_KEYS),
+        "player": None,
+        "publish_name": None,
     }
+    persisted = {**setup_data, **session.finished_values}
+    assert persisted["publish_name"] is None
+
+
+@pytest.mark.parametrize("player_type", [PlayerType.DISPLAY, PlayerType.SOURCE])
+async def test_no_playable_output_aborts_setup(player_type: PlayerType) -> None:
+    """Capture and display registrations cannot be selected as output players."""
+    player = _player()
+    player.type = player_type
+    session = _SetupSession(
+        {"ym-main": {"domain": "yandex_music", "name": "Primary"}},
+        {},
+        players=[player],
+    )
+    with pytest.raises(AbortFlow, match="no_players"):
+        await run_setup(session)
 
 
 async def test_finish_retry_preserves_translated_error_metadata() -> None:
