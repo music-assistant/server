@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from ..capabilities import Capability
 from ..resource_helpers import (
-    safe_active_queue,
     to_brief_player,
     to_brief_queue,
     to_resource_text,
@@ -25,7 +24,7 @@ def register_player_resources(mcp: Any, mass: MusicAssistant) -> None:
         """Player snapshot by id."""
         player = mass.players.get_player(player_id)
         return to_resource_text(
-            to_brief_player(player, safe_active_queue(mass, player_id))
+            to_brief_player(player, mass.player_queues.get_active_queue(player_id))
             if player is not None
             else None
         )

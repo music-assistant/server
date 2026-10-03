@@ -149,19 +149,6 @@ def to_brief_queue(
     )
 
 
-def safe_active_queue(mass: Any, player_id: str) -> Any:
-    """
-    Resolve a player's active queue, degrading to ``None`` on errors.
-
-    :param mass: Music Assistant instance.
-    :param player_id: Player whose queue should be resolved.
-    """
-    try:
-        return mass.player_queues.get_active_queue(player_id)
-    except Exception:
-        return None
-
-
 def to_resource_text(value: Any) -> str | None:
     """
     Serialize a resource return value as JSON text.

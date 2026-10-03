@@ -753,3 +753,24 @@ async def test_final_revalidation_keeps_secret_values_protected() -> None:
     assert revalidate_preflight_command_sync(
         mass, save, save_args, save_preflight
     ).additional_required == frozenset({str(Capability.CONFIG_WRITE_SECRET)})
+
+
+@pytest.mark.parametrize(
+    ("favorite", "extra"),
+    [(None, {str(Capability.DELETE_FAVORITES)}), (True, set()), (False, set())],
+)
+async def test_clearing_a_favorite_requires_the_delete_capability(
+    favorite: bool | None, extra: set[str]
+) -> None:
+    """`set_item` with favorite=None clears the state, the same action as remove_item."""
+    decision = resolve_command_policy("music/favorites/set_item", Scope.LIBRARY_WRITE, None)
+    arguments = {"item": "library://track/1", "favorite": favorite}
+
+    preflight = await preflight_command(SimpleNamespace(), decision, arguments)
+    revalidated = revalidate_preflight_command_sync(
+        SimpleNamespace(), decision, arguments, CommandPreflight()
+    )
+
+    assert decision.required_capabilities == frozenset({str(Capability.EDIT_FAVORITES)})
+    assert preflight.additional_required == frozenset(extra)
+    assert revalidated.additional_required == frozenset(extra)

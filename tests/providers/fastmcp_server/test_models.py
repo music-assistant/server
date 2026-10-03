@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from music_assistant.providers.fastmcp_server.models import PlayerBrief, QueueBrief, QueueItemBrief
 from music_assistant.providers.fastmcp_server.resource_helpers import (
-    safe_active_queue,
     to_brief_player,
     to_brief_queue,
     to_resource_text,
@@ -161,13 +159,6 @@ def test_to_brief_queue_does_not_infer_total_from_partial_page() -> None:
     assert (
         to_brief_queue(queue, [SimpleNamespace(queue_item_id="1", name="One")]).item_count is None
     )
-
-
-def test_safe_active_queue_swallows_upstream_lookup_errors() -> None:
-    """Player resources remain readable when active-queue lookup races teardown."""
-    mass = MagicMock()
-    mass.player_queues.get_active_queue.side_effect = RuntimeError("gone")
-    assert safe_active_queue(mass, "p1") is None
 
 
 def test_to_resource_text_redacts_provider_preview_audio_urls() -> None:

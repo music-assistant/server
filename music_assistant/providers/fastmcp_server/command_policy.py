@@ -411,6 +411,8 @@ def resolve_command_policy(
         }
         else "storage_secret_write"
         if command in _STORAGE_SECRET_COMMANDS
+        else "favorite_clear"
+        if command == "music/favorites/set_item"
         else None
     )
     return CommandDecision(
@@ -458,6 +460,8 @@ async def preflight_command(
             )
     elif decision.preflight == "storage_secret_write":
         return _storage_secret_preflight(arguments)
+    elif decision.preflight == "favorite_clear":
+        return _favorite_clear_preflight(arguments)
     elif decision.preflight == "config_flow_submit":
         return await _preflight_setup_flow_submit(mass, arguments)
     elif decision.preflight == "config_flow_abort":
@@ -501,6 +505,8 @@ def revalidate_preflight_command_sync(
         )
     if decision.preflight == "storage_secret_write":
         return _storage_secret_preflight(arguments)
+    if decision.preflight == "favorite_clear":
+        return _favorite_clear_preflight(arguments)
     if decision.preflight == "config_flow_submit":
         return _revalidate_setup_flow_submit_sync(mass, arguments)
     if decision.preflight == "config_flow_abort":
@@ -606,6 +612,13 @@ def _storage_secret_preflight(arguments: Mapping[str, Any]) -> CommandPreflight:
     if arguments.get("password") is None:
         return CommandPreflight()
     return CommandPreflight(additional_required=frozenset({str(Capability.CONFIG_WRITE_SECRET)}))
+
+
+def _favorite_clear_preflight(arguments: Mapping[str, Any]) -> CommandPreflight:
+    """Require the delete capability when ``set_item`` clears a favorite (favorite=None)."""
+    if arguments.get("favorite") is not None:
+        return CommandPreflight()
+    return CommandPreflight(additional_required=frozenset({str(Capability.DELETE_FAVORITES)}))
 
 
 def _config_entries_target(arguments: Mapping[str, Any]) -> tuple[str, str]:
