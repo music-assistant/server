@@ -107,13 +107,7 @@ class TestFftMagnitudeFromAmplitude:
         assert fft_magnitude_from_amplitude(65535) == pytest.approx(FFT_MAGNITUDE_SCALE)
 
     def test_output_is_not_byte_clamped(self) -> None:
-        """
-        Unlike loudness_to_sample/spectrum_to_fft_result, this must not compress into 0-255.
-
-        WLED's real FFT_Magnitude is a raw, unnormalized float routinely in the thousands
-        on real hardware -- passing a 0-255-ish value here would make magnitude-based
-        effects on the receiving device under-react.
-        """
+        """FFT_Magnitude is a raw float in the thousands on WLED, so it is not capped at 255."""
         loudness = 47537  # amplitude ~0.15
         assert fft_magnitude_from_amplitude(loudness) > 255.0
 
@@ -216,13 +210,7 @@ class TestSpectrumToFftResult:
         assert result[0] == 0
 
     def test_full_scale_bin_reaches_near_max(self) -> None:
-        """
-        A full-scale band 0 lands just under 255, not exactly at it.
-
-        Every scaling mode's per-band multiplier is 0.85 at band 0 (matching WLED's own
-        square_root/linear/logarithmic FFTScalingMode formulas), a deliberate slight
-        de-emphasis of the lowest band relative to the rest -- not a bug.
-        """
+        """A full-scale band 0 lands below 255 because its per-band multiplier is 0.85."""
         result = spectrum_to_fft_result([65535])
         assert result[0] == 217
 
@@ -233,14 +221,7 @@ class TestSpectrumToFftResult:
         assert result[4] == 255
 
     def test_mid_range_bin_is_far_below_naive_bitshift_value(self) -> None:
-        """
-        A bin at 50% of the dB-linear range (-30dBFS) must not read as ~50% brightness.
-
-        Uses band 9 (~4dB combined compensation, the least of any band) to isolate the
-        dB -> amplitude conversion itself: a naive bit-shift would put this at 128/255
-        (50%). -30dBFS is genuinely quiet -- even after band 9's small compensation, it
-        should read well below that naive value.
-        """
+        """A bin at -30dBFS reads well below the 128/255 a naive bit-shift would give."""
         bins = [0] * 16
         bins[9] = 32768
         result = spectrum_to_fft_result(bins)
@@ -250,9 +231,7 @@ class TestSpectrumToFftResult:
         """Fewer than 16 bins should be zero-padded, not raise."""
         result = spectrum_to_fft_result([65535])
         assert len(result) == 16
-        assert (
-            result[0] == 217
-        )  # band 0's multiplier is 0.85, see test_full_scale_bin_reaches_near_max
+        assert result[0] == 217
         assert all(b == 0 for b in result[1:])
 
     def test_truncates_long_input(self) -> None:

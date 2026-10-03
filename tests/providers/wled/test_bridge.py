@@ -67,7 +67,6 @@ async def test_stop_removes_client_and_closes_transport() -> None:
     await bridge.stop()
     remove_client.assert_awaited_once_with("wled-zone-11988")
     transport.close.assert_called_once()
-    assert bridge._transport is None
 
 
 def test_frames_are_only_queued_while_streaming() -> None:

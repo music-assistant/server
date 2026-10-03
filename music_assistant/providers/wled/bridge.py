@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 class WledBridge(SendspinLightBridge):
     """Bridge for a single WLED sync zone (one UDP port)."""
 
+    _transport: asyncio.DatagramTransport
+
     def __init__(
         self,
         provider: WledProvider,
@@ -81,7 +83,6 @@ class WledBridge(SendspinLightBridge):
             render_rate_hz=SEND_RATE_HZ,
         )
         self.port = port
-        self._transport: asyncio.DatagramTransport | None = None
         self._latency_us = latency_ms * 1000
         self._gain_db = gain_db
         self._scaling_mode = scaling_mode
@@ -104,9 +105,7 @@ class WledBridge(SendspinLightBridge):
     async def stop(self) -> None:
         """Remove the Sendspin client and close the UDP transport."""
         await self.unregister_client()
-        if self._transport:
-            self._transport.close()
-            self._transport = None
+        self._transport.close()
 
     def update_settings(self, latency_ms: int, gain_db: float, scaling_mode: ScalingMode) -> None:
         """
@@ -144,8 +143,6 @@ class WledBridge(SendspinLightBridge):
         """Send one Audio Sync packet for the features due at the current playhead."""
         # Send slightly ahead of the playhead to offset the speaker's output latency.
         self._drain_pending(self.sendspin_server.clock.now_us() + self._latency_us)
-        if self._transport is None:
-            return
         sample = loudness_to_sample(self._latest_loudness, self._gain_db, self._scaling_mode)
         packet = pack_audio_sync_packet(
             sample_raw=sample,

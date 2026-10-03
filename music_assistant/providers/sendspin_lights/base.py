@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import ClientHelloPayload
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
-class SendspinLightBridge:
+class SendspinLightBridge(ABC):
     """Registers a light player with Sendspin and drives a fixed-rate render loop."""
 
     def __init__(
@@ -114,34 +115,34 @@ class SendspinLightBridge:
             await self.sendspin_server.remove_client(self._sendspin_client.client_id)
             self._sendspin_client = None
 
+    @abstractmethod
     def _on_frame(self, frame: ExtractedFrame) -> None:
         """Handle an extracted feature frame."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _render(self) -> None:
         """Render and send one update."""
-        raise NotImplementedError
 
     def _on_external_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle playback dialing this client."""
         self.logger.debug("Sendspin stream start request (%s)", request.connection_reason)
 
-    def _on_stream_start(self) -> None:
+    def _on_stream_start(self) -> None:  # noqa: B027
         """Handle stream start."""
 
-    def _on_stream_clear(self) -> None:
+    def _on_stream_clear(self) -> None:  # noqa: B027
         """Handle a seek."""
 
-    def _on_stream_end(self) -> None:
+    def _on_stream_end(self) -> None:  # noqa: B027
         """Handle stream end."""
 
-    def _on_beats(self, beats: list[BeatTiming]) -> None:
+    def _on_beats(self, beats: list[BeatTiming]) -> None:  # noqa: B027
         """Handle a beat schedule segment."""
 
-    def _on_beats_clear(self) -> None:
+    def _on_beats_clear(self) -> None:  # noqa: B027
         """Handle the beat schedule being dropped."""
 
-    def _on_color(self, payload: ServerStatePayload) -> None:
+    def _on_color(self, payload: ServerStatePayload) -> None:  # noqa: B027
         """Handle a color palette update."""
 
     def _start_render_loop(self) -> None:
@@ -162,8 +163,16 @@ class SendspinLightBridge:
         self._render_handle = None
         if not self._is_streaming:
             return
-        self._render()
-        self._render_handle = self.mass.loop.call_later(self._render_period_s, self._render_tick)
+        try:
+            self._render()
+        except Exception:
+            # One bad tick must not stop the loop: log and reschedule below.
+            self.logger.exception("Render tick failed")
+        finally:
+            if self._is_streaming:
+                self._render_handle = self.mass.loop.call_later(
+                    self._render_period_s, self._render_tick
+                )
 
 
 __all__ = ["SendspinLightBridge"]

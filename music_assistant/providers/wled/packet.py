@@ -77,32 +77,6 @@ _PINK_NOISE_COMPENSATION_DB: tuple[float, ...] = (
 )
 
 
-def _amplitude_from_dbu16(value: int, gain_db: float) -> float:
-    """Convert a Sendspin dB-linear uint16 value to gain-boosted linear amplitude."""
-    if value <= 0:
-        return 0.0
-    normalized_db = max(0.0, min(1.0, value / 65535.0))
-    db = normalized_db * 60.0 - 60.0
-    amplitude = float(10.0 ** (db / 20.0))
-    boosted = amplitude * float(10.0 ** (gain_db / 20.0))
-    return max(0.0, min(1.0, boosted))
-
-
-def _apply_curve(amplitude: float, scaling_mode: ScalingMode) -> float:
-    """Apply a WLED-style perceptual curve to a linear amplitude in [0, 1]."""
-    if scaling_mode == ScalingMode.LINEAR:
-        return amplitude
-    if scaling_mode == ScalingMode.LOGARITHMIC:
-        return float(math.log1p(_LOG_STEEPNESS * amplitude) / math.log1p(_LOG_STEEPNESS))
-    return float(amplitude**0.5)  # square_root
-
-
-def _band_multiplier(band_index: int, scaling_mode: ScalingMode) -> float:
-    """Return the per-band high-frequency boost for a scaling mode."""
-    divisor = _BAND_MULTIPLIER_DIVISOR[scaling_mode]
-    return 0.85 + band_index / divisor
-
-
 def fft_magnitude_from_amplitude(f_peak_amp: int, gain_db: float = 0.0) -> float:
     """
     Convert a Sendspin f_peak_amp value to WLED's FFT_Magnitude scale.
@@ -186,3 +160,29 @@ def pack_audio_sync_packet(
         fft_magnitude,
         fft_major_peak,
     )
+
+
+def _amplitude_from_dbu16(value: int, gain_db: float) -> float:
+    """Convert a Sendspin dB-linear uint16 value to gain-boosted linear amplitude."""
+    if value <= 0:
+        return 0.0
+    normalized_db = max(0.0, min(1.0, value / 65535.0))
+    db = normalized_db * 60.0 - 60.0
+    amplitude = float(10.0 ** (db / 20.0))
+    boosted = amplitude * float(10.0 ** (gain_db / 20.0))
+    return max(0.0, min(1.0, boosted))
+
+
+def _apply_curve(amplitude: float, scaling_mode: ScalingMode) -> float:
+    """Apply a WLED-style perceptual curve to a linear amplitude in [0, 1]."""
+    if scaling_mode == ScalingMode.LINEAR:
+        return amplitude
+    if scaling_mode == ScalingMode.LOGARITHMIC:
+        return float(math.log1p(_LOG_STEEPNESS * amplitude) / math.log1p(_LOG_STEEPNESS))
+    return float(amplitude**0.5)
+
+
+def _band_multiplier(band_index: int, scaling_mode: ScalingMode) -> float:
+    """Return the per-band high-frequency boost for a scaling mode."""
+    divisor = _BAND_MULTIPLIER_DIVISOR[scaling_mode]
+    return 0.85 + band_index / divisor

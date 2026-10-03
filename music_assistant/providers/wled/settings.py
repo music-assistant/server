@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from .constants import (
     CONF_GAIN_DB,
@@ -33,7 +33,9 @@ def get_settings(config: ProviderConfig) -> WledSettings:
     :param config: Provider config to read the settings from.
     """
     return WledSettings(
-        latency_ms=int(float(str(config.get_value(CONF_LATENCY_MS, DEFAULT_LATENCY_MS)))),
-        gain_db=float(str(config.get_value(CONF_GAIN_DB, DEFAULT_GAIN_DB))),
-        scaling_mode=ScalingMode(str(config.get_value(CONF_SCALING_MODE, DEFAULT_SCALING_MODE))),
+        latency_ms=cast("int", config.get_value(CONF_LATENCY_MS, DEFAULT_LATENCY_MS)),
+        gain_db=cast("float", config.get_value(CONF_GAIN_DB, DEFAULT_GAIN_DB)),
+        scaling_mode=ScalingMode(
+            cast("str", config.get_value(CONF_SCALING_MODE, DEFAULT_SCALING_MODE))
+        ),
     )

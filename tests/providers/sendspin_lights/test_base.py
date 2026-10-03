@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
 from music_assistant_models.enums import PlayerType
 
@@ -57,6 +58,26 @@ def test_render_tick_reschedules_only_while_streaming() -> None:
     bridge._render_tick()
     assert bridge.rendered == 1
     call_later.assert_called_once()
+
+
+def test_render_tick_survives_a_failing_render() -> None:
+    """One failed render is logged and the loop keeps running."""
+    bridge, call_later, _, _ = _make()
+    bridge._is_streaming = True
+    bridge._render = Mock(side_effect=OSError("send failed"))  # type: ignore[method-assign]
+    bridge._render_tick()
+    cast("Mock", bridge.logger.exception).assert_called_once()
+    call_later.assert_called_once()
+
+
+def test_subclass_must_implement_frame_and_render_hooks() -> None:
+    """A subclass missing a required hook cannot be instantiated."""
+
+    class _Incomplete(SendspinLightBridge):
+        pass
+
+    with pytest.raises(TypeError, match="abstract"):
+        _Incomplete()  # type: ignore[abstract,call-arg]
 
 
 async def test_unregister_removes_client() -> None:

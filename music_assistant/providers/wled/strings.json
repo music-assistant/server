@@ -1,5 +1,9 @@
 {
   "config_entries": {
+    "port": {
+      "label": "Port",
+      "description": "UDP port for this sync zone. Use the same port in your WLED devices' audio sync settings."
+    },
     "latency_ms": {
       "label": "Sync latency (ms)",
       "description": "Milliseconds to send audio-sync packets ahead of the audio, to offset the speaker's output latency. Increase if the lights lag the music."
@@ -28,6 +32,6 @@
     "description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant."
   },
   "errors": {
-    "port_in_use": "Zone port {0} is already used by another WLED instance. Choose a different port."
+    "port_in_use": "This zone port is already used by another WLED instance. Choose a different port."
   }
 }

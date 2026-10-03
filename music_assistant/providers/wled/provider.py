@@ -63,7 +63,10 @@ class WledProvider(PluginProvider):
                 key=CONF_SCALING_MODE,
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_SCALING_MODE,
-                options=[ConfigValueOption(mode.value, mode.value) for mode in ScalingMode],
+                options=[
+                    ConfigValueOption(mode.value, mode.value.replace("_", " ").capitalize())
+                    for mode in ScalingMode
+                ],
                 immediate_apply=True,
                 category="settings",
             ),
@@ -71,7 +74,7 @@ class WledProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Reject a port used by another instance, then start the sync zone."""
-        port = int(cast("int", self.get_setup_value(CONF_PORT, DEFAULT_PORT)))
+        port = cast("int", self.get_setup_value(CONF_PORT, DEFAULT_PORT))
         for sibling in await self.mass.config.get_provider_configs(provider_domain=self.domain):
             if sibling.instance_id == self.instance_id:
                 continue
@@ -79,12 +82,11 @@ class WledProvider(PluginProvider):
                 raise SetupFailedError(
                     f"Zone port {port} is already used by another WLED instance",
                     translation_key="port_in_use",
-                    translation_args=[port],
                     translation_owner=f"provider.{self.domain}",
                 )
         sendspin_provider = cast("SendspinProvider", self.mass.get_provider("sendspin"))
         settings = get_settings(self.config)
-        self._bridge = WledBridge(
+        bridge = WledBridge(
             self,
             sendspin_provider,
             port,
@@ -92,7 +94,8 @@ class WledProvider(PluginProvider):
             scaling_mode=settings.scaling_mode,
             latency_ms=settings.latency_ms,
         )
-        await self._bridge.start()
+        await bridge.start()
+        self._bridge = bridge
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
