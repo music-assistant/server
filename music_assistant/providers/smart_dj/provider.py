@@ -13,7 +13,7 @@ from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
 
-from .engine import MODES, track_score
+from .engine import DJControls, MODES, SignalControl, beam_optimize
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -54,6 +54,7 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/analyze", self.analyze),
             ("smart_dj/rank_queue", self.rank_queue),
             ("smart_dj/status", self.status),
+            ("smart_dj/capabilities", self.capabilities),
         )
         for command, handler in handlers:
             scope = Scope.QUEUES_CONTROL if command == "smart_dj/rank_queue" else Scope.QUEUES_READ
@@ -256,40 +257,69 @@ class SmartDJProvider(PluginProvider):
         prefer_keys: bool = True,
         preserve_variety: bool = True,
         mode: str = "ai_dj",
+        controls: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Rank upcoming queue items and apply the ordering through MA queue primitives."""
+        """Optimize the upcoming queue under an explicit user control contract."""
         snapshot = await self.analyze(queue_id)
         tracks = snapshot["tracks"]
         if len(tracks) < 2:
             return snapshot
+        raw = controls or {}
 
-        settings = {
-            "bpm_tolerance": bpm_tolerance,
-            "prefer_keys": prefer_keys,
-            "preserve_variety": preserve_variety,
-        }
-        current = snapshot["current"]
-        current_id = tracks[0]["queue_item_id"]
-        candidates = []
-        for track in tracks[1:]:
-            score = self._compatibility(current, track.get("analysis"), settings)
-            engine_score, reasons = track_score(
-                current, track.get("analysis") or {}, MODES.get(mode, MODES["ai_dj"])
-            )
-            score = round((score + engine_score) / 2, 4)
-            analysis = track.get("analysis") or {}
-            if current and analysis:
-                if current.get("bpm") and analysis.get("bpm"):
-                    reasons.append(f"BPM {current['bpm']:.0f}→{analysis['bpm']:.0f}")
-                if current.get("camelot") and analysis.get("camelot"):
-                    reasons.append(f"key {current['camelot']}→{analysis['camelot']}")
-                if current.get("energy") is not None and analysis.get("energy") is not None:
-                    reasons.append("energy up" if analysis["energy"] >= current["energy"] else "energy down")
-            candidates.append({**track, "score": score, "reasons": reasons})
-        candidates.sort(key=lambda x: x["score"], reverse=True)
+        def signal(name: str, fallback: str = "soft") -> SignalControl:
+            value = raw.get(name, fallback)
+            if isinstance(value, dict):
+                return SignalControl(
+                    state=str(value.get("state", fallback)),
+                    weight=max(0.0, float(value.get("weight", 1.0))),
+                )
+            return SignalControl(state=str(value), weight=1.0)
 
-        # Apply the ranked order in one queue update. Preserve the already-played/current
-        # prefix so Smart DJ never moves a committed or buffered item.
+        control = DJControls(
+            bpm=signal("bpm"),
+            key=signal("key", "soft" if prefer_keys else "disabled"),
+            energy=signal("energy"),
+            danceability=signal("danceability"),
+            loudness=signal("loudness"),
+            genre=signal("genre"),
+            artist_spacing=signal("artist_spacing"),
+            momentum=signal("momentum"),
+            bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
+            bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
+            max_bpm_jump=float(raw["max_bpm_jump"]) if raw.get("max_bpm_jump") is not None else None,
+            key_relation=str(raw.get("key_relation", "compatible")),
+            max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
+            instrumental=str(raw.get("instrumental", "any")),
+            explicit=str(raw.get("explicit", "allow")),
+            transition_bars=int(raw.get("transition_bars", 8)),
+            automix_enabled=bool(raw.get("automix_enabled", False)),
+            smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
+            lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),
+            transition_aggressiveness=max(
+                0.0, min(1.0, float(raw.get("transition_aggressiveness", 0.5)))
+            ),
+            required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
+            excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
+            fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
+            end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
+        )
+        if not control.smart_reorder_enabled:
+            return {
+                "queue_id": queue_id,
+                "tracks": tracks[1:],
+                "settings": {"controls": raw, "smart_reorder_enabled": False},
+            }
+
+        optimized = beam_optimize(
+            tracks[1:],
+            snapshot["current"],
+            MODES.get(mode, MODES["ai_dj"]),
+            controls=control,
+            beam_width=max(4, min(32, control.lookahead * 3)),
+        )
+        if not optimized and control.required_ids:
+            raise RuntimeError("Hard requirements are impossible with the current queue")
+
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             raise RuntimeError(f"Queue not found: {queue_id}")
@@ -297,12 +327,22 @@ class SmartDJProvider(PluginProvider):
         by_id = {item.queue_item_id: item for item in items}
         prefix_len = (queue.current_index or 0) + 1
         prefix = items[:prefix_len]
-        ranked_ids = [track["queue_item_id"] for track in candidates]
+        ranked_ids = [track["queue_item_id"] for track in optimized]
         ranked = [by_id[item_id] for item_id in ranked_ids if item_id in by_id]
-        ranked_ids_set = set(ranked_ids)
-        remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_ids_set]
+        ranked_set = set(ranked_ids)
+        remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_set]
         self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
-        return {"queue_id": queue_id, "current_item_id": current_id, "tracks": candidates, "settings": settings}
+        return {
+            "queue_id": queue_id,
+            "current_item_id": tracks[0]["queue_item_id"],
+            "tracks": optimized,
+            "settings": {
+                "mode": mode,
+                "bpm_tolerance": bpm_tolerance,
+                "preserve_variety": preserve_variety,
+                "controls": raw,
+            },
+        }
 
     async def status(self) -> dict[str, Any]:
         """Return provider readiness without revealing credentials."""
