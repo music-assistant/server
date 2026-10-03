@@ -8,16 +8,12 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class SignalControl:
-    """Explicit user control for one Smart DJ signal."""
-
     state: str = "soft"  # hard | soft | disabled
     weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
 class DJWeights:
-    """Default soft-preference weights."""
-
     bpm: float = 0.30
     key: float = 0.25
     energy: float = 0.15
@@ -39,13 +35,6 @@ class DJMode:
 
 @dataclass(frozen=True, slots=True)
 class DJControls:
-    """Complete user-control contract.
-
-    Hard rules are never violated. Soft signals may affect ordering. Disabled
-    signals contribute nothing. This object is intentionally serializable so
-    the frontend can own the complete decision policy.
-    """
-
     bpm: SignalControl = SignalControl()
     key: SignalControl = SignalControl()
     energy: SignalControl = SignalControl()
@@ -54,12 +43,11 @@ class DJControls:
     genre: SignalControl = SignalControl()
     artist_spacing: SignalControl = SignalControl()
     momentum: SignalControl = SignalControl()
-
     bpm_min: float | None = None
     bpm_max: float | None = None
     max_bpm_jump: float | None = None
-    key_relation: str = "compatible"  # compatible | same | any
-    max_artist_repeat: int = 1
+    key_relation: str = "compatible"
+    max_artist_repeat: int = 1  # maximum consecutive tracks by the same artist
     instrumental: str = "any"  # any | prefer | required
     explicit: str = "allow"  # allow | exclude
     transition_bars: int = 8
@@ -75,30 +63,15 @@ class DJControls:
 
 MODES = {
     "ai_dj": DJMode("ai_dj", 0.08, 0.15, 0.45, DJWeights()),
-    "party": DJMode(
-        "party",
-        0.12,
-        0.05,
-        0.75,
-        DJWeights(bpm=0.28, key=0.18, energy=0.16, danceability=0.18, loudness=0.06,
-                  genre=0.06, artist_spacing=0.04, momentum=0.04),
-    ),
-    "chill": DJMode(
-        "chill",
-        0.10,
-        -0.15,
-        0.65,
-        DJWeights(bpm=0.22, key=0.18, energy=0.22, danceability=0.10, loudness=0.08,
-                  genre=0.10, artist_spacing=0.05, momentum=0.05),
-    ),
-    "workout": DJMode(
-        "workout",
-        0.06,
-        0.12,
-        0.35,
-        DJWeights(bpm=0.32, key=0.18, energy=0.20, danceability=0.16, loudness=0.05,
-                  genre=0.03, artist_spacing=0.03, momentum=0.03),
-    ),
+    "party": DJMode("party", 0.12, 0.05, 0.75, DJWeights(
+        bpm=0.28, key=0.18, energy=0.16, danceability=0.18, loudness=0.06,
+        genre=0.06, artist_spacing=0.04, momentum=0.04)),
+    "chill": DJMode("chill", 0.10, -0.15, 0.65, DJWeights(
+        bpm=0.22, key=0.18, energy=0.22, danceability=0.10, loudness=0.08,
+        genre=0.10, artist_spacing=0.05, momentum=0.05)),
+    "workout": DJMode("workout", 0.06, 0.12, 0.35, DJWeights(
+        bpm=0.32, key=0.18, energy=0.20, danceability=0.16, loudness=0.05,
+        genre=0.03, artist_spacing=0.03, momentum=0.03)),
     "custom": DJMode("custom", 0.08, 0.0, 0.50, DJWeights()),
 }
 
@@ -110,14 +83,13 @@ def _norm_delta(a: Any, b: Any, scale: float) -> float:
 
 
 def camelot_affinity(a: str | None, b: str | None) -> float:
-    """Return a normalized Camelot compatibility score."""
     if not a or not b:
         return 0.5
     if a == b:
         return 1.0
     try:
-        na, nb = int(a[:-1]), int(b[:-1])
-        ma, mb = a[-1].upper(), b[-1].upper()
+        na, nb = int(str(a)[:-1]), int(str(b)[:-1])
+        ma, mb = str(a)[-1].upper(), str(b)[-1].upper()
     except (ValueError, TypeError):
         return 0.0
     if ma == mb and ((na - nb) % 12 in (1, 11)):
@@ -129,83 +101,106 @@ def camelot_affinity(a: str | None, b: str | None) -> float:
     return 0.0
 
 
+def _artist_run_length(path: list[dict[str, Any]], artist: str | None) -> int:
+    if not artist:
+        return 0
+    count = 0
+    for item in reversed(path):
+        if item.get("artist") != artist:
+            break
+        count += 1
+    return count
+
+
 def _hard_fail(
     current: dict[str, Any] | None,
     candidate: dict[str, Any],
     controls: DJControls,
     *,
-    same_artist: bool = False,
+    artist_run_length: int = 0,
 ) -> list[str]:
-    """Return all hard-rule violations. An empty list means the candidate is legal."""
     violations: list[str] = []
     if not candidate:
-        violations.append("missing analysis")
+        return ["missing analysis"]
 
-    if candidate.get("queue_item_id") in controls.excluded_ids:
+    candidate_id = candidate.get("queue_item_id")
+    if candidate_id in controls.excluded_ids:
         violations.append("excluded track")
 
     bpm = candidate.get("bpm")
-    if isinstance(bpm, (int, float)):
-        if controls.bpm_min is not None and bpm < controls.bpm_min:
-            violations.append("below minimum BPM")
-        if controls.bpm_max is not None and bpm > controls.bpm_max:
-            violations.append("above maximum BPM")
+    if controls.bpm_min is not None and not isinstance(bpm, (int, float)):
+        violations.append("BPM unavailable for minimum constraint")
+    elif isinstance(bpm, (int, float)) and controls.bpm_min is not None and bpm < controls.bpm_min:
+        violations.append("below minimum BPM")
+    if controls.bpm_max is not None and not isinstance(bpm, (int, float)):
+        violations.append("BPM unavailable for maximum constraint")
+    elif isinstance(bpm, (int, float)) and controls.bpm_max is not None and bpm > controls.bpm_max:
+        violations.append("above maximum BPM")
 
     if current and controls.max_bpm_jump is not None:
-        a, b = current.get("bpm"), candidate.get("bpm")
-        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-            if abs(float(b) - float(a)) > controls.max_bpm_jump:
-                violations.append("maximum BPM jump exceeded")
+        a = current.get("bpm")
+        if not isinstance(a, (int, float)) or not isinstance(bpm, (int, float)):
+            violations.append("BPM unavailable for maximum jump constraint")
+        elif abs(float(bpm) - float(a)) > controls.max_bpm_jump:
+            violations.append("maximum BPM jump exceeded")
 
     if controls.key_relation != "any" and current:
         a, b = current.get("camelot"), candidate.get("camelot")
-        if a and b:
+        if not a or not b:
+            violations.append("key unavailable for key constraint")
+        else:
             affinity = camelot_affinity(a, b)
             if controls.key_relation == "same" and affinity < 1.0:
                 violations.append("key must match")
             elif controls.key_relation == "compatible" and affinity <= 0.0:
                 violations.append("incompatible key")
 
-    if controls.instrumental == "required" and not candidate.get("instrumental"):
-        violations.append("instrumental required")
+    if controls.instrumental == "required" and candidate.get("instrumental") is not True:
+        violations.append("instrumental status unavailable or not instrumental")
 
-    if controls.explicit == "exclude" and candidate.get("explicit"):
-        violations.append("explicit track excluded")
+    if controls.explicit == "exclude" and candidate.get("explicit") is not False:
+        violations.append("explicit status unavailable or track is explicit")
 
-    if controls.bpm.state == "hard" and current and bpm is not None:
+    if controls.bpm.state == "hard" and current:
         a = current.get("bpm")
-        if isinstance(a, (int, float)) and abs(float(bpm) - float(a)) > float(a) * 0.08:
+        if not isinstance(a, (int, float)) or not isinstance(bpm, (int, float)):
+            violations.append("hard BPM compatibility unavailable")
+        elif abs(float(bpm) - float(a)) > float(a) * 0.08:
             violations.append("hard BPM compatibility")
 
     if controls.key.state == "hard" and current:
         a, b = current.get("camelot"), candidate.get("camelot")
-        if a and b and camelot_affinity(a, b) <= 0.0:
-            violations.append("hard key compatibility")
+        if not a or not b or camelot_affinity(a, b) <= 0.0:
+            violations.append("hard key compatibility unavailable or failed")
 
     if controls.energy.state == "hard" and current:
         a, b = current.get("energy"), candidate.get("energy")
-        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(float(a) - float(b)) > 0.35:
+        if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+            violations.append("hard energy compatibility unavailable")
+        elif abs(float(a) - float(b)) > 0.35:
             violations.append("hard energy compatibility")
 
-    for field, label, scale in (
-        ("danceability", "danceability", 0.45),
-        ("loudness", "loudness", 8.0),
-    ):
+    for field, label, scale in (("danceability", "danceability", 0.45), ("loudness", "loudness", 8.0)):
         control = getattr(controls, field)
         if control.state == "hard" and current:
             a, b = current.get(field), candidate.get(field)
-            if isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(float(a) - float(b)) > scale:
+            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+                violations.append(f"hard {label} compatibility unavailable")
+            elif abs(float(a) - float(b)) > scale:
                 violations.append(f"hard {label} compatibility")
 
     if controls.genre.state == "hard" and current:
-        if current.get("genre") and candidate.get("genre") and current["genre"] != candidate["genre"]:
+        a, b = current.get("genre"), candidate.get("genre")
+        if not a or not b:
+            violations.append("hard genre compatibility unavailable")
+        elif a != b:
             violations.append("hard genre compatibility")
 
-    if controls.artist_spacing.state == "hard" and same_artist:
+    if controls.artist_spacing.state == "hard" and artist_run_length >= max(1, controls.max_artist_repeat):
         violations.append("hard artist spacing")
 
-    if same_artist and controls.max_artist_repeat <= 0:
-        violations.append("artist repeat prohibited")
+    if artist_run_length >= max(1, controls.max_artist_repeat):
+        violations.append("maximum consecutive artist repeat exceeded")
 
     return violations
 
@@ -216,57 +211,39 @@ def _signal_values(
     mode: DJMode,
     controls: DJControls,
     *,
-    same_artist: bool,
+    artist_run_length: int,
 ) -> tuple[float, list[str]]:
-    """Calculate only enabled soft signals."""
     w = mode.weights
     values = {
-        "bpm": _norm_delta(
-            current.get("bpm"),
-            candidate.get("bpm"),
-            max(1.0, float(current.get("bpm") or 120) * mode.bpm_tolerance),
-        ),
+        "bpm": _norm_delta(current.get("bpm"), candidate.get("bpm"),
+                           max(1.0, float(current.get("bpm") or 120) * mode.bpm_tolerance)),
         "key": camelot_affinity(current.get("camelot"), candidate.get("camelot")),
-        "energy": max(
-            0.0,
-            1.0
-            - abs(
-                float(candidate.get("energy") or 0.5)
-                - (float(current.get("energy") or 0.5) + mode.energy_direction)
-            )
-            / 0.35,
-        ),
+        "energy": max(0.0, 1.0 - abs(
+            float(candidate.get("energy") or 0.5)
+            - (float(current.get("energy") or 0.5) + mode.energy_direction)
+        ) / 0.35),
         "danceability": _norm_delta(current.get("danceability"), candidate.get("danceability"), 0.45),
         "loudness": _norm_delta(current.get("loudness"), candidate.get("loudness"), 8.0),
-        "genre": (
-            1.0
-            if current.get("genre") and candidate.get("genre") and current["genre"] == candidate["genre"]
-            else 0.5
-        ),
-        "artist_spacing": 0.0 if same_artist else 1.0,
-        "momentum": (
-            1.0
-            if float(candidate.get("energy") or 0.5) >= float(current.get("energy") or 0.5)
-            else 0.65
-        ),
+        "genre": 1.0 if current.get("genre") and candidate.get("genre") and current["genre"] == candidate["genre"] else 0.5,
+        "artist_spacing": max(0.0, 1.0 - artist_run_length / max(1, controls.max_artist_repeat)),
+        "momentum": 1.0 if float(candidate.get("energy") or 0.5) >= float(current.get("energy") or 0.5) else 0.65,
     }
     reasons: list[str] = []
-    total = 0.0
-    total_weight = 0.0
+    total = total_weight = 0.0
     for name, value in values.items():
         control = getattr(controls, name)
         if control.state != "soft":
             continue
-        base_weight = getattr(w, name)
-        effective = max(0.0, control.weight) * base_weight
+        effective = max(0.0, control.weight) * getattr(w, name)
         total += value * effective
         total_weight += effective
         if value >= 0.85:
             reasons.append(f"{name.replace('_', ' ')} strong")
-    if controls.instrumental == "prefer" and candidate.get("instrumental"):
-        total += 0.10
-        total_weight += 0.10
-        reasons.append("instrumental preference")
+    if controls.instrumental == "prefer":
+        if candidate.get("instrumental") is True:
+            total += 0.10
+            total_weight += 0.10
+            reasons.append("instrumental preference")
     if total_weight == 0:
         return 0.5, reasons
     return max(0.0, min(1.0, total / total_weight)), reasons
@@ -278,17 +255,16 @@ def score_candidate(
     mode: DJMode,
     controls: DJControls,
     *,
-    same_artist: bool = False,
+    artist_run_length: int = 0,
 ) -> tuple[float, list[str], list[str]]:
-    """Score a candidate while explicitly reporting hard-rule violations."""
     if not candidate:
         return 0.0, [], ["missing analysis"]
-    violations = _hard_fail(current, candidate, controls, same_artist=same_artist)
+    violations = _hard_fail(current, candidate, controls, artist_run_length=artist_run_length)
     if violations:
         return 0.0, [], violations
     if current is None:
         return 0.5, ["no current-track anchor"], []
-    score, reasons = _signal_values(current, candidate, mode, controls, same_artist=same_artist)
+    score, reasons = _signal_values(current, candidate, mode, controls, artist_run_length=artist_run_length)
     return score, reasons, []
 
 
@@ -301,15 +277,52 @@ def track_score(
     energy_target: float | None = None,
     same_artist: bool = False,
 ) -> tuple[float, list[str]]:
-    """Backward-compatible scoring entry point."""
-    controls = DJControls(
-        bpm=SignalControl("soft", 1.0),
-        key=SignalControl("soft", 1.0),
-    )
+    controls = DJControls(bpm=SignalControl("soft", 1.0), key=SignalControl("soft", 1.0))
     if bpm_tolerance is not None:
         mode = DJMode(mode.name, bpm_tolerance, mode.energy_direction, mode.variety, mode.weights)
-    score, reasons, _ = score_candidate(current, candidate, mode, controls, same_artist=same_artist)
+    score, reasons, _ = score_candidate(
+        current, candidate, mode, controls, artist_run_length=1 if same_artist else 0
+    )
     return score, reasons
+
+
+def _merge_track(item: dict[str, Any]) -> dict[str, Any]:
+    analysis = item.get("analysis")
+    merged = dict(analysis) if isinstance(analysis, dict) else {}
+    for key in ("queue_item_id", "artist", "genre", "explicit", "instrumental"):
+        if key in item:
+            merged[key] = item[key]
+    return merged
+
+
+def _optimize_segment(
+    segment: list[dict[str, Any]],
+    anchor: dict[str, Any] | None,
+    mode: DJMode,
+    controls: DJControls,
+    beam_width: int,
+) -> list[dict[str, Any]]:
+    beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], list(segment))]
+    for _ in range(len(segment)):
+        next_beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = []
+        for total, path, remaining in beams:
+            current = _merge_track(path[-1]) if path else anchor
+            for candidate in remaining:
+                data = _merge_track(candidate)
+                run = _artist_run_length(path, candidate.get("artist"))
+                score, reasons, violations = score_candidate(
+                    current, data, mode, controls, artist_run_length=run
+                )
+                if violations:
+                    continue
+                item = {**candidate, "score": score, "reasons": reasons}
+                next_beams.append((total + score, path + [item],
+                                   [x for x in remaining if x is not candidate]))
+        next_beams.sort(key=lambda x: x[0], reverse=True)
+        beams = next_beams[:beam_width]
+        if not beams:
+            break
+    return beams[0][1] if beams else []
 
 
 def beam_optimize(
@@ -323,62 +336,76 @@ def beam_optimize(
     excluded_ids: set[str] | None = None,
     artist_spacing: int = 1,
 ) -> list[dict[str, Any]]:
-    """Near-global playlist optimization with hard constraints."""
+    """Optimize all movable tracks while preserving fixed positions and hard requirements."""
     controls = controls or DJControls()
-    fixed_ids = fixed_ids or set(controls.fixed_ids)
-    excluded_ids = excluded_ids or set(controls.excluded_ids)
-    pool = [
-        t for t in tracks
-        if t.get("queue_item_id") not in excluded_ids
-        and t.get("queue_item_id") not in controls.excluded_ids
+    fixed_ids = set(fixed_ids or controls.fixed_ids)
+    excluded_ids = set(excluded_ids or controls.excluded_ids)
+
+    ids = {str(t.get("queue_item_id")) for t in tracks}
+    missing_required = set(controls.required_ids) - ids
+    if missing_required:
+        raise RuntimeError(f"Required tracks are missing: {sorted(missing_required)}")
+    conflict = controls.required_ids & controls.excluded_ids
+    if conflict:
+        raise RuntimeError(f"Tracks cannot be both required and excluded: {sorted(conflict)}")
+    if controls.end_track_id and controls.end_track_id in controls.excluded_ids:
+        raise RuntimeError("End track cannot also be excluded")
+    if controls.end_track_id and controls.end_track_id not in ids:
+        raise RuntimeError(f"End track is missing: {controls.end_track_id}")
+
+    fixed_positions = {idx: t for idx, t in enumerate(tracks) if t.get("queue_item_id") in fixed_ids}
+    movable = [
+        t for idx, t in enumerate(tracks)
+        if idx not in fixed_positions and t.get("queue_item_id") not in excluded_ids
     ]
-    fixed = [t for t in pool if t.get("queue_item_id") in fixed_ids or t.get("queue_item_id") in controls.fixed_ids]
-    movable = [t for t in pool if t not in fixed]
+    excluded = [t for t in tracks if t.get("queue_item_id") in excluded_ids]
 
-    beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], movable)]
-    for _ in range(len(movable)):
-        next_beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = []
-        for total, path, remaining in beams:
-            anchor = path[-1].get("analysis") if path else current
-            for candidate in remaining:
-                same_artist = bool(
-                    path
-                    and candidate.get("artist")
-                    and candidate.get("artist") == path[-1].get("artist")
-                )
-                score, reasons, violations = score_candidate(
-                    anchor, candidate.get("analysis") or {}, mode, controls, same_artist=same_artist
-                )
-                if violations:
-                    continue
-                item = {**candidate, "score": score, "reasons": reasons}
-                next_beams.append(
-                    (
-                        total + score,
-                        path + [item],
-                        [x for x in remaining if x is not candidate],
-                    )
-                )
-        next_beams.sort(key=lambda x: x[0], reverse=True)
-        beams = next_beams[:beam_width]
-        if not beams:
-            break
+    # Optimize each interval between fixed anchors so fixed positions remain exact.
+    result: list[dict[str, Any]] = []
+    movable_cursor = 0
+    for idx in range(len(tracks)):
+        if idx in fixed_positions:
+            fixed = fixed_positions[idx]
+            if fixed.get("queue_item_id") in controls.excluded_ids:
+                raise RuntimeError("A fixed track is excluded")
+            fixed_data = _merge_track(fixed)
+            if fixed.get("queue_item_id") in controls.required_ids:
+                pass
+            result.append({**fixed, "score": 1.0, "reasons": ["fixed track"]})
+            current = fixed_data
+            continue
+        # Gather the remaining interval until the next fixed slot.
+        if idx < len(tracks):
+            next_fixed = min((p for p in fixed_positions if p > idx), default=len(tracks))
+        else:
+            next_fixed = len(tracks)
+        segment_len = next_fixed - idx
+        if segment_len <= 0:
+            continue
+        segment = movable[movable_cursor:movable_cursor + segment_len]
+        movable_cursor += segment_len
+        anchor = _merge_track(result[-1]) if result else current
+        optimized = _optimize_segment(segment, anchor, mode, controls, beam_width)
+        if len(optimized) != len(segment):
+            raise RuntimeError("Hard requirements are impossible with the current queue")
+        result.extend(optimized)
 
-    best = beams[0][1] if beams else []
+    # Excluded tracks are intentionally absent; every other non-fixed track must remain exactly once.
+    expected = {str(t.get("queue_item_id")) for t in tracks if t.get("queue_item_id") not in excluded_ids}
+    actual = {str(t.get("queue_item_id")) for t in result}
+    if expected != actual:
+        raise RuntimeError("Optimizer would lose or duplicate queue tracks")
 
-    # Preserve fixed tracks in their original relative positions.
-    by_id = {t.get("queue_item_id"): t for t in fixed}
-    for idx, original in enumerate(tracks):
-        item_id = original.get("queue_item_id")
-        if item_id in by_id:
-            best.insert(
-                min(idx, len(best)),
-                {**by_id[item_id], "score": 1.0, "reasons": ["fixed track"]},
-            )
+    required_present = controls.required_ids <= actual
+    if not required_present:
+        raise RuntimeError("Hard required tracks were not placed")
 
     if controls.end_track_id:
-        end = next((x for x in best if x.get("queue_item_id") == controls.end_track_id), None)
-        if end is not None:
-            best = [x for x in best if x.get("queue_item_id") != controls.end_track_id] + [end]
+        end_index = next(i for i, item in enumerate(result) if item.get("queue_item_id") == controls.end_track_id)
+        if end_index != len(result) - 1:
+            if end_index in fixed_positions:
+                raise RuntimeError("End track is fixed and cannot be moved to the end")
+            end = result.pop(end_index)
+            result.append({**end, "reasons": [*end.get("reasons", []), "end track"]})
 
-    return best
+    return result
