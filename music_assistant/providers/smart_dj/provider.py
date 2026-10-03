@@ -236,9 +236,20 @@ class SmartDJProvider(PluginProvider):
             })
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
-        # Rebuild only the upcoming portion, never the currently playing item.
-        for track in candidates:
-            await self.mass.player_queues.move_item_end(queue_id, track["queue_item_id"])
+        # Apply the ranked order in one queue update. Preserve the already-played/current
+        # prefix so Smart DJ never moves a committed or buffered item.
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            raise RuntimeError(f"Queue not found: {queue_id}")
+        items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
+        by_id = {item.queue_item_id: item for item in items}
+        prefix_len = (queue.current_index or 0) + 1
+        prefix = items[:prefix_len]
+        ranked_ids = [track["queue_item_id"] for track in candidates]
+        ranked = [by_id[item_id] for item_id in ranked_ids if item_id in by_id]
+        ranked_ids_set = set(ranked_ids)
+        remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_ids_set]
+        self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
         return {"queue_id": queue_id, "current_item_id": current_id, "tracks": candidates, "settings": settings}
 
     async def status(self) -> dict[str, Any]:
