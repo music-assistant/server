@@ -344,6 +344,28 @@ class SmartDJProvider(PluginProvider):
             },
         }
 
+    async def capabilities(self) -> dict[str, Any]:
+        """Describe available Smart DJ analysis and mixing capabilities."""
+        analysis_controller = getattr(self.mass.streams, "audio_analysis", None)
+        return {
+            "analysis": {
+                "music_assistant": analysis_controller is not None,
+                "musicae": bool(self._key()),
+            },
+            "mixing": {
+                "smart_fades": True,
+                "transition_planner": True,
+                "vocal_protection": True,
+                "bass_eq_management": True,
+                "tempo_planning": True,
+            },
+            "user_control": {
+                "states": ["hard", "soft", "disabled"],
+                "transition_bars": [4, 8, 16, 32],
+                "lookahead": [1, 2, 4, 8, 16, 32],
+            },
+        }
+
     async def status(self) -> dict[str, Any]:
         """Return provider readiness without revealing credentials."""
         return {
