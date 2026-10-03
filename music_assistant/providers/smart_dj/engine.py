@@ -406,7 +406,7 @@ def beam_optimize(
                 **fixed,
                 "score": None if reason.startswith("analysis") else 1.0,
                 "reasons": [reason],
-            )
+            })
             current = None if reason.startswith("analysis") else fixed_data
 
     # Excluded tracks are intentionally absent; every other non-fixed track must remain exactly once.
