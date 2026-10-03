@@ -14,7 +14,7 @@ from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
 
-from .engine import DJControls, MODES, SignalControl, beam_optimize
+from .engine import DJControls, DJMode, MODES, SignalControl, beam_optimize
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -354,10 +354,18 @@ class SmartDJProvider(PluginProvider):
                 "settings": {"controls": raw, "smart_reorder_enabled": False},
             }
 
+        selected_mode = MODES.get(mode, MODES["ai_dj"])
+        selected_mode = DJMode(
+            selected_mode.name,
+            max(0.01, min(1.0, float(bpm_tolerance))),
+            selected_mode.energy_direction,
+            selected_mode.variety,
+            selected_mode.weights,
+        )
         optimized = beam_optimize(
             tracks[1:],
             snapshot["current"],
-            MODES.get(mode, MODES["ai_dj"]),
+            selected_mode,
             controls=control,
             beam_width=max(4, min(32, control.lookahead * 3)),
         )
