@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -28,6 +30,7 @@ class SmartDJProvider(PluginProvider):
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._session: aiohttp.ClientSession | None = None
         self._handles: list[Any] = []
+        self._cache_file = Path(self.mass.storage_path) / "smart_dj" / "analysis_cache.json"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Smart DJ configuration."""
@@ -43,6 +46,7 @@ class SmartDJProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register the Smart DJ API."""
         self._session = aiohttp.ClientSession()
+        await self._load_cache()
         handlers = (
             ("smart_dj/analyze", self.analyze),
             ("smart_dj/rank_queue", self.rank_queue),
@@ -61,6 +65,29 @@ class SmartDJProvider(PluginProvider):
             await self._session.close()
             self._session = None
         await super().unload(is_removed)
+
+    async def _load_cache(self) -> None:
+        """Load the persistent analysis cache."""
+        try:
+            if self._cache_file.exists():
+                raw = await asyncio.to_thread(self._cache_file.read_text)
+                data = json.loads(raw)
+                now = asyncio.get_running_loop().time()
+                if isinstance(data, dict):
+                    self._cache = {key: (now, value) for key, value in data.items() if isinstance(value, dict)}
+        except (OSError, ValueError, TypeError) as err:
+            self.logger.warning("Could not load Smart DJ cache: %s", err)
+
+    async def _save_cache(self) -> None:
+        """Persist analysis cache atomically."""
+        try:
+            await asyncio.to_thread(self._cache_file.parent.mkdir, parents=True, exist_ok=True)
+            payload = {key: value for key, (_timestamp, value) in self._cache.items()}
+            tmp = self._cache_file.with_suffix(".tmp")
+            await asyncio.to_thread(tmp.write_text, json.dumps(payload))
+            await asyncio.to_thread(tmp.replace, self._cache_file)
+        except OSError as err:
+            self.logger.warning("Could not save Smart DJ cache: %s", err)
 
     def _key(self) -> str | None:
         value = self.config.get_value(CONF_RAPIDAPI_KEY)
@@ -112,7 +139,8 @@ class SmartDJProvider(PluginProvider):
         if provider_domain != "spotify":
             return None
         now = asyncio.get_running_loop().time()
-        cached = self._cache.get(item_id)
+        cache_key = f"{provider}:{item_id}"
+        cached = self._cache.get(cache_key)
         if cached and now - cached[0] < CACHE_TTL:
             return cached[1]
 
@@ -138,7 +166,8 @@ class SmartDJProvider(PluginProvider):
             "source": "musicae",
             "raw": result,
         }
-        self._cache[item_id] = (now, normalized)
+        self._cache[cache_key] = (now, normalized)
+        await self._save_cache()
         return normalized
 
     @staticmethod
@@ -232,10 +261,17 @@ class SmartDJProvider(PluginProvider):
         current_id = tracks[0]["queue_item_id"]
         candidates = []
         for track in tracks[1:]:
-            candidates.append({
-                **track,
-                "score": self._compatibility(current, track.get("analysis"), settings),
-            })
+            score = self._compatibility(current, track.get("analysis"), settings)
+            reasons: list[str] = []
+            analysis = track.get("analysis") or {}
+            if current and analysis:
+                if current.get("bpm") and analysis.get("bpm"):
+                    reasons.append(f"BPM {current['bpm']:.0f}→{analysis['bpm']:.0f}")
+                if current.get("camelot") and analysis.get("camelot"):
+                    reasons.append(f"key {current['camelot']}→{analysis['camelot']}")
+                if current.get("energy") is not None and analysis.get("energy") is not None:
+                    reasons.append("energy up" if analysis["energy"] >= current["energy"] else "energy down")
+            candidates.append({**track, "score": score, "reasons": reasons})
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
         # Apply the ranked order in one queue update. Preserve the already-played/current
