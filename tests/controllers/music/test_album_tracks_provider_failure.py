@@ -221,3 +221,15 @@ async def test_album_tracks_skip_an_unavailable_mapping(mass: MusicAssistant) ->
     stored = await mass.music.albums.get_library_item(db_album.item_id)
     fetch = await _album_tracks_with_failure(mass, stored, MediaNotFoundError("Album not found"))
     assert [call.args[1] for call in fetch.call_args_list] == ["local_inst"]
+
+
+async def test_a_mapping_found_again_is_available_again(mass: MusicAssistant) -> None:
+    """A mapping marked unavailable is marked available again when it is linked once more."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(mass, db_album, MediaNotFoundError("Album not found"))
+    added = await mass.music.albums.add_unclaimed_provider_mappings(
+        db_album.item_id, [_mapping("streaming_inst", "album_streaming", in_library=False)]
+    )
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert added == []
+    assert _streaming_mapping_available(stored)

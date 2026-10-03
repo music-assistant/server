@@ -2516,7 +2516,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Mark a library item's provider mapping unavailable after its provider did not find it.
 
-        The library sync marks the mapping available again once the provider lists the item.
+        It is marked available again once the provider lists the item or the mapping is found again.
         Items that are not library items are left untouched.
 
         :param media_item: The library item that holds the mapping.
