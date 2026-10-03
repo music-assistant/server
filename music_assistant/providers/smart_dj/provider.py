@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, Scope
+from music_assistant_models.enums import ConfigEntryType\nfrom music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
 
