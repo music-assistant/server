@@ -1,0 +1,37 @@
+{
+  "config_entries": {
+    "port": {
+      "label": "Port",
+      "description": "UDP port for this sync zone. Use the same port in your WLED devices' audio sync settings."
+    },
+    "latency_ms": {
+      "label": "Sync latency (ms)",
+      "description": "Milliseconds to send audio-sync packets ahead of the audio, to offset the speaker's output latency. Increase if the lights lag the music."
+    },
+    "gain_db": {
+      "label": "Gain (dB)",
+      "description": "Boosts the analysed audio before sending. Increase if effects look dim or flat, decrease if they are pinned at maximum."
+    },
+    "scaling_mode": {
+      "label": "Scaling mode",
+      "description": "Perceptual curve applied to the audio levels, matching WLED's own FFT scaling options.",
+      "options": {
+        "square_root": "Square root",
+        "linear": "Linear",
+        "logarithmic": "Logarithmic"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Add WLED sync zone",
+      "description": "Pick the UDP port for this sync zone. Set the same port on your WLED devices in the AudioReactive sync settings."
+    }
+  },
+  "manifest": {
+    "description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant."
+  },
+  "errors": {
+    "port_in_use": "This zone port is already used by another WLED instance. Choose a different port."
+  }
+}
