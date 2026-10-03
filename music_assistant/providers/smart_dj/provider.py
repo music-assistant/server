@@ -64,6 +64,7 @@ class SmartDJProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_RAPIDAPI_KEY,
                 type=ConfigEntryType.SECURE_STRING,
+                label="RapidAPI key",
                 required=False,
                 advanced=True,
             ),
@@ -209,6 +210,13 @@ class SmartDJProvider(PluginProvider):
         result = data.get("data") if isinstance(data.get("data"), dict) else data
         if not isinstance(result, dict):
             return None
+        instrumental_raw = result.get("instrumental")
+        instrumentalness_raw = result.get("instrumentalness")
+        instrumental_flag = (
+            instrumental_raw
+            if isinstance(instrumental_raw, bool)
+            else (instrumentalness_raw >= 0.5 if isinstance(instrumentalness_raw, (int, float)) else None)
+        )
         normalized = {
             "bpm": result.get("bpm"),
             "key": result.get("key") or result.get("musical_key"),
@@ -224,7 +232,7 @@ class SmartDJProvider(PluginProvider):
             "downbeats": result.get("downbeats"),
             "rms_energy": result.get("rms_energy") or result.get("waveform"),
             "spectral_centroid": result.get("spectral_centroid"),
-            "instrumental": result.get("instrumental") if isinstance(result.get("instrumental"), bool) else (result.get("instrumentalness") >= 0.5 if isinstance(result.get("instrumentalness"), (int, float)) else None),
+            "instrumental": instrumental_flag,
             "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
             "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "musicae"),
@@ -336,7 +344,14 @@ class SmartDJProvider(PluginProvider):
         )
         if not control.smart_reorder_enabled:
             if apply:
-                self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
+                # crossfade is a per-player config setting on this server version;
+                # there is no queue-level crossfade API to call
+                self.logger.debug(
+                    "Smart DJ: automix crossfade preference (%s) noted for %s; "
+                    "configure crossfade on the player itself",
+                    control.automix_enabled,
+                    queue_id,
+                )
             return {
                 "queue_id": queue_id,
                 "tracks": tracks[1:],
@@ -379,7 +394,6 @@ class SmartDJProvider(PluginProvider):
             if len(prefix) + len(ranked) + len(remainder) != len(items):
                 raise RuntimeError("Queue integrity check failed")
             self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
-            self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
         return {
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
@@ -467,6 +481,9 @@ class SmartDJProvider(PluginProvider):
             item_id = getattr(media, "item_id", None)
             metadata_obj = getattr(media, "metadata", None)
             genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
+            if not isinstance(item_id, str) or not isinstance(provider, str):
+                self.logger.debug("Smart DJ: skipping media without item/provider ids")
+                continue
             analysis = await self._analysis(
                 item_id,
                 provider,

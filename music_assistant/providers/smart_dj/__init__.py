@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
-SUPPORTED_FEATURES = set()
+SUPPORTED_FEATURES: set[str] = set()
 
 async def setup(
     mass: MusicAssistant,

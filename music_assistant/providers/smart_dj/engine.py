@@ -473,8 +473,8 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
         if end_index != len(result) - 1:
             if result[end_index].get("queue_item_id") in fixed_ids:
                 raise RuntimeError("End track is fixed and cannot be moved to the end")
-            end = result.pop(end_index)
-            result.append({**end, "reasons": [*end.get("reasons", []), "end track"]})
+            end_item = result.pop(end_index)
+            result.append({**end_item, "reasons": [*end_item.get("reasons", []), "end track"]})
 
     annotated: list[dict[str, Any]] = []
     previous = current
