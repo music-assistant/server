@@ -12,6 +12,8 @@ from music_assistant_models.enums import ConfigEntryType\nfrom music_assistant_m
 
 from music_assistant.models.plugin import PluginProvider
 
+from .engine import MODES, track_score
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant_models.config_entries import ProviderConfig
@@ -252,6 +254,7 @@ class SmartDJProvider(PluginProvider):
         bpm_tolerance: float = 0.08,
         prefer_keys: bool = True,
         preserve_variety: bool = True,
+        mode: str = "ai_dj",
     ) -> dict[str, Any]:
         """Rank upcoming queue items and apply the ordering through MA queue primitives."""
         snapshot = await self.analyze(queue_id)
@@ -269,6 +272,8 @@ class SmartDJProvider(PluginProvider):
         candidates = []
         for track in tracks[1:]:
             score = self._compatibility(current, track.get("analysis"), settings)
+            engine_score, reasons = track_score(current, track.get("analysis") or {}, MODES.get(mode, MODES["ai_dj"]))
+            score = round((score + engine_score) / 2, 4)
             reasons: list[str] = []
             analysis = track.get("analysis") or {}
             if current and analysis:
