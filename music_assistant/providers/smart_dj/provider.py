@@ -168,6 +168,10 @@ class SmartDJProvider(PluginProvider):
                     "instrumentalness": analysis.instrumentalness,
                     "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
+                    "sources": {
+                        field: "music_assistant"
+                        for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
+                    },
                     **(metadata or {}),
                 }
         except Exception as err:
@@ -205,6 +209,10 @@ class SmartDJProvider(PluginProvider):
             "instrumental": result.get("instrumental") if isinstance(result.get("instrumental"), bool) else (result.get("instrumentalness") >= 0.5 if isinstance(result.get("instrumentalness"), (int, float)) else None),
             "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
+            "sources": {
+                field: "musicae"
+                for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
+            },
             "raw": result,
             **(metadata or {}),
         }
