@@ -20,7 +20,7 @@ def test_compatibility_handles_missing_analysis() -> None:
     assert SmartDJProvider._compatibility({"bpm": 120}, None, {"bpm_tolerance": 0.08}) == 0.0
 
 
-from music_assistant.providers.smart_dj.engine import DJControls, SignalControl, score_candidate
+from music_assistant.providers.smart_dj.engine import DJControls, MODES, SignalControl, score_candidate
 
 
 def test_hard_bpm_rule_is_never_violated() -> None:
@@ -29,7 +29,7 @@ def test_hard_bpm_rule_is_never_violated() -> None:
     score, _reasons, violations = score_candidate(
         current,
         candidate,
-        __import__("music_assistant.providers.smart_dj.engine", fromlist=["MODES"]).MODES["ai_dj"],
+        MODES["ai_dj"],
         DJControls(bpm=SignalControl("hard")),
     )
     assert score == 0.0
@@ -39,7 +39,6 @@ def test_hard_bpm_rule_is_never_violated() -> None:
 def test_disabled_key_does_not_affect_score() -> None:
     current = {"bpm": 120, "camelot": "8A", "energy": 0.5}
     candidate = {"bpm": 120, "camelot": "2B", "energy": 0.5}
-    from music_assistant.providers.smart_dj.engine import MODES
     soft, _, _ = score_candidate(current, candidate, MODES["ai_dj"], DJControls())
     disabled, _, _ = score_candidate(
         current, candidate, MODES["ai_dj"], DJControls(key=SignalControl("disabled"))
