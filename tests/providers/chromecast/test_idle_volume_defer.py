@@ -9,7 +9,9 @@ when the device already reports the target, so it cannot de-duplicate the resend
 
 from __future__ import annotations
 
-from typing import cast
+import asyncio
+from collections.abc import Callable
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -152,6 +154,88 @@ async def test_reassert_yields_to_a_volume_set_during_the_nudge_gap() -> None:
     assert 0.3 not in sent
 
 
+def _hold_first_send() -> tuple[Callable[..., Any], asyncio.Event, asyncio.Event]:
+    """
+    Build a to_thread stand-in that holds the first send in flight until released.
+
+    Every later send goes through at once, so a send that is not held back by the
+    player overtakes the held one.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    sends = 0
+
+    async def to_thread(func: Callable[..., Any], *args: Any) -> Any:
+        nonlocal sends
+        sends += 1
+        if sends == 1:
+            started.set()
+            await release.wait()
+        return func(*args)
+
+    return to_thread, started, release
+
+
+async def _let_other_tasks_run() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_volume_set_waits_for_the_reassert_send_in_flight() -> None:
+    """A volume_set made while the re-assert's send is on its way must land after it."""
+    player = _make_player(app_id=MASS_APP_ID)
+    player._pending_volume = 36
+    cast("MagicMock", player.cc).status.volume_level = 0.06
+    to_thread, started, release = _hold_first_send()
+
+    with patch.object(asyncio, "to_thread", to_thread):
+        reassert = asyncio.create_task(player._reassert_pending_volume())
+        await started.wait()
+        user = asyncio.create_task(player.volume_set(50))
+        await _let_other_tasks_run()
+        release.set()
+        await asyncio.gather(reassert, user)
+
+    assert _sent_volumes(player) == [0.36, 0.5]
+
+
+async def test_volume_set_waits_for_the_nudge_send_in_flight() -> None:
+    """A volume_set made while the nudge is on its way must land after it, not under it."""
+    player = _make_player(app_id=MASS_APP_ID)
+    player._pending_volume = 36
+    cast("MagicMock", player.cc).status.volume_level = 0.36
+    to_thread, started, release = _hold_first_send()
+
+    with (
+        patch.object(asyncio, "to_thread", to_thread),
+        patch("music_assistant.providers.chromecast.player.VOLUME_REASSERT_GAP", 0),
+    ):
+        reassert = asyncio.create_task(player._reassert_pending_volume())
+        await started.wait()
+        user = asyncio.create_task(player.volume_set(50))
+        await _let_other_tasks_run()
+        release.set()
+        await asyncio.gather(reassert, user)
+
+    assert _sent_volumes(player) == [pytest.approx(0.36 - 1 / 255), 0.5]
+
+
+async def test_reassert_skips_its_send_when_overtaken_while_waiting_to_send() -> None:
+    """A volume_set made while the re-assert waits its turn makes the old target obsolete."""
+    player = _make_player(app_id=MASS_APP_ID)
+    player._pending_volume = 36
+    cast("MagicMock", player.cc).status.volume_level = 0.06
+
+    async with player._volume_lock:
+        reassert = asyncio.create_task(player._reassert_pending_volume())
+        await _let_other_tasks_run()
+        user = asyncio.create_task(player.volume_set(50))
+        await _let_other_tasks_run()
+    await asyncio.gather(reassert, user)
+
+    assert _sent_volumes(player) == [0.5]
+
+
 async def test_reassert_pending_volume_with_nothing_pending_is_a_noop() -> None:
     """With no deferred value there is nothing to re-assert."""
     player = _make_player(app_id=MASS_APP_ID)
@@ -210,13 +294,19 @@ async def _play_media(fake: MagicMock) -> None:
 
 
 async def test_play_media_reasserts_a_volume_deferred_while_idle() -> None:
-    """Playback start (media loaded, no audio yet) is where a deferred volume is applied."""
+    """
+    Playback start (media loaded, no audio yet) is where a deferred volume is applied.
+
+    It runs as a task, so a receiver slow to answer the volume sends cannot hold up playback.
+    """
     fake = _fake_play_media_player(reassert=True)
 
     await _play_media(fake)
 
     assert fake._reassert_volume is False
-    fake._reassert_pending_volume.assert_awaited_once()
+    fake.mass.create_task.assert_called_once_with(
+        fake._reassert_pending_volume, task_id=fake._reassert_task_id, abort_existing=True
+    )
 
 
 async def test_play_media_without_a_deferred_volume_does_not_reassert() -> None:
@@ -225,7 +315,20 @@ async def test_play_media_without_a_deferred_volume_does_not_reassert() -> None:
 
     await _play_media(fake)
 
-    fake._reassert_pending_volume.assert_not_called()
+    fake.mass.create_task.assert_not_called()
+
+
+async def test_unload_cancels_a_running_reassert() -> None:
+    """An unloaded player must not keep sending volumes to the device."""
+    player = _make_player(app_id=MASS_APP_ID)
+
+    with (
+        patch("music_assistant.providers.chromecast.player.Player.on_unload", AsyncMock()),
+        patch("music_assistant.providers.chromecast.player.disconnect_cast"),
+    ):
+        await player.on_unload()
+
+    cast("MagicMock", player.mass).cancel_task.assert_any_call(player._reassert_task_id)
 
 
 def _cast_status(*, volume_level: float, volume_muted: bool = False) -> MagicMock:

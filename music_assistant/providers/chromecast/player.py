@@ -104,6 +104,9 @@ class ChromecastPlayer(Player):
         self._pending_volume: int | None = None
         # bumped by every volume_set, so a re-assert can tell it was overtaken mid-nudge
         self._volume_sets = 0
+        # volume_set and the re-assert run under different player locks; this keeps their
+        # sends in order, so a newer volume can never be overwritten by an older one
+        self._volume_lock = asyncio.Lock()
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -234,8 +237,9 @@ class ChromecastPlayer(Player):
             return
         self._pending_volume = None
         self._reassert_volume = False
-        # Round to 2 decimal places to avoid floating-point precision issues
-        await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
+        async with self._volume_lock:
+            # Round to 2 decimal places to avoid floating-point precision issues
+            await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -260,7 +264,12 @@ class ChromecastPlayer(Player):
             # no audio is out yet, so applying a volume deferred while idle here lands before
             # the first sample: the device starts at the new level, with no audible jump
             self._reassert_volume = False
-            await self._reassert_pending_volume()
+            # as a task, so a receiver slow to answer the volume sends cannot hold up playback
+            self.mass.create_task(
+                self._reassert_pending_volume,
+                task_id=self._reassert_task_id,
+                abort_existing=True,
+            )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -314,6 +323,7 @@ class ChromecastPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         self.cancel_pending_app_quit()
+        self.mass.cancel_task(self._reassert_task_id)
         self.mz_controller = None
         if self.status_listener is not None:
             self.status_listener.invalidate()
@@ -538,6 +548,11 @@ class ChromecastPlayer(Player):
 
         self.app_quit_sent = False
 
+    @property
+    def _reassert_task_id(self) -> str:
+        """Task id of the volume re-assert that playback start runs for this player."""
+        return f"cast_reassert_volume_{self.player_id}"
+
     async def _reassert_pending_volume(self) -> None:
         """
         Apply a volume deferred while idle, at playback start.
@@ -553,20 +568,33 @@ class ChromecastPlayer(Player):
         self._pending_volume = None
         if target is None:
             return
+        volume_sets = self._volume_sets
         level = round(target / 100, 2)
         reported = self.cc.status.volume_level if self.cc.status else None
         try:
             if reported is not None and abs(reported - level) < 1 / 255:
                 # nudge up at 0, where a step down would clamp back onto the target
                 nudge = level + 1 / 255 if level < 1 / 255 else level - 1 / 255
-                volume_sets = self._volume_sets
-                await asyncio.to_thread(self.cc.set_volume, nudge)
+                if not await self._send_volume_unless_overtaken(nudge, volume_sets):
+                    return
                 await asyncio.sleep(VOLUME_REASSERT_GAP)
-                if self._volume_sets != volume_sets:
-                    return  # a newer volume_set landed during the gap and must win
-            await asyncio.to_thread(self.cc.set_volume, level)
+            await self._send_volume_unless_overtaken(level, volume_sets)
         except PyChromecastError as err:
             self.logger.warning("Could not re-assert volume on %s: %s", self.display_name, err)
+
+    async def _send_volume_unless_overtaken(self, level: float, volume_sets: int) -> bool:
+        """
+        Send a re-asserted volume, unless a newer volume_set came in since it was taken.
+
+        :param level: The volume to send, on the device's 0..1 scale.
+        :param volume_sets: The volume_set count when the re-asserted volume was taken.
+        :return: Whether the volume was sent.
+        """
+        async with self._volume_lock:
+            if self._volume_sets != volume_sets:
+                return False  # the newer volume must win
+            await asyncio.to_thread(self.cc.set_volume, level)
+            return True
 
     def _log_launch_failure(self, app_id: str, reason: str) -> None:
         """
