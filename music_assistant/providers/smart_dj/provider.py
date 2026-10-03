@@ -227,46 +227,6 @@ class SmartDJProvider(PluginProvider):
         await self._save_cache()
         return normalized
 
-    @staticmethod
-    def _compatibility(current: dict[str, Any] | None, candidate: dict[str, Any] | None, settings: dict[str, Any]) -> float:
-        """Score a candidate from 0..1 using mix-safe musical dimensions."""
-        if not candidate:
-            return 0.0
-        if not current:
-            return 0.5
-        score = 0.0
-        weight = 0.0
-
-        bpm_a, bpm_b = current.get("bpm"), candidate.get("bpm")
-        if isinstance(bpm_a, (int, float)) and isinstance(bpm_b, (int, float)) and bpm_a:
-            tolerance = max(0.02, float(settings.get("bpm_tolerance", 0.08)))
-            delta = abs(float(bpm_b) - float(bpm_a)) / float(bpm_a)
-            score += max(0.0, 1.0 - delta / tolerance) * 0.30
-            weight += 0.30
-
-        key_a, key_b = current.get("camelot"), candidate.get("camelot")
-        if key_a and key_b:
-            if key_a == key_b:
-                key_score = 1.0
-            else:
-                try:
-                    na, nb = int(str(key_a)[:-1]), int(str(key_b)[:-1])
-                    ma, mb = str(key_a)[-1], str(key_b)[-1]
-                    key_score = 0.75 if ma == mb and ((na - nb) % 12 in (1, 11)) else 0.65 if na == nb else 0.0
-                except (ValueError, TypeError):
-                    key_score = 0.0
-            score += key_score * 0.25
-            weight += 0.25
-
-        for field, field_weight in (("energy", 0.20), ("danceability", 0.10), ("valence", 0.05), ("arousal", 0.10)):
-            a, b = current.get(field), candidate.get(field)
-            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                target_delta = 0.22 if field in ("energy", "arousal") else 0.35
-                score += max(0.0, 1.0 - abs(float(b) - float(a)) / target_delta) * field_weight
-                weight += field_weight
-
-        return round(score / weight, 4) if weight else 0.5
-
     async def _queue_snapshot(self, queue_id: str) -> list[dict[str, Any]]:
         """Return a compact queue snapshot."""
         items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
