@@ -835,15 +835,21 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         recommended_item["id"] = recommended_item["playlistId"]
                         del recommended_item["playlistId"]
                         folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist, but it's in that same weird album-like format
+                        # that you see for the get_similar_artists payload
+                        fake_artist = {
+                            "channelId": recommended_item["browseId"],
+                            "name": recommended_item["title"],
+                            "thumbnails": recommended_item["thumbnails"],
+                        }
+                        folder.items.append(self._parse_artist(fake_artist))
                     elif recommended_item.get("browseId"):
                         if podcast := self._parse_browse_podcast(recommended_item):
                             folder.items.append(podcast)
                         else:
                             # Probably an album
                             folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("subscribers"):
-                        # Probably artist
-                        folder.items.append(self._parse_album(recommended_item))
                     elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
                         # Podcast episodes show up here without a videoId/browseId,
                         # so there is no playable item to build from them
