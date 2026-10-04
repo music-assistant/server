@@ -2764,6 +2764,7 @@ class TestSessionBoundNativeGrouping:
         mock_mass: MagicMock,
         parent_class: type[MockPlayer],
         with_orphan: bool = False,
+        with_airplay: bool = False,
     ) -> tuple[PlayerController, dict[str, MockPlayer]]:
         """
         Build a leader with a natively groupable member and a bridge-only member.
@@ -2775,6 +2776,7 @@ class TestSessionBoundNativeGrouping:
         :param mock_mass: The mocked MusicAssistant instance.
         :param parent_class: The player class to build the leader from.
         :param with_orphan: Add a second natively groupable member without a bridge protocol.
+        :param with_airplay: Also link an AirPlay protocol player to the leader and its member.
         """
         controller = PlayerController(mock_mass)
         speaker_provider = MockProvider("speaker", instance_id="speaker_instance", mass=mock_mass)
@@ -2829,6 +2831,29 @@ class TestSessionBoundNativeGrouping:
             orphan._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
             orphan._cache.clear()
             players["speaker_orphan"] = orphan
+        if with_airplay:
+            airplay_provider = MockProvider(
+                "airplay", instance_id="airplay_instance", mass=mock_mass
+            )
+            for parent, airplay_id, airplay_name in (
+                (leader, "airplay_leader", "Living Room (AirPlay)"),
+                (member, "airplay_member", "Kitchen (AirPlay)"),
+            ):
+                airplay = MockPlayer(
+                    airplay_provider, airplay_id, airplay_name, player_type=PlayerType.PROTOCOL
+                )
+                airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+                airplay._cache.clear()
+                airplay.set_protocol_parent_id(parent.player_id)
+                parent.set_linked_output_protocols(
+                    [
+                        *parent.linked_output_protocols,
+                        LinkedOutputProtocol(
+                            output_protocol_id=airplay_id, protocol_domain="airplay", priority=10
+                        ),
+                    ]
+                )
+                players[airplay_id] = airplay
 
         mock_mass.players = controller
         controller._players = dict(players)
@@ -2912,7 +2937,7 @@ class TestRegroupOffUnneededProtocol:
     """
 
     async def _build_left_on_bridge(
-        self, mock_mass: MagicMock
+        self, mock_mass: MagicMock, with_airplay: bool = False
     ) -> tuple[PlayerController, dict[str, MockPlayer]]:
         """
         Build two session-bound speakers left grouped on the bridge after the bridge-only member left.
@@ -2921,7 +2946,7 @@ class TestRegroupOffUnneededProtocol:
         again, exactly as the grouping commands do it.
         """
         controller, players = TestSessionBoundNativeGrouping()._build_topology(
-            mock_mass, SessionBoundMockPlayer
+            mock_mass, SessionBoundMockPlayer, with_airplay=with_airplay
         )
         leader = players["speaker_leader"]
         for player in players.values():
@@ -3014,6 +3039,33 @@ class TestRegroupOffUnneededProtocol:
 
         assert players["bridge_leader"].group_members == ["bridge_leader", "bridge_member"]
         players["bridge_leader"].play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+
+    async def test_group_that_prefers_another_protocol_regroups_onto_it(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        Speakers that all prefer another protocol are regrouped onto that protocol.
+
+        The leader plays through its preferred protocol, so its members can follow it there.
+        """
+        controller, players = await self._build_left_on_bridge(mock_mass, with_airplay=True)
+        preferred = {"speaker_leader": "airplay_leader", "speaker_member": "airplay_member"}
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda player_id, key, default=None: (
+                preferred.get(player_id, default)
+                if key == CONF_PREFERRED_OUTPUT_PROTOCOL
+                else default
+            )
+        )
+        media = PlayerMedia(uri="http://test/stream")
+
+        await controller._handle_play_media("speaker_leader", media)
+
+        assert players["bridge_leader"].group_members == ["bridge_leader"]
+        assert players["airplay_leader"].group_members == ["airplay_leader", "airplay_member"]
+        assert players["speaker_leader"].active_output_protocol == "airplay_leader"
+        players["airplay_leader"].play_media.assert_awaited_once_with(media)  # type: ignore[attr-defined]
+        players["bridge_leader"].play_media.assert_not_awaited()  # type: ignore[attr-defined]
 
     @pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
     async def test_running_playback_is_not_interrupted(

@@ -2131,12 +2131,6 @@ class ProtocolLinkingMixin:
             or len(protocol_player.group_members) < 2
         ):
             return
-        # a player plays through its preferred protocol, which its members then have to share
-        preferred = self.mass.config.get_raw_player_config_value(
-            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-        )
-        if preferred and preferred not in ("auto", "native"):
-            return
         protocol_member_ids = [
             member_id
             for member_id in protocol_player.group_members
@@ -2156,6 +2150,17 @@ class ProtocolLinkingMixin:
         )
         placed_members = len(protocol_members) + len(native_members)
         if protocol_domain == protocol_player.provider.domain or placed_members != len(member_ids):
+            return
+        # the player plays through its preferred protocol, so the group may only move onto that one
+        preferred = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+        )
+        if (
+            preferred
+            and preferred not in ("auto", "native")
+            and (preferred_protocol := player.get_linked_protocol(str(preferred)))
+            and preferred_protocol.protocol_domain != protocol_domain
+        ):
             return
         self.logger.info(
             "Regrouping %s off the %s protocol, which none of its members need anymore",
