@@ -42,7 +42,7 @@ def create_ws_client(
 def get_written_message(client: WebsocketClientHandler) -> str:
     """Pop the next message queued for the client's writer."""
     message = client._to_write.get_nowait()
-    assert message is not None
+    assert isinstance(message, str)
     return message
 
 

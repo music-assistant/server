@@ -60,6 +60,7 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    _IMAGE_API_MAX_CONCURRENT,
     ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
@@ -146,6 +147,7 @@ class MetaDataController(
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._image_id_persisted: dict[str, float] = {}
         self._image_id_lock = threading.Lock()
+        self._image_api_semaphore = asyncio.Semaphore(_IMAGE_API_MAX_CONCURRENT)
         # corrupt metadata rows found by the last scan pass, per table, for diagnostics
         self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
         # what the last MusicBrainz link run did, for diagnostics

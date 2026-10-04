@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 
 import aiofiles
 import aiofiles.os
+from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
@@ -75,6 +76,8 @@ _SOURCE_MEMORY_MAX_BYTES = 32 * 1024 * 1024
 _SOURCE_MEMORY_ENTRY_MAX_BYTES = 8 * 1024 * 1024
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
+_REMOTE_IMAGE_TIMEOUT = 30
+_PROVIDER_IMAGE_TIMEOUT = 30
 
 # Leading magic bytes used to sniff raster image formats from their content.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -400,7 +403,7 @@ async def _fetch_and_cache_source_image(
 
     try:
         img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
-    except (FileNotFoundError, MediaNotFoundError) as err:
+    except (FileNotFoundError, MediaNotFoundError, TimeoutError) as err:
         # remember the failure briefly and log it once, concisely: every
         # thumbnail/palette/metadata request for this source would otherwise
         # retry the origin and log the same error over and over
@@ -442,7 +445,11 @@ async def _fetch_source_image(
     :param depth: Recursion depth of the originating get_image_data call.
     """
     if prov := mass.get_provider(provider):
-        resolved_image = await prov.resolve_image(path_or_url)
+        try:
+            async with asyncio.timeout(_PROVIDER_IMAGE_TIMEOUT):
+                resolved_image = await prov.resolve_image(path_or_url)
+        except TimeoutError as err:
+            raise TimeoutError(f"Timed out resolving image from {provider}: {path_or_url}") from err
         if resolved_image is None:
             # the provider looked and has nothing at this path: a miss, not a failed fetch
             msg = f"{provider} has no image at {path_or_url}"
@@ -481,6 +488,8 @@ async def _fetch_source_image(
             )
         try:
             return await _fetch_remote_image(mass, path_or_url), True
+        except TimeoutError as err:
+            raise TimeoutError(f"Timed out fetching image from {path_or_url}") from err
         except ClientError as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
@@ -514,7 +523,10 @@ async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
     # such CDNs allowlist, so artwork is served on the first (and only) request.
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
     async with mass.http_session_no_ssl.get(
-        url, raise_for_status=True, headers={"User-Agent": user_agent}
+        url,
+        raise_for_status=True,
+        headers={"User-Agent": user_agent},
+        timeout=ClientTimeout(total=_REMOTE_IMAGE_TIMEOUT),
     ) as resp:
         return await resp.read()
 

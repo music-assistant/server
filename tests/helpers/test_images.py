@@ -55,6 +55,45 @@ def _reset_image_caches() -> Iterator[None]:
     images._failed_sources.clear()
 
 
+async def test_remote_image_body_deadline(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The origin deadline includes a response body that never finishes."""
+    release = asyncio.Event()
+
+    async def stalled_body(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await release.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/image", stalled_body)
+    monkeypatch.setattr(images, "_REMOTE_IMAGE_TIMEOUT", 0.02)
+    async with TestServer(app) as server, ClientSession() as session:
+        mass_minimal._http_session_no_ssl = session
+        try:
+            with pytest.raises(TimeoutError):
+                await images._fetch_remote_image(mass_minimal, str(server.make_url("/image")))
+        finally:
+            release.set()
+
+
+async def test_origin_timeout_is_negatively_cached(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled origin is not fetched again during the failure-cache interval."""
+    fetch = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(images, "_resolve_own_imageproxy_url", AsyncMock(return_value=None))
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch)
+    monkeypatch.setattr(mass_minimal, "get_provider", MagicMock(return_value=None))
+    with pytest.raises(TimeoutError, match="Timed out fetching"):
+        await get_image_data(mass_minimal, "https://example.com/stalled.png", "builtin")
+    with pytest.raises(FileNotFoundError, match="Timed out fetching"):
+        await get_image_data(mass_minimal, "https://example.com/stalled.png", "builtin")
+    fetch.assert_awaited_once()
+
+
 @pytest.fixture
 def fetch_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """Spy on origin fetches; returns the list of (provider, path) fetch calls."""

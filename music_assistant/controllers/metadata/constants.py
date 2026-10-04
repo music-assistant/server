@@ -140,3 +140,8 @@ _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
 _ALLOWED_IMAGEPROXY_SIZES_STR = ", ".join(str(size) for size in sorted(_ALLOWED_IMAGEPROXY_SIZES))
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
+
+_IMAGE_API_MAX_CONCURRENT = 6
+_IMAGE_API_TIMEOUT = 30
+# Base64 plus the result envelope stays below a 4 MiB WebSocket message limit.
+_IMAGE_API_MAX_BYTES = 2 * 1024 * 1024

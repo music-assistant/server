@@ -8,7 +8,7 @@ import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidToken,
     MusicAssistantError,
+    ResourceBusyError,
 )
 from music_assistant_models.event import MassEvent
 from music_assistant_models.favorite_update import FavoriteUpdate
@@ -58,6 +59,16 @@ if TYPE_CHECKING:
 
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+MAX_PENDING_IMAGES = 2
+IMAGE_SEND_TIMEOUT = 30
+
+
+@dataclass
+class _ImageResponse:
+    """Serialized image response and its writer acknowledgement."""
+
+    message: str
+    sent: asyncio.Future[None]
 
 
 class WebsocketClientHandler:
@@ -70,7 +81,11 @@ class WebsocketClientHandler:
         self.request = request
         self.client_id = uuid4().hex
         self.wsock = web.WebSocketResponse(heartbeat=25)
-        self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
+        self._to_write: asyncio.Queue[str | _ImageResponse | None] = asyncio.Queue(
+            maxsize=MAX_PENDING_MSG
+        )
+        self._image_tasks: set[asyncio.Task[Any]] = set()
+        self._closing = False
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
@@ -135,6 +150,7 @@ class WebsocketClientHandler:
 
     def cancel(self) -> None:
         """Cancel the connection, without waiting for its writer to finish."""
+        self._cancel_image_tasks()
         if self._handle_task is not None:
             self._handle_task.cancel()
         if self._writer_task is not None:
@@ -206,6 +222,9 @@ class WebsocketClientHandler:
 
         finally:
             # Handle connection shutting down.
+            self._cancel_image_tasks()
+            if self._image_tasks:
+                await asyncio.gather(*self._image_tasks, return_exceptions=True)
             if self._events_unsub_callback:
                 self._events_unsub_callback()
                 self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
@@ -218,13 +237,15 @@ class WebsocketClientHandler:
 
             try:
                 self._to_write.put_nowait(None)
-                # Make sure all error messages are written before closing
-                await self._writer_task
-                await wsock.close()
-            except asyncio.QueueFull:  # can be raised by put_nowait
+                # Image cancellation removes response deadlines, so bound this final flush too.
+                async with asyncio.timeout(IMAGE_SEND_TIMEOUT):
+                    await asyncio.shield(self._writer_task)
+            except asyncio.QueueFull, TimeoutError:
                 self._writer_task.cancel()
-
+                with suppress(*CANCELLATION_ERRORS):
+                    await self._writer_task
             finally:
+                await wsock.close()
                 if disconnect_warn is None:
                     self._logger.log(VERBOSE_LOG_LEVEL, "Disconnected")
                 else:
@@ -300,8 +321,34 @@ class WebsocketClientHandler:
                 )
                 return
 
+        if msg.command == "metadata/get_image":
+            if self._closing:
+                return
+            if len(self._image_tasks) >= MAX_PENDING_IMAGES:
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        ResourceBusyError.error_code,
+                        "Too many pending image requests. Retry after a response is received.",
+                        translation_key=ResourceBusyError.translation_key,
+                    )
+                )
+                return
+            # Reserve before yielding: admission includes fetching, serialization, queueing,
+            # and the actual socket write, not just the metadata handler's semaphore.
+            task = self.mass.create_task(self._run_handler(handler, msg))
+            self._image_tasks.add(task)
+            task.add_done_callback(self._image_tasks.discard)
+            return
+
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))
+
+    def _cancel_image_tasks(self) -> None:
+        """Stop admitting images and cancel this connection's image commands."""
+        self._closing = True
+        for task in self._image_tasks:
+            task.cancel()
 
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         """Run command handler and send response."""
@@ -356,17 +403,32 @@ class WebsocketClientHandler:
     async def _writer(self) -> None:
         """Write outgoing messages."""
         # Exceptions if Socket disconnected or cancelled by connection handler
-        with suppress(RuntimeError, ConnectionResetError, *CANCELLATION_ERRORS):
-            while not self.wsock.closed:
-                if (process := await self._to_write.get()) is None:
-                    break
+        try:
+            with suppress(RuntimeError, ConnectionResetError, *CANCELLATION_ERRORS):
+                while not self.wsock.closed:
+                    if (process := await self._to_write.get()) is None:
+                        break
 
-                if callable(process):
-                    message: str = process()
-                else:
-                    message = process
-                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
-                await self.wsock.send_str(message)
+                    if isinstance(process, _ImageResponse):
+                        if process.sent.cancelled():
+                            continue
+                        message = process.message
+                    elif callable(process):
+                        message = process()
+                    else:
+                        message = process
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
+                    await self.wsock.send_str(message)
+                    if isinstance(process, _ImageResponse) and not process.sent.done():
+                        process.sent.set_result(None)
+        finally:
+            self._cancel_image_tasks()
+            # Discard queued payloads on writer failure rather than retaining image bytes
+            # until the connection object is eventually collected.
+            while not self._to_write.empty():
+                pending = self._to_write.get_nowait()
+                if isinstance(pending, _ImageResponse) and not pending.sent.done():
+                    pending.sent.cancel()
 
     async def _send_message(self, message: MessageType) -> None:
         """
@@ -393,12 +455,23 @@ class WebsocketClientHandler:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
             TRANSLATION_RESOLVER.reset(token_loc)
 
+        image_response = asyncio.current_task() in self._image_tasks
+        sent = loop.create_future() if image_response else None
         try:
-            self._to_write.put_nowait(_message)
+            self._to_write.put_nowait(_ImageResponse(_message, sent) if sent else _message)
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
-
             self.cancel()
+            return
+
+        if sent is not None:
+            try:
+                async with asyncio.timeout(IMAGE_SEND_TIMEOUT):
+                    await sent
+            except TimeoutError:
+                self._logger.warning("Timeout writing image response; disconnecting client")
+                self.cancel()
+                raise asyncio.CancelledError from None
 
     def _send_message_sync(self, message: MessageType) -> None:
         """

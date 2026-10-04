@@ -8,15 +8,21 @@ media images to (proxied) URLs, renders and caches thumbnails, serves the
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from base64 import b64encode
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -37,10 +43,13 @@ from music_assistant.helpers.images import (
     get_image_thumb,
     invalidate_cached_image,
 )
+from music_assistant.helpers.util import join_task
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
     _ALLOWED_IMAGEPROXY_SIZES_STR,
+    _IMAGE_API_MAX_BYTES,
+    _IMAGE_API_TIMEOUT,
     _IMAGE_ID_CACHE_TTL,
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
@@ -60,6 +69,31 @@ if TYPE_CHECKING:
     from music_assistant.controllers.cache import CacheController
 
 
+class ImageResult(TypedDict):
+    """Image bytes and response metadata for API transports."""
+
+    data: str
+    content_type: str
+    cache_control: str
+
+
+def _image_response_headers(content_format: str) -> dict[str, str]:
+    """Return HTTP image response headers."""
+    headers = {
+        "Content-Type": _IMAGEPROXY_CONTENT_TYPES[content_format],
+        "Cache-Control": "max-age=31536000",
+        "Access-Control-Allow-Origin": "*",
+    }
+    if content_format == "svg":
+        # SVGs from attacker-influenceable sources can contain scripts when opened
+        # as documents rather than rendered as images.
+        headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        )
+        headers["X-Content-Type-Options"] = "nosniff"
+    return headers
+
+
 class ImageProxyMixin:
     """
     Image/imageproxy functionality for the MetaDataController.
@@ -77,6 +111,7 @@ class ImageProxyMixin:
         _image_id_lru: OrderedDict[str, tuple[str, str]]
         _image_id_persisted: dict[str, float]
         _image_id_lock: threading.Lock
+        _image_api_semaphore: asyncio.Semaphore
 
     def compute_image_id(self, provider: str, path: str) -> str:
         """
@@ -252,6 +287,54 @@ class ImageProxyMixin:
             return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
 
+    @api_command("metadata/get_image", required_scope=Scope.LIBRARY_READ)
+    async def get_image(
+        self, image_id: str, size: int = 512, image_format: str | None = None
+    ) -> ImageResult:
+        """
+        Get a base64-encoded image through the API without a separate HTTP request.
+
+        Returns ``data`` (base64 bytes, not a data URI), ``content_type`` and
+        ``cache_control``. Images larger than 2 MiB are rejected; request a smaller
+        thumbnail in that case. Requests time out after 30 seconds, including queueing.
+        Work already started may finish after the request times out; it continues
+        to occupy a fetch slot. SVG bytes are unsanitized and must only be rendered
+        as images, never inserted as markup or opened as documents. This API does
+        not provide the browser security headers of the HTTP image endpoint.
+
+        :param image_id: The ``proxy_id`` from a MediaItemImage.
+        :param size: Thumbnail size: 0 (original), 80, 160, 256, 512 or 1024.
+        :param image_format: Optional best-effort jpg/jpeg/png/svg output format;
+            defaults to source format. The returned ``content_type`` is authoritative.
+        """
+        image_id = image_id.lower()
+        if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
+            raise InvalidDataError("Invalid image id")
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            raise InvalidDataError(
+                f"Unsupported size: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR}"
+            )
+        normalized_format = _normalize_imageproxy_format(image_format)
+        if image_format is not None and normalized_format is None:
+            raise InvalidDataError("Unsupported image format: use jpg/jpeg/png/svg")
+        try:
+            async with asyncio.timeout(_IMAGE_API_TIMEOUT):
+                await self._image_api_semaphore.acquire()
+                # Hand the slot to the worker before the next await: a cancelled caller
+                # must not free it while image work still runs, and callers that time
+                # out while queued never start a worker.
+                try:
+                    task = self.mass.create_task(
+                        self._get_image_result(image_id, size, normalized_format),
+                        log_exceptions=False,
+                    )
+                except BaseException:
+                    self._image_api_semaphore.release()
+                    raise
+                return await join_task(task)
+        except TimeoutError as err:
+            raise ResourceTemporarilyUnavailable("Image request timed out") from err
+
     @api_command("metadata/get_image_palette", required_scope=Scope.LIBRARY_READ)
     async def get_image_palette(self, image_id: str) -> MediaItemPalette | None:
         """
@@ -353,6 +436,34 @@ class ImageProxyMixin:
         ) or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
+    async def _get_image_result(
+        self, image_id: str, size: int, normalized_format: str | None
+    ) -> ImageResult:
+        """Resolve an API image and release its work slot on completion."""
+        try:
+            resolved = await self.resolve_image_id(image_id)
+            if resolved is None:
+                raise MediaNotFoundError("Image not found")
+            provider, path = resolved
+            output_format = normalized_format or _detect_image_format(path)
+            try:
+                image_data, content_format = await self._resolve_thumbnail(
+                    path, provider, size, output_format, output_format == "jpeg"
+                )
+            except TimeoutError as err:
+                raise ResourceTemporarilyUnavailable("Image request timed out") from err
+            except (MediaNotFoundError, ProviderUnavailableError, OSError) as err:
+                raise MediaNotFoundError("Image not found or unreadable") from err
+            if len(image_data) > _IMAGE_API_MAX_BYTES:
+                raise InvalidDataError("Image exceeds 2 MiB; request a smaller thumbnail")
+            return {
+                "data": b64encode(image_data).decode("ascii"),
+                "content_type": _IMAGEPROXY_CONTENT_TYPES[content_format],
+                "cache_control": "max-age=31536000",
+            }
+        finally:
+            self._image_api_semaphore.release()
+
     async def _resolve_thumbnail(
         self,
         path: str,
@@ -375,7 +486,11 @@ class ImageProxyMixin:
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
         if image_format == "svg":
-            return await get_image_data(self.mass, path, provider), "svg"
+            image_data = await get_image_data(self.mass, path, provider)
+            content_format = detect_image_content_format(image_data)
+            if content_format is None:
+                raise MediaNotFoundError("Image format not recognized")
+            return image_data, content_format
         thumbnail_bytes = await get_image_thumb(
             self.mass,
             path,
@@ -411,21 +526,9 @@ class ImageProxyMixin:
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
-        response_headers = {
-            "Cache-Control": "max-age=31536000",
-            "Access-Control-Allow-Origin": "*",
-        }
-        if content_format == "svg":
-            # Sniffed SVGs from attacker-influenceable sources (radio favicons) are
-            # served same-origin; without a CSP an embedded <script> would run.
-            response_headers["Content-Security-Policy"] = (
-                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
-            )
-            response_headers["X-Content-Type-Options"] = "nosniff"
         return web.Response(
             body=image_data,
-            headers=response_headers,
-            content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
+            headers=_image_response_headers(content_format),
         )
 
     async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:
