@@ -1564,6 +1564,20 @@ async def test_resolve_release_by_name_abstains_on_several_release_groups() -> N
     assert _requested(get_data) == ["release?query"]
 
 
+async def test_resolve_release_by_name_abstains_on_an_incomplete_search() -> None:
+    """A truncated search or one with an unparsable hit may hide another album."""
+    for result in (
+        {"count": 101, "releases": [_edition("rel-1")]},
+        {"count": 2, "releases": [_edition("rel-1"), {"title": "In Rainbows"}]},
+    ):
+        provider, get_data = _routed_provider(
+            {"release?query": result, "release/rel-1": _release_lookup("rel-1")}
+        )
+
+        assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+        assert _requested(get_data) == ["release?query"]
+
+
 async def test_resolve_release_by_name_looks_up_two_editions_at_most() -> None:
     """A name search spends one search and at most two release lookups."""
     candidates = {"count": 3, "releases": [_edition(f"rel-{index}") for index in range(3)]}

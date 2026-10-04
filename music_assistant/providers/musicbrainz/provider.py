@@ -1020,18 +1020,26 @@ class MusicbrainzProvider(MetadataProvider):
         search_album = re.sub(LUCENE_SPECIAL, r"\\\1", album.name)
         search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
         result = await self._api_client.get_data(
-            "release", query=f'release:"{search_album}" AND artist:"{search_artist}"'
+            "release",
+            query=f'release:"{search_album}" AND artist:"{search_artist}"',
+            limit="100",
         )
+        releases = (result or {}).get("releases") or []
+        # the hits are only known to be unambiguous when every one of them is seen
+        if result and result.get("count", len(releases)) > len(releases):
+            return None
         candidates: list[MusicBrainzBarcodeRelease] = []
-        for raw_release in (result or {}).get("releases") or []:
-            with suppress(MissingField, InvalidFieldValue):
+        for raw_release in releases:
+            try:
                 candidate = MusicBrainzBarcodeRelease.from_raw(raw_release)
-                if (
-                    compare_album_name(candidate.title or "", album.name)
-                    and _track_count(candidate) == track_count
-                    and _credits_primary_artist(candidate.artist_credit, artist_name)
-                ):
-                    candidates.append(candidate)
+            except MissingField, InvalidFieldValue:
+                return None
+            if (
+                compare_album_name(candidate.title or "", album.name)
+                and _track_count(candidate) == track_count
+                and _credits_primary_artist(candidate.artist_credit, artist_name)
+            ):
+                candidates.append(candidate)
         # editions of one album share its release group; hits in several groups are
         # different albums by the same name, which a name alone cannot tell apart
         if len({candidate.release_group.id for candidate in candidates}) != 1:
