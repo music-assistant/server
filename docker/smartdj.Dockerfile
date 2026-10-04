@@ -44,5 +44,43 @@ RUN . /app/venv/bin/activate \
   && uv pip install --python /app/venv/bin/python --no-cache /build \
   && uv pip install --python /app/venv/bin/python --no-cache /wheels/*.whl \
   && rm -rf /build /wheels /root/.cache
-EXPOSE 8095 8097
+EXPOSE 18095 18097
+
+# Admin-reset hook: wrap the base entrypoint. If the add-on option reset_admin
+# is true, archive the auth database once (rising-edge, marker-file guarded) so
+# the /setup onboarding page comes back on next start. Library, players,
+# settings and provider tokens live in other files and are NOT touched.
+# Flip the option off (or on->off->on for a later reset) to re-arm.
+RUN mv /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-orig.sh
+COPY <<'EOF' /usr/local/bin/entrypoint.sh
+#!/bin/sh
+/app/venv/bin/python - <<'PY'
+import json, os, shutil, time
+data_dir = "/data"
+opts_path = os.path.join(data_dir, "options.json")
+opts = {}
+if os.path.exists(opts_path):
+    try:
+        with open(opts_path) as f:
+            opts = json.load(f)
+    except Exception:
+        opts = {}
+marker = os.path.join(data_dir, ".auth_reset_done")
+if not opts.get("reset_admin"):
+    if os.path.exists(marker):
+        os.remove(marker)
+        print("[smartdj] reset_admin off: re-armed for next time", flush=True)
+elif not os.path.exists(marker):
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    for name in ("auth.db", "auth.db-wal", "auth.db-shm"):
+        fp = os.path.join(data_dir, name)
+        if os.path.exists(fp):
+            shutil.move(fp, fp + ".bak-" + ts)
+    with open(marker, "w") as f:
+        f.write(ts)
+    print("[smartdj] reset_admin: auth database archived, onboarding will be offered", flush=True)
+PY
+exec /usr/local/bin/entrypoint-orig.sh "$@"
+EOF
+RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

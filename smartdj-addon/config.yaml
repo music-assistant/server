@@ -1,5 +1,5 @@
 name: Music Assistant Smart DJ
-version: "0.0.2"
+version: "0.0.3"
 slug: music_assistant_smartdj
 description: Music Assistant built from the mattamays-ai Smart DJ fork. Prebuilt image, fast starts.
 url: https://github.com/mattamays-ai/server
@@ -15,7 +15,7 @@ discovery:
 auth_api: true
 host_network: true
 ingress: true
-ingress_port: 8094
+ingress_port: 18094
 audio: true
 map:
   - media:rw
@@ -29,6 +29,8 @@ backup_exclude:
 options:
   log_level: info
   safe_mode: false
+  reset_admin: false
 schema:
   log_level: list(debug|info|warning|error)
   safe_mode: bool
+  reset_admin: bool
