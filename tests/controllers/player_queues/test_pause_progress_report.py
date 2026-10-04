@@ -1,4 +1,4 @@
-"""Tests that pausing reports the position the player last played, not a reset one."""
+"""Tests that a pause keeps the position the player last played, not a reset one."""
 
 from __future__ import annotations
 
@@ -98,8 +98,8 @@ def _reported_positions(ctrl: PlayerQueuesController) -> list[int]:
 
 
 @pytest.mark.parametrize("rewind_to", [None, 19000])
-async def test_pause_reports_the_last_played_position(rewind_to: int | None) -> None:
-    """A player resetting its position on pause must not move the progress back."""
+async def test_pause_keeps_the_last_played_position(rewind_to: int | None) -> None:
+    """A player resetting its position on pause moves neither the progress nor the resume back."""
     ctrl = _controller(_book())
     await ctrl.play_index(QUEUE_ID, 0, seek_position=RESUMED_AT)
     for stream_elapsed in (0, 91, 121):
@@ -111,7 +111,10 @@ async def test_pause_reports_the_last_played_position(rewind_to: int | None) -> 
             _player_reports(ctrl, PlaybackState.PLAYING, stream_elapsed)
         played_until = rewind_to + 30
 
-    # like Sonos, which stops on pause and reports the start of the stream afterwards
+    # paused outside MA, like Sonos, which stops and reports the start of the stream afterwards
     _player_reports(ctrl, PlaybackState.PAUSED, 0)
+    await ctrl.resume(QUEUE_ID)
 
     assert _reported_positions(ctrl)[-1] == played_until
+    load_item = cast("AsyncMock", ctrl._load_item)
+    assert load_item.call_args.kwargs["seek_position"] == played_until

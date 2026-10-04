@@ -944,7 +944,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             resume_pos = queue.corrected_elapsed_time
             fade_in = False
         else:
-            resume_pos = queue.resume_pos or queue.elapsed_time
+            resume_pos = queue.resume_pos or self._last_played_position(queue)
 
         if queue.ended and len(queue_items) > 0:
             # the queue played to its end and is parked on its last item,
@@ -1200,7 +1200,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             source_resume_pos = int(source_queue.corrected_elapsed_time)
         else:
             # when not playing the live clock is stale, so use the stored resume position
-            source_resume_pos = int(source_queue.resume_pos or source_queue.elapsed_time or 0)
+            source_resume_pos = int(
+                source_queue.resume_pos or self._last_played_position(source_queue)
+            )
         source_current_index = source_queue.current_index
         source_current_item = source_queue.current_item
 
@@ -1968,6 +1970,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
+
+    def _last_played_position(self, queue: PlayerQueue) -> float:
+        """Return where the current item last played, kept when the player resets it."""
+        prev_state = self._queue_data[queue.queue_id].prev_state
+        if (
+            prev_state
+            and queue.current_item
+            and prev_state["current_item_id"] == queue.current_item.queue_item_id
+            and prev_state["last_playing_elapsed_time"]
+        ):
+            return prev_state["last_playing_elapsed_time"]
+        return queue.elapsed_time or 0
 
     def _clamp_skip_target(self, target: float, duration: int) -> float:
         """
