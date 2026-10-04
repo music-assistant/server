@@ -1,5 +1,6 @@
 """Focused Smart DJ engine tests."""
 
+from typing import Any
 
 from music_assistant.providers.smart_dj.engine import (
     MODES,
@@ -38,10 +39,18 @@ def test_disabled_key_does_not_affect_score() -> None:
 
 def test_missing_analysis_is_preserved_as_a_barrier() -> None:
     """Missing analysis is preserved as a barrier."""
-    tracks = [
-        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
+    tracks: list[dict[str, Any]] = [
+        {
+            "queue_item_id": "a",
+            "artist": "A",
+            "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5},
+        },
         {"queue_item_id": "b", "artist": "B", "analysis": None},
-        {"queue_item_id": "c", "artist": "C", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
+        {
+            "queue_item_id": "c",
+            "artist": "C",
+            "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5},
+        },
     ]
     result = beam_optimize(tracks, tracks[0]["analysis"], MODES["ai_dj"], controls=DJControls())
     assert [x["queue_item_id"] for x in result] == ["a", "b", "c"]
@@ -50,10 +59,22 @@ def test_missing_analysis_is_preserved_as_a_barrier() -> None:
 
 def test_required_and_excluded_are_enforced() -> None:
     """Required and excluded are enforced."""
-    tracks = [
-        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "c", "artist": "C", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
+    tracks: list[dict[str, Any]] = [
+        {
+            "queue_item_id": "a",
+            "artist": "A",
+            "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "b",
+            "artist": "B",
+            "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "c",
+            "artist": "C",
+            "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5},
+        },
     ]
     result = beam_optimize(
         tracks[1:],
@@ -69,10 +90,22 @@ def test_required_and_excluded_are_enforced() -> None:
 
 def test_fixed_position_is_preserved() -> None:
     """Fixed position is preserved."""
-    tracks = [
-        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "c", "artist": "C", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
+    tracks: list[dict[str, Any]] = [
+        {
+            "queue_item_id": "a",
+            "artist": "A",
+            "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "b",
+            "artist": "B",
+            "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "c",
+            "artist": "C",
+            "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5},
+        },
     ]
     result = beam_optimize(
         tracks,
@@ -85,10 +118,22 @@ def test_fixed_position_is_preserved() -> None:
 
 def test_artist_repeat_limit_is_applied() -> None:
     """Artist repeat limit is applied."""
-    tracks = [
-        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "b", "artist": "A", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "c", "artist": "B", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
+    tracks: list[dict[str, Any]] = [
+        {
+            "queue_item_id": "a",
+            "artist": "A",
+            "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "b",
+            "artist": "A",
+            "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "c",
+            "artist": "B",
+            "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5},
+        },
     ]
     anchor = {**tracks[0]["analysis"], "artist": tracks[0]["artist"]}
     result = beam_optimize(
@@ -102,10 +147,22 @@ def test_artist_repeat_limit_is_applied() -> None:
 
 def test_excluded_track_does_not_consume_fixed_interval() -> None:
     """Excluded track does not consume fixed interval."""
-    tracks = [
-        {"queue_item_id": "a", "artist": "A", "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "x", "artist": "X", "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5}},
-        {"queue_item_id": "b", "artist": "B", "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5}},
+    tracks: list[dict[str, Any]] = [
+        {
+            "queue_item_id": "a",
+            "artist": "A",
+            "analysis": {"bpm": 120, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "x",
+            "artist": "X",
+            "analysis": {"bpm": 121, "camelot": "8A", "energy": 0.5},
+        },
+        {
+            "queue_item_id": "b",
+            "artist": "B",
+            "analysis": {"bpm": 122, "camelot": "8A", "energy": 0.5},
+        },
     ]
     result = beam_optimize(
         tracks,

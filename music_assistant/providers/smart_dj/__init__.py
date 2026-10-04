@@ -1,4 +1,5 @@
 """Smart DJ plugin provider."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 SUPPORTED_FEATURES: set[str] = set()
+
 
 async def setup(
     mass: MusicAssistant,

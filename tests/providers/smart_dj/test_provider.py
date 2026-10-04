@@ -1,6 +1,5 @@
 """Focused Smart DJ provider tests."""
 
-
 from music_assistant.providers.smart_dj.engine import (
     MODES,
     DJControls,

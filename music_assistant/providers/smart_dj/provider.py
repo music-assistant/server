@@ -1,4 +1,5 @@
 """Smart DJ queue intelligence backed by Music Assistant audio analysis and Musicae."""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,15 +34,40 @@ MUSICAE_HOST = "dj-track-audio-analysis-api.p.rapidapi.com"
 MUSICAE_BASE = f"https://{MUSICAE_HOST}"
 CACHE_TTL = 86400.0
 
+
 def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
     """Convert Music Assistant key/mode to Camelot notation."""
     if not key or not mode:
         return None
     minor = mode.lower() in {"minor", "min", "m"}
-    minor_keys = {"Ab": "1A", "Eb": "2A", "Bb": "3A", "F": "4A", "C": "5A", "G": "6A",
-                  "D": "7A", "A": "8A", "E": "9A", "B": "10A", "F#": "11A", "C#": "12A"}
-    major_keys = {"B": "1B", "F#": "2B", "C#": "3B", "Ab": "4B", "Eb": "5B", "Bb": "6B",
-                  "F": "7B", "C": "8B", "G": "9B", "D": "10B", "A": "11B", "E": "12B"}
+    minor_keys = {
+        "Ab": "1A",
+        "Eb": "2A",
+        "Bb": "3A",
+        "F": "4A",
+        "C": "5A",
+        "G": "6A",
+        "D": "7A",
+        "A": "8A",
+        "E": "9A",
+        "B": "10A",
+        "F#": "11A",
+        "C#": "12A",
+    }
+    major_keys = {
+        "B": "1B",
+        "F#": "2B",
+        "C#": "3B",
+        "Ab": "4B",
+        "Eb": "5B",
+        "Bb": "6B",
+        "F": "7B",
+        "C": "8B",
+        "G": "9B",
+        "D": "10B",
+        "A": "11B",
+        "E": "12B",
+    }
     normalized = key.replace("♭", "b").replace("♯", "#")
     return (minor_keys if minor else major_keys).get(normalized)
 
@@ -49,7 +75,13 @@ def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
-    def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig, supported_features: set[Any]) -> None:
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[Any],
+    ) -> None:
         """Set up the provider and its analysis cache and API handles."""
         super().__init__(mass, manifest, config, supported_features)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -85,7 +117,9 @@ class SmartDJProvider(PluginProvider):
             # requires the "user" role, which excludes guest accounts; the read-only
             # commands stay available to any authenticated user.
             role = "user" if command == "smart_dj/rank_queue" else None
-            self._handles.append(self.mass.register_api_command(command, handler, required_role=role))
+            self._handles.append(
+                self.mass.register_api_command(command, handler, required_role=role)
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Close the HTTP client and unregister commands."""
@@ -149,7 +183,9 @@ class SmartDJProvider(PluginProvider):
         if self._session is None:
             self._session = aiohttp.ClientSession()
         headers = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": MUSICAE_HOST}
-        async with self._session.get(f"{MUSICAE_BASE}{path}", params=params, headers=headers) as response:
+        async with self._session.get(
+            f"{MUSICAE_BASE}{path}", params=params, headers=headers
+        ) as response:
             if response.status >= 400:
                 body = await response.text()
                 raise RuntimeError(f"Musicae request failed ({response.status}): {body[:300]}")
@@ -158,14 +194,22 @@ class SmartDJProvider(PluginProvider):
                 raise TypeError("Musicae returned an invalid response")
             return data
 
-    async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None, analysis_provider: str = "auto") -> dict[str, Any] | None:
+    async def _analysis(
+        self,
+        item_id: str,
+        provider: str,
+        metadata: dict[str, Any] | None = None,
+        analysis_provider: str = "auto",
+    ) -> dict[str, Any] | None:
         """Get analysis using the selected provider policy."""
         if analysis_provider not in {"auto", "music_assistant", "musicae"}:
             raise TypeError(f"Unknown analysis provider: {analysis_provider}")
         try:
             analysis = None
             if analysis_provider != "musicae":
-                analysis = await self.mass.streams.audio_analysis.get_audio_analysis(item_id, provider)
+                analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
+                    item_id, provider
+                )
             if analysis:
                 return {
                     "bpm": analysis.bpm,
@@ -181,11 +225,29 @@ class SmartDJProvider(PluginProvider):
                     "downbeats": analysis.downbeats,
                     "rms_energy": analysis.rms_energy,
                     "spectral_centroid": analysis.spectral_centroid,
-                    "instrumental": (None if analysis.instrumentalness is None else analysis.instrumentalness >= 0.5),
+                    "instrumental": (
+                        None
+                        if analysis.instrumentalness is None
+                        else analysis.instrumentalness >= 0.5
+                    ),
                     "instrumentalness": analysis.instrumentalness,
                     "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
-                    "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "music_assistant"),
+                    "sources": dict.fromkeys(
+                        (
+                            "bpm",
+                            "key",
+                            "camelot",
+                            "energy",
+                            "danceability",
+                            "loudness",
+                            "beats_per_bar",
+                            "beats",
+                            "downbeats",
+                            "instrumental",
+                        ),
+                        "music_assistant",
+                    ),
                     **(metadata or {}),
                 }
         except Exception as err:
@@ -213,7 +275,11 @@ class SmartDJProvider(PluginProvider):
         instrumental_flag = (
             instrumental_raw
             if isinstance(instrumental_raw, bool)
-            else (instrumentalness_raw >= 0.5 if isinstance(instrumentalness_raw, (int, float)) else None)
+            else (
+                instrumentalness_raw >= 0.5
+                if isinstance(instrumentalness_raw, (int, float))
+                else None
+            )
         )
         normalized = {
             "bpm": result.get("bpm"),
@@ -233,7 +299,21 @@ class SmartDJProvider(PluginProvider):
             "instrumental": instrumental_flag,
             "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
-            "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "musicae"),
+            "sources": dict.fromkeys(
+                (
+                    "bpm",
+                    "key",
+                    "camelot",
+                    "energy",
+                    "danceability",
+                    "loudness",
+                    "beats_per_bar",
+                    "beats",
+                    "downbeats",
+                    "instrumental",
+                ),
+                "musicae",
+            ),
             "raw": result,
             **(metadata or {}),
         }
@@ -253,24 +333,35 @@ class SmartDJProvider(PluginProvider):
                 continue
             metadata_obj = getattr(media, "metadata", None)
             genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
-            result.append({
-                "queue_item_id": item.queue_item_id,
-                "name": item.name,
-                "artist": getattr(media, "artist_str", None) or getattr(media, "artist", None),
-                "item_id": item_id,
-                "provider": provider,
-                "genre": genres[0] if genres else None,
-                "genres": list(genres or []),
-                "explicit": getattr(metadata_obj, "explicit", None) if metadata_obj else None,
-            })
+            result.append(
+                {
+                    "queue_item_id": item.queue_item_id,
+                    "name": item.name,
+                    "artist": getattr(media, "artist_str", None) or getattr(media, "artist", None),
+                    "item_id": item_id,
+                    "provider": provider,
+                    "genre": genres[0] if genres else None,
+                    "genres": list(genres or []),
+                    "explicit": getattr(metadata_obj, "explicit", None) if metadata_obj else None,
+                }
+            )
         return result
 
-    async def analyze(self, queue_id: str, limit: int = 40, analysis_provider: str = "auto") -> dict[str, Any]:
+    async def analyze(
+        self, queue_id: str, limit: int = 40, analysis_provider: str = "auto"
+    ) -> dict[str, Any]:
         """Analyze the active queue and return DJ-ready metadata."""
-        items = (await self._queue_snapshot(queue_id))[:max(1, min(limit, 100))]
+        items = (await self._queue_snapshot(queue_id))[: max(1, min(limit, 100))]
         analyzed = []
         tasks = [
-            asyncio.create_task(self._analysis(item["item_id"], item["provider"], {k: item[k] for k in ("genre", "genres", "explicit") if k in item}, analysis_provider))
+            asyncio.create_task(
+                self._analysis(
+                    item["item_id"],
+                    item["provider"],
+                    {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
+                    analysis_provider,
+                )
+            )
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -323,7 +414,9 @@ class SmartDJProvider(PluginProvider):
             momentum=signal("momentum"),
             bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
             bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
-            max_bpm_jump=float(raw["max_bpm_jump"]) if raw.get("max_bpm_jump") is not None else None,
+            max_bpm_jump=float(raw["max_bpm_jump"])
+            if raw.get("max_bpm_jump") is not None
+            else None,
             key_relation=str(raw.get("key_relation", "compatible")),
             max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
             instrumental=str(raw.get("instrumental", "any")),
@@ -388,7 +481,9 @@ class SmartDJProvider(PluginProvider):
             if len(ranked) != len(ranked_ids):
                 raise RuntimeError("Queue changed while Smart DJ was planning")
             ranked_set = set(ranked_ids)
-            remainder = [item for item in items[prefix_len:] if item.queue_item_id not in ranked_set]
+            remainder = [
+                item for item in items[prefix_len:] if item.queue_item_id not in ranked_set
+            ]
             if len(prefix) + len(ranked) + len(remainder) != len(items):
                 raise RuntimeError("Queue integrity check failed")
             self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)

@@ -71,15 +71,54 @@ class DJControls:
 
 MODES = {
     "ai_dj": DJMode("ai_dj", 0.08, 0.15, 0.45, DJWeights()),
-    "party": DJMode("party", 0.12, 0.05, 0.75, DJWeights(
-        bpm=0.28, key=0.18, energy=0.16, danceability=0.18, loudness=0.06,
-        genre=0.06, artist_spacing=0.04, momentum=0.04)),
-    "chill": DJMode("chill", 0.10, -0.15, 0.65, DJWeights(
-        bpm=0.22, key=0.18, energy=0.22, danceability=0.10, loudness=0.08,
-        genre=0.10, artist_spacing=0.05, momentum=0.05)),
-    "workout": DJMode("workout", 0.06, 0.12, 0.35, DJWeights(
-        bpm=0.32, key=0.18, energy=0.20, danceability=0.16, loudness=0.05,
-        genre=0.03, artist_spacing=0.03, momentum=0.03)),
+    "party": DJMode(
+        "party",
+        0.12,
+        0.05,
+        0.75,
+        DJWeights(
+            bpm=0.28,
+            key=0.18,
+            energy=0.16,
+            danceability=0.18,
+            loudness=0.06,
+            genre=0.06,
+            artist_spacing=0.04,
+            momentum=0.04,
+        ),
+    ),
+    "chill": DJMode(
+        "chill",
+        0.10,
+        -0.15,
+        0.65,
+        DJWeights(
+            bpm=0.22,
+            key=0.18,
+            energy=0.22,
+            danceability=0.10,
+            loudness=0.08,
+            genre=0.10,
+            artist_spacing=0.05,
+            momentum=0.05,
+        ),
+    ),
+    "workout": DJMode(
+        "workout",
+        0.06,
+        0.12,
+        0.35,
+        DJWeights(
+            bpm=0.32,
+            key=0.18,
+            energy=0.20,
+            danceability=0.16,
+            loudness=0.05,
+            genre=0.03,
+            artist_spacing=0.03,
+            momentum=0.03,
+        ),
+    ),
     "custom": DJMode("custom", 0.08, 0.0, 0.50, DJWeights()),
 }
 
@@ -203,7 +242,10 @@ def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
         elif abs(float(a) - float(b)) > 0.35:
             violations.append("hard energy compatibility")
 
-    for field, label, scale in (("danceability", "danceability", 0.45), ("loudness", "loudness", 8.0)):
+    for field, label, scale in (
+        ("danceability", "danceability", 0.45),
+        ("loudness", "loudness", 8.0),
+    ):
         control = getattr(controls, field)
         if control.state == "hard" and current:
             a, b = current.get(field), candidate.get(field)
@@ -219,7 +261,9 @@ def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
         elif a != b:
             violations.append("hard genre compatibility")
 
-    if controls.artist_spacing.state == "hard" and artist_run_length >= max(1, controls.max_artist_repeat):
+    if controls.artist_spacing.state == "hard" and artist_run_length >= max(
+        1, controls.max_artist_repeat
+    ):
         violations.append("hard artist spacing")
 
     if artist_run_length >= max(1, controls.max_artist_repeat):
@@ -238,18 +282,34 @@ def _signal_values(
 ) -> tuple[float, list[str]]:
     w = mode.weights
     values = {
-        "bpm": _norm_delta(current.get("bpm"), candidate.get("bpm"),
-                           max(1.0, float(current.get("bpm") or 120) * mode.bpm_tolerance)),
+        "bpm": _norm_delta(
+            current.get("bpm"),
+            candidate.get("bpm"),
+            max(1.0, float(current.get("bpm") or 120) * mode.bpm_tolerance),
+        ),
         "key": camelot_affinity(current.get("camelot"), candidate.get("camelot")),
-        "energy": max(0.0, 1.0 - abs(
-            float(candidate.get("energy") or 0.5)
-            - (float(current.get("energy") or 0.5) + mode.energy_direction)
-        ) / 0.35),
-        "danceability": _norm_delta(current.get("danceability"), candidate.get("danceability"), 0.45),
+        "energy": max(
+            0.0,
+            1.0
+            - abs(
+                float(candidate.get("energy") or 0.5)
+                - (float(current.get("energy") or 0.5) + mode.energy_direction)
+            )
+            / 0.35,
+        ),
+        "danceability": _norm_delta(
+            current.get("danceability"), candidate.get("danceability"), 0.45
+        ),
         "loudness": _norm_delta(current.get("loudness"), candidate.get("loudness"), 8.0),
-        "genre": 1.0 if current.get("genre") and candidate.get("genre") and current["genre"] == candidate["genre"] else 0.5,
+        "genre": 1.0
+        if current.get("genre")
+        and candidate.get("genre")
+        and current["genre"] == candidate["genre"]
+        else 0.5,
         "artist_spacing": max(0.0, 1.0 - artist_run_length / max(1, controls.max_artist_repeat)),
-        "momentum": 1.0 if float(candidate.get("energy") or 0.5) >= float(current.get("energy") or 0.5) else 0.65,
+        "momentum": 1.0
+        if float(candidate.get("energy") or 0.5) >= float(current.get("energy") or 0.5)
+        else 0.65,
     }
     reasons: list[str] = []
     total = total_weight = 0.0
@@ -294,7 +354,9 @@ def score_candidate(
         return 0.0, [], violations
     if current is None:
         return 0.5, ["no current-track anchor"], []
-    score, reasons = _signal_values(current, candidate, mode, controls, artist_run_length=artist_run_length)
+    score, reasons = _signal_values(
+        current, candidate, mode, controls, artist_run_length=artist_run_length
+    )
     return score, reasons, []
 
 
@@ -334,7 +396,9 @@ def _beam_pass(
     beam_width: int,
     anchor_artist: str | None,
 ) -> list[dict[str, Any]]:
-    beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], list(segment))]
+    beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [
+        (0.0, [], list(segment))
+    ]
     for _ in range(len(segment)):
         next_beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = []
         for total, path, remaining in beams:
@@ -412,10 +476,7 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
         idx: t
         for idx, t in enumerate(tracks)
         if t.get("queue_item_id") in fixed_ids
-        or (
-            not isinstance(t.get("analysis"), dict)
-            and t.get("queue_item_id") not in excluded_ids
-        )
+        or (not isinstance(t.get("analysis"), dict) and t.get("queue_item_id") not in excluded_ids)
     }
 
     # Optimize each interval between fixed anchors. Excluded tracks do not occupy
@@ -428,8 +489,7 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
         segment = [
             track
             for idx, track in enumerate(tracks[start:end], start=start)
-            if idx not in fixed_positions
-            and track.get("queue_item_id") not in excluded_ids
+            if idx not in fixed_positions and track.get("queue_item_id") not in excluded_ids
         ]
         if segment:
             anchor = (
@@ -451,15 +511,19 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
                 if not isinstance(fixed.get("analysis"), dict)
                 else "fixed track"
             )
-            result.append({
-                **fixed,
-                "score": None if reason.startswith("analysis") else 1.0,
-                "reasons": [reason],
-            })
+            result.append(
+                {
+                    **fixed,
+                    "score": None if reason.startswith("analysis") else 1.0,
+                    "reasons": [reason],
+                }
+            )
             current = None if reason.startswith("analysis") else fixed_data
 
     # Excluded tracks are intentionally absent; every other non-fixed track must remain exactly once.
-    expected = {str(t.get("queue_item_id")) for t in tracks if t.get("queue_item_id") not in excluded_ids}
+    expected = {
+        str(t.get("queue_item_id")) for t in tracks if t.get("queue_item_id") not in excluded_ids
+    }
     actual = {str(t.get("queue_item_id")) for t in result}
     if expected != actual:
         raise RuntimeError("Optimizer would lose or duplicate queue tracks")
@@ -469,7 +533,9 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
         raise RuntimeError("Hard required tracks were not placed")
 
     if controls.end_track_id:
-        end_index = next(i for i, item in enumerate(result) if item.get("queue_item_id") == controls.end_track_id)
+        end_index = next(
+            i for i, item in enumerate(result) if item.get("queue_item_id") == controls.end_track_id
+        )
         if end_index != len(result) - 1:
             if result[end_index].get("queue_item_id") in fixed_ids:
                 raise RuntimeError("End track is fixed and cannot be moved to the end")
@@ -484,17 +550,23 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
         energy_delta = None
         key_affinity = None
         if isinstance(previous, dict) and isinstance(analysis, dict):
-            if isinstance(previous.get("bpm"), (int, float)) and isinstance(analysis.get("bpm"), (int, float)):
+            if isinstance(previous.get("bpm"), (int, float)) and isinstance(
+                analysis.get("bpm"), (int, float)
+            ):
                 bpm_change = float(analysis["bpm"]) - float(previous["bpm"])
-            if isinstance(previous.get("energy"), (int, float)) and isinstance(analysis.get("energy"), (int, float)):
+            if isinstance(previous.get("energy"), (int, float)) and isinstance(
+                analysis.get("energy"), (int, float)
+            ):
                 energy_delta = float(analysis["energy"]) - float(previous["energy"])
             key_affinity = camelot_affinity(previous.get("camelot"), analysis.get("camelot"))
-        annotated.append({
-            **item,
-            "bpm_change": bpm_change,
-            "energy_delta": energy_delta,
-            "key_affinity": key_affinity,
-            "transition_bars": controls.transition_bars,
-        })
+        annotated.append(
+            {
+                **item,
+                "bpm_change": bpm_change,
+                "energy_delta": energy_delta,
+                "key_affinity": key_affinity,
+                "transition_bars": controls.transition_bars,
+            }
+        )
         previous = analysis
     return annotated
