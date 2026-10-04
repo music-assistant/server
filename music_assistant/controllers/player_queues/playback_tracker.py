@@ -621,7 +621,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # report on current item
             is_current_item = True
             item_to_report = self.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
-            seconds_played = int(new_state["elapsed_time"])
+            if new_state["state"] == PlaybackState.PLAYING:
+                seconds_played = int(new_state["elapsed_time"])
+            else:
+                # a player may reset its position on pause/stop, report where it last played
+                seconds_played = int(new_state["last_playing_elapsed_time"])
 
         if not item_to_report:
             return  # guard against invalid items
