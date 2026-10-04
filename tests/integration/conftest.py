@@ -131,6 +131,15 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
         ),
+        # hermetic: MusicBrainz knows none of the fake library items
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_data",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_browse_data",
+            new=AsyncMock(return_value=None),
+        ),
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
         # no library sync starting on its own inside a running test
