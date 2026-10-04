@@ -82,6 +82,6 @@ async def _send_save(mass: MusicAssistant, locale: str | None) -> dict[str, Any]
     handler = mass.command_handlers[_SAVE_HOSTNAME_AS_PUBLISH_IP.command]
     await client._run_handler(handler, _SAVE_HOSTNAME_AS_PUBLISH_IP)
     message = client._to_write.get_nowait()
-    assert message is not None
+    assert isinstance(message, str)
     reply: dict[str, Any] = json_loads(message)
     return reply
