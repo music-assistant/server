@@ -6,7 +6,7 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
@@ -481,6 +481,25 @@ async def test_section_sanitization(mass: MusicAssistant) -> None:
         assert "Artist" not in leaky
     finally:
         unregister()
+
+
+async def test_provider_section_names_domain(mass: MusicAssistant) -> None:
+    """
+    Test that a provider section is named by its domain next to its instance id.
+
+    :param mass: Full Music Assistant test instance.
+    """
+
+    class ConvertedSource:
+        domain = "filesystem_local"
+        instance_id = "filesystem_smb--abc123"
+
+        async def get_diagnostics(self) -> dict[str, Any]:
+            return {"ok": True}
+
+    with patch.object(type(mass), "providers", PropertyMock(return_value=[ConvertedSource()])):
+        report = await mass.diagnostics.get_report()
+    assert report["sections"]["provider.filesystem_local.filesystem_smb--abc123"] == {"ok": True}
 
 
 async def test_no_background_work(mass: MusicAssistant) -> None:
