@@ -10,17 +10,21 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from xml.parsers.expat import ExpatError
 
 import xmltodict
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import is_valid_isrc
 from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.helpers.security import is_safe_path
 
 from .constants import IMAGE_EXTENSIONS, METADATA_IMAGE_STEMS, NFO_FILENAMES
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +304,23 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
     parts = sorted(f"{x.relative_path}\0{x.checksum}\0{x.file_size}" for x in items)
     return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
+
+
+def get_valid_isrcs(isrcs: Iterable[str], path: str, log: logging.Logger) -> list[str]:
+    """
+    Return the valid ISRCs, logging a warning for each invalid one that is discarded.
+
+    :param isrcs: ISRC values read from a file tag or CUE sheet.
+    :param path: Path of the file the values were read from.
+    :param log: Logger to report discarded values on.
+    """
+    valid_isrcs = []
+    for isrc in isrcs:
+        if is_valid_isrc(isrc):
+            valid_isrcs.append(isrc)
+        else:
+            log.warning("Ignoring invalid ISRC '%s' in %s", isrc, path)
+    return valid_isrcs
 
 
 def get_artist_dir(
