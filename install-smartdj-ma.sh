@@ -12,6 +12,7 @@
 # USAGE:
 #   sh install-smartdj-ma.sh            # interactive (asks before stopping nightly)
 #   sh install-smartdj-ma.sh --yes      # don't ask, just go
+#   sh install-smartdj-ma.sh --logs     # just follow the dev add-on's logs live
 #   sh install-smartdj-ma.sh --rollback # stop dev, restart nightly
 #
 # Everything it does is reversible: the nightly add-on is never uninstalled.
@@ -49,6 +50,10 @@ jsonval() { # crude "did result=ok" check
 
 ASSUME_YES=0
 [ "${1:-}" = "--yes" ] && ASSUME_YES=1
+if [ "${1:-}" = "--logs" ]; then
+  echo "==> Following $SLUG logs live (Ctrl-C to stop; the add-on keeps running)"
+  exec curl -fsS -N -H "Authorization: Bearer $SUPERVISOR_TOKEN" "$HASSIO/addons/$SLUG/logs/follow"
+fi
 if [ "${1:-}" = "--rollback" ]; then
   echo "==> Stopping $SLUG (if installed) and restarting $NIGHTLY_SLUG"
   api POST "/addons/$SLUG/stop" >/dev/null 2>&1 || true
@@ -106,9 +111,16 @@ resp=$(api POST "/addons/$SLUG/start") || die "start failed: $resp"
 jsonval "$resp" || die "start failed: $resp"
 echo "    started"
 echo ""
-echo "==> Done. First boot builds your fork's server + frontend inside the add-on:"
-echo "    expect 5-15 minutes of 'installing' before the UI responds."
+# 6. show the first logs so the build is visible
+echo "==> Waiting 20s for the first log lines..."
+sleep 20
+echo "---- last 40 log lines ($(date +%H:%M:%S)) ----"
+api GET "/addons/$SLUG/logs" | tail -n 40 || echo "(could not fetch logs yet — try: sh install-smartdj-ma.sh --logs)"
+echo "---- end ----"
 echo ""
-echo "    Watch progress:  ha apps logs $SLUG -f   (or: ha addons logs $SLUG -f on older CLI)"
+echo "==> First boot builds your fork's server + frontend inside the add-on:"
+echo "    expect 5-15 minutes before the UI responds. Keep watching with:"
+echo "      sh install-smartdj-ma.sh --logs"
+echo "      (or:  ha apps logs $SLUG -f   /   ha addons logs $SLUG -f on older CLI)"
 echo "    Smart DJ UI:     Settings → Music Assistant panel in HA"
 echo "    Rollback:        sh install-smartdj-ma.sh --rollback"
