@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import StreamType
+from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.helpers.datetime import utc
@@ -147,6 +148,39 @@ async def test_split_broadcast_plays_all_segments() -> None:
     assert [p.duration for p in details.data] == [600, 300]
     assert details.duration == 900
     assert all("{" not in p.path for p in details.data)
+
+
+async def test_split_broadcast_with_a_missing_segment_url_is_unplayable() -> None:
+    """A broadcast is not played with a segment left out."""
+    provider = _provider()
+    provider._fetch_broadcast_detail = AsyncMock(  # type: ignore[method-assign]
+        return_value={"state": "C", "streams": [_segment(0, 600_000), {"duration": 300_000}]}
+    )
+
+    with pytest.raises(UnplayableMediaError):
+        await provider._get_broadcast_episode_stream_details("br:oe1:1")
+
+
+@pytest.mark.parametrize(
+    ("segment", "can_seek"),
+    [
+        (_segment(900_000, 300_000), True),
+        ({**_segment(900_000, 300_000), "duration": None}, False),
+        ({"duration": 300_000, "urls": {"progressive": f"{SEGMENT_URL}{{&offset}}"}}, False),
+    ],
+)
+async def test_split_broadcast_seeks_natively_only_with_offsets_and_durations(
+    segment: dict[str, Any], can_seek: bool
+) -> None:
+    """Without the offset and duration of every segment, seeking is left to the decoder."""
+    provider = _provider()
+    provider._fetch_broadcast_detail = AsyncMock(  # type: ignore[method-assign]
+        return_value={"state": "C", "streams": [_segment(0, 600_000), segment]}
+    )
+
+    details = await provider._get_broadcast_episode_stream_details("br:oe1:1")
+
+    assert details.can_seek is can_seek
 
 
 async def test_single_segment_broadcast_uses_hls() -> None:

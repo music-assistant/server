@@ -596,16 +596,23 @@ class RadiothekProvider(MusicProvider):
         :param url: The (sanitized) progressive url of the segment.
         :param skip_ms: Milliseconds to skip from the start of the segment.
         """
-        if skip_ms <= 0:
+        offset = RadiothekProvider._segment_offset(url)
+        if skip_ms <= 0 or offset is None:
             return url
         parts = urlsplit(url)
-        query = parse_qsl(parts.query, keep_blank_values=True)
-        offset = next((v for k, v in query if k == "offset"), None)
-        if offset is None or not offset.isdigit():
-            return url
-        new_offset = str(int(offset) + skip_ms)
-        query = [(k, new_offset if k == "offset" else v) for k, v in query]
+        new_offset = str(offset + skip_ms)
+        query = [
+            (k, new_offset if k == "offset" else v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        ]
         return urlunsplit(parts._replace(query=urlencode(query)))
+
+    @staticmethod
+    def _segment_offset(url: str) -> int | None:
+        """Return the millisecond "offset" query parameter of a segment url, or None."""
+        query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
+        offset = next((v for k, v in query if k == "offset"), None)
+        return int(offset) if offset is not None and offset.isdigit() else None
 
     @staticmethod
     def _duration_from_seconds(seconds: float | None) -> int | None:
@@ -1351,17 +1358,22 @@ class RadiothekProvider(MusicProvider):
 
         parts: list[MultiPartPath] = []
         for segment in segments:
-            if url := self._segment_url(segment, "progressive"):
-                parts.append(MultiPartPath(path=url, duration=self._segment_seconds(segment)))
-        if not parts:
-            raise UnplayableMediaError("No playable url for episode")
+            url = self._segment_url(segment, "progressive")
+            # leaving a segment out would silently cut part of the broadcast
+            if not url:
+                raise UnplayableMediaError("No playable url for a segment of episode")
+            parts.append(MultiPartPath(path=url, duration=self._segment_seconds(segment)))
 
         duration: int | None = None
         if all(part.duration for part in parts):
             duration = self._duration_from_seconds(sum(part.duration or 0 for part in parts))
 
         # streamed by get_audio_stream, which seeks through the url instead of downloading
-        # (and discarding) all audio before the seek position
+        # (and discarding) all audio before the seek position; that needs the duration and
+        # offset of every segment, without them the decoder seeks instead
+        can_seek = all(
+            part.duration and self._segment_offset(part.path) is not None for part in parts
+        )
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -1370,7 +1382,7 @@ class RadiothekProvider(MusicProvider):
             data=parts,
             duration=duration,
             audio_format=AudioFormat(content_type=ContentType.try_parse("mp3")),
-            can_seek=True,
+            can_seek=can_seek,
             allow_seek=True,
         )
 
