@@ -1033,6 +1033,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # reports position don't carry the previous item's elapsed_time
                     queue.elapsed_time = seek_position if attempt == 0 else 0
                     queue.elapsed_time_last_updated = time.time()
+                    if (prev_state := queue_data.prev_state) and prev_state[
+                        "current_item_id"
+                    ] == queue_item.queue_item_id:
+                        # a seek within the item must not keep its position from before
+                        prev_state["last_playing_elapsed_time"] = int(queue.elapsed_time)
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
