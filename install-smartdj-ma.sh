@@ -71,18 +71,30 @@ echo ""
 # 1. make sure the official add-on repository is registered
 echo "==> [1/5] Checking add-on store repositories"
 repos=$(api GET "/store/repositories") || die "could not reach the Supervisor API"
-echo "$repos" | grep -q "home-assistant-addon" || {
+if ! echo "$repos" | grep -q "home-assistant-addon"; then
   echo "    adding https://github.com/music-assistant/home-assistant-addon"
   api POST "/store/repositories" '{"repository":"https://github.com/music-assistant/home-assistant-addon"}' >/dev/null \
     || die "could not add the music-assistant add-on repository"
-}
+  echo "    forcing a store sync"
+  api POST "/store/reload" >/dev/null 2>&1 || true
+  sleep 5
+fi
 echo "    ok"
 
-# 2. install the dev app (no-op if already installed)
+# 2. install the dev app (no-op if already installed), then PROVE it exists
 echo "==> [2/5] Installing $SLUG (skips if present; first download is a few hundred MB)"
-resp=$(api POST "/store/apps/$SLUG/install" 2>&1) || \
+resp=$(api POST "/store/apps/$SLUG/install" 2>&1) || {
   echo "$resp" | grep -qi "already" || die "install failed: $resp"
-echo "    ok"
+}
+echo "    install call ok — verifying the add-on actually exists"
+resp=$(api GET "/addons/$SLUG/info" 2>&1) || {
+  echo "    404 on /addons/$SLUG/info — installed add-ons found:"
+  api GET "/addons" 2>/dev/null | tr ',' '\n' | grep '"slug"' || true
+  api GET "/store/apps" 2>/dev/null | tr ',' '\n' | grep -i "music_assistant" || true
+  die "add-on $SLUG is not installed after the install call. Paste the lines above."
+}
+jsonval "$resp" || die "add-on info looked wrong: $resp"
+echo "    add-on present"
 
 # 3. point it at the fork
 echo "==> [3/5] Configuring server/frontend sources"
