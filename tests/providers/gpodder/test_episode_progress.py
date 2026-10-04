@@ -5,8 +5,13 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from music_assistant_models.enums import MediaType
+
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.providers.gpodder import GPodder
 from music_assistant.providers.gpodder.client import (
+    EpisodeActionDelete,
     EpisodeActionNew,
     EpisodeActionPlay,
     SubscriptionsGet,
@@ -84,12 +89,37 @@ async def test_listing_shows_the_progress_without_writing_it(provider: GPodder) 
     assert provider.timestamp_actions == 100
 
 
-async def test_on_played_uploads_without_reading_the_feed(provider: GPodder) -> None:
+@pytest.mark.parametrize(
+    ("action", "timestamp"),
+    [
+        # a mark as unplayed carries its time, so core prefers it over the playlog
+        (EpisodeActionNew, from_utc_timestamp(999)),
+        # a deleted download does not, so a finished episode stays finished
+        (EpisodeActionDelete, None),
+    ],
+)
+async def test_reset_in_another_client_wins_over_the_playlog(
+    provider: GPodder, action: type[EpisodeActionNew | EpisodeActionDelete], timestamp: Any
+) -> None:
+    """Only an explicit reset since the last sync overrides MA's own resume position."""
+    _serve(provider)
+    reset = action(podcast=FEED, episode="https://example.com/ep2.mp3")
+    cast("Mock", provider._client).get_episode_actions = AsyncMock(return_value=([reset], 999))
+
+    resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
+
+    assert resume == (False, 0, timestamp)
+
+
+# a feed without itunes:duration leaves the episode without one
+@pytest.mark.parametrize("duration", [1200, 0])
+async def test_on_played_uploads_without_reading_the_feed(provider: GPodder, duration: int) -> None:
     """The episode's own stream url identifies it, the cached feed is not needed."""
     _serve(provider)
     client = cast("Mock", provider._client)
     client.update_progress = AsyncMock()
     played = await anext(provider.get_podcast_episodes(FEED))
+    played.duration = duration
     provider._cache_get_podcast = AsyncMock(side_effect=AssertionError("feed read"))  # type: ignore[method-assign]
 
     await provider.on_played(played.media_type, played.item_id, False, 30, played)

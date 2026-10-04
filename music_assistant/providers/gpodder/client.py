@@ -8,7 +8,6 @@ Gpodder Sync uses guid optionally.
 
 import datetime
 import logging
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,38 +168,38 @@ class GPodderClient:
     ) -> bytes:
         """POST request."""
         try:
-            response = await self.session.post(
+            async with self.session.post(
                 f"{self.base_url}/{endpoint}",
                 json=data,
                 ssl=self.verify_ssl,
                 headers=self.headers if self.is_nextcloud else None,
                 raise_for_status=True,
                 auth=self.auth,
-            )
+            ) as response:
+                if response.status != 200:
+                    self.logger.debug(f"Call failed with status {response.status}")
+                    raise RuntimeError(f"Api post call failed to {endpoint} failed!")
+                return await response.read()
         except ClientResponseError as exc:
             self.logger.debug(exc)
             raise RuntimeError(f"API POST call to {endpoint} failed.") from exc
-        if response.status != 200:
-            self.logger.debug(f"Call failed with status {response.status}")
-            raise RuntimeError(f"Api post call failed to {endpoint} failed!")
-        return await response.read()
 
     async def _get(self, endpoint: str, params: dict[str, str | int] | None = None) -> bytes:
         """GET request."""
-        response = await self.session.get(
+        async with self.session.get(
             f"{self.base_url}/{endpoint}",
             params=params,
             ssl=self.verify_ssl,
             headers=self.headers if self.is_nextcloud else None,
             auth=self.auth,
-        )
-        status = response.status
-        if response.content_type == "application/json" and status == 200:
-            return await response.read()
-        if status == 404:
-            return b""
-        self.logger.debug(f"Call failed with status {response.status}")
-        raise RuntimeError(f"API GET call to {endpoint} failed.")
+        ) as response:
+            status = response.status
+            if response.content_type == "application/json" and status == 200:
+                return await response.read()
+            if status == 404:
+                return b""
+            self.logger.debug(f"Call failed with status {response.status}")
+            raise RuntimeError(f"API GET call to {endpoint} failed.")
 
     async def get_subscriptions(self, since: int = 0) -> SubscriptionsGet | None:
         """
@@ -253,11 +252,8 @@ class GPodderClient:
             if isinstance(x, EpisodeActionPlay | EpisodeActionNew | EpisodeActionDelete)
         ]
 
-        with suppress(ValueError):
-            actions = sorted(actions, key=lambda x: datetime.datetime.fromisoformat(x.timestamp))[
-                ::-1
-            ]
-
+        # newest first; of actions within the same second, the later reported one first
+        actions = sorted(actions, key=_action_time)[::-1]
         return actions, actions_response.timestamp
 
     async def update_subscriptions(
@@ -312,3 +308,15 @@ class GPodderClient:
         else:
             endpoint = f"api/2/episodes/{self.username}.json"
         await self._post(endpoint=endpoint, data=[episode_action.to_dict()])
+
+
+def _action_time(action: EpisodeAction) -> float:
+    """Return when an action happened, an action without a readable time counts as oldest."""
+    try:
+        timestamp = datetime.datetime.fromisoformat(action.timestamp)
+    except ValueError:
+        return 0.0
+    if timestamp.tzinfo is None:
+        # the gpodder api sends utc without an offset
+        timestamp = timestamp.replace(tzinfo=datetime.UTC)
+    return timestamp.timestamp()

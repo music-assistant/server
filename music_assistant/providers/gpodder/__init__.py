@@ -317,13 +317,15 @@ class GPodder(MusicProvider):
             # progress is external, compare guid and stream_url
             stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
             action = _find_action(actions, guid_or_stream_url, stream_url)
-        if isinstance(action, EpisodeActionNew | EpisodeActionDelete):
-            # no progress, it might have been actively reset
-            # in case of delete, we start from start.
+        dt_timestamp = from_utc_timestamp(timestamp) if timestamp is not None else None
+        if isinstance(action, EpisodeActionNew):
+            # actively reset in another client, which wins over the playlog
+            return False, 0, dt_timestamp
+        if isinstance(action, EpisodeActionDelete):
+            # a deleted download says nothing about progress, the playlog still decides
             return False, 0, None
         if isinstance(action, EpisodeActionPlay):
             self.logger.debug("Found an updated external resume position.")
-            dt_timestamp = from_utc_timestamp(timestamp) if timestamp is not None else None
             return action.position >= action.total, max(action.position * 1000, 0), dt_timestamp
         self.logger.debug("Did not find an updated resume position, falling back to stored.")
         # If we did not find a resume position, nothing changed since our last timestamp
@@ -362,7 +364,7 @@ class GPodder(MusicProvider):
                 position_s=position,
                 duration_s=duration,
             )
-            self.logger.debug(f"Updated progress to {position / duration * 100:.2f}%")
+            self.logger.debug("Updated progress to %s of %s s", position, duration)
         except RuntimeError as exc:
             self.logger.debug(exc)
             self.logger.debug("Failed to update progress.")
