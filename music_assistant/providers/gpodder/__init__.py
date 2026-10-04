@@ -15,7 +15,7 @@ Note:
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -56,7 +56,13 @@ from music_assistant.helpers.podcast_parsers import (
 )
 from music_assistant.models.music_provider import MusicProvider
 
-from .client import EpisodeActionDelete, EpisodeActionNew, EpisodeActionPlay, GPodderClient
+from .client import (
+    EpisodeAction,
+    EpisodeActionDelete,
+    EpisodeActionNew,
+    EpisodeActionPlay,
+    GPodderClient,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -212,6 +218,7 @@ class GPodder(MusicProvider):
                 continue
 
         episode_actions, timestamp_action = await self._client.get_episode_actions()
+        actions_by_podcast = _index_actions(episode_actions)
         for feed_url in self.feeds:
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             # parse podcast
@@ -226,48 +233,9 @@ class GPodder(MusicProvider):
                 self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
 
-            # playlog
-            # be safe, if there should be multiple episodeactions. client already sorts
-            # progresses in descending order.
-            _already_processed = set()
-            _episode_actions = [x for x in episode_actions if x.podcast == feed_url]
-            for _action in _episode_actions:
-                if _action.episode not in _already_processed:
-                    _already_processed.add(_action.episode)
-                    # we do not have to add the progress, these would make calls twice,
-                    # and we only use the object to propagate to playlog
-                    self.progress_guard_timestamp = time.time()
-                    _episode_ids: list[str] = []
-                    if _action.guid is not None:
-                        _episode_ids.append(f"{feed_url} {_action.guid}")
-                    _episode_ids.append(f"{feed_url} {_action.episode}")
-                    mass_episode: PodcastEpisode | None = None
-                    for _episode_id in _episode_ids:
-                        try:
-                            mass_episode = await self.get_podcast_episode(
-                                _episode_id, add_progress=False
-                            )
-                            break
-                        except MediaNotFoundError:
-                            continue
-                    if mass_episode is None:
-                        self.logger.debug(
-                            f"Was unable to use progress for episode {_action.episode}."
-                        )
-                        continue
-                    match _action:
-                        case EpisodeActionNew():
-                            await self.mass.music.mark_item_unplayed(
-                                mass_episode, provider_instance_id=self.instance_id
-                            )
-                        case EpisodeActionPlay():
-                            await self.mass.music.mark_item_played(
-                                mass_episode,
-                                fully_played=_action.position >= _action.total,
-                                seconds_played=_action.position,
-                                user_initiated=False,
-                                provider_instance_id=self.instance_id,
-                            )
+            await self._sync_progress(
+                feed_url, parsed_podcast, actions_by_podcast.get(feed_url, {})
+            )
 
             # cache
             yield parse_podcast(
@@ -294,87 +262,40 @@ class GPodder(MusicProvider):
             domain=self.domain,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str, add_progress: bool = True
-    ) -> AsyncGenerator[PodcastEpisode]:
-        """Get Podcast episodes. Add progress information."""
-        if add_progress:
-            episode_actions, timestamp = await self._client.get_episode_actions()
-        else:
-            episode_actions, timestamp = [], None
-
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """Get Podcast episodes, with the progress gPodder holds for them."""
+        episode_actions, _ = await self._client.get_episode_actions()
+        actions = _index_actions(episode_actions).get(prov_podcast_id, {})
         podcast = await self._cache_get_podcast(prov_podcast_id)
-        podcast_cover = podcast.get("cover_url")
-        parsed_episodes = podcast.get("episodes", [])
-
-        if timestamp is not None:
-            self.timestamp_actions = timestamp
-            await self._cache_set_timestamps()
-
-        positions = get_episode_positions(parsed_episodes)
-        for position, parsed_episode in zip(positions, parsed_episodes, strict=True):
-            mass_episode = parse_podcast_episode(
-                episode=parsed_episode,
-                prov_podcast_id=prov_podcast_id,
-                position=position,
-                podcast_cover=podcast_cover,
-                podcast_name=podcast.get("title"),
-                domain=self.domain,
-                instance_id=self.instance_id,
-            )
+        for position, parsed_episode, stream_url, guid in _iter_episodes(podcast):
+            mass_episode = self._parse_episode(prov_podcast_id, podcast, parsed_episode, position)
             if mass_episode is None:
-                # faulty episode
                 continue
-            try:
-                stream_url, guid = get_stream_url_and_guid_from_episode(episode=parsed_episode)
-            except ValueError:
-                # episode enclosure or stream url missing
-                continue
-
-            for action in episode_actions:
-                # we have to test both, as we are comparing to external input.
-                _test = [action.guid, action.episode]
-                if prov_podcast_id == action.podcast and (guid in _test or stream_url in _test):
-                    self.progress_guard_timestamp = time.time()
-                    if isinstance(action, EpisodeActionNew):
-                        mass_episode.resume_position_ms = 0
-                        mass_episode.fully_played = False
-
-                        # propagate to playlog
-                        await self.mass.music.mark_item_unplayed(
-                            mass_episode, provider_instance_id=self.instance_id
-                        )
-                    elif isinstance(action, EpisodeActionPlay):
-                        fully_played = action.position >= action.total
-                        resume_position_s = action.position
-                        mass_episode.resume_position_ms = resume_position_s * 1000
-                        mass_episode.fully_played = fully_played
-
-                        # propagate progress to playlog
-                        await self.mass.music.mark_item_played(
-                            mass_episode,
-                            fully_played=fully_played,
-                            seconds_played=resume_position_s,
-                            user_initiated=False,
-                            provider_instance_id=self.instance_id,
-                        )
-                    elif isinstance(action, EpisodeActionDelete):
-                        for mapping in mass_episode.provider_mappings:
-                            mapping.available = False
-                    break
+            if action := _find_action(actions, guid, stream_url):
+                _apply_action(mass_episode, action)
             yield mass_episode
 
-    async def get_podcast_episode(
-        self, prov_episode_id: str, add_progress: bool = True
-    ) -> PodcastEpisode:
-        """Get Podcast Episode. Add progress information."""
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get Podcast Episode, with the progress gPodder holds for it."""
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        async for mass_episode in self.get_podcast_episodes(podcast_id, add_progress=add_progress):
-            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
-            # this is enough, as internal
-            if guid_or_stream_url == _guid_or_stream_url:
-                await self._enrich_episode_chapters(podcast_id, guid_or_stream_url, mass_episode)
-                return mass_episode
+        podcast = await self._cache_get_podcast(podcast_id)
+        for position, parsed_episode, stream_url, guid in _iter_episodes(podcast):
+            # the episode part of the item id, see parse_podcast_episode
+            if guid_or_stream_url != (guid if guid is not None else stream_url):
+                continue
+            mass_episode = self._parse_episode(podcast_id, podcast, parsed_episode, position)
+            if mass_episode is None:
+                break
+            episode_actions, _ = await self._client.get_episode_actions()
+            actions = _index_actions(episode_actions).get(podcast_id, {})
+            if action := _find_action(actions, guid, stream_url):
+                _apply_action(mass_episode, action)
+            await enrich_episode_chapters(
+                session=self.mass.http_session,
+                chapters_json_url=parsed_episode.get("chapters_json_url"),
+                mass_episode=mass_episode,
+            )
+            return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
     async def get_resume_position(
@@ -383,32 +304,27 @@ class GPodder(MusicProvider):
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         podcast_id, guid_or_stream_url = item_id.split(" ")
-        stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         try:
+            # only the library sync moves this timestamp, as it writes the actions to the playlog
             progresses, timestamp = await self._client.get_episode_actions(
                 since=self.timestamp_actions
             )
         except RuntimeError:
             self.logger.warning("Was unable to obtain progresses.")
             raise NotImplementedError  # fallback to internal position.
-        for action in progresses:
-            _test = [action.guid, action.episode]
+        action: EpisodeAction | None = None
+        if actions := _index_actions(progresses).get(podcast_id):
             # progress is external, compare guid and stream_url
-            if action.podcast == podcast_id and (
-                guid_or_stream_url in _test or stream_url in _test
-            ):
-                dt_timestamp: datetime | None = None
-                if timestamp is not None:
-                    self.timestamp_actions = timestamp
-                    await self._cache_set_timestamps()
-                    dt_timestamp = from_utc_timestamp(timestamp)
-                if isinstance(action, EpisodeActionNew | EpisodeActionDelete):
-                    # no progress, it might have been actively reset
-                    # in case of delete, we start from start.
-                    return False, 0, None
-                _progress = (action.position >= action.total, max(action.position * 1000, 0))
-                self.logger.debug("Found an updated external resume position.")
-                return action.position >= action.total, max(action.position * 1000, 0), dt_timestamp
+            stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
+            action = _find_action(actions, guid_or_stream_url, stream_url)
+        if isinstance(action, EpisodeActionNew | EpisodeActionDelete):
+            # no progress, it might have been actively reset
+            # in case of delete, we start from start.
+            return False, 0, None
+        if isinstance(action, EpisodeActionPlay):
+            self.logger.debug("Found an updated external resume position.")
+            dt_timestamp = from_utc_timestamp(timestamp) if timestamp is not None else None
+            return action.position >= action.total, max(action.position * 1000, 0), dt_timestamp
         self.logger.debug("Did not find an updated resume position, falling back to stored.")
         # If we did not find a resume position, nothing changed since our last timestamp
         # we raise NotImplementedError, such that MA falls back to the already stored
@@ -432,7 +348,10 @@ class GPodder(MusicProvider):
         if time.time() - self.progress_guard_timestamp <= 5:
             return
         podcast_id, guid_or_stream_url = prov_item_id.split(" ")
-        stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
+        stream_url = next(
+            (x.url for x in media_item.provider_mappings if x.item_id == prov_item_id and x.url),
+            None,
+        ) or await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         assert stream_url is not None
         duration = media_item.duration
         try:
@@ -481,31 +400,51 @@ class GPodder(MusicProvider):
             allow_seek=True,
         )
 
-    async def _enrich_episode_chapters(
-        self, prov_podcast_id: str, guid_or_stream_url: str, mass_episode: PodcastEpisode
+    async def _sync_progress(
+        self, feed_url: str, parsed_podcast: dict[str, Any], actions: _ActionIndex
     ) -> None:
-        """
-        Attach external ``podcast:chapters`` JSON to a resolved single episode, if any.
-
-        :param prov_podcast_id: Provider podcast id the episode belongs to.
-        :param guid_or_stream_url: Episode identifier used to locate the raw parsed episode.
-        :param mass_episode: The episode to enrich in place; left untouched on any failure.
-        """
-        if mass_episode.metadata.chapters:
-            return
-        podcast = await self._cache_get_podcast(prov_podcast_id)
-        for episode in podcast.get("episodes", []):
-            try:
-                stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
-            except ValueError:
+        """Write the progress gPodder holds for a podcast's episodes to the playlog."""
+        matched: set[int] = set()
+        for position, parsed_episode, stream_url, guid in _iter_episodes(parsed_podcast):
+            if not (action := _find_action(actions, guid, stream_url)):
                 continue
-            if guid_or_stream_url in (guid, stream_url):
-                await enrich_episode_chapters(
-                    session=self.mass.http_session,
-                    chapters_json_url=episode.get("chapters_json_url"),
-                    mass_episode=mass_episode,
+            matched.add(id(action))
+            if not isinstance(action, EpisodeActionNew | EpisodeActionPlay):
+                continue
+            mass_episode = self._parse_episode(feed_url, parsed_podcast, parsed_episode, position)
+            if mass_episode is None:
+                continue
+            # the playlog writes must not be reported back to gPodder
+            self.progress_guard_timestamp = time.time()
+            if isinstance(action, EpisodeActionNew):
+                await self.mass.music.mark_item_unplayed(
+                    mass_episode, provider_instance_id=self.instance_id
                 )
-                return
+            else:
+                await self.mass.music.mark_item_played(
+                    mass_episode,
+                    fully_played=action.position >= action.total,
+                    seconds_played=action.position,
+                    user_initiated=False,
+                    provider_instance_id=self.instance_id,
+                )
+        if unmatched := len({id(action) for _, action in actions.values()} - matched):
+            self.logger.debug(
+                "%s episode actions of %s match no episode in its feed", unmatched, feed_url
+            )
+
+    def _parse_episode(
+        self, prov_podcast_id: str, podcast: dict[str, Any], episode: dict[str, Any], position: int
+    ) -> PodcastEpisode | None:
+        return parse_podcast_episode(
+            episode=episode,
+            prov_podcast_id=prov_podcast_id,
+            position=position,
+            podcast_cover=podcast.get("cover_url"),
+            podcast_name=podcast.get("title"),
+            domain=self.domain,
+            instance_id=self.instance_id,
+        )
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         parsed_podcast = await self._cache_get_podcast(podcast_id)
@@ -539,3 +478,54 @@ class GPodder(MusicProvider):
             category=CACHE_CATEGORY_OTHER,
             data=list(self.feeds),
         )
+
+
+# episode actions of one podcast by guid and episode url, each with its rank (0 is newest)
+type _ActionIndex = dict[str, tuple[int, EpisodeAction]]
+
+
+def _index_actions(actions: Iterable[EpisodeAction]) -> dict[str, _ActionIndex]:
+    """Index the actions per podcast by guid and episode url, keeping the newest of each."""
+    index: dict[str, _ActionIndex] = {}
+    # the client returns the newest action first
+    for rank, action in enumerate(actions):
+        podcast_actions = index.setdefault(action.podcast, {})
+        for key in (action.guid, action.episode):
+            if key:
+                podcast_actions.setdefault(key, (rank, action))
+    return index
+
+
+def _find_action(
+    actions: _ActionIndex, guid: str | None, stream_url: str | None
+) -> EpisodeAction | None:
+    """Return the newest action of an episode, which a client may know by guid or by url."""
+    found = [actions[key] for key in (guid, stream_url) if key is not None and key in actions]
+    return min(found, key=lambda x: x[0])[1] if found else None
+
+
+def _apply_action(mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
+    """Set the progress an episode action holds on the episode."""
+    if isinstance(action, EpisodeActionNew):
+        mass_episode.resume_position_ms = 0
+        mass_episode.fully_played = False
+    elif isinstance(action, EpisodeActionPlay):
+        mass_episode.resume_position_ms = action.position * 1000
+        mass_episode.fully_played = action.position >= action.total
+    elif isinstance(action, EpisodeActionDelete):
+        for mapping in mass_episode.provider_mappings:
+            mapping.available = False
+
+
+def _iter_episodes(
+    parsed_podcast: dict[str, Any],
+) -> Iterator[tuple[int, dict[str, Any], str, str | None]]:
+    """Yield position, raw episode, stream url and guid of every playable episode of a feed."""
+    episodes = parsed_podcast.get("episodes", [])
+    for position, episode in zip(get_episode_positions(episodes), episodes, strict=True):
+        try:
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+        except ValueError:
+            # episode enclosure or stream url missing
+            continue
+        yield position, episode, stream_url, guid
