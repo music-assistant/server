@@ -303,6 +303,24 @@ async def test_listing_uses_known_durations() -> None:
     provider.mass.create_task.assert_not_called()
 
 
+async def test_listing_does_not_start_a_fill_after_unload() -> None:
+    """A listing that finishes while the provider unloads starts no background requests."""
+    provider = _provider()
+    provider.mass.create_task = Mock()  # type: ignore[method-assign]
+    today = utc().date()
+
+    async def _day(_station: str, day: date) -> list[dict[str, Any]] | None:
+        provider.unloading = True
+        return [_broadcast(1, today, 6)] if day == today else []
+
+    provider._get_broadcasts_for_day = AsyncMock(side_effect=_day)  # type: ignore[method-assign]
+
+    episodes = [ep async for ep in provider.get_podcast_episodes("br:oe1")]
+
+    assert len(episodes) == 1
+    provider.mass.create_task.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("current", "kept"),
     [({2}, {"2", "3"}), (None, {"1", "2", "3"})],

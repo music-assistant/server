@@ -1066,7 +1066,8 @@ class RadiothekProvider(MusicProvider):
                         episode.duration = seconds
                 yield episode
 
-        if missing:
+        # a listing can outlive an unload of the provider, which must not start new fills
+        if missing and not self.unloading:
             self._fill_tasks[station_id] = self.mass.create_task(
                 self._fill_broadcast_durations(station_id, missing, current if complete else None),
                 task_id=f"orf_radiothek.durations.{self.instance_id}.{station_id}",
