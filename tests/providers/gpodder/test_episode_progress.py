@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.datetime import from_utc_timestamp
-from music_assistant.providers.gpodder import GPodder
+from music_assistant.providers.gpodder import FEED_REFRESH_CONCURRENCY, GPodder
 from music_assistant.providers.gpodder.client import (
     EpisodeActionDelete,
     EpisodeActionNew,
@@ -48,12 +50,16 @@ def _progress(item: Any) -> tuple[str, bool | None, int | None]:
     return item.item_id.split(" ")[1], item.fully_played, item.resume_position_ms
 
 
+def _subscribe(provider: GPodder, feeds: list[str]) -> None:
+    cast("Mock", provider._client).get_subscriptions = AsyncMock(
+        return_value=SubscriptionsGet(add=feeds, remove=[], timestamp=5)
+    )
+
+
 async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodder) -> None:
     """Episodes reported by url only are matched although their item id holds the guid."""
     _serve(provider)
-    cast("Mock", provider._client).get_subscriptions = AsyncMock(
-        return_value=SubscriptionsGet(add=[FEED], remove=[], timestamp=5)
-    )
+    _subscribe(provider, [FEED])
     with patch(
         "music_assistant.providers.gpodder.refresh_cached_podcast",
         AsyncMock(return_value=PODCAST),
@@ -69,6 +75,54 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
     unplayed = music.mark_item_unplayed
     assert [c.args[0].item_id for c in unplayed.call_args_list] == [f"{FEED} guid-2"]
     assert provider.timestamp_actions == 999
+
+
+async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) -> None:
+    """After a completed sync, the next one asks gPodder only for the actions since."""
+    _serve(provider)
+    # the server returns the whole history for since=0 and nothing newer than the last sync
+    cast("Mock", provider._client).get_episode_actions = AsyncMock(
+        side_effect=lambda since=0: (ACTIONS if since == 0 else [], 999)
+    )
+    _subscribe(provider, [FEED])
+    music = cast("Mock", provider.mass.music)
+    with patch(
+        "music_assistant.providers.gpodder.refresh_cached_podcast",
+        AsyncMock(return_value=PODCAST),
+    ):
+        _ = [podcast async for podcast in provider.get_library_podcasts()]
+        assert music.mark_item_played.call_count == 1
+        _ = [podcast async for podcast in provider.get_library_podcasts()]
+        assert music.mark_item_played.call_count == 1
+        # a newly subscribed feed brings in the whole history again
+        _subscribe(provider, [FEED, "https://example.com/new.xml"])
+        _ = [podcast async for podcast in provider.get_library_podcasts()]
+
+    assert music.mark_item_played.call_count == 2
+
+
+async def test_sync_refreshes_several_feeds_at_once(provider: GPodder) -> None:
+    """Feeds are refreshed concurrently up to the limit, and a broken one is skipped."""
+    _serve(provider)
+    feeds = [f"https://example.com/{number}.xml" for number in range(7)]
+    _subscribe(provider, feeds)
+    running = peak = 0
+
+    async def refresh(*, feed_url: str, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        if feed_url == feeds[3]:
+            raise MediaNotFoundError("gone")
+        return PODCAST
+
+    with patch("music_assistant.providers.gpodder.refresh_cached_podcast", side_effect=refresh):
+        podcasts = [podcast async for podcast in provider.get_library_podcasts()]
+
+    assert sorted(podcast.item_id for podcast in podcasts) == sorted(set(feeds) - {feeds[3]})
+    assert peak == FEED_REFRESH_CONCURRENCY
 
 
 async def test_listing_shows_the_progress_without_writing_it(provider: GPodder) -> None:

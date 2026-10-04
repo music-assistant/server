@@ -14,9 +14,12 @@ Note:
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from itertools import islice
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -86,10 +89,13 @@ CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 # category 0 holds the individual parsed podcasts, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_OTHER = 1
-CACHE_KEY_TIMESTAMP = (
-    "timestamp"  # tuple of two ints, timestamp_subscriptions and timestamp_actions
-)
+# tuple of two ints, timestamp_subscriptions and timestamp_actions; the actions timestamp marks
+# what the sync wrote to the playlog, the previous key ("timestamp") was also moved by listings
+CACHE_KEY_TIMESTAMP = "sync_timestamps"
 CACHE_KEY_FEEDS = "feeds"  # list[str] : all available rss feed urls
+
+# feeds refreshed at the same time during a library sync
+FEED_REFRESH_CONCURRENCY = 5
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
@@ -207,30 +213,16 @@ class GPodder(MusicProvider):
         if subscriptions is None:
             return
 
-        for feed_url in subscriptions.add:
-            self.feeds.add(feed_url)
-        for feed_url in subscriptions.remove:
-            try:
-                self.feeds.remove(feed_url)
-            except KeyError:
-                # a podcast might have been added and removed in our absence...
-                continue
+        feeds = self.feeds | set(subscriptions.add)
+        # a podcast might have been added and removed in our absence...
+        feeds.difference_update(subscriptions.remove)
+        # a feed not in the last completed sync needs its whole history, the others what is new
+        since = self.timestamp_actions if feeds <= self.feeds else 0
 
-        episode_actions, timestamp_action = await self._client.get_episode_actions()
+        episode_actions, timestamp_action = await self._client.get_episode_actions(since=since)
         actions_by_podcast = index_actions(episode_actions)
-        for feed_url in self.feeds:
+        async for feed_url, parsed_podcast in self._refresh_feeds(list(feeds)):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
-            # parse podcast
-            try:
-                parsed_podcast = await refresh_cached_podcast(
-                    mass=self.mass,
-                    provider_instance_id=self.instance_id,
-                    feed_url=feed_url,
-                    max_episodes=self.max_episodes,
-                )
-            except MediaNotFoundError as err:
-                self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
-                continue
 
             # playlog
             actions = actions_by_podcast.get(feed_url, {})
@@ -273,6 +265,7 @@ class GPodder(MusicProvider):
                 domain=self.domain,
             )
 
+        self.feeds = feeds
         self.timestamp_subscriptions = subscriptions.timestamp
         if timestamp_action is not None:
             self.timestamp_actions = timestamp_action
@@ -429,6 +422,40 @@ class GPodder(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _refresh_feeds(
+        self, feed_urls: list[str]
+    ) -> AsyncGenerator[tuple[str, dict[str, Any]]]:
+        """Refresh the cached feeds a few at a time, yielding them in the given order."""
+
+        def refresh(feed_url: str) -> tuple[str, asyncio.Task[dict[str, Any]]]:
+            return feed_url, asyncio.create_task(
+                refresh_cached_podcast(
+                    mass=self.mass,
+                    provider_instance_id=self.instance_id,
+                    feed_url=feed_url,
+                    max_episodes=self.max_episodes,
+                )
+            )
+
+        # only a few refreshed feeds are held at a time, however large the library
+        pending = iter(feed_urls)
+        refreshing = deque(refresh(x) for x in islice(pending, FEED_REFRESH_CONCURRENCY))
+        try:
+            while refreshing:
+                feed_url, task = refreshing.popleft()
+                parsed_podcast: dict[str, Any] | None = None
+                try:
+                    parsed_podcast = await task
+                except MediaNotFoundError as err:
+                    self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
+                if (next_feed_url := next(pending, None)) is not None:
+                    refreshing.append(refresh(next_feed_url))
+                if parsed_podcast is not None:
+                    yield feed_url, parsed_podcast
+        finally:
+            for _, task in refreshing:
+                task.cancel()
 
     def _parse_episode(
         self, prov_podcast_id: str, podcast: dict[str, Any], episode: dict[str, Any], position: int
