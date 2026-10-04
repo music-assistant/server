@@ -22,8 +22,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -144,6 +146,7 @@ class RadiothekProvider(MusicProvider):
         self._bundle: dict[str, Any] | None = None
         self._media_dir = Path(__file__).parent / "media"
         self._throttler = Throttler(rate_limit=ORF_RATE_LIMIT, period=1.0)
+        self._fill_tasks: dict[str, asyncio.Task[None]] = {}
 
         self.stream_proto = "hls"
         self.stream_quality = "qxa"
@@ -226,6 +229,15 @@ class RadiothekProvider(MusicProvider):
         except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
             raise ProviderUnavailableError(f"Unable to fetch ORF station bundle: {err}") from err
 
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        for task in self._fill_tasks.values():
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        self._fill_tasks.clear()
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
@@ -286,7 +298,14 @@ class RadiothekProvider(MusicProvider):
                 return self._bundle
             raise
 
-    async def _get_broadcasts_for_day(self, station: str, day: date) -> list[dict[str, Any]]:
+    async def _get_broadcasts_for_day(self, station: str, day: date) -> list[dict[str, Any]] | None:
+        """
+        Return the broadcasts of a station on a given day.
+
+        :param station: The ORF station id.
+        :param day: The broadcast day.
+        :return: The broadcasts, or None when the day could not be fetched.
+        """
         yyyymmdd = day.strftime("%Y%m%d")
         cache_key = f"broadcasts.{station}.{yyyymmdd}"
         cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
@@ -299,7 +318,7 @@ class RadiothekProvider(MusicProvider):
             )
         except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
             self.logger.warning("Failed to fetch broadcasts of %s for %s: %s", station, day, err)
-            return []
+            return None
 
         payload = data.get("payload")
         items = [x for x in payload if isinstance(x, dict)] if isinstance(payload, list) else []
@@ -315,9 +334,7 @@ class RadiothekProvider(MusicProvider):
         return items
 
     async def _get_broadcast_detail(self, station: str, bid: int) -> dict[str, Any]:
-        cache_key = f"broadcast.{station}.{bid}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
-        if isinstance(cached, dict):
+        if cached := await self._get_cached_broadcast_detail(station, bid):
             return cached
 
         payload = await self._fetch_broadcast_detail(station, bid)
@@ -326,12 +343,21 @@ class RadiothekProvider(MusicProvider):
         # state "C" means the broadcast has completed
         finished = payload.get("state") == "C"
         await self.mass.cache.set(
-            cache_key,
+            self._broadcast_detail_cache_key(station, bid),
             payload,
             expiration=BROADCAST_FINISHED_CACHE if finished else BROADCAST_UNFINISHED_CACHE,
             provider=self.instance_id,
         )
         return payload
+
+    def _broadcast_detail_cache_key(self, station: str, bid: int) -> str:
+        return f"broadcast.{station}.{bid}"
+
+    async def _get_cached_broadcast_detail(self, station: str, bid: int) -> dict[str, Any] | None:
+        cached = await self.mass.cache.get(
+            self._broadcast_detail_cache_key(station, bid), provider=self.instance_id
+        )
+        return cached if isinstance(cached, dict) else None
 
     async def _fetch_broadcast_detail(self, station: str, bid: int) -> dict[str, Any]:
         data = await self._http_get_json(BROADCAST_URL.format(station=station, bid=bid))
@@ -355,7 +381,7 @@ class RadiothekProvider(MusicProvider):
         return cached if isinstance(cached, dict) else {}
 
     async def _fill_broadcast_durations(
-        self, station: str, missing: list[int], current: set[int]
+        self, station: str, missing: list[int], current: set[int] | None
     ) -> None:
         """
         Look up the real audio duration of broadcasts in the background.
@@ -363,22 +389,27 @@ class RadiothekProvider(MusicProvider):
         :param station: The ORF station id.
         :param missing: Broadcast ids without a known duration, in the order to look them up.
         :param current: All broadcast ids still listed, older ones are dropped from the cache.
+            None when the listing was incomplete, then nothing is dropped.
         """
         set_request_priority(RequestPriority.LOW)
         known = {
             bid: seconds
             for bid, seconds in (await self._get_known_durations(station)).items()
-            if bid.isdigit() and int(bid) in current
+            if bid.isdigit() and (current is None or int(bid) in current)
         }
         unsaved = 0
         for bid in missing:
             if str(bid) in known:
                 continue
-            try:
-                detail = await self._fetch_broadcast_detail(station, bid)
-            except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
-                self.logger.debug("Failed to fetch broadcast %s of %s: %s", bid, station, err)
-                continue
+            # reuse a detail cached by opening or playing the episode, but don't cache what
+            # the fill fetches: only the duration is kept, for well over a thousand broadcasts
+            detail = await self._get_cached_broadcast_detail(station, bid)
+            if detail is None:
+                try:
+                    detail = await self._fetch_broadcast_detail(station, bid)
+                except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
+                    self.logger.debug("Failed to fetch broadcast %s of %s: %s", bid, station, err)
+                    continue
             # the detail of a broadcast still on air is incomplete
             if detail.get("state") != "C":
                 continue
@@ -983,6 +1014,12 @@ class RadiothekProvider(MusicProvider):
             if station_id not in allowed:
                 return
 
+        async for episode in self._get_catchup_episodes(bundle, station_id, prov_podcast_id):
+            yield episode
+
+    async def _get_catchup_episodes(
+        self, bundle: dict[str, Any], station_id: str, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode]:
         stations = {s.id: s for s in self._iter_orf_stations(bundle)}
         st = stations.get(station_id)
         if not st:
@@ -994,11 +1031,15 @@ class RadiothekProvider(MusicProvider):
         known = await self._get_known_durations(station_id)
         missing: list[int] = []
         current: set[int] = set()
+        complete = True
 
         today = utc().date()
         for day_offset in range(CATCHUP_DAYS):
             d = today - timedelta(days=day_offset)
             items = await self._get_broadcasts_for_day(station_id, d)
+            if items is None:
+                complete = False
+                continue
             for b in items:
                 episode = self._episode_from_broadcast_obj(
                     b=b,
@@ -1019,13 +1060,12 @@ class RadiothekProvider(MusicProvider):
                 yield episode
 
         if missing:
-            self.mass.create_task(
-                self._fill_broadcast_durations(station_id, missing, current),
+            self._fill_tasks[station_id] = self.mass.create_task(
+                self._fill_broadcast_durations(station_id, missing, current if complete else None),
                 task_id=f"orf_radiothek.durations.{self.instance_id}.{station_id}",
                 task_name="orf_radiothek_fill_durations",
             )
 
-    @use_cache(3600 * 24)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get specific episode of specific podcast."""
         bundle = await self._get_bundle()
