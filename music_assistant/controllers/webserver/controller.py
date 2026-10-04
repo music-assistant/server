@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
 
-DEFAULT_SERVER_PORT = 8095
+DEFAULT_SERVER_PORT = 18095
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
