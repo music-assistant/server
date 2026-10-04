@@ -20,7 +20,6 @@ from .engine import (
     SignalControl,
     _merge_track,
     beam_optimize,
-    camelot_affinity,
 )
 
 if TYPE_CHECKING:
@@ -79,7 +78,6 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/rank_queue", self.rank_queue),
             ("smart_dj/status", self.status),
             ("smart_dj/capabilities", self.capabilities),
-            ("smart_dj/transition_plan", self.transition_plan),
         )
         for command, handler in handlers:
             # this server's API layer has no scope system (register_api_command takes
@@ -407,97 +405,6 @@ class SmartDJProvider(PluginProvider):
             },
         }
 
-    async def transition_plan(
-        self,
-        from_queue_item_id: str,
-        to_queue_item_id: str,
-        transition_bars: int = 8,
-        analysis_provider: str = "auto",
-    ) -> dict[str, Any]:
-        """Return a phrase-aware transition proposal for two queue items."""
-        if transition_bars not in {4, 8, 16, 32}:
-            raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
-        snapshot = await self._queue_snapshot_for_ids(
-            from_queue_item_id,
-            to_queue_item_id,
-            analysis_provider,
-        )
-        a, b = snapshot
-        if a is None or b is None:
-            raise RuntimeError("Both transition tracks must be available")
-        if not a.get("analysis") or not b.get("analysis"):
-            raise RuntimeError("Both transition tracks require audio analysis")
-
-        aa = a["analysis"]
-        bb = b["analysis"]
-        beat_a = aa.get("downbeats") or aa.get("beats") or []
-        beat_b = bb.get("downbeats") or bb.get("beats") or []
-        duration_a = aa.get("duration")
-        bpm_a = aa.get("bpm")
-        bpm_b = bb.get("bpm")
-        phrase_seconds = None
-        if isinstance(bpm_a, (int, float)) and bpm_a > 0:
-            phrase_seconds = (60.0 / float(bpm_a)) * 4 * transition_bars
-        start_out = None
-        if isinstance(duration_a, (int, float)) and phrase_seconds:
-            target = max(0.0, float(duration_a) - phrase_seconds)
-            if beat_a:
-                start_out = min((float(x) for x in beat_a), key=lambda x: abs(x - target))
-        start_in = float(beat_b[0]) if beat_b else 0.0
-        return {
-            "from_queue_item_id": from_queue_item_id,
-            "to_queue_item_id": to_queue_item_id,
-            "transition_bars": transition_bars,
-            "out_start": start_out,
-            "in_start": start_in,
-            "bpm_change": (float(bpm_b) - float(bpm_a)) if isinstance(bpm_a, (int, float)) and isinstance(bpm_b, (int, float)) else None,
-            "key_affinity": camelot_affinity(aa.get("camelot"), bb.get("camelot")),
-            "energy_delta": (float(bb.get("energy")) - float(aa.get("energy"))) if isinstance(aa.get("energy"), (int, float)) and isinstance(bb.get("energy"), (int, float)) else None,
-            "vocal_safe": bool(aa.get("instrumental") or bb.get("instrumental")),
-            "eq_strategy": "bass-duck-crossover",
-        }
-
-    async def _queue_snapshot_for_ids(
-        self,
-        from_queue_item_id: str,
-        to_queue_item_id: str,
-        analysis_provider: str,
-    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        """Analyze two selected queue items without exposing provider credentials."""
-        items = self.mass.player_queues.items(
-            self.mass.player_queues.get_queue_id(from_queue_item_id)
-            if hasattr(self.mass.player_queues, "get_queue_id")
-            else from_queue_item_id,
-            limit=1000,
-            offset=0,
-        )
-        selected = [item for item in items if item.queue_item_id in {from_queue_item_id, to_queue_item_id}]
-        if len(selected) != 2:
-            return None, None
-        snapshot: list[dict[str, Any]] = []
-        for item in selected:
-            media = item.media_item
-            provider = getattr(media, "provider", None) or getattr(media, "provider_instance", None)
-            item_id = getattr(media, "item_id", None)
-            metadata_obj = getattr(media, "metadata", None)
-            genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
-            if not isinstance(item_id, str) or not isinstance(provider, str):
-                self.logger.debug("Smart DJ: skipping media without item/provider ids")
-                continue
-            analysis = await self._analysis(
-                item_id,
-                provider,
-                {
-                    "genre": genres[0] if genres else None,
-                    "genres": list(genres or []),
-                    "explicit": getattr(metadata_obj, "explicit", None) if metadata_obj else None,
-                },
-                analysis_provider,
-            )
-            snapshot.append({ "queue_item_id": item.queue_item_id, "analysis": analysis })
-        by_id = {item["queue_item_id"]: item for item in snapshot}
-        return by_id.get(from_queue_item_id), by_id.get(to_queue_item_id)
-
     async def capabilities(self) -> dict[str, Any]:
         """Describe available Smart DJ analysis and mixing capabilities."""
         analysis_controller = getattr(self.mass.streams, "audio_analysis", None)
@@ -508,7 +415,7 @@ class SmartDJProvider(PluginProvider):
             },
             "mixing": {
                 "smart_fades": True,
-                "transition_planner": True,
+                "transition_planner": False,
                 "vocal_protection": True,
                 "bass_eq_management": True,
                 "tempo_planning": True,
