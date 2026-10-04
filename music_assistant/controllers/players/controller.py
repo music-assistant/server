@@ -80,6 +80,7 @@ from music_assistant.constants import (
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
     ATTR_VOLUME_TARGET,
+    CONF_ALLOW_BROWSER_PLAYERS,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
@@ -137,6 +138,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
@@ -319,10 +321,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 required=False,
                 category="generic",
             ),
+            ConfigEntry(
+                key=CONF_ALLOW_BROWSER_PLAYERS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+                category="generic",
+                advanced=True,
+            ),
             *await create_tts_engine_config_entries(
                 self.mass, CONF_ANNOUNCE_TTS_ENGINE, category="announcements"
             ),
         )
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_ALLOW_BROWSER_PLAYERS}" in changed_keys and (
+            sendspin := self.mass.get_provider("sendspin")
+        ):
+            cast("SendspinProvider", sendspin).apply_browser_players_setting()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
