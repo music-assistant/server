@@ -11,6 +11,9 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/mattamays-ai/server
+concurrency:
+  group: smartdj-image
+  cancel-in-progress: true
 
 jobs:
   build:

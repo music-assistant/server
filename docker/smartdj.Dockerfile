@@ -30,17 +30,16 @@ RUN pip wheel --no-deps -w /wheels /fe
 FROM ghcr.io/music-assistant/server:nightly
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY --from=fewheel /wheels /wheels
-COPY requirements_all.txt /build/requirements_all.txt
-COPY pyproject.toml README.md /build/
+COPY requirements_all.txt MANIFEST.in /build/
+COPY pyproject.toml README.md setup.cfg /build/
 COPY music_assistant /build/music_assistant
+# NOTE: no app_secrets.json handling here — that file is a nightly-only artifact;
+# the fork server never references it (verified: zero `app_secrets` hits in fork source).
 RUN . /app/venv/bin/activate \
   && export UV_INDEX_STRATEGY=unsafe-best-match \
-  && SP=$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))') \
-  && cp "$SP/music_assistant/helpers/app_secrets.json" /tmp/app_secrets.json \
   && uv pip install --python /app/venv/bin/python --no-cache -r /build/requirements_all.txt \
   && uv pip install --python /app/venv/bin/python --no-cache /build \
   && uv pip install --python /app/venv/bin/python --no-cache /wheels/*.whl \
-  && cp /tmp/app_secrets.json "$SP/music_assistant/helpers/app_secrets.json" \
   && rm -rf /build /wheels /root/.cache
 EXPOSE 8095 8097
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
