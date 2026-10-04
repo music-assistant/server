@@ -13,12 +13,21 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.plugin import PluginProvider
 
-from .engine import DJControls, DJMode, MODES, SignalControl, beam_optimize
+from .engine import (
+    MODES,
+    DJControls,
+    DJMode,
+    SignalControl,
+    _merge_track,
+    beam_optimize,
+    camelot_affinity,
+)
 
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
 
 CONF_RAPIDAPI_KEY = "rapidapi_key"
 MUSICAE_HOST = "dj-track-audio-analysis-api.p.rapidapi.com"
@@ -42,6 +51,7 @@ class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig, supported_features: set[Any]) -> None:
+        """Set up the provider and its analysis cache and API handles."""
         super().__init__(mass, manifest, config, supported_features)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -54,6 +64,7 @@ class SmartDJProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_RAPIDAPI_KEY,
                 type=ConfigEntryType.SECURE_STRING,
+                label="RapidAPI key",
                 required=False,
                 advanced=True,
             ),
@@ -71,7 +82,12 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/transition_plan", self.transition_plan),
         )
         for command, handler in handlers:
-            self._handles.append(self.mass.register_api_command(command, handler))
+            # this server's API layer has no scope system (register_api_command takes
+            # required_role, not required_scope). rank_queue mutates the queue, so it
+            # requires the "user" role, which excludes guest accounts; the read-only
+            # commands stay available to any authenticated user.
+            role = "user" if command == "smart_dj/rank_queue" else None
+            self._handles.append(self.mass.register_api_command(command, handler, required_role=role))
 
     async def unload(self, is_removed: bool = False) -> None:
         """Close the HTTP client and unregister commands."""
@@ -141,13 +157,13 @@ class SmartDJProvider(PluginProvider):
                 raise RuntimeError(f"Musicae request failed ({response.status}): {body[:300]}")
             data = await response.json()
             if not isinstance(data, dict):
-                raise RuntimeError("Musicae returned an invalid response")
+                raise TypeError("Musicae returned an invalid response")
             return data
 
     async def _analysis(self, item_id: str, provider: str, metadata: dict[str, Any] | None = None, analysis_provider: str = "auto") -> dict[str, Any] | None:
         """Get analysis using the selected provider policy."""
         if analysis_provider not in {"auto", "music_assistant", "musicae"}:
-            raise RuntimeError(f"Unknown analysis provider: {analysis_provider}")
+            raise TypeError(f"Unknown analysis provider: {analysis_provider}")
         try:
             analysis = None
             if analysis_provider != "musicae":
@@ -171,10 +187,7 @@ class SmartDJProvider(PluginProvider):
                     "instrumentalness": analysis.instrumentalness,
                     "camelot": _camelot_from_key(analysis.key, analysis.mode),
                     "source": "music_assistant",
-                    "sources": {
-                        field: "music_assistant"
-                        for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
-                    },
+                    "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "music_assistant"),
                     **(metadata or {}),
                 }
         except Exception as err:
@@ -197,6 +210,13 @@ class SmartDJProvider(PluginProvider):
         result = data.get("data") if isinstance(data.get("data"), dict) else data
         if not isinstance(result, dict):
             return None
+        instrumental_raw = result.get("instrumental")
+        instrumentalness_raw = result.get("instrumentalness")
+        instrumental_flag = (
+            instrumental_raw
+            if isinstance(instrumental_raw, bool)
+            else (instrumentalness_raw >= 0.5 if isinstance(instrumentalness_raw, (int, float)) else None)
+        )
         normalized = {
             "bpm": result.get("bpm"),
             "key": result.get("key") or result.get("musical_key"),
@@ -212,13 +232,10 @@ class SmartDJProvider(PluginProvider):
             "downbeats": result.get("downbeats"),
             "rms_energy": result.get("rms_energy") or result.get("waveform"),
             "spectral_centroid": result.get("spectral_centroid"),
-            "instrumental": result.get("instrumental") if isinstance(result.get("instrumental"), bool) else (result.get("instrumentalness") >= 0.5 if isinstance(result.get("instrumentalness"), (int, float)) else None),
+            "instrumental": instrumental_flag,
             "instrumentalness": result.get("instrumentalness"),
             "source": "musicae",
-            "sources": {
-                field: "musicae"
-                for field in ("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental")
-            },
+            "sources": dict.fromkeys(("bpm", "key", "camelot", "energy", "danceability", "loudness", "beats_per_bar", "beats", "downbeats", "instrumental"), "musicae"),
             "raw": result,
             **(metadata or {}),
         }
@@ -259,10 +276,10 @@ class SmartDJProvider(PluginProvider):
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
-        for item, analysis in zip(items, analyses, strict=True):
-            if isinstance(analysis, Exception):
-                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], analysis)
-                analysis = None
+        for item, result in zip(items, analyses, strict=True):
+            analysis = None if isinstance(result, Exception) else result
+            if isinstance(result, Exception):
+                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
             analyzed.append({**item, "analysis": analysis})
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}
@@ -327,7 +344,14 @@ class SmartDJProvider(PluginProvider):
         )
         if not control.smart_reorder_enabled:
             if apply:
-                self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
+                # crossfade is a per-player config setting on this server version;
+                # there is no queue-level crossfade API to call
+                self.logger.debug(
+                    "Smart DJ: automix crossfade preference (%s) noted for %s; "
+                    "configure crossfade on the player itself",
+                    control.automix_enabled,
+                    queue_id,
+                )
             return {
                 "queue_id": queue_id,
                 "tracks": tracks[1:],
@@ -345,7 +369,7 @@ class SmartDJProvider(PluginProvider):
         )
         optimized = beam_optimize(
             tracks[1:],
-            snapshot["current"],
+            _merge_track(tracks[0]) if tracks else snapshot["current"],
             selected_mode,
             controls=control,
             beam_width=max(4, min(32, control.lookahead * 3)),
@@ -370,7 +394,6 @@ class SmartDJProvider(PluginProvider):
             if len(prefix) + len(ranked) + len(remainder) != len(items):
                 raise RuntimeError("Queue integrity check failed")
             self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
-            self.mass.player_queues.set_crossfade(queue_id, control.automix_enabled)
         return {
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
@@ -458,6 +481,9 @@ class SmartDJProvider(PluginProvider):
             item_id = getattr(media, "item_id", None)
             metadata_obj = getattr(media, "metadata", None)
             genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
+            if not isinstance(item_id, str) or not isinstance(provider, str):
+                self.logger.debug("Smart DJ: skipping media without item/provider ids")
+                continue
             analysis = await self._analysis(
                 item_id,
                 provider,

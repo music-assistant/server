@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING
 from .provider import SmartDJProvider
 
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
-SUPPORTED_FEATURES = set()
+    from music_assistant.mass import MusicAssistant
+
+SUPPORTED_FEATURES: set[str] = set()
 
 async def setup(
     mass: MusicAssistant,

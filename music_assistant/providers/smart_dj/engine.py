@@ -8,12 +8,16 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class SignalControl:
+    """Per-signal policy: hard enforcement, soft preference, or disabled."""
+
     state: str = "soft"  # hard | soft | disabled
     weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
 class DJWeights:
+    """Relative weights of the scoring signals for a mode."""
+
     bpm: float = 0.30
     key: float = 0.25
     energy: float = 0.15
@@ -26,6 +30,8 @@ class DJWeights:
 
 @dataclass(frozen=True, slots=True)
 class DJMode:
+    """A named DJ preset: tolerances, preferred energy direction, and weights."""
+
     name: str
     bpm_tolerance: float
     energy_direction: float
@@ -35,6 +41,8 @@ class DJMode:
 
 @dataclass(frozen=True, slots=True)
 class DJControls:
+    """User-facing control surface: per-signal policies plus hard constraints."""
+
     bpm: SignalControl = SignalControl()
     key: SignalControl = SignalControl()
     energy: SignalControl = SignalControl()
@@ -83,6 +91,7 @@ def _norm_delta(a: Any, b: Any, scale: float) -> float:
 
 
 def camelot_affinity(a: str | None, b: str | None) -> float:
+    """Harmonic compatibility of two Camelot notations (0.0-1.0)."""
     if not a or not b:
         return 0.5
     if a == b:
@@ -101,7 +110,18 @@ def camelot_affinity(a: str | None, b: str | None) -> float:
     return 0.0
 
 
-def _artist_run_length(path: list[dict[str, Any]], artist: str | None) -> int:
+def _artist_run_length(
+    path: list[dict[str, Any]],
+    artist: str | None,
+    *,
+    anchor_artist: str | None = None,
+) -> int:
+    """Count consecutive same-artist tracks at the end of path, including the anchor.
+
+    The anchor (now-playing / previous fixed track) is not in ``path`` but still
+    counts toward the consecutive-run limit. When the entire path is the same
+    artist as the anchor, the run includes the anchor.
+    """
     if not artist:
         return 0
     count = 0
@@ -109,10 +129,13 @@ def _artist_run_length(path: list[dict[str, Any]], artist: str | None) -> int:
         if item.get("artist") != artist:
             break
         count += 1
+    # If the whole path matches, or the path is empty, fold in the anchor.
+    if count == len(path) and anchor_artist == artist:
+        count += 1
     return count
 
 
-def _hard_fail(
+def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
     current: dict[str, Any] | None,
     candidate: dict[str, Any],
     controls: DJControls,
@@ -259,6 +282,11 @@ def score_candidate(
     *,
     artist_run_length: int = 0,
 ) -> tuple[float, list[str], list[str]]:
+    """Score one candidate against the current track.
+
+    Returns (score, reasons, hard violations); an empty violation list means the
+    candidate is allowed under the current hard constraints.
+    """
     if not candidate:
         return 0.0, [], ["missing analysis"]
     violations = _hard_fail(current, candidate, controls, artist_run_length=artist_run_length)
@@ -276,9 +304,10 @@ def track_score(
     mode: DJMode,
     *,
     bpm_tolerance: float | None = None,
-    energy_target: float | None = None,
+    energy_target: float | None = None,  # noqa: ARG001 - public signature contract
     same_artist: bool = False,
 ) -> tuple[float, list[str]]:
+    """Score a candidate with ad-hoc tolerances (no full DJControls needed)."""
     controls = DJControls(bpm=SignalControl("soft", 1.0), key=SignalControl("soft", 1.0))
     if bpm_tolerance is not None:
         mode = DJMode(mode.name, bpm_tolerance, mode.energy_direction, mode.variety, mode.weights)
@@ -297,12 +326,13 @@ def _merge_track(item: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _optimize_segment(
+def _beam_pass(
     segment: list[dict[str, Any]],
     anchor: dict[str, Any] | None,
     mode: DJMode,
     controls: DJControls,
     beam_width: int,
+    anchor_artist: str | None,
 ) -> list[dict[str, Any]]:
     beams: list[tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = [(0.0, [], list(segment))]
     for _ in range(len(segment)):
@@ -311,15 +341,20 @@ def _optimize_segment(
             current = _merge_track(path[-1]) if path else anchor
             for candidate in remaining:
                 data = _merge_track(candidate)
-                run = _artist_run_length(path, candidate.get("artist"))
+                run = _artist_run_length(
+                    path,
+                    candidate.get("artist"),
+                    anchor_artist=anchor_artist,
+                )
                 score, reasons, violations = score_candidate(
                     current, data, mode, controls, artist_run_length=run
                 )
                 if violations:
                     continue
                 item = {**candidate, "score": score, "reasons": reasons}
-                next_beams.append((total + score, path + [item],
-                                   [x for x in remaining if x is not candidate]))
+                next_beams.append(
+                    (total + score, [*path, item], [x for x in remaining if x is not candidate])
+                )
         next_beams.sort(key=lambda x: x[0], reverse=True)
         beams = next_beams[:beam_width]
         if not beams:
@@ -327,7 +362,26 @@ def _optimize_segment(
     return beams[0][1] if beams else []
 
 
-def beam_optimize(
+def _optimize_segment(
+    segment: list[dict[str, Any]],
+    anchor: dict[str, Any] | None,
+    mode: DJMode,
+    controls: DJControls,
+    beam_width: int,
+) -> list[dict[str, Any]]:
+    anchor_artist = anchor.get("artist") if anchor else None
+    optimized = _beam_pass(segment, anchor, mode, controls, beam_width, anchor_artist)
+    if len(optimized) != len(segment) and anchor_artist is not None:
+        # The anchor boundary can make the artist-run constraint unsatisfiable
+        # (e.g. the queue continues the now-playing artist): no ordering of the
+        # segment can satisfy it, and bailing out fails the whole queue. The
+        # queue is fixed reality; the optimizer only chooses the order. Retry
+        # with the boundary constraint relaxed rather than brick the queue.
+        optimized = _beam_pass(segment, anchor, mode, controls, beam_width, None)
+    return optimized
+
+
+def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
     tracks: list[dict[str, Any]],
     current: dict[str, Any] | None,
     mode: DJMode,
@@ -363,11 +417,6 @@ def beam_optimize(
             and t.get("queue_item_id") not in excluded_ids
         )
     }
-    movable = [
-        t for idx, t in enumerate(tracks)
-        if idx not in fixed_positions and t.get("queue_item_id") not in excluded_ids
-    ]
-    excluded = [t for t in tracks if t.get("queue_item_id") in excluded_ids]
 
     # Optimize each interval between fixed anchors. Excluded tracks do not occupy
     # an output slot, so they must not affect segment sizing.
@@ -424,8 +473,8 @@ def beam_optimize(
         if end_index != len(result) - 1:
             if result[end_index].get("queue_item_id") in fixed_ids:
                 raise RuntimeError("End track is fixed and cannot be moved to the end")
-            end = result.pop(end_index)
-            result.append({**end, "reasons": [*end.get("reasons", []), "end track"]})
+            end_item = result.pop(end_index)
+            result.append({**end_item, "reasons": [*end_item.get("reasons", []), "end track"]})
 
     annotated: list[dict[str, Any]] = []
     previous = current
