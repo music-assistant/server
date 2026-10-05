@@ -74,14 +74,9 @@ class AppleMusicLibraryManager:
         rating_library_response = await self.api.get_ratings(
             album_library_item_ids, MediaType.ALBUM
         )
-        for item in album_items:
-            if item and item["id"]:
-                if await self._is_withdrawn_library_album(item):
-                    # Apple keeps listing these, but there is nothing left on them to play
-                    self.logger.debug(
-                        "Skipping library album %s: all its songs point at withdrawn catalog ids",
-                        item["id"],
-                    )
+        for listing_item in album_items:
+            if listing_item and listing_item["id"]:
+                if (item := await self._with_song_catalog_album(listing_item)) is None:
                     continue
                 is_favourite = (
                     rating_catalog_response.get(item["id"])
@@ -453,26 +448,48 @@ class AppleMusicLibraryManager:
             )
         return details
 
-    async def _is_withdrawn_library_album(self, item: dict[str, Any]) -> bool:
-        """Return True for a catalog-less library album whose songs all lost their catalog id."""
+    async def _with_song_catalog_album(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the album linked to its songs' catalog album, or None when nothing is playable."""
         album_catalog = item.get("relationships", {}).get("catalog", {}).get("data")
         if item.get("type") != "library-albums" or album_catalog:
-            return False
+            return item
         has_songs = False
+        catalog_albums: dict[str, dict[str, Any]] = {}
         try:
+            # include[songs] nests each catalog song's album under its catalog relationship
+            params: dict[str, Any] = {"include": "catalog", "include[songs]": "albums"}
             async for song in self.api.iter_all_items(
-                f"me/library/albums/{item['id']}/tracks", include="catalog"
+                f"me/library/albums/{item['id']}/tracks", **params
             ):
                 has_songs = True
                 # uploads never had a catalog version, so only a catalog id that no longer
                 # resolves marks a song as withdrawn
-                catalog_id = song.get("attributes", {}).get("playParams", {}).get("catalogId")
-                if not catalog_id or song.get("relationships", {}).get("catalog", {}).get("data"):
-                    return False
+                if not song.get("attributes", {}).get("playParams", {}).get("catalogId"):
+                    return item
+                song_catalog = song.get("relationships", {}).get("catalog", {}).get("data")
+                if not song_catalog:
+                    continue
+                song_albums = song_catalog[0].get("relationships", {}).get("albums", {}).get("data")
+                if not song_albums:
+                    return item
+                catalog_albums[song_albums[0]["id"]] = song_albums[0]
         except MusicAssistantError as err:
             self.logger.debug("Unable to check the songs of library album %s: %s", item["id"], err)
-            return False
-        return has_songs
+            return item
+        if not has_songs:
+            return item
+        if not catalog_albums:
+            # Apple keeps listing these, but there is nothing left on them to play
+            self.logger.debug(
+                "Skipping library album %s: all its songs point at withdrawn catalog ids",
+                item["id"],
+            )
+            return None
+        if len(catalog_albums) > 1:
+            return item
+        # without it the bare listing row duplicates the catalog album the songs sync onto
+        catalog = {"data": list(catalog_albums.values())}
+        return {**item, "relationships": {**item.get("relationships", {}), "catalog": catalog}}
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
