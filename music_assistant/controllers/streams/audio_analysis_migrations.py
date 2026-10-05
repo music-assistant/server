@@ -178,7 +178,7 @@ async def _convert_legacy_analysis(database: DatabaseConnection, logger: logging
 
 async def _relocate_legacy_failures(database: DatabaseConnection, logger: logging.Logger) -> int:
     """
-    Copy the legacy main.audio_analysis_failures into the attached db in id batches, then drop it.
+    Copy the legacy main.audio_analysis_failures into the attached db in batches, then drop it.
 
     :param database: The music library connection the analysis database is attached to.
     :param logger: Logger to report progress on.
@@ -189,12 +189,6 @@ async def _relocate_legacy_failures(database: DatabaseConnection, logger: loggin
         return 0
     schema = constants.AA_DB_SCHEMA
     total = await database.get_count_from_query(f"SELECT id FROM main.{table}")
-    max_id = 0
-    if total:
-        row = await database.get_rows_from_query(
-            f"SELECT MAX(id) AS max_id FROM main.{table}", limit=1
-        )
-        max_id = int(row[0]["max_id"])
     logger.info(
         "Moving %s rows from library.db table %s to %s", total, table, constants.AA_DB_FILENAME
     )
@@ -202,7 +196,17 @@ async def _relocate_legacy_failures(database: DatabaseConnection, logger: loggin
     updates = ", ".join(f"{column} = excluded.{column}" for column in _FAILURE_COLUMNS)
     copied = 0
     last_id = 0
-    while last_id < max_id:
+    while True:
+        # page by existing ids: insert_or_replace churn leaves the legacy ids sparse
+        row = await database.get_rows_from_query(
+            f"SELECT MAX(id) AS upper FROM (SELECT id FROM main.{table} "
+            "WHERE id > :last_id ORDER BY id LIMIT :batch_size)",
+            {"last_id": last_id, "batch_size": constants.RELOCATE_BATCH_SIZE},
+            limit=0,
+        )
+        if row[0]["upper"] is None:
+            break
+        upper = int(row[0]["upper"])
         cursor = await database.execute(
             f"INSERT INTO {schema}.{table} ({cols}) "
             f"SELECT {cols} FROM main.{table} "
@@ -210,11 +214,11 @@ async def _relocate_legacy_failures(database: DatabaseConnection, logger: loggin
             "ON CONFLICT(item_id, provider, aa_provider_domain, media_type) "
             f"DO UPDATE SET {updates} "
             f"WHERE excluded.timestamp_created > {table}.timestamp_created",
-            {"last_id": last_id, "upper": last_id + constants.RELOCATE_BATCH_SIZE},
+            {"last_id": last_id, "upper": upper},
         )
         await database.commit()
         copied += cursor.rowcount
-        last_id += constants.RELOCATE_BATCH_SIZE
+        last_id = upper
         logger.debug("Moved %s/%s rows of %s", min(copied, total), total, table)
     missing = await database.get_count_from_query(
         f"SELECT m.id FROM main.{table} m WHERE NOT EXISTS ("
