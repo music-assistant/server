@@ -112,5 +112,5 @@ yandex-music==3.0.0
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
 yoto-api==4.4.1
 ytmusicapi==1.12.3
-zeroconf==0.149.16
+zeroconf==0.151.5
 zvuk-music[async]==0.6.1
