@@ -101,6 +101,18 @@ __all__ = [
 ]
 
 
+def _confirmation_prompt(name: str, evidence: frozenset[str]) -> str:
+    """Name every capability (and impersonation) that accepting the prompt grants."""
+    capabilities = sorted(item for item in evidence if item != "impersonation")
+    parts = []
+    if capabilities:
+        label = "capability" if len(capabilities) == 1 else "capabilities"
+        parts.append(f"{label} {', '.join(capabilities)}")
+    if "impersonation" in evidence:
+        parts.append("impersonation of another user")
+    return f"Run {name} using {' and '.join(parts)}?"
+
+
 def _public_tool_error(exc: ToolError) -> ToolError:
     """Map internal failures to the finite, redacted public vocabulary."""
     message = str(exc)
@@ -812,7 +824,7 @@ class DynamicAPIAdapter:
         if not evidence:
             return frozenset()
         capability = self._confirmation_capability(invocation)
-        prompt = f"Run {invocation.entry.name} using capability {capability}?"
+        prompt = _confirmation_prompt(invocation.entry.name, evidence)
         self._audit_invocation(
             invocation,
             "confirmation.requested",

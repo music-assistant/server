@@ -1530,3 +1530,46 @@ async def test_alternative_capability_catalog_mode_is_conservative() -> None:
     )
     entry = (await adapter.visible_entries())[0]
     assert entry.policy_mode is PolicyMode.CONFIRM
+
+
+async def test_confirmation_prompt_names_every_capability_it_grants() -> None:
+    """One confirmation that grants several capabilities discloses all of them."""
+
+    async def save(
+        provider_domain: str,
+        values: dict[str, Any],
+        instance_id: str | None = None,
+    ) -> None:
+        del provider_domain, values, instance_id
+
+    token = AccessToken(token="config", client_id="id-config", scopes=[])
+    adapter = _adapter(
+        [_handler("config/providers/save", save, "config.providers.write")],
+        current_token=[token],
+        policies={
+            "config": _custom(
+                config__write__provider=PolicyMode.CONFIRM,
+                config__write__secret=PolicyMode.CONFIRM,
+            )
+        },
+    )
+    adapter.mass.config.get_provider_config_entries = AsyncMock(
+        return_value=[ConfigEntry(key="token", type=ConfigEntryType.SECURE_STRING, label="Token")]
+    )
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(return_value=SimpleNamespace(action="accept", data=True))
+
+    await adapter.call(
+        "ma_api:config/providers/save",
+        {"provider_domain": "demo", "instance_id": "demo--1", "values": {"token": "x"}},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=ctx,
+    )
+
+    prompts = [call.args[0] for call in ctx.elicit.await_args_list]
+    assert prompts
+    assert all(
+        "config:write:provider" in prompt and "config:write:secret" in prompt for prompt in prompts
+    )
