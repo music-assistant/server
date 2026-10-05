@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import pathlib
 import sqlite3
@@ -36,7 +37,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     _merged_from_rows,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
-from music_assistant.controllers.streams.constants import AA_DB_SCHEMA, AA_TABLE_ANALYSIS
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -491,8 +492,26 @@ def _make_controller() -> AudioAnalysisController:
     streams.mass = MagicMock()
     streams.mass.logger.getChild.return_value = MagicMock()
     controller = AudioAnalysisController(streams)
+    controller._database = MagicMock(close=AsyncMock())
     controller._database_ready = True
     return controller
+
+
+def _skip_track_key_load(controller: AudioAnalysisController) -> list[str]:
+    """
+    Replace the TEMP-table key load with a no-op so a test sees only the candidate query.
+
+    :returns: The filesystem domains the key load was asked for, filled in when it runs.
+    """
+    loaded_domains: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def _no_load(domains: Any) -> AsyncGenerator[None]:
+        loaded_domains.extend(domains)
+        yield
+
+    controller._filesystem_track_keys = _no_load  # type: ignore[method-assign,assignment]
+    return loaded_domains
 
 
 def _make_aa_provider(
@@ -607,7 +626,8 @@ async def test_find_candidates_handles_sqlite_row_without_get(
             }
         ),
     ]
-    controller.mass.music.database.get_rows_from_query = AsyncMock(return_value=rows)  # type: ignore[method-assign]
+    controller.database.get_rows_from_query = AsyncMock(return_value=rows)  # type: ignore[method-assign]
+    _skip_track_key_load(controller)
 
     result = await controller._find_candidates_missing_analysis({"loudness_analysis": 1}, 100)
 
@@ -648,7 +668,8 @@ async def test_find_candidates_query_gates_on_current_version(
         captured["params"] = params
         return []
 
-    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+    controller.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+    _skip_track_key_load(controller)
 
     await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
 
@@ -943,9 +964,8 @@ def _stub_controller(
             yield row
 
     db.iter_rows_from_query = MagicMock(side_effect=_iter_stub)
+    c._database = db
     c.mass = MagicMock()
-    c.mass.music = MagicMock()
-    c.mass.music.database = db
     c.mass.get_providers = MagicMock(return_value=[])
     return c, db
 
@@ -1315,10 +1335,9 @@ async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
 
 @pytest.fixture
 async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
-    """Create a real on-disk sqlite DB with the aa-schema audio_analysis table attached."""
+    """Create a real on-disk sqlite analysis DB holding the audio_analysis table."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
     await db.setup()
-    await db.execute(f"ATTACH DATABASE ':memory:' AS {AA_DB_SCHEMA}")
     await db.execute(
         f"CREATE TABLE {AA_TABLE_ANALYSIS}("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
@@ -1367,9 +1386,9 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
 
     streams = MagicMock()
     streams.mass = MagicMock()
-    streams.mass.music.database = real_audio_analysis_db
     streams.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])
     controller = AudioAnalysisController(streams)
+    controller._database = real_audio_analysis_db
 
     with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
         controller._database_ready = True
@@ -1415,8 +1434,8 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
 
     streams = MagicMock()
     streams.mass = MagicMock()
-    streams.mass.music.database = real_audio_analysis_db
     controller = AudioAnalysisController(streams)
+    controller._database = real_audio_analysis_db
 
     controller._database_ready = True
     rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
@@ -1546,7 +1565,7 @@ async def test_coverage_returns_three_counts_and_version() -> None:
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
     c.get_audio_analysis_count = AsyncMock(return_value=100)  # type: ignore[method-assign]
     c._count_candidates_missing_analysis = AsyncMock(return_value=20)  # type: ignore[method-assign]
-    c.mass.music.database.get_count_from_query = AsyncMock(  # type: ignore[method-assign]
+    c.database.get_count_from_query = AsyncMock(  # type: ignore[method-assign]
         return_value=5
     )
 
@@ -1609,6 +1628,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov.domain = domain
     fs_prov.available = True
     c.mass.providers = [fs_prov]  # type: ignore[misc]
+    loaded_domains = _skip_track_key_load(c)
 
     result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 
@@ -1618,7 +1638,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "NOT EXISTS" in sql
     assert "an.analysis_version IS NOT NULL" in sql
     assert "an.analysis_version >= :current_version" in sql
-    assert f"'{domain}'" in sql
+    assert loaded_domains == [domain]
     assert params["media_type"] == MediaType.TRACK.value
     assert params["aa_domain"] == "sonic_analysis"
     assert params["current_version"] == 2
@@ -1734,7 +1754,7 @@ async def test_get_audio_analysis_deletes_unparsable_rows(
 
     assert result is not None
     assert result.bpm == 101.0
-    delete_mock = cast("AsyncMock", controller.mass.music.database.delete)
+    delete_mock = cast("AsyncMock", controller.database.delete)
     delete_mock.assert_awaited_once_with(AA_TABLE_ANALYSIS, {"id": 7})
     warning = next(r for r in caplog.records if r.name == audio_analysis_mod.LOGGER.name)
     assert "in field spectral_centroid" in warning.getMessage()

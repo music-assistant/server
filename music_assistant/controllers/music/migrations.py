@@ -12,18 +12,20 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError, ProviderUnavailableError
 from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
@@ -42,9 +44,14 @@ from music_assistant.constants import (
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MEDIA_ITEM_DB_TABLES,
 )
-from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.controllers.music.constants import (
+    AUDIO_ANALYSIS_MOVE_BATCH_SIZE,
+    DB_SCHEMA_VERSION,
+)
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
+from music_assistant.controllers.streams.audio_analysis_database import create_analysis_tables
+from music_assistant.controllers.streams.constants import AA_DB_FILENAME
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
@@ -54,6 +61,29 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.database import DatabaseConnection
+
+
+# schema name the analysis database is attached under while legacy rows are moved into it
+_AUDIO_ANALYSIS_SCHEMA = "aa"
+_ANALYSIS_COLUMNS = (
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "analysis_data",
+    "analysis_version",
+    "timestamp_created",
+)
+_FAILURE_COLUMNS = (
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "reason",
+    "analysis_version",
+    "next_retry",
+    "timestamp_created",
+)
 
 
 async def ensure_legacy_audio_analysis_table(database: DatabaseConnection) -> None:
@@ -1220,6 +1250,10 @@ async def migrate_database(  # noqa: PLR0915
             shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
         )
 
+    if prev_version <= 62:
+        # audio analysis moved out of library.db into a database file of its own
+        await _move_audio_analysis_out(mass, database, logger)
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:
@@ -1260,3 +1294,124 @@ async def migrate_database(  # noqa: PLR0915
 
     # always clear the cache after a db migration
     await mass.cache.clear()
+
+
+async def _move_audio_analysis_out(
+    mass: MusicAssistant, database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Move the audio analysis tables out of library.db into audio_analysis.db.
+
+    Never raises: a table that cannot be moved completely stays in library.db.
+
+    :param mass: The MusicAssistant instance, for the storage path.
+    :param database: The music library connection.
+    :param logger: Logger to report progress on.
+    """
+    tables = [
+        (table, columns)
+        for table, columns in (
+            (DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS),
+            (DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS),
+        )
+        if await database.get_rows_from_query(
+            "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
+            {"name": table},
+            limit=1,
+        )
+    ]
+    if not tables:
+        return
+    db_path = os.path.join(mass.storage_path, AA_DB_FILENAME)
+    try:
+        # ATTACH cannot run inside a transaction
+        await database.commit()
+        await database.execute(
+            f"ATTACH DATABASE :path AS {_AUDIO_ANALYSIS_SCHEMA}", {"path": db_path}
+        )
+    # a failed library migration resets library.db, so nothing here may raise
+    except Exception as err:
+        logger.error(
+            "Could not open %s (%s); audio analysis stays in library.db", AA_DB_FILENAME, err
+        )
+        return
+    try:
+        # a newer analysis schema raises here, before anything is written
+        await create_analysis_tables(database, _AUDIO_ANALYSIS_SCHEMA)
+        for table, columns in tables:
+            await _move_audio_analysis_table(database, logger, table, columns)
+    except Exception as err:
+        logger.error(
+            "Could not move audio analysis to %s (%s); the remaining rows stay in library.db",
+            AA_DB_FILENAME,
+            err,
+        )
+    finally:
+        with suppress(sqlite3.Error):
+            await database.commit()
+            await database.execute(f"DETACH DATABASE {_AUDIO_ANALYSIS_SCHEMA}")
+
+
+async def _move_audio_analysis_table(
+    database: DatabaseConnection,
+    logger: logging.Logger,
+    table: str,
+    columns: tuple[str, ...],
+) -> None:
+    """
+    Copy one audio analysis table into the attached analysis database in batches, then drop it.
+
+    Conflicts on the natural key keep the newer row, so rows a downgraded build wrote win
+    over older copies.
+
+    :param database: The music library connection with the analysis database attached.
+    :param logger: Logger to report progress on.
+    :param table: Name of the table, the same in library.db and the analysis database.
+    :param columns: Column names (excluding id) the two tables share.
+    """
+    schema = _AUDIO_ANALYSIS_SCHEMA
+    total = await database.get_count_from_query(f"SELECT id FROM main.{table}")
+    logger.info("Moving %s rows of %s to %s", total, table, AA_DB_FILENAME)
+    cols = ", ".join(columns)
+    updates = ", ".join(f"{column} = excluded.{column}" for column in columns)
+    copied = 0
+    last_id = 0
+    while True:
+        # page by existing ids: insert_or_replace churn leaves the legacy ids sparse
+        row = await database.get_rows_from_query(
+            f"SELECT MAX(id) AS upper FROM (SELECT id FROM main.{table} "
+            "WHERE id > :last_id ORDER BY id LIMIT :batch_size)",
+            {"last_id": last_id, "batch_size": AUDIO_ANALYSIS_MOVE_BATCH_SIZE},
+            limit=0,
+        )
+        if row[0]["upper"] is None:
+            break
+        upper = int(row[0]["upper"])
+        cursor = await database.execute(
+            f"INSERT INTO {schema}.{table} ({cols}) "
+            f"SELECT {cols} FROM main.{table} "
+            f"WHERE id > :last_id AND id <= :upper ORDER BY id "
+            "ON CONFLICT(item_id, provider, aa_provider_domain, media_type) "
+            f"DO UPDATE SET {updates} "
+            f"WHERE excluded.timestamp_created > {table}.timestamp_created",
+            {"last_id": last_id, "upper": upper},
+        )
+        await database.commit()
+        copied += cursor.rowcount
+        last_id = upper
+        logger.debug("Moved %s/%s rows of %s", min(copied, total), total, table)
+    # verify by natural key, not row count: the analysis file can already hold rows
+    # of its own, so its count alone can't prove every row landed
+    missing = await database.get_count_from_query(
+        f"SELECT m.id FROM main.{table} m WHERE NOT EXISTS ("
+        f"SELECT 1 FROM {schema}.{table} a "
+        f"WHERE a.item_id = m.item_id AND a.provider = m.provider "
+        f"AND a.aa_provider_domain = m.aa_provider_domain AND a.media_type = m.media_type)"
+    )
+    if missing:
+        raise ProviderUnavailableError(
+            f"Moving {table} incomplete ({missing} of {total} rows still in library.db)"
+        )
+    await database.execute(f"DROP TABLE main.{table}")
+    await database.commit()
+    logger.info("Moved %s of %s rows of %s to %s", copied, total, table, AA_DB_FILENAME)

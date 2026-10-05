@@ -16,7 +16,7 @@ import asyncio
 import os
 import shutil
 import sqlite3
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import MusicAssistantError
 
@@ -68,16 +68,6 @@ if TYPE_CHECKING:
 PLAYLOG_CONFLICT_KEYS: Final[tuple[str, ...]] = ("item_id", "provider", "media_type", "userid")
 
 
-class LibraryResetHook(Protocol):
-    """Keeps state tied to the library database connection and must follow a reset."""
-
-    async def before_library_reset(self) -> None:
-        """Prepare for the library database being deleted; raise to refuse the reset."""
-
-    async def after_library_reset(self) -> None:
-        """Handle the new library database connection being ready."""
-
-
 class MusicDatabaseSetupMixin:
     """
     Mixin class providing database setup and migration for the MusicController.
@@ -100,7 +90,6 @@ class MusicDatabaseSetupMixin:
         mass: MusicAssistant
         logger: logging.Logger
         _database: DatabaseConnection | None
-        _reset_hooks: list[LibraryResetHook]
         albums: AlbumsController
         artists: ArtistsController
         tracks: TracksController
@@ -120,14 +109,6 @@ class MusicDatabaseSetupMixin:
             media_types: list[MediaType] | None = None,
             providers: list[str] | None = None,
         ) -> list[BackgroundTask]: ...
-
-    def register_reset_hook(self, hook: LibraryResetHook) -> None:
-        """
-        Register a hook that runs around a reset of the library database.
-
-        :param hook: Object notified before and after the library database is reset.
-        """
-        self._reset_hooks.append(hook)
 
     async def _cleanup_database(self) -> None:
         """Perform database cleanup/maintenance."""
@@ -278,14 +259,10 @@ class MusicDatabaseSetupMixin:
 
     async def _reset_database(self) -> None:
         """Reset the database."""
-        for hook in self._reset_hooks:
-            await hook.before_library_reset()
         await self.close()
         db_path = os.path.join(self.mass.storage_path, "library.db")
         await asyncio.to_thread(os.remove, db_path)
         await self._setup_database()
-        for hook in self._reset_hooks:
-            await hook.after_library_reset()
         # initiate full sync
         await self.start_sync()
 

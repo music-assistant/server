@@ -55,7 +55,7 @@ async def _add_analysis_row(
     mass: MusicAssistant, item_id: str, provider_key: str = FS_INSTANCE
 ) -> None:
     """Insert an analysis row for the given provider item id."""
-    await mass.music.database.insert(
+    await mass.streams.audio_analysis.database.insert(
         AA_TABLE_ANALYSIS,
         {
             "media_type": MediaType.TRACK.value,
@@ -70,7 +70,7 @@ async def _add_analysis_row(
 
 async def _add_failure_row(mass: MusicAssistant, item_id: str, provider_key: str) -> None:
     """Insert a never-retry failure for the given provider item key."""
-    await mass.music.database.insert(
+    await mass.streams.audio_analysis.database.insert(
         AA_TABLE_FAILURES,
         {
             "media_type": MediaType.TRACK.value,
@@ -96,7 +96,9 @@ async def test_post_setup_drains_deleted_providers(mass: MusicAssistant) -> None
     assert not await mass.music.database.get_rows(
         DB_TABLE_PROVIDER_MAPPINGS, {"provider_instance": FS_INSTANCE}
     )
-    assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-track"})
+    assert not await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "fs-track"}
+    )
     assert (
         mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == []
     )
@@ -110,8 +112,12 @@ async def test_remove_item_from_library_deletes_analysis(mass: MusicAssistant) -
 
     await mass.music.remove_item_from_library(MediaType.TRACK, str(db_id))
 
-    assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-removed"})
-    assert not await mass.music.database.get_rows(AA_TABLE_FAILURES, {"item_id": "fs-removed"})
+    assert not await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "fs-removed"}
+    )
+    assert not await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_FAILURES, {"item_id": "fs-removed"}
+    )
 
 
 @pytest.mark.parametrize("removal", ["single", "all", "provider"])
@@ -150,8 +156,10 @@ async def test_mapping_removal_cleans_analysis_for_kept_track(
         spotify_instance
     }
     for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
-        assert not await mass.music.database.get_rows(table, {"provider": FS_INSTANCE})
-        assert await mass.music.database.get_rows(
+        assert not await mass.streams.audio_analysis.database.get_rows(
+            table, {"provider": FS_INSTANCE}
+        )
+        assert await mass.streams.audio_analysis.database.get_rows(
             table, {"item_id": "sp-kept", "provider": "spotify"}
         )
 
@@ -180,7 +188,9 @@ async def test_shared_domain_analysis_survives_other_account_removal(
         else:
             await mass.music.tracks.remove_provider_mappings(db_id, instance)
         for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
-            assert bool(await mass.music.database.get_rows(table, match)) == (index == 0)
+            assert bool(await mass.streams.audio_analysis.database.get_rows(table, match)) == (
+                index == 0
+            )
 
 
 @pytest.mark.parametrize("removal", ["item", "single", "all"])
@@ -212,11 +222,11 @@ async def test_shared_analysis_survives_removal_from_another_library_item(
         else:
             await mass.music.tracks.remove_provider_mappings(db_id, instance)
         for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
-            assert not await mass.music.database.get_rows(
+            assert not await mass.streams.audio_analysis.database.get_rows(
                 table, {"item_id": "sp-shared", "provider": instance}
             )
             assert bool(
-                await mass.music.database.get_rows(
+                await mass.streams.audio_analysis.database.get_rows(
                     table, {"item_id": "sp-shared", "provider": "spotify"}
                 )
             ) == (index == 0)
@@ -242,7 +252,10 @@ async def test_cleanup_waits_for_analysis_database(
     assert await mass.music.database.get_rows(
         DB_TABLE_PROVIDER_MAPPINGS, {"provider_instance": FS_INSTANCE}
     )
-    assert await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"})
+    # read past the readiness gate: the rows themselves must still be there
+    analysis_db = mass.streams.audio_analysis._database
+    assert analysis_db is not None
+    assert await analysis_db.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"})
     assert mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == [
         FS_INSTANCE
     ]
@@ -255,7 +268,9 @@ async def test_cleanup_waits_for_analysis_database(
     assert not await mass.music.database.get_rows(
         DB_TABLE_PROVIDER_MAPPINGS, {"provider_instance": FS_INSTANCE}
     )
-    assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"})
+    assert not await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"}
+    )
     assert (
         mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == []
     )
@@ -281,7 +296,10 @@ async def test_failed_analysis_cleanup_preserves_removal_keys(
             ),
         )
     original = await mass.music.tracks.get_library_item(db_id)
-    real_delete = mass.music.database.delete
+    # the analysis connection itself, so it can be read past the readiness gate
+    analysis_db = mass.streams.audio_analysis._database
+    assert analysis_db is not None
+    real_delete = analysis_db.delete
 
     async def failing_delete(
         table: str, match: dict[str, Any] | None = None, query: str | None = None
@@ -302,7 +320,7 @@ async def test_failed_analysis_cleanup_preserves_removal_keys(
         if failure == "unavailable":
             failing.setattr(mass.streams.audio_analysis, "_database_ready", False)
         else:
-            failing.setattr(mass.music.database, "delete", failing_delete)
+            failing.setattr(analysis_db, "delete", failing_delete)
         expected_error = (
             ProviderUnavailableError if failure == "unavailable" else sqlite3.OperationalError
         )
@@ -319,7 +337,7 @@ async def test_failed_analysis_cleanup_preserves_removal_keys(
                 "provider_instance": FS_INSTANCE,
             },
         )
-        assert await mass.music.database.get_rows(
+        assert await analysis_db.get_rows(
             AA_TABLE_FAILURES, {"item_id": "fs-retry", "provider": FS_INSTANCE}
         )
 
@@ -334,6 +352,6 @@ async def test_failed_analysis_cleanup_preserves_removal_keys(
         },
     )
     for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
-        assert not await mass.music.database.get_rows(
+        assert not await mass.streams.audio_analysis.database.get_rows(
             table, {"item_id": "fs-retry", "provider": FS_INSTANCE}
         )

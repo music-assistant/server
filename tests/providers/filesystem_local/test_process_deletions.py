@@ -152,7 +152,7 @@ async def test_deleted_file_keeps_other_provider_mappings(
         "item_id": file_path,
         "provider": "filesystem_local--test",
     }
-    await mass.music.database.insert(
+    await mass.streams.audio_analysis.database.insert(
         AA_TABLE_ANALYSIS,
         {**analysis_row, "aa_provider_domain": "test", "analysis_data": "{}"},
     )
@@ -162,4 +162,4 @@ async def test_deleted_file_keeps_other_provider_mappings(
     library_track = await mass.music.tracks.get_library_item(db_track.item_id)
     assert {x.provider_instance for x in library_track.provider_mappings} == {"spotify--test"}
     # the deleted file's audio analysis must not be reused by a new file at the same path
-    assert not await mass.music.database.get_row(AA_TABLE_ANALYSIS, analysis_row)
+    assert not await mass.streams.audio_analysis.database.get_row(AA_TABLE_ANALYSIS, analysis_row)
