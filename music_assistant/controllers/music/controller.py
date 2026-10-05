@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -2236,6 +2237,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param provider_instance_id_or_domain: The requested provider instance id or domain.
         :raises InsufficientPermissions: The user may not see that music source.
+        :raises ProviderUnavailableError: The user's music source is not available.
         """
         user = get_current_user()
         if (
@@ -2251,6 +2253,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if allowed_instance := self._resolve_allowed_provider_instance(
             provider_instance_id_or_domain, allowed
         ):
+            # never let an unavailable instance fall back to another of the same domain
+            if exact_provider(self.mass, allowed_instance) is None:
+                raise ProviderUnavailableError(f"{allowed_instance} is not available")
             return allowed_instance
         raise InsufficientPermissions(
             f"{provider_instance_id_or_domain} is not a music source of this user"

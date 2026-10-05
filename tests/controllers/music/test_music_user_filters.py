@@ -19,7 +19,11 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -895,35 +899,41 @@ async def test_genre_library_count_ignores_music_sources(
 
 
 @pytest.mark.parametrize(
-    ("requested", "expected"),
+    ("requested", "own_available", "expected"),
     [
         # the denied instance is listed first, so an unbound domain lookup would resolve to it
-        ("spotify", "spotify--TPf9JZ2K"),
-        ("spotify--TPf9JZ2K", "spotify--TPf9JZ2K"),
-        ("library", "library"),
-        ("plugin_inst", "plugin_inst"),
-        ("spotify--AAAAAAAA", None),
+        ("spotify", True, "spotify--TPf9JZ2K"),
+        ("spotify--TPf9JZ2K", True, "spotify--TPf9JZ2K"),
+        ("library", True, "library"),
+        ("plugin_inst", True, "plugin_inst"),
+        ("spotify--AAAAAAAA", True, InsufficientPermissions),
+        # mass.get_provider would serve the unavailable own account through the hidden one
+        ("spotify", False, ProviderUnavailableError),
+        ("spotify--TPf9JZ2K", False, ProviderUnavailableError),
     ],
 )
 @patch("music_assistant.controllers.music.controller.get_current_user")
 def test_resolve_visible_provider(
-    mock_get_user: Mock, requested: str, expected: str | None
+    mock_get_user: Mock,
+    requested: str,
+    own_available: bool,
+    expected: str | type[Exception],
 ) -> None:
-    """A read is bound to a music source the user may see, or refused."""
+    """A read is bound to an available music source the user may see, or refused."""
     mock_get_user.return_value = _user(USER_A)
     controller = _controller_with_sources(
         {"spotify--AAAAAAAA": _private(USER_B), "spotify--TPf9JZ2K": _private(USER_A)},
         [
             _music_source_prov("spotify--AAAAAAAA"),
-            _music_source_prov("spotify--TPf9JZ2K"),
+            _music_source_prov("spotify--TPf9JZ2K", available=own_available),
             _make_prov("plugin_inst", ProviderType.PLUGIN),
         ],
     )
-    if expected is None:
-        with pytest.raises(InsufficientPermissions):
-            controller.resolve_visible_provider(requested)
-    else:
+    if isinstance(expected, str):
         assert controller.resolve_visible_provider(requested) == expected
+    else:
+        with pytest.raises(expected):
+            controller.resolve_visible_provider(requested)
 
 
 @pytest.mark.parametrize(
