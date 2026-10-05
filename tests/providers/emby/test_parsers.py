@@ -98,6 +98,18 @@ def test_album_image_falls_back_to_own_tag(provider: Mock) -> None:
     assert _image_path(album) == (f"{BASE_URL}Items/album-1/Images/Primary?tag=own-tag")
 
 
+def test_album_fallback_tag_pairs_with_own_item_id(provider: Mock) -> None:
+    """A parent image id without the parent tag must not pair it with the album's own tag."""
+    item: dict[str, Any] = {
+        "Id": "album-1",
+        "Name": "Album",
+        "ImageTags": {"Primary": "own-tag"},
+        "PrimaryImageItemId": "parent-album-1",
+    }
+    album = parse_album(INSTANCE_ID, provider, item)
+    assert _image_path(album) == (f"{BASE_URL}Items/album-1/Images/Primary?tag=own-tag")
+
+
 def test_album_without_tag_has_no_image(provider: Mock) -> None:
     """An album id without a tag must not get an image (it would 404)."""
     item: dict[str, Any] = {

@@ -240,9 +240,11 @@ def parse_album(
 
     # Extract images
     image_item_id = item.get(ITEM_KEY_PRIMARY_IMAGE_ITEM_ID)
-    primary_tag = item.get(ITEM_KEY_PRIMARY_IMAGE_TAG) or item.get(ITEM_KEY_IMAGE_TAGS, {}).get(
-        "Primary"
-    )
+    primary_tag = item.get(ITEM_KEY_PRIMARY_IMAGE_TAG)
+    if not primary_tag:
+        # the fallback tag is the album's own, so it only validates against the album's id
+        primary_tag = item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary")
+        image_item_id = None
     if primary_tag:
         image_url = (
             f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
