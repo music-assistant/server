@@ -22,6 +22,7 @@ type ActionIndex = dict[str, tuple[int, EpisodeAction]]
 
 def index_actions(actions: Iterable[EpisodeAction]) -> dict[str, ActionIndex]:
     """Index the actions per podcast by guid and episode url, keeping the newest of each."""
+    # {podcast url: {guid or episode url: (rank, action)}}
     index: dict[str, ActionIndex] = {}
     # newest first; of actions within the same second, the later reported one first
     for rank, action in enumerate(sorted(actions, key=action_time)[::-1]):

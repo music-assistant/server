@@ -233,11 +233,8 @@ class GPodder(MusicProvider):
 
             # playlog
             actions = actions_by_podcast.get(feed_url, {})
-            matched: set[int] = set()
             for position, parsed_episode, stream_url, guid in iter_episodes(parsed_podcast):
-                if not (action := find_action(actions, guid, stream_url)):
-                    continue
-                matched.add(id(action))
+                action = find_action(actions, guid, stream_url)
                 if not isinstance(action, EpisodeActionNew | EpisodeActionPlay):
                     continue
                 mass_episode = parse_podcast_episode(
@@ -251,12 +248,7 @@ class GPodder(MusicProvider):
                 )
                 if mass_episode is not None:
                     await self._write_playlog(mass_episode, action)
-            if unmatched := len({id(action) for _, action in actions.values()} - matched):
-                self.logger.debug(
-                    "%s episode actions of %s match no episode in its feed", unmatched, feed_url
-                )
 
-            # cache
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
