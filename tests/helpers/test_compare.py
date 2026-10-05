@@ -921,6 +921,19 @@ def test_compare_album_track_fingerprint_invalid_isrc_falls_back_to_title_durati
     )
 
 
+def test_compare_track_ignores_placeholder_isrc() -> None:
+    """Unrelated tracks sharing a placeholder ISRC are not matched on it."""
+    base_track = _track("1", name="Owner of a Lonely Heart", isrc="000000000000")
+    compare_track = _track("2", name="Since You Been Gone", isrc="000000000000")
+
+    assert compare.compare_track(base_track, compare_track) is False
+
+    base_track = _track("1", name="Owner of a Lonely Heart", isrc="USRC17607839")
+    compare_track = _track("2", name="Since You Been Gone", isrc="USRC17607839")
+
+    assert compare.compare_track(base_track, compare_track) is True
+
+
 def test_compare_album_track_fingerprint_title_duration_fallback() -> None:
     """Without ISRCs, matching normalized title/version and a tight duration match."""
     base_tracks = [_track("1", track_number=1, name="Track One", duration=200)]
