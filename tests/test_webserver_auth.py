@@ -10,7 +10,8 @@ from datetime import timedelta
 from sqlite3 import IntegrityError
 
 import pytest
-from music_assistant_models.auth import AuthProviderType, Scope, UserRole
+from music_assistant.helpers.auth_compat import SERVICE_ROLE_KEY, Scope
+from music_assistant_models.auth import AuthProviderType, UserRole
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
@@ -120,7 +121,7 @@ async def test_role_scopes_are_available_to_frontend(auth_manager: Authenticatio
     assert Scope.LIBRARY_READ.value in scopes[UserRole.USER]
     assert Scope.CONFIG_PROVIDERS_OWN.value in scopes[UserRole.USER]
     assert Scope.LIBRARY_READ.value in scopes[UserRole.GUEST]
-    assert Scope.CONFIG_PLAYERS_WRITE.value in scopes[UserRole.SERVICE]
+    assert Scope.CONFIG_PLAYERS_WRITE.value in scopes[SERVICE_ROLE_KEY]
 
 
 async def test_create_user(auth_manager: AuthenticationManager) -> None:

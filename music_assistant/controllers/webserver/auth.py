@@ -15,7 +15,6 @@ from music_assistant_models.auth import (
     AuthProviderType,
     AuthToken,
     User,
-    Scope,
     UserAuthProvider,
     UserRole,
 )

@@ -7,9 +7,10 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from aiohttp import web
-from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.auth_compat import SERVICE_ROLE_KEY, Scope
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
 
@@ -37,7 +38,7 @@ ROLE_SCOPES: Final[dict[str, frozenset[Scope]]] = {
     UserRole.ADMIN: frozenset({Scope.ALL}),
     UserRole.USER: _MEMBER_SCOPES | {Scope.CONFIG_PROVIDERS_OWN},
     UserRole.GUEST: _GUEST_SCOPES,
-    UserRole.SERVICE: _MEMBER_SCOPES
+    SERVICE_ROLE_KEY: _MEMBER_SCOPES
     | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE},
 }
 
