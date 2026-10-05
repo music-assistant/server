@@ -38,8 +38,7 @@ A static-PIN pairing always waits for the device's pairing button. A dynamic PIN
 digits and waits only once the device has seen too many wrong entries. A device offering both
 advertises only the dynamic PIN.
 
-Once a device is paired, the server opens the pairing window itself over a management session, so
-the button is only needed for a first pairing.
+A paired device has to be unpaired, or reset, before it can pair again.
 
 ## Scenarios
 

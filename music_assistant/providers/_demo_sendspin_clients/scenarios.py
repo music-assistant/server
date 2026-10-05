@@ -59,7 +59,7 @@ class Scenario:
 
     @property
     def gesture_gated(self) -> bool:
-        """Whether a first pairing needs the device's pairing button pressed."""
+        """Whether a pairing needs the device's pairing button pressed."""
         return self.static_pin and not self.dynamic_pin
 
 
