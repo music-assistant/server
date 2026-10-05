@@ -14,6 +14,10 @@
         "automatic": "Automatic (let client decide)"
       }
     },
+    "flow_mode_sample_rate": {
+      "label": "Sample rate selection",
+      "description": "Select the sample rate of the audio sent to this player. By default, it follows the sample rate of the first track that is played. Only applies when the preferred audio format is set to automatic."
+    },
     "allow_legacy_clients": {
       "label": "Allow legacy clients",
       "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
