@@ -36,6 +36,11 @@ class PlannedSection:
     web_search_mode: str
     # when true, a failed weather fetch skips the clip instead of airing it without a forecast
     weather_required: bool = False
+    # RSS/Atom feeds to fetch at render time, keyed by the exact placeholder token they belong to
+    # so a merged section keeps each source's articles attached to its own <rss_feed> occurrence.
+    # A single section uses the bare "<rss_feed>" token; merged sections use "<rss_feed_1>", etc.
+    # Each value is a list of feed dicts with "url" and "max_articles".
+    rss_feeds_by_token: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # the guard history events this plan claimed, as (section_id, (song, minute)). a caller
     # that drops the plan can drop these too, so a clip that never aired carries no weight
     history_events: list[tuple[str, tuple[int, float]]] = field(default_factory=list)
