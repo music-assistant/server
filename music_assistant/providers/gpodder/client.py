@@ -6,7 +6,6 @@ of gpodder.net (mygpo) or drop-in replacements like opodsync.
 Gpodder Sync uses guid optionally.
 """
 
-import datetime
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -251,9 +250,6 @@ class GPodderClient:
             for x in actions_response.actions
             if isinstance(x, EpisodeActionPlay | EpisodeActionNew | EpisodeActionDelete)
         ]
-
-        # newest first; of actions within the same second, the later reported one first
-        actions = sorted(actions, key=_action_time)[::-1]
         return actions, actions_response.timestamp
 
     async def update_subscriptions(
@@ -308,15 +304,3 @@ class GPodderClient:
         else:
             endpoint = f"api/2/episodes/{self.username}.json"
         await self._post(endpoint=endpoint, data=[episode_action.to_dict()])
-
-
-def _action_time(action: EpisodeAction) -> float:
-    """Return when an action happened, an action without a readable time counts as oldest."""
-    try:
-        timestamp = datetime.datetime.fromisoformat(action.timestamp)
-    except ValueError:
-        return 0.0
-    if timestamp.tzinfo is None:
-        # the gpodder api sends utc without an offset
-        timestamp = timestamp.replace(tzinfo=datetime.UTC)
-    return timestamp.timestamp()

@@ -55,37 +55,6 @@ def _client(response: _FakeResponse) -> GPodderClient:
     return client
 
 
-def _action(episode: str, timestamp: str) -> dict[str, Any]:
-    return {
-        "podcast": "https://example.com/feed.xml",
-        "episode": episode,
-        "timestamp": timestamp,
-        "action": "PLAY",
-        "position": 10,
-        "total": 100,
-    }
-
-
-async def test_actions_come_newest_first_whatever_their_timestamps() -> None:
-    """An unreadable or zone-qualified timestamp neither stops the ordering nor breaks it."""
-    response = _FakeResponse(
-        200,
-        {
-            "actions": [
-                _action("unreadable", ""),
-                _action("old", "2024-01-01T10:00:00"),
-                _action("newest", "2024-03-01T10:00:00+00:00"),
-                _action("middle", "2024-02-01T10:00:00"),
-            ],
-            "timestamp": 5,
-        },
-    )
-
-    actions, _ = await _client(response).get_episode_actions()
-
-    assert [x.episode for x in actions] == ["newest", "middle", "old", "unreadable"]
-
-
 async def test_failed_call_releases_its_connection() -> None:
     """A failing call hands its connection back to the shared session."""
     response = _FakeResponse(500, {})

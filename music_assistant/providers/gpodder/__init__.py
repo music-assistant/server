@@ -233,8 +233,14 @@ class GPodder(MusicProvider):
                 matched.add(id(action))
                 if not isinstance(action, EpisodeActionNew | EpisodeActionPlay):
                     continue
-                mass_episode = self._parse_episode(
-                    feed_url, parsed_podcast, parsed_episode, position
+                mass_episode = parse_podcast_episode(
+                    episode=parsed_episode,
+                    prov_podcast_id=feed_url,
+                    position=position,
+                    podcast_cover=parsed_podcast.get("cover_url"),
+                    podcast_name=parsed_podcast.get("title"),
+                    domain=self.domain,
+                    instance_id=self.instance_id,
                 )
                 if mass_episode is not None:
                     await self._write_playlog(mass_episode, action)
@@ -274,7 +280,15 @@ class GPodder(MusicProvider):
         actions, synced = await self._get_unsynced_actions(prov_podcast_id)
         podcast = await self._cache_get_podcast(prov_podcast_id)
         for position, parsed_episode, stream_url, guid in iter_episodes(podcast):
-            mass_episode = self._parse_episode(prov_podcast_id, podcast, parsed_episode, position)
+            mass_episode = parse_podcast_episode(
+                episode=parsed_episode,
+                prov_podcast_id=prov_podcast_id,
+                position=position,
+                podcast_cover=podcast.get("cover_url"),
+                podcast_name=podcast.get("title"),
+                domain=self.domain,
+                instance_id=self.instance_id,
+            )
             if mass_episode is None:
                 continue
             if action := find_action(actions, guid, stream_url):
@@ -291,7 +305,15 @@ class GPodder(MusicProvider):
             # the episode part of the item id, see parse_podcast_episode
             if guid_or_stream_url != (guid if guid is not None else stream_url):
                 continue
-            mass_episode = self._parse_episode(podcast_id, podcast, parsed_episode, position)
+            mass_episode = parse_podcast_episode(
+                episode=parsed_episode,
+                prov_podcast_id=podcast_id,
+                position=position,
+                podcast_cover=podcast.get("cover_url"),
+                podcast_name=podcast.get("title"),
+                domain=self.domain,
+                instance_id=self.instance_id,
+            )
             if mass_episode is None:
                 break
             actions, synced = await self._get_unsynced_actions(podcast_id)
@@ -444,19 +466,6 @@ class GPodder(MusicProvider):
         finally:
             for _, task in refreshing:
                 task.cancel()
-
-    def _parse_episode(
-        self, prov_podcast_id: str, podcast: dict[str, Any], episode: dict[str, Any], position: int
-    ) -> PodcastEpisode | None:
-        return parse_podcast_episode(
-            episode=episode,
-            prov_podcast_id=prov_podcast_id,
-            position=position,
-            podcast_cover=podcast.get("cover_url"),
-            podcast_name=podcast.get("title"),
-            domain=self.domain,
-            instance_id=self.instance_id,
-        )
 
     async def _get_unsynced_actions(self, podcast_id: str) -> tuple[ActionIndex, bool]:
         """Return the podcast's actions the playlog lacks, and whether the sync wrote the rest."""

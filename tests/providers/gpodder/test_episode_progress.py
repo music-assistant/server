@@ -18,6 +18,7 @@ from music_assistant.providers.gpodder.client import (
     EpisodeActionPlay,
     SubscriptionsGet,
 )
+from music_assistant.providers.gpodder.helpers import index_actions
 
 from .conftest import FEED, episode
 
@@ -29,15 +30,32 @@ PODCAST = {
         episode(3, guid="guid-3"),
     ],
 }
-# newest first, as the client returns them; many clients report an episode by its url only
+# many clients report an episode by its url only
 ACTIONS = [
     # the newer action of episode 2 names it by url, the older one by guid
-    EpisodeActionNew(podcast=FEED, episode="https://example.com/ep2.mp3"),
-    EpisodeActionPlay(podcast=FEED, episode="https://example.com/ep2.mp3", guid="guid-2"),
-    EpisodeActionPlay(
-        podcast=FEED, episode="https://example.com/ep1.mp3", position=600, total=1200
+    EpisodeActionNew(
+        podcast=FEED, episode="https://example.com/ep2.mp3", timestamp="2024-01-04T10:00:00"
     ),
-    EpisodeActionPlay(podcast="https://example.com/other.xml", episode="x", position=5, total=9),
+    EpisodeActionPlay(
+        podcast=FEED,
+        episode="https://example.com/ep2.mp3",
+        guid="guid-2",
+        timestamp="2024-01-03T10:00:00",
+    ),
+    EpisodeActionPlay(
+        podcast=FEED,
+        episode="https://example.com/ep1.mp3",
+        position=600,
+        total=1200,
+        timestamp="2024-01-02T10:00:00",
+    ),
+    EpisodeActionPlay(
+        podcast="https://example.com/other.xml",
+        episode="x",
+        position=5,
+        total=9,
+        timestamp="2024-01-01T10:00:00",
+    ),
 ]
 
 
@@ -54,6 +72,20 @@ def _subscribe(provider: GPodder, feeds: list[str]) -> None:
     cast("Mock", provider._client).get_subscriptions = AsyncMock(
         return_value=SubscriptionsGet(add=feeds, remove=[], timestamp=5)
     )
+
+
+def test_index_ranks_actions_newest_first_whatever_their_timestamps() -> None:
+    """An unreadable or zone-qualified timestamp neither stops the ordering nor breaks it."""
+    actions = [
+        EpisodeActionPlay(podcast=FEED, episode="unreadable"),
+        EpisodeActionPlay(podcast=FEED, episode="old", timestamp="2024-01-01T10:00:00"),
+        EpisodeActionPlay(podcast=FEED, episode="newest", timestamp="2024-03-01T10:00:00+00:00"),
+        EpisodeActionPlay(podcast=FEED, episode="middle", timestamp="2024-02-01T10:00:00"),
+    ]
+
+    ranked = sorted(index_actions(actions)[FEED].items(), key=lambda item: item[1][0])
+
+    assert [key for key, _ in ranked] == ["newest", "middle", "old", "unreadable"]
 
 
 async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodder) -> None:

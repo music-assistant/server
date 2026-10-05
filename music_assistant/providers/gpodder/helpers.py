@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.helpers.podcast_parsers import (
@@ -22,13 +23,25 @@ type ActionIndex = dict[str, tuple[int, EpisodeAction]]
 def index_actions(actions: Iterable[EpisodeAction]) -> dict[str, ActionIndex]:
     """Index the actions per podcast by guid and episode url, keeping the newest of each."""
     index: dict[str, ActionIndex] = {}
-    # the client returns the newest action first
-    for rank, action in enumerate(actions):
+    # newest first; of actions within the same second, the later reported one first
+    for rank, action in enumerate(sorted(actions, key=action_time)[::-1]):
         podcast_actions = index.setdefault(action.podcast, {})
         for key in (action.guid, action.episode):
             if key:
                 podcast_actions.setdefault(key, (rank, action))
     return index
+
+
+def action_time(action: EpisodeAction) -> float:
+    """Return when an action happened, an action without a readable time counts as oldest."""
+    try:
+        timestamp = datetime.fromisoformat(action.timestamp)
+    except ValueError:
+        return 0.0
+    if timestamp.tzinfo is None:
+        # the gpodder api sends utc without an offset
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.timestamp()
 
 
 def find_action(
