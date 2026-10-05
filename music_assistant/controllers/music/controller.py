@@ -90,6 +90,7 @@ from music_assistant.controllers.music.constants import (
 )
 from music_assistant.controllers.music.database import (
     PLAYLOG_CONFLICT_KEYS,
+    LibraryResetHook,
     MusicDatabaseSetupMixin,
 )
 from music_assistant.controllers.music.favorites import FavoritesStore
@@ -314,6 +315,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recency = RecencyEngine(self.mass)
         self.favorites = FavoritesStore(self.mass)
         self._database: DatabaseConnection | None = None
+        self._reset_hooks: list[LibraryResetHook] = []
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
         self.manifest.description = (
