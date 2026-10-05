@@ -720,7 +720,7 @@ async def test_search_exact_match_shortcut_skipped_for_explicit_providers() -> N
     )
 
     await controller.search(
-        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["prov_a"]
+        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["library", "prov_a"]
     )
 
     prov.search.assert_awaited_once()
