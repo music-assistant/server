@@ -945,6 +945,43 @@ def test_resolve_visible_provider(
 
 
 @pytest.mark.parametrize(
+    ("requested", "own_available", "expected"),
+    [
+        # the hidden account is listed first, so an unfiltered lookup would return it
+        ("spotify", True, "spotify--mine"),
+        ("spotify--theirs", True, "spotify--mine"),
+        ("spotify", False, None),
+        ("spotify--mine", False, None),
+        ("filesystem_local--theirs", True, None),
+        ("plugin_inst", True, "plugin_inst"),
+    ],
+)
+@patch("music_assistant.controllers.music.controller.get_current_user")
+def test_get_visible_provider(
+    mock_get_user: Mock, requested: str, own_available: bool, expected: str | None
+) -> None:
+    """A lookup only ever returns an available music source the user may see."""
+    mock_get_user.return_value = _user(USER_A)
+    controller = _controller_with_sources(
+        {
+            "spotify--theirs": _private(USER_B),
+            "spotify--mine": _private(USER_A),
+            "filesystem_local--theirs": _private(USER_B),
+        },
+        [
+            _music_source_prov("spotify--theirs"),
+            _music_source_prov("spotify--mine", available=own_available),
+            _music_source_prov("filesystem_local--theirs", is_streaming=False),
+            _make_prov("plugin_inst", ProviderType.PLUGIN),
+        ],
+    )
+
+    provider = controller.get_visible_provider(requested)
+
+    assert (provider.instance_id if provider else None) == expected
+
+
+@pytest.mark.parametrize(
     "read",
     [
         lambda mass: mass.music.get_item(MediaType.SOUND_EFFECT, "1", PROV_B),
