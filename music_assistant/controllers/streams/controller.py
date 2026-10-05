@@ -152,7 +152,7 @@ isfile = wrap(os.path.isfile)
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     """Return the normalization modes that can be picked as a preference."""
     return [
-        ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
+        ConfigValueOption(mode.value)
         for mode in VolumeNormalizationMode
         if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     ]
