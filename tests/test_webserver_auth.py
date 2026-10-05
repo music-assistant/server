@@ -10,7 +10,6 @@ from datetime import timedelta
 from sqlite3 import IntegrityError
 
 import pytest
-from music_assistant.helpers.auth_compat import SERVICE_ROLE_KEY, Scope
 from music_assistant_models.auth import AuthProviderType, UserRole
 from music_assistant_models.errors import InvalidDataError
 
@@ -23,6 +22,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
+from music_assistant.helpers.auth_compat import SERVICE_ROLE_KEY, Scope
 from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
