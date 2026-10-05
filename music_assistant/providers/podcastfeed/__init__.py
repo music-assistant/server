@@ -25,6 +25,7 @@ from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
+    MediaItemTranscriptCue,
     Podcast,
     PodcastEpisode,
     UniqueList,
@@ -36,6 +37,7 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -163,6 +165,19 @@ class PodcastMusicprovider(MusicProvider):
         for position, episode in zip(positions, episodes, strict=True):
             if mass_episode := self._parse_episode(episode, position):
                 yield mass_episode
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        for episode in self.parsed_podcast.get("episodes", []):
+            if prov_episode_id == episode.get("guid"):
+                return await get_episode_transcript(
+                    mass=self.mass,
+                    provider_instance_id=self.instance_id,
+                    transcripts=episode.get("transcripts"),
+                )
+        return None, None
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""

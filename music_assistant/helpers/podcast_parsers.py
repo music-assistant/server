@@ -5,9 +5,12 @@ from datetime import UTC, datetime
 from io import BytesIO
 from math import isfinite
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin
+from xml.etree.ElementTree import ParseError as XMLParseError
 
 import podcastparser
 from aiohttp.client import ClientError, ClientTimeout
+from defusedxml.ElementTree import fromstring as parse_xml
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -16,13 +19,23 @@ from music_assistant_models.media_items import (
     MediaItemChapter,
     MediaItemImage,
     MediaItemLink,
+    MediaItemTranscriptCue,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
     UniqueList,
 )
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+from music_assistant.helpers.transcripts import (
+    cues_to_text,
+    document_to_text,
+    parse_transcript_cues,
+)
+
 if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
+
     import aiohttp
 
     from music_assistant.mass import MusicAssistant
@@ -31,10 +44,44 @@ LOGGER = logging.getLogger(__name__)
 
 # best-effort enrichment must never stall episode resolution, so cap the chapter fetch
 _CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
+_TRANSCRIPT_FETCH_TIMEOUT = ClientTimeout(total=15)
+# a publisher's transcript link is untrusted and may point at the audio itself, so the
+# document is read up to a cap that still leaves ample room for the longest real transcript
+_MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024
+_TRANSCRIPT_READ_CHUNK = 64 * 1024
+
+# some podcast hosts and CDNs reject anything that does not look like a browser, so these
+# fetches override the Music Assistant user agent that the session sends by default
+# https://github.com/music-assistant/support/issues/3596
+_BROWSER_UA_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# transcript formats carrying timings, most preferred first. Anything else is still
+# usable, but only as untimed text.
+_TIMED_TRANSCRIPT_TYPES = (
+    "text/vtt",
+    "application/x-subrip",
+    "application/srt",
+    "text/srt",
+    "application/json",
+)
+
+# the current Podcasting 2.0 namespace address and the older ones that feeds still declare
+_PODCAST_NAMESPACES = (
+    "https://podcastindex.org/namespace/1.0",
+    "https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+    "https://github.com/podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+)
+_TRANSCRIPT_TAGS = frozenset(f"{{{namespace}}}transcript" for namespace in _PODCAST_NAMESPACES)
+_CHAPTERS_TAGS = frozenset(f"{{{namespace}}}chapters" for namespace in _PODCAST_NAMESPACES)
 
 # defaults for the parsed-feed cache shared by the podcast providers
 CACHE_CATEGORY_PODCAST_FEED = 0
 PODCAST_FEED_CACHE_EXPIRATION = 24 * 3600
+
+# a published transcript does not change, so it is cached far longer than the feed to keep
+# repeat views of an episode off the publisher's server
+CACHE_CATEGORY_PODCAST_TRANSCRIPT = 1
+PODCAST_TRANSCRIPT_CACHE_EXPIRATION = 3600 * 24 * 180
 
 
 async def get_podcastparser_dict(
@@ -46,10 +93,8 @@ async def get_podcastparser_dict(
     max_episodes = 0 does not limit the returned episodes.
     """
     feed_data: bytes | None = None
-    # without user agent, some feeds can not be retrieved
-    # https://github.com/music-assistant/support/issues/3596
-    # but, reports on discord show, that also the opposite may be true
-    for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
+    # reports on discord show that some feeds need the opposite, so also try without any UA
+    for headers in [_BROWSER_UA_HEADERS, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
         # url doesn't exist etc. The body is read inside the context manager, so a
@@ -67,9 +112,14 @@ async def get_podcastparser_dict(
         )
     feed_stream = BytesIO(feed_data)
     try:
-        return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
+        parsed: dict[str, Any] = podcastparser.parse(
+            feed_url, feed_stream, max_episodes=max_episodes
+        )
     except podcastparser.FeedParseError:
         raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
+    # enrich with transcript and chapter data that podcastparser does not capture
+    _inject_podcast_namespace_tags(feed_url, feed_data, parsed)
+    return parsed
 
 
 async def get_cached_podcast(
@@ -184,7 +234,7 @@ def parse_podcast(
             elif isinstance(_sub_genre, str):
                 genres.append(_sub_genre)
 
-    mass_podcast.metadata.genres = set(genres)
+    mass_podcast.metadata.genres = set(genres) or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
     mass_podcast.metadata.description = parsed_feed.get("description", "")
     mass_podcast.metadata.explicit = parsed_feed.get("explicit", False)
     language = parsed_feed.get("language")
@@ -264,6 +314,25 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
         # empty guid resolves the same way it was turned into an item_id
         if guid_or_stream_url == (stream_url if guid is None else guid):
             return stream_url
+    return None
+
+
+def find_episode_transcripts(
+    *, parsed_feed: dict[str, Any], guid_or_stream_url: str
+) -> list[dict[str, Any]] | None:
+    """
+    Return the transcript entries for an episode in a parsed feed, or None.
+
+    :param parsed_feed: The parsed podcast feed.
+    :param guid_or_stream_url: Episode part of the item_id, see parse_podcast_episode.
+    """
+    for episode in parsed_feed.get("episodes", []):
+        try:
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+        except ValueError:
+            continue
+        if guid_or_stream_url == (stream_url if guid is None else guid):
+            return episode.get("transcripts") or None
     return None
 
 
@@ -409,6 +478,8 @@ def parse_podcast_episode(
         if _chapters:
             mass_episode.metadata.chapters = _chapters
 
+    mass_episode.metadata.has_transcript = bool(episode.get("transcripts"))
+
     # cover image
     if episode_cover is not None:
         mass_episode.metadata.images = UniqueList(
@@ -520,16 +591,15 @@ async def enrich_episode_chapters(
     url = chapters_json_url
     if not url:
         return
-    # send a browser UA: some podcast hosts/CDNs reject non-browser agents
-    # (music-assistant/support#3596). Chapter data is supplementary, so unlike
-    # get_podcastparser_dict we make a single best-effort attempt with no UA-less retry.
+    # chapter data is supplementary, so unlike get_podcastparser_dict this is a single
+    # attempt with no UA-less retry.
     # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly
     # to keep this enrichment best-effort. The parse stays inside the try so a malformed
     # document can never break episode resolution either.
     try:
         async with session.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=_BROWSER_UA_HEADERS,
             raise_for_status=True,
             timeout=_CHAPTERS_FETCH_TIMEOUT,
         ) as response:
@@ -538,3 +608,150 @@ async def enrich_episode_chapters(
             mass_episode.metadata.chapters = chapters
     except (ClientError, TimeoutError, ValueError, TypeError) as err:
         LOGGER.warning("Failed to fetch podcast chapters from %s: %s", url, err)
+
+
+async def get_episode_transcript(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    transcripts: list[dict[str, Any]] | None,
+) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+    """
+    Return an episode's transcript as (readable text, timed cues).
+
+    Never raises: a transcript is supplementary, so a failure yields (None, None). The
+    document is fetched once and cached, so repeat views cost nothing.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param transcripts: The available transcripts as dicts with a url and optional type,
+        or None. The one carrying timings is preferred.
+    """
+    if not (url := _select_transcript_url(transcripts)):
+        return None, None
+    raw = await mass.cache.get(
+        key=url,
+        provider=provider_instance_id,
+        category=CACHE_CATEGORY_PODCAST_TRANSCRIPT,
+        default=None,
+    )
+    if raw is None:
+        if (raw := await _fetch_transcript(session=mass.http_session, url=url)) is None:
+            return None, None
+        await mass.cache.set(
+            key=url,
+            provider=provider_instance_id,
+            category=CACHE_CATEGORY_PODCAST_TRANSCRIPT,
+            data=raw,
+            expiration=PODCAST_TRANSCRIPT_CACHE_EXPIRATION,
+        )
+    if cues := parse_transcript_cues(raw):
+        return cues_to_text(cues), cues
+    return document_to_text(raw) or None, None
+
+
+def _select_transcript_url(transcripts: list[dict[str, Any]] | None) -> str | None:
+    """Return the url of the most useful transcript, preferring the formats with timings."""
+
+    def preference(transcript: dict[str, Any]) -> int:
+        media_type = str(transcript.get("type") or "").lower().split(";", 1)[0].strip()
+        if media_type in _TIMED_TRANSCRIPT_TYPES:
+            return _TIMED_TRANSCRIPT_TYPES.index(media_type)
+        return len(_TIMED_TRANSCRIPT_TYPES)
+
+    if not (candidates := [entry for entry in transcripts or [] if entry.get("url")]):
+        return None
+    return str(min(candidates, key=preference)["url"])
+
+
+async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str | None:
+    """Fetch a transcript document, returning None when it cannot be retrieved."""
+    # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly.
+    try:
+        async with session.get(
+            url,
+            headers=_BROWSER_UA_HEADERS,
+            raise_for_status=True,
+            timeout=_TRANSCRIPT_FETCH_TIMEOUT,
+        ) as response:
+            if (response.content_length or 0) > _MAX_TRANSCRIPT_BYTES:
+                LOGGER.warning("Skipping podcast transcript from %s: it is too large", url)
+                return None
+            # a single read may return less than asked before the end of the body, so read
+            # to the end in chunks and stop as soon as the cap is passed
+            raw = bytearray()
+            while chunk := await response.content.read(_TRANSCRIPT_READ_CHUNK):
+                raw.extend(chunk)
+                if len(raw) > _MAX_TRANSCRIPT_BYTES:
+                    LOGGER.warning("Skipping podcast transcript from %s: it is too large", url)
+                    return None
+            # hosts commonly serve these without a charset (or as octet-stream), so decode
+            # explicitly rather than letting aiohttp guess at the encoding
+            return raw.decode("utf-8", errors="replace")
+    except (ClientError, TimeoutError) as err:
+        LOGGER.warning("Failed to fetch podcast transcript from %s: %s", url, err)
+        return None
+
+
+def _inject_podcast_namespace_tags(feed_url: str, feed_data: bytes, parsed: dict[str, Any]) -> None:
+    """Add each episode's transcripts and chapters url from the raw feed to the parsed feed."""
+    # podcastparser keeps at most one transcript url per episode, and reads neither
+    # transcripts nor chapters on the current namespace address
+    try:
+        root = parse_xml(feed_data)
+    except XMLParseError, ValueError:
+        return
+
+    channel = root.find("channel")
+    if channel is None:
+        return
+
+    # podcastparser reorders and filters the items, so they are matched on its guid
+    transcripts_by_guid: dict[str, list[dict[str, str]]] = {}
+    chapters_by_guid: dict[str, str] = {}
+    for item in channel.iter("item"):
+        transcripts: list[dict[str, str]] = []
+        chapters_url: str | None = None
+        for child in item:
+            url = child.get("url")
+            if not url:
+                continue
+            if child.tag in _CHAPTERS_TAGS:
+                chapters_url = urljoin(feed_url, url)
+                continue
+            if child.tag not in _TRANSCRIPT_TAGS:
+                continue
+            entry: dict[str, str] = {"url": url}
+            if mime_type := child.get("type"):
+                entry["type"] = mime_type
+            if language := child.get("language"):
+                entry["language"] = language
+            transcripts.append(entry)
+        if not (transcripts or chapters_url) or not (guid := _podcastparser_guid(feed_url, item)):
+            continue
+        if transcripts:
+            transcripts_by_guid[guid] = transcripts
+        if chapters_url:
+            chapters_by_guid[guid] = chapters_url
+
+    for episode in parsed.get("episodes", []):
+        guid = episode.get("guid", "")
+        if episode_transcripts := transcripts_by_guid.get(guid):
+            episode["transcripts"] = episode_transcripts
+        if not episode.get("chapters_json_url") and (chapters_url := chapters_by_guid.get(guid)):
+            episode["chapters_json_url"] = chapters_url
+
+
+def _podcastparser_guid(feed_url: str, item: Element) -> str | None:
+    """Return the guid podcastparser gives an RSS item, or None."""
+    guid_tag = item.find("guid")
+    if guid_tag is not None and (guid := (guid_tag.text or "").strip()):
+        if guid_tag.get("isPermaLink", "true").lower() == "true":
+            return urljoin(feed_url, guid)
+        return guid
+    if link := (item.findtext("link") or "").strip():
+        return urljoin(feed_url, link)
+    enclosure = item.find("enclosure")
+    if enclosure is not None and (url := enclosure.get("url")):
+        return str(podcastparser.parse_url(urljoin(feed_url, url.lstrip())))
+    return None

@@ -287,7 +287,9 @@ class AirPlayStreamSession:
             if not all(flushed):
                 raise PlayerCommandFailed("warm flush was not acknowledged")
             for player in self.sync_clients:
-                await self._start_player_ffmpeg(player, media)
+                stream = player.stream
+                assert stream
+                await self._start_player_ffmpeg(player, media, stream)
             self.media = media
             # The stream position counter and the late-join prime buffer both
             # describe the OLD timeline; restart them before the new source pumps.
@@ -1142,14 +1144,17 @@ class AirPlayStreamSession:
                 # returns at once for one that finished.
                 await airplay_player.stream.stop()
             stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
-            airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
-            airplay_player.stream.session = self
-            await airplay_player.stream.connect(use_shared_ptp)
+            stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
+            airplay_player.stream = stream
+            stream.session = self
+            await stream.connect(use_shared_ptp)
             # Wiring the audio producer to the cli stdin belongs to the same
             # claim: a displacement landing between the connect and this would
             # leave an ffmpeg feeding a process that is already gone, with
-            # nothing tracking it to clean up.
-            await self._start_player_ffmpeg(airplay_player, self.media)
+            # nothing tracking it to clean up. Pass the stream we just published
+            # rather than re-reading player.stream, so a displacement cannot swap
+            # it under us while the ffmpeg is being wired.
+            await self._start_player_ffmpeg(airplay_player, self.media, stream)
 
     def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """
@@ -1393,7 +1398,9 @@ class AirPlayStreamSession:
             if player.stream is not None:
                 player.stream.reset_reanchor_shift()
 
-    async def _start_player_ffmpeg(self, player: AirPlayPlayer, media: PlayerMedia) -> None:
+    async def _start_player_ffmpeg(
+        self, player: AirPlayPlayer, media: PlayerMedia, stream: AirPlayStream
+    ) -> None:
         """
         Start the per-seek ffmpeg feeding a member's persistent cli stdin.
 
@@ -1404,11 +1411,11 @@ class AirPlayStreamSession:
 
         :param player: The member whose ffmpeg is (re)started.
         :param media: Media whose queue/session identify the output plan.
+        :param stream: The published stream to wire the ffmpeg into, resolved by
+            the caller so an await here cannot swap player.stream under us.
         """
         if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
             await ffmpeg.close()
-        stream = player.stream
-        assert stream
         handoff_format = stream.pcm_format
         output_plan = self.mass.streams.audio.get_player_output_plan(
             player.player_id,

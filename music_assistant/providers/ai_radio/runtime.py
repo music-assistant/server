@@ -56,6 +56,7 @@ from .constants import (
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
+    EVENT_SESSIONS_UPDATED,
     FAHRENHEIT_COUNTRY_CODES,
     SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
@@ -130,6 +131,7 @@ class AIRadioRuntimeMixin:
             "step": phase,
             **details,
         }
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
 
     def _build_program(self, station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
         """Merge a station and its host into the dict the planner consumes."""
@@ -154,6 +156,7 @@ class AIRadioRuntimeMixin:
         """Run one session in the background."""
         session = self._sessions[session_id]
         session.started_at = utc_now_iso()
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         self.logger.info(
             "AI Radio run started: session=%s station=%s",
             session.session_id,
@@ -184,6 +187,7 @@ class AIRadioRuntimeMixin:
             self.logger.exception("AI Radio session failed")
         finally:
             session.ended_at = utc_now_iso()
+            self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
             # a show session blocks queue DJ replans while it runs, so ending it must
             # re-arm the DJ itself instead of waiting on the next queue change
             if session.queue_id:

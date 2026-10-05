@@ -233,19 +233,15 @@ async def test_setup_flow_retries_with_submitted_url_and_error() -> None:
             {CONF_MAMMAMIRADIO_URL: "http://mammamiradio.local:8000"},
         ]
     )
-    session.finish = AsyncMock(
-        side_effect=[
-            SetupFlowError("Unable to connect", translation_key="cannot_connect"),
-            None,
-        ]
-    )
+    finish_error = SetupFlowError("Unable to connect", translation_key="cannot_connect")
+    session.finish = AsyncMock(side_effect=[finish_error, None])
 
     await mammamiradio_setup_flow.run_setup(session)
 
     retry_call = session.form.await_args_list[1]
     retry_entry = retry_call.args[0][0]
     assert retry_entry.value == "http://unreachable:8000"
-    assert retry_call.kwargs["errors"] == {"base": "cannot_connect"}
+    assert retry_call.kwargs["errors"] == {"base": finish_error}
     assert session.finish.await_count == 2
 
 

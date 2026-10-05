@@ -1,12 +1,18 @@
 """Tests for the filesystem provider helpers."""
 
+import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     get_folder_signature,
+    get_valid_isrcs,
     sorted_scandir,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _file_item(name: str, checksum: str = "1700000000", file_size: int = 1024) -> FileSystemItem:
@@ -105,3 +111,14 @@ def test_folder_signature_cannot_be_forged_by_a_filename() -> None:
     forged = [_file_item("a.mp3:1700000000:1024|b.mp3", checksum="1800000000", file_size=2048)]
 
     assert get_folder_signature(forged) != get_folder_signature(real)
+
+
+def test_get_valid_isrcs_discards_invalid_values(caplog: pytest.LogCaptureFixture) -> None:
+    """Invalid ISRCs are dropped with a warning naming the file, valid ones are kept."""
+    log = logging.getLogger(__name__)
+    with caplog.at_level(logging.WARNING):
+        isrcs = get_valid_isrcs(["000000000000", "usrc1-76-07839"], "Yes/90125.cue", log)
+
+    assert isrcs == ["usrc1-76-07839"]
+    assert "'000000000000' in Yes/90125.cue" in caplog.text
+    assert "usrc1" not in caplog.text

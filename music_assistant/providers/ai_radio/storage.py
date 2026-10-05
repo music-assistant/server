@@ -16,7 +16,13 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
-from .constants import EMPTY_SECTION_ID, MERGE_SECTION_PROMPT, VALID_WEB_SEARCH_MODES
+from .constants import (
+    EMPTY_SECTION_ID,
+    EVENT_SECTIONS_UPDATED,
+    EVENT_STATIONS_UPDATED,
+    MERGE_SECTION_PROMPT,
+    VALID_WEB_SEARCH_MODES,
+)
 from .helpers import slugify
 
 _slugify = slugify
@@ -82,6 +88,7 @@ class AIRadioStorageMixin:
             "sections": sorted(self._sections.values(), key=lambda item: item["id"].lower()),
         }
         await self._write_json_file(self._sections_file, payload)
+        self.signal_provider_event({"event": EVENT_SECTIONS_UPDATED})
 
     async def _load_stations(self) -> None:
         """Load station profiles from disk."""
@@ -132,6 +139,7 @@ class AIRadioStorageMixin:
             "stations": sorted(self._stations.values(), key=lambda item: item["name"]),
         }
         await self._write_json_file(self._stations_file, payload)
+        self.signal_provider_event({"event": EVENT_STATIONS_UPDATED})
 
     async def _write_json_file(self, target: Path, payload: dict[str, Any]) -> None:
         """Write a JSON payload to disk without corrupting the target on failure."""

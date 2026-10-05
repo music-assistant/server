@@ -16,7 +16,8 @@ import asyncio
 import builtins
 import time
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
@@ -865,6 +866,11 @@ class Player(ABC):
         """
         return self._attr_supported_sample_rates
 
+    @asynccontextmanager
+    async def prepare_play_media(self) -> AsyncIterator[None]:
+        """Scope provider preparation across auto-power and the ensuing playback."""
+        yield
+
     async def power(self, powered: bool) -> None:
         """
         Handle POWER command on the player.
@@ -1014,6 +1020,18 @@ class Player(ABC):
         :param output_protocol: The OutputProtocol object containing protocol details.
         """
         return  # Optional callback - no-op by default
+
+    async def on_group_content_takeover(self) -> object | None:
+        """Prepare a protocol group before a new content owner joins it."""
+        return None
+
+    async def on_group_content_takeover_finished(self, token: object) -> None:
+        """Finish a protocol-group content takeover transaction."""
+        return
+
+    async def on_group_content_takeover_aborted(self, token: object) -> None:
+        """Abort a protocol-group content takeover without publishing old content."""
+        return
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
@@ -2698,6 +2716,7 @@ class Player(ABC):
             and self._state.playback_state != PlaybackState.IDLE
         ):
             self.__stop_called = False
+            self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif (
             prev_state.playback_state != PlaybackState.IDLE
             and self._state.playback_state == PlaybackState.IDLE
@@ -3304,14 +3323,17 @@ class Player(ABC):
             base_features.add(PlayerFeature.POWER)
         else:
             base_features.discard(PlayerFeature.POWER)
-        if self.volume_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_SET)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_SET)
-        if self.mute_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_MUTE)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Group providers derive volume and mute capabilities from their members;
+        # the group itself intentionally has no native control to resolve here.
+        if self.type != PlayerType.GROUP:
+            if self.volume_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_SET)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_SET)
+            if self.mute_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_MUTE)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
         if self.grouping_locked:

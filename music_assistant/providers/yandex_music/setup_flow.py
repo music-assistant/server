@@ -61,7 +61,7 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: The setup session driving the flow.
     """
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -88,7 +88,7 @@ async def run_setup(session: SetupSession) -> None:
         )
         method = str(values[CONF_METHOD])
         if method == METHOD_TOKEN:
-            token_errors: dict[str, str] | None = None
+            token_errors: dict[str, str | SetupFlowError] | None = None
             while True:
                 token_values = await session.form(
                     [
@@ -138,7 +138,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _qr_login(session: SetupSession) -> Credentials:

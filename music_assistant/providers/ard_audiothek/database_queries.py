@@ -197,6 +197,7 @@ query ShowEpisode($coreId: String!) {
     duration
     title
     episodeNumber
+    publishDate
     coreId
     showId
     synopsis
