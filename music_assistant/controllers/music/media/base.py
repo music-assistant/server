@@ -1595,6 +1595,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
+    async def remove_provider_images(
+        self, item_id: str | int, provider_instance_id: str, paths: Iterable[str]
+    ) -> None:
+        """
+        Remove the given images of a provider from a library item.
+
+        :param item_id: The library item ID to remove images from.
+        :param provider_instance_id: The provider instance the images belong to.
+        :param paths: The image paths to remove.
+        """
+        db_id = int(item_id)  # ensure integer
+        if not await self._remove_provider_images(db_id, provider_instance_id, set(paths)):
+            return
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            item = await self.get_library_item(db_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
     async def set_provider_mappings(
         self,
         item_id: str | int,
@@ -2590,12 +2608,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         msg = f"{library_item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
 
-    async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
+    async def _remove_provider_images(
+        self, db_id: int, provider_instance_id: str, paths: set[str] | None = None
+    ) -> bool:
         """
         Remove images belonging to a provider from a library item's stored metadata.
 
         :param db_id: The library (database) id of the item.
         :param provider_instance_id: The provider instance whose images should be removed.
+        :param paths: Only remove the provider's images with these paths (all when None).
         :return: True if any images were removed and the db record was updated.
         """
         # read the raw metadata straight from the db (instead of via get_library_item)
@@ -2608,10 +2629,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if not metadata.images:
             return False
         remaining = UniqueList(
-            img for img in metadata.images if img.provider != provider_instance_id
+            img
+            for img in metadata.images
+            if img.provider != provider_instance_id or (paths is not None and img.path not in paths)
         )
         if len(remaining) == len(metadata.images):
-            # nothing belonged to this provider
+            # nothing to remove
             return False
         metadata.images = remaining or None
         await self.mass.music.database.update(
