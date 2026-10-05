@@ -52,6 +52,8 @@ from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
+from .events import ProviderEventRecorder
+
 
 class StubConfig:
     """Minimal ProviderConfig stand-in exposing get_value."""
@@ -65,7 +67,7 @@ class StubConfig:
         return self._values.get(key, default)
 
 
-class DummyRuntime(AIRadioRuntimeMixin):
+class DummyRuntime(ProviderEventRecorder, AIRadioRuntimeMixin):
     """Minimal runtime harness for testing mixin behavior."""
 
     def __init__(self, setup_values: dict[str, Any] | None = None) -> None:
