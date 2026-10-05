@@ -22,9 +22,11 @@ from music_assistant_models.errors import (
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio import provider as ai_radio_provider
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_SESSION_ID,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
     ENGINE_RETRY_DELAY,
+    EVENT_SESSIONS_UPDATED,
     MAX_FINISHED_SESSIONS,
 )
 from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
@@ -1116,3 +1118,83 @@ async def test_status_only_shows_the_runs_on_players_the_user_has_access_to() ->
     for hidden in ("s_living", "s_group"):
         with pytest.raises(KeyError):
             await provider.get_status(session_id=hidden)
+
+
+async def test_stop_run_emits_a_sessions_hint() -> None:
+    """Stopping a run announces a hint before the queue is stopped."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_recording_stop(stopped),
+            )
+        ),
+    )
+    session = SessionState(
+        session_id="s1", station_id="station_a", status="running", queue_id="living_room"
+    )
+    provider._sessions[session.session_id] = session
+
+    await provider.stop_run(session_id="s1")
+
+    assert session.status == "stopped"
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )
+
+
+def test_record_skip_emits_a_sessions_hint() -> None:
+    """A skipped clip bumps the session counters and announces a hint."""
+    provider = _make_provider()
+    session = SessionState(session_id="s1", station_id="station_a")
+    provider._sessions[session.session_id] = session
+    queue_item = SimpleNamespace(extra_attributes={ATTR_SESSION_ID: "s1"})
+
+    provider._record_skip(cast("Any", queue_item), "tts down")
+
+    assert session.skipped_sections == 1
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )
+
+
+async def test_start_run_emits_a_sessions_hint() -> None:
+    """Creating a run announces a hint once the session is registered."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
+    provider._stations = {
+        "station_a": {
+            "id": "station_a",
+            "name": "Station A",
+            "source_playlist_id": "1",
+            "source_playlist_provider": "library",
+            "default_player_id": "living_room",
+            "host_id": "host_a",
+        }
+    }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            players=SimpleNamespace(get_player=lambda _player_id: player),
+            create_task=lambda coro, **_kw: coro.close(),
+        ),
+    )
+
+    await provider.start_run(station_id="station_a")
+
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )

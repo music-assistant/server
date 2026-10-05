@@ -45,6 +45,7 @@ from .constants import (
     ENGINE_DISCOVERY_TIMEOUT,
     ENGINE_RECHECK_GRACE,
     ENGINE_RETRY_DELAY,
+    EVENT_SESSIONS_UPDATED,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
@@ -457,6 +458,7 @@ class AIRadioProvider(
                 self._run_session(session_id, program),
                 task_id=f"ai_radio_session_{session_id}",
             )
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         self.logger.debug(
             "AI Radio session started: session=%s station=%s",
             session_id,
@@ -478,6 +480,7 @@ class AIRadioProvider(
             selected.task.cancel()
         selected.status = "stopped"
         selected.ended_at = utc_now_iso()
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         await self._stop_session_queue(selected)
         self.logger.info(
             "AI Radio session stopped: session=%s station=%s",

@@ -45,6 +45,7 @@ from music_assistant.providers.ai_radio.constants import (
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
     CONF_WEATHER_PROVIDER,
+    EVENT_SESSIONS_UPDATED,
     TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
@@ -2274,7 +2275,7 @@ async def test_run_show_binds_the_session_to_the_target_queue() -> None:
 async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
     """Report a run that ended because the queue was stopped as stopped, not completed."""
 
-    class QueueStoppedRuntime(AIRadioRuntimeMixin):
+    class QueueStoppedRuntime(ProviderEventRecorder, AIRadioRuntimeMixin):
         def __init__(self) -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.queue_stopped")
             self._sessions: dict[str, SessionState] = {}
@@ -2290,3 +2291,52 @@ async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
 
     assert session.status == "stopped"
     assert session.ended_at is not None
+
+
+async def test_run_session_emits_a_sessions_hint_at_start_and_end() -> None:
+    """A run announces itself when it starts and once more when it settles."""
+
+    class SuccessfulRuntime(DummyRuntime):
+        async def _run_show(
+            self,
+            session: SessionState,
+            station: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Return a successful show run result."""
+            return {}
+
+    runtime = SuccessfulRuntime()
+    session = SessionState(session_id="s1", station_id="station_a")
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "station_a"})
+
+    assert session.status == "completed"
+    assert runtime.provider_events == [
+        {"event": EVENT_SESSIONS_UPDATED},
+        {"event": EVENT_SESSIONS_UPDATED},
+    ]
+
+
+async def test_run_session_emits_a_sessions_hint_when_it_fails() -> None:
+    """A failed run still settles with a hint, so clients pick up the error."""
+    runtime = FailingRuntime()
+    session = SessionState(session_id="s2", station_id="station_b")
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "station_b"})
+
+    assert session.status == "failed"
+    assert runtime.provider_events[-1] == {"event": EVENT_SESSIONS_UPDATED}
+    assert len(runtime.provider_events) == 2
+
+
+def test_set_session_progress_emits_a_sessions_hint() -> None:
+    """Every progress phase change announces a hint."""
+    runtime = DummyRuntime()
+    session = SessionState(session_id="s3", station_id="station_c")
+
+    runtime._set_session_progress(session, "planning_sections", total_tracks=3)
+
+    assert session.progress["phase"] == "planning_sections"
+    assert runtime.provider_events == [{"event": EVENT_SESSIONS_UPDATED}]
