@@ -35,9 +35,7 @@ def provider() -> QobuzProvider:
         "log_level": "GLOBAL",
     }.get(key, default)
     provider = QobuzProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    provider._user_auth_info = {
-        "user": {"id": 123, "device": {"id": 7}, "credential": {"id": 9}}
-    }
+    provider._user_auth_info = {"user": {"id": 123, "device": {"id": 7}, "credential": {"id": 9}}}
     provider._get_data = AsyncMock(return_value=FILE_URL_RESPONSE)  # type: ignore[method-assign]
     provider._post_data = AsyncMock(return_value={})  # type: ignore[method-assign]
     return provider
