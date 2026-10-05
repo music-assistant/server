@@ -602,6 +602,7 @@ class StreamsController(CoreController):
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
         # the music database connection exists now; attach the analysis database onto it
+        self.mass.music.register_reset_hook(self._audio_analysis)
         await self._audio_analysis.setup_database()
         # the inbound half of a live announcement rides on the webserver: it is the only
         # one of the two servers that authenticates (and that browsers reach over https)
