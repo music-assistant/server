@@ -1,4 +1,19 @@
-"""AI Radio Plugin Provider for Music Assistant."""
+"""
+AI Radio Plugin Provider for Music Assistant.
+
+State changes are announced to connected clients as PROVIDER_EVENT events with
+``object_id`` set to this provider's instance_id (``ai_radio``; the plugin is single
+instance). Every payload is a refetch hint without state::
+
+    {"event": "hosts_updated"}      -> refetch ai_radio/hosts/list
+    {"event": "stations_updated"}   -> refetch ai_radio/stations/list
+    {"event": "sections_updated"}   -> refetch ai_radio/sections/list
+    {"event": "queue_dj_updated"}   -> refetch ai_radio/queue_dj/status
+    {"event": "sessions_updated"}   -> refetch ai_radio/status
+
+The endpoints apply the caller's player access, which is why the events themselves
+carry nothing.
+"""
 
 from __future__ import annotations
 

@@ -50,6 +50,7 @@ def _make_provider() -> AIRadioProvider:
     provider = AIRadioProvider.__new__(AIRadioProvider)
     provider._sessions = {}
     provider._session_lock = asyncio.Lock()
+    provider.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     return provider
 
 
@@ -85,6 +86,7 @@ def provider(tmp_path: Path) -> AIRadioProvider:
     instance._dj_queues = {}
     instance._hosts_file = tmp_path / "hosts.json"
     instance._sections = {item["id"]: item for item in instance._default_sections_template()}
+    instance.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     return instance
 
 
