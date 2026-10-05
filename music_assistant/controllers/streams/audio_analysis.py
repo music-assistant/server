@@ -346,6 +346,19 @@ class AudioAnalysisController:
             self.analysis_executor.shutdown(wait=False, cancel_futures=True)
             self.analysis_executor = None
 
+    async def before_library_reset(self) -> None:
+        """Refuse a library reset while the analysis database is unavailable."""
+        # an unfinished relocation leaves analysis rows in library.db that a reset would delete
+        if not self._database_ready:
+            raise ProviderUnavailableError(
+                "Cannot reset the library while audio analysis storage is unavailable; "
+                "resolve the storage or migration error first"
+            )
+
+    async def after_library_reset(self) -> None:
+        """Attach the analysis database onto the new library connection."""
+        await self.setup_database()
+
     def ensure_inference_runtime_configured(self) -> None:
         """
         Configure the on-device inference runtime for analysis (process-wide, applied once).
