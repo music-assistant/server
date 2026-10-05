@@ -308,8 +308,7 @@ async def test_get_artist_albums_includes_albums_and_singles(
     assert len(albums) == 3
     assert albums[0].item_id == "MPREb_album_1"
     assert albums[0].name == "Full Album"
-    # This matches real behavior where ytmusicapi doesn't indicate the type for
-    # artist albums. Maybe we could still safely mark them as albums nonetheless?
+    # ytmusicapi doesn't return a type for items in the artist albums section.
     assert albums[0].album_type == AlbumType.UNKNOWN
 
     assert albums[1].item_id == "MPREb_single_1"

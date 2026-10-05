@@ -67,7 +67,6 @@ async def get_artist_albums(
 
     def _get_artist_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        # Get all albums
         return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
 
     return await _run_ytmusic(_get_artist_albums)

@@ -551,10 +551,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
 
-        # get_artist() only has top-10 preview lists, so we need to hydrate
-        # them to full lists of albums, singles, etc.
-        # `singles` covers both EPs and Singles, `shows` covers radio shows
-        # (not really music, questionable if we want these?)
+        # get_artist() only embeds ~10 item previews, so fetch each section in full.
+        # "singles" covers singles and EPs, "shows" covers radio shows and audio dramas.
         sections = [
             (key, section)
             for key in ("albums", "singles", "shows")
