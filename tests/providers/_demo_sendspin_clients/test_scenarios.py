@@ -47,23 +47,16 @@ def test_identity_is_stable_per_scenario() -> None:
 
 
 def test_matrix_covers_every_pairing_method() -> None:
-    """Each pairing method, and a device offering none, is represented."""
-    assert any(scenario.pairing_psk for scenario in SCENARIOS)
+    """Each PIN method, and a device with neither PIN nor guest access, is represented."""
     assert any(scenario.static_pin for scenario in SCENARIOS)
     assert any(scenario.dynamic_pin for scenario in SCENARIOS)
     assert any(scenario.unpaired_access for scenario in SCENARIOS)
     assert any(
-        not scenario.offers_pairing and not scenario.unpaired_access for scenario in SCENARIOS
+        not (scenario.static_pin or scenario.dynamic_pin or scenario.unpaired_access)
+        for scenario in SCENARIOS
     )
     assert any(scenario.source_role for scenario in SCENARIOS)
     assert any(scenario.pin_channel.has_speaker for scenario in SCENARIOS)
-
-
-def test_real_speakers_carry_the_token_alongside_a_pin_method() -> None:
-    """Every pairable device also offers the server-side token, as real speakers do."""
-    for scenario in SCENARIOS:
-        if scenario.static_pin or scenario.dynamic_pin:
-            assert scenario.pairing_psk, f"{scenario.scenario_id} should also offer the token"
 
 
 def test_the_token_only_devices_cover_both_secret_locations() -> None:
@@ -71,9 +64,14 @@ def test_the_token_only_devices_cover_both_secret_locations() -> None:
     token_only = {
         scenario.scenario_id: scenario.secret_locations
         for scenario in SCENARIOS
-        if scenario.pairing_psk and not (scenario.static_pin or scenario.dynamic_pin)
+        if not (scenario.static_pin or scenario.dynamic_pin)
     }
-    assert token_only == {"token": ("device",), "token_operator": ("operator",)}
+    assert token_only == {
+        "open": (),
+        "token": ("device",),
+        "token_operator": ("operator",),
+        "locked": (),
+    }
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.scenario_id)
@@ -102,8 +100,8 @@ async def test_device_advertises_its_scenario(
         assert config.dynamic_pairing_code_enabled is scenario.dynamic_pin
         assert config.unpaired_access_enabled is scenario.unpaired_access
         assert (await store.static_pairing_code() == STATIC_PIN) is scenario.static_pin
-        assert (await store.pairing_psk() is not None) is scenario.pairing_psk
-        assert (device.pairing_token is not None) is scenario.pairing_psk
+        assert await store.pairing_psk() is not None
+        assert device.pairing_token is not None
     finally:
         await device.stop()
 

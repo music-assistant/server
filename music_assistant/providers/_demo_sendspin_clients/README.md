@@ -45,19 +45,17 @@ the button is only needed for a first pairing.
 
 | Scenario | What it shows |
 | --- | --- |
-| Open Speaker | Guest access only: a single consent step, no pairing offered |
+| Open Speaker | Guest access, with only the token offered as the secure alternative |
 | Guest Speaker | Guest access with pairing offered as the optional secure alternative |
 | PIN Speaker | Six-digit dynamic PIN on a display |
 | Spoken PIN Speaker | Dynamic PIN spoken instead of displayed |
 | Static PIN Speaker | Fixed eight-digit PIN, always gesture-gated |
 | Token Speaker | No PIN support, so setup falls back to the token printed on the device |
 | Managed Speaker | No PIN support, with its token handed out by an administrator |
-| Locked Speaker | Nothing on offer, so setup can only abort |
+| Locked Speaker | No guest access and no PIN, and no hint where its token is |
 | Everything Speaker | Guest access plus every method, on both PIN out-channels |
 | Line-In Speaker | Adds an audio input, and with it the line-in decision step |
 
-Every device except the locked one also carries the token method, as real speakers do.
-Setup only surfaces it for a device with no PIN of its own, so on the rest it changes
-nothing on screen.
+Every device also carries the token method, as real speakers do.
 
 Audio is decoded and dropped, so the players are usable playback targets too.

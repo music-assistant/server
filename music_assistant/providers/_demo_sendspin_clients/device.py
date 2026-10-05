@@ -149,8 +149,7 @@ class FakeSendspinDevice:
         )
         if self.scenario.static_pin:
             await store.set_static_pairing_code(STATIC_PIN)
-        if self.scenario.pairing_psk:
-            self.pairing_token = await _ensure_pairing_token(store, self.client_id)
+        self.pairing_token = await _ensure_pairing_token(store, self.client_id)
 
         roles = [Roles.PLAYER]
         if self.scenario.source_role:
@@ -287,12 +286,7 @@ def _scenario_identity(scenario_id: str) -> Identity:
 
 
 async def _ensure_pairing_token(store: FileClientPairingStore, client_id: str) -> str:
-    """
-    Return the device's pairing token, minting the Pairing PSK behind it once.
-
-    Setup offers the token only to a device with no PIN method of its own, but every
-    device mints one, since real speakers advertise it alongside their PIN.
-    """
+    """Return the device's pairing token, minting the Pairing PSK behind it once."""
     pairing_psk = await store.pairing_psk()
     if pairing_psk is None:
         psk = generate_psk()
