@@ -139,6 +139,7 @@ from .helpers import (
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    get_valid_isrcs,
     is_disc_dir,
     is_image_file,
     is_metadata_file,
@@ -2471,9 +2472,8 @@ class LocalFileSystemProvider(MusicProvider):
             ),
         )
 
-        if isrc_tags := tags.isrc:
-            for isrsc in isrc_tags:
-                track.external_ids.add((ExternalID.ISRC, isrsc))
+        for isrc in get_valid_isrcs(tags.isrc, file_item.relative_path, self.logger):
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if acoustid := tags.get("acoustid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
