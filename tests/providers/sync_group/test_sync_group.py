@@ -144,6 +144,7 @@ def _make_mock_player(
 
     player.state = MagicMock()
     player.state.available = available
+    player.state.type = player_type
     player.state.playback_state = playback_state
     player.state.can_group_with = set()
     player.state.group_members = []
@@ -252,6 +253,20 @@ class TestProtocolAwareLeaderSelection:
 
         leader = sgp._select_sync_leader()
         assert leader == player_a
+
+    def test_select_leader_skips_non_playback_member(self) -> None:
+        """A light member listed first is never picked as sync leader."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        light = _make_mock_player("light", provider_domain="sendspin", player_type=PlayerType.LIGHT)
+        player_b = _make_mock_player("player_b", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"light": light, "player_b": player_b})
+
+        sgp._attr_group_members = ["light", "player_b"]
+
+        leader = sgp._select_sync_leader()
+        assert leader == player_b
 
 
 class TestMemberSupportsProtocol:
