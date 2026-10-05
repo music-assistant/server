@@ -80,6 +80,27 @@ def test_supported_rates_follow_the_codec_in_use() -> None:
     assert explicit.supported_sample_rates == [(44100, 16)]
 
 
+async def test_session_without_queue_item_returns_to_client_default() -> None:
+    """A session without a first queue item (e.g. an audio source) uses the client's default."""
+    player, role = _player([FLAC_48K, FLAC_44K])
+    session = _session(player, sample_rate=44100)
+    await session._follow_session_sample_rate([PLAYER_ID])
+
+    session._start_streamdetails = None
+    await session._follow_session_sample_rate([PLAYER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 48000
+    assert role._state().preferred_format_override is None
+
+
+async def test_unlisted_explicit_format_reports_client_rates() -> None:
+    """An explicit format the client no longer lists does not limit the supported rates."""
+    player, _ = _player([FLAC_48K, FLAC_44K], preferred_format="flac:96000:24:2")
+
+    assert player.supported_sample_rates == [(44100, 16), (48000, 16)]
+
+
 async def test_late_joining_member_follows_session_rate() -> None:
     """A member joining a running session is steered to the session's first track rate."""
     leader, _ = _player([FLAC_48K, FLAC_44K])

@@ -1315,8 +1315,6 @@ class SendspinPlaybackSession:
         """Let the given players' Sendspin formats follow the sample rate of this session."""
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
-        if self._start_streamdetails is None:
-            return
         for player_id in player_ids:
             player = self.player.mass.players.get_player(player_id)
             if isinstance(player, SendspinPlayer):

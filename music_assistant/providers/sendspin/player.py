@@ -1262,12 +1262,20 @@ class SendspinPlayer(SendspinBasePlayer):
             "str",
             self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
         )
-        if config_value != SENDSPIN_FORMAT_AUTOMATIC and (
-            parsed := option_value_to_format(config_value)
-        ):
-            _, audio_format = parsed
-            return [(audio_format.sample_rate, audio_format.bit_depth)]
         if (player_role := self._player_role) is not None:
+            if config_value != SENDSPIN_FORMAT_AUTOMATIC and (
+                parsed := option_value_to_format(config_value)
+            ):
+                codec, audio_format = parsed
+                # a format the client no longer lists falls back to the client's default
+                if any(
+                    fmt.codec == codec
+                    and fmt.sample_rate == audio_format.sample_rate
+                    and fmt.bit_depth == audio_format.bit_depth
+                    and fmt.channels == audio_format.channels
+                    for fmt in player_role.get_supported_formats() or []
+                ):
+                    return [(audio_format.sample_rate, audio_format.bit_depth)]
             formats = self._top_codec_formats(player_role)
             rates = sorted({(fmt.sample_rate, fmt.bit_depth) for fmt in formats})
             if rates:
@@ -1513,22 +1521,23 @@ class SendspinPlayer(SendspinBasePlayer):
         await self._apply_preferred_format()
         await self._apply_static_delay()
 
-    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails) -> None:
+    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
         """
         Match an automatic Sendspin format to the sample rate of a new playback session.
 
         The rate follows the player's sample rate setting for the first item of the session.
+        Without a first item, the client's own default format is used.
         An explicitly configured Sendspin format is left as is.
 
-        :param start_streamdetails: Stream details of the first item of the session.
+        :param start_streamdetails: Stream details of the first item of the session, if any.
         """
-        pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
-            self, start_streamdetails=start_streamdetails
-        )
-        # an unchanged rate leaves the role as is, so a format the client requested since stays
-        if pcm_format.sample_rate == self._session_sample_rate:
-            return
-        self._session_sample_rate = pcm_format.sample_rate
+        if start_streamdetails is None:
+            self._session_sample_rate = None
+        else:
+            pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+                self, start_streamdetails=start_streamdetails
+            )
+            self._session_sample_rate = pcm_format.sample_rate
         await self._apply_preferred_format()
 
     async def on_group_content_takeover(self) -> object:
