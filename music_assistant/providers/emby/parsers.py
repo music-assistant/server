@@ -36,6 +36,7 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_NAME,
     ITEM_KEY_PARENT_INDEX_NUMBER,
     ITEM_KEY_PRIMARY_IMAGE_ITEM_ID,
+    ITEM_KEY_PRIMARY_IMAGE_TAG,
     ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
@@ -120,8 +121,8 @@ def parse_track(
     )
 
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{track_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{track_id}/Images/Primary?tag={primary_tag}"
         if track.metadata.images is None:
             track.metadata.images = UniqueList[MediaItemImage]()
         track.metadata.images.append(
@@ -168,8 +169,8 @@ def parse_artist(
     )
 
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{artist_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{artist_id}/Images/Primary?tag={primary_tag}"
         if artist.metadata.images is None:
             artist.metadata.images = UniqueList[MediaItemImage]()
         artist.metadata.images.append(
@@ -239,8 +240,14 @@ def parse_album(
 
     # Extract images
     image_item_id = item.get(ITEM_KEY_PRIMARY_IMAGE_ITEM_ID)
-    if image_item_id or "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
+    primary_tag = item.get(ITEM_KEY_PRIMARY_IMAGE_TAG) or item.get(ITEM_KEY_IMAGE_TAGS, {}).get(
+        "Primary"
+    )
+    if primary_tag:
+        image_url = (
+            f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
+            f"?tag={primary_tag}"
+        )
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
@@ -283,8 +290,8 @@ def parse_playlist(
         },
     )
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{playlist_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{playlist_id}/Images/Primary?tag={primary_tag}"
         if playlist.metadata.images is None:
             playlist.metadata.images = UniqueList[MediaItemImage]()
         playlist.metadata.images.append(
