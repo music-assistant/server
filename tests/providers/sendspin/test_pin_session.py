@@ -272,6 +272,17 @@ def _make_provider(
     return provider, refreshed
 
 
+def _enable_both_pin_methods(provider: SendspinProvider, server_api: _FakeServerApi) -> None:
+    """Enable both PIN methods over management, the only way a device offers both."""
+    provider._pairing_config_snapshots["c"] = (
+        cast("SendspinConnection", server_api.connection),
+        ManagementResultData(
+            static_pairing_code=PairingMethodConfig(enabled=True),
+            dynamic_pairing_code=PairingMethodConfig(enabled=True),
+        ),
+    )
+
+
 async def test_session_running_states() -> None:
     """A running attempt tracks the gesture and PIN waits independently."""
     loop = asyncio.get_running_loop()
@@ -393,8 +404,9 @@ async def test_pin_submitted_before_gesture(monkeypatch: pytest.MonkeyPatch) -> 
 
 async def test_default_prefers_dynamic_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     """When both PIN methods are offered, the default pick is dynamic."""
-    api = _FakeServerApi(_offer(PairMethod.STATIC_PAIRING_CODE, PairMethod.DYNAMIC_PAIRING_CODE))
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     provider, _refreshed = _make_provider(api, monkeypatch)
+    _enable_both_pin_methods(provider, api)
     session = await provider.start_pin_pairing("c")
     assert session.method is PairMethod.DYNAMIC_PAIRING_CODE
     await provider.cancel_pin_pairing("c")
@@ -402,8 +414,9 @@ async def test_default_prefers_dynamic_pin(monkeypatch: pytest.MonkeyPatch) -> N
 
 async def test_static_override_picks_static_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     """The static override pairs with the static PIN even when dynamic is offered."""
-    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE))
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     provider, refreshed = _make_provider(api, monkeypatch)
+    _enable_both_pin_methods(provider, api)
     session = await provider.start_pin_pairing("c", static=True)
     assert session.method is PairMethod.STATIC_PAIRING_CODE
     await _submit_and_settle(provider, "12345678")
@@ -465,9 +478,10 @@ async def test_parked_static_session_not_resumed_by_default_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A parked static-PIN session is not resumed by a later dynamic-first request."""
-    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE))
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     api.outcomes.append(RemotePairingAbortError(PairAbortReason.PAIRING_CODE_MISMATCH))
     provider, _refreshed = _make_provider(api, monkeypatch)
+    _enable_both_pin_methods(provider, api)
     session = await provider.start_pin_pairing("c", static=True)
     assert session.method is PairMethod.STATIC_PAIRING_CODE
     await _submit_and_settle(provider, "00000000")
@@ -481,8 +495,9 @@ async def test_parked_static_session_not_resumed_by_default_mode(
 
 async def test_running_mode_mismatch_raises_concurrent(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attempt in flight with a different mode cannot be co-opted."""
-    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE))
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     provider, _refreshed = _make_provider(api, monkeypatch)
+    _enable_both_pin_methods(provider, api)
     session = await provider.start_pin_pairing("c")
     assert session.attempt_running
 
@@ -586,16 +601,17 @@ async def test_static_pin_attempt_carries_no_format(monkeypatch: pytest.MonkeyPa
 async def test_dynamic_pin_offered_only_as_qr_code_is_not_usable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The operator can only type digits, so a QR-only dynamic offer falls back to static."""
-    offer = _offer(PairMethod.STATIC_PAIRING_CODE)
+    """The operator can only type digits, so a QR-only dynamic offer leaves no PIN method."""
+    offer = _offer(PairMethod.PAIRING_PSK)
     offer.dynamic_pairing_code = DynamicPairMethodDescriptor(
         out_channels=["display"], formats=["qr_code"]
     )
     api = _FakeServerApi(offer)
     provider, _refreshed = _make_provider(api, monkeypatch)
-    session = await provider.start_pin_pairing("c")
-    assert session.method is PairMethod.STATIC_PAIRING_CODE
-    await _submit_and_settle(provider, "12345678")
+    with pytest.raises(SecurityActionError) as excinfo:
+        await provider.start_pin_pairing("c")
+    assert excinfo.value.alert_key == "pairing_error_no_pin_method"
+    assert api.initiate_calls == 0
 
 
 async def test_config_enabled_dynamic_pin_is_offered_without_a_hello_descriptor(

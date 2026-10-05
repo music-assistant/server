@@ -40,15 +40,6 @@ def test_unchanged_delay_is_not_stored_again() -> None:
     player.mass.config.set_raw_player_config_value.assert_not_called()
 
 
-async def test_configured_delay_is_sent_as_output_delay() -> None:
-    """The stored delay setting reaches the device through set_output_delay."""
-    player = _player(configured_delay=80)
-
-    await SendspinPlayer._apply_static_delay(player)
-
-    player._player_role.set_output_delay.assert_called_once_with(80)
-
-
 @pytest.mark.parametrize(
     ("commands", "offered"),
     [

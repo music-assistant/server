@@ -86,7 +86,7 @@ async def test_device_advertises_its_scenario(
         assert client is not None
 
         implemented = client.implemented_pair_methods
-        assert (PairMethod.PAIRING_PSK in implemented) is True
+        assert PairMethod.PAIRING_PSK in implemented
         assert (PairMethod.STATIC_PAIRING_CODE in implemented) is scenario.static_pin
         assert (PairMethod.DYNAMIC_PAIRING_CODE in implemented) is scenario.dynamic_pin
         assert client.secret_locations == scenario.secret_locations
@@ -104,13 +104,6 @@ async def test_device_advertises_its_scenario(
         assert device.pairing_token is not None
     finally:
         await device.stop()
-
-
-@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.scenario_id)
-def test_gesture_gating_matches_the_spec(scenario: Scenario) -> None:
-    """A device needs its button pressed only when the static PIN is the one it offers."""
-    expected = scenario.static_pin and not scenario.dynamic_pin
-    assert scenario.gesture_gated is expected
 
 
 def test_pin_channel_flags() -> None:

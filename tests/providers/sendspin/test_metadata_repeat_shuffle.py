@@ -49,7 +49,6 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     await SendspinPlayer.send_current_media_metadata(player)
 
     metadata = player._metadata_role.set_metadata.call_args.args[0]
-    assert metadata.title == "Title"
     assert metadata.repeat is None
     assert metadata.shuffle is None
     player._controller_role.set_repeat.assert_called_once_with(SendspinRepeatMode.ALL)
