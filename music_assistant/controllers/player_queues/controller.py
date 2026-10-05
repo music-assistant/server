@@ -888,6 +888,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
         if not current_item.duration:
             raise InvalidCommand("Can not skip in items without duration.")
+        self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         if queue_data.pending_skip_item_id != current_item.queue_item_id:
             queue_data.pending_skip_seconds = 0
