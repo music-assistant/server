@@ -3403,7 +3403,7 @@ class StreamsAudio:
                 if blocked:
                     msg = f"{queue_item.name} is not available on any music source of this user"
                     raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
-            streamdetails = await self._request_streamdetails(candidates, media_item.media_type)
+            streamdetails = await self._request_streamdetails(candidates, media_item)
 
             if not streamdetails:
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
@@ -3921,13 +3921,16 @@ class StreamsAudio:
     async def _request_streamdetails(
         self,
         candidates: Iterable[tuple[ProviderMapping, Provider]],
-        media_type: MediaType,
+        media_item: MediaItemType,
     ) -> StreamDetails | None:
         """
         Request stream details from ordered provider mapping candidates.
 
+        A library item's mapping whose own provider no longer finds the item is marked
+        unavailable.
+
         :param candidates: Candidates in mapping and compatible-instance order.
-        :param media_type: Media type requested from each provider.
+        :param media_item: The media item the candidates belong to.
         :return: The first resolved stream details, or None when every candidate failed.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
@@ -3937,11 +3940,20 @@ class StreamsAudio:
             try:
                 stream_prov = cast("AudioStreamMixin", provider)
                 with request_priority(RequestPriority.HIGH):
-                    return await stream_prov.get_stream_details(mapping.item_id, media_type)
+                    return await stream_prov.get_stream_details(
+                        mapping.item_id, media_item.media_type
+                    )
             except AudioError as err:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
+            except MediaNotFoundError as err:
+                self.logger.warning("%s", err)
+                # another account of the same service may simply lack the item
+                if provider.instance_id == mapping.provider_instance:
+                    self.mass.create_task(
+                        self.mass.music.mark_provider_mapping_unavailable(media_item, mapping)
+                    )
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
         if last_audio_error is not None:

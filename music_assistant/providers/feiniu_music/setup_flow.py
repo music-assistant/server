@@ -31,7 +31,7 @@ async def run_setup(session: SetupSession) -> None:
         else None
     )
     data.setdefault("device_id", uuid.uuid4().hex)
-    errors = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         submitted = await session.form(
             [
@@ -60,4 +60,4 @@ async def run_setup(session: SetupSession) -> None:
         except SetupFlowError as err:
             if session.context.kind == "reconfigure":
                 data["password"] = original_password
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

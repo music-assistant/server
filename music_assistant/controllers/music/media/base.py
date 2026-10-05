@@ -2970,6 +2970,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Add provider mappings to a library item and return the ones that were added.
 
+        An unavailable mapping the item already holds is marked available again when it
+        is passed in as available.
+
         :param db_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
         :param merge_conflicts: Whether a mapping another library item holds merges that
@@ -3019,8 +3022,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     mappings = [x for x in mappings if (x.provider_domain, x.item_id) != claimed]
 
             added = [x for x in mappings if x not in library_item.provider_mappings]
-            if not added:
+            # a mapping found again is available again, e.g. after playback marked it unavailable
+            revived = [
+                x
+                for x in library_item.provider_mappings
+                if not x.available and any(m == x and m.available for m in mappings)
+            ]
+            if not added and not revived:
                 return []
+            for mapping in revived:
+                mapping.available = True
             library_item.provider_mappings.update(added)
             await self.set_provider_mappings(db_id, library_item.provider_mappings)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)

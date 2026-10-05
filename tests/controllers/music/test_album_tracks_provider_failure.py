@@ -147,3 +147,89 @@ async def test_album_tracks_raise_when_library_tracks_unavailable(mass: MusicAss
         pytest.raises(MediaNotFoundError),
     ):
         await mass.music.albums.tracks(db_album.item_id, "library")
+
+
+def _streaming_mapping_available(album: Album) -> bool:
+    return next(
+        mapping.available
+        for mapping in album.provider_mappings
+        if mapping.provider_instance == "streaming_inst"
+    )
+
+
+def _loaded_provider(instance_id: str) -> Callable[..., MagicMock]:
+    """Return a fake provider lookup that resolves every provider to the given instance."""
+
+    def _get_provider(*_args: object, **_kwargs: object) -> MagicMock:
+        provider = MagicMock()
+        provider.instance_id = instance_id
+        return provider
+
+    return _get_provider
+
+
+async def _album_tracks_with_failure(
+    mass: MusicAssistant, db_album: Album, error: Exception, served_by: str = "streaming_inst"
+) -> MagicMock:
+    """List the album's tracks with the streaming lookup failing, served by the given instance."""
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    with (
+        patch.object(mass, "get_provider", side_effect=_loaded_provider(served_by)),
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            side_effect=_failing_provider_fetch(error),
+        ) as fetch,
+    ):
+        await mass.music.albums.tracks(db_album.item_id, "library")
+    return fetch
+
+
+async def test_album_tracks_mark_a_mapping_the_provider_does_not_find(mass: MusicAssistant) -> None:
+    """A provider that no longer finds the album gets its mapping marked unavailable."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(mass, db_album, MediaNotFoundError("Album not found"))
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert not _streaming_mapping_available(stored)
+    assert len(stored.provider_mappings) == 2
+
+
+async def test_album_tracks_keep_a_mapping_on_a_transient_failure(mass: MusicAssistant) -> None:
+    """A provider that fails for another reason keeps its mapping available."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(mass, db_album, ProviderPermissionDenied("Not in your region"))
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert _streaming_mapping_available(stored)
+
+
+async def test_album_tracks_keep_a_mapping_another_account_does_not_find(
+    mass: MusicAssistant,
+) -> None:
+    """Another account of the service standing in and lacking the album says nothing about it."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(
+        mass, db_album, MediaNotFoundError("Album not found"), served_by="streaming_inst_2"
+    )
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert _streaming_mapping_available(stored)
+
+
+async def test_album_tracks_skip_an_unavailable_mapping(mass: MusicAssistant) -> None:
+    """A mapping already marked unavailable is not fetched again."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(mass, db_album, MediaNotFoundError("Album not found"))
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    fetch = await _album_tracks_with_failure(mass, stored, MediaNotFoundError("Album not found"))
+    assert [call.args[1] for call in fetch.call_args_list] == ["local_inst"]
+
+
+async def test_a_mapping_found_again_is_available_again(mass: MusicAssistant) -> None:
+    """A mapping marked unavailable is marked available again when it is linked once more."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await _album_tracks_with_failure(mass, db_album, MediaNotFoundError("Album not found"))
+    added = await mass.music.albums.add_unclaimed_provider_mappings(
+        db_album.item_id, [_mapping("streaming_inst", "album_streaming", in_library=False)]
+    )
+    stored = await mass.music.albums.get_library_item(db_album.item_id)
+    assert added == []
+    assert _streaming_mapping_available(stored)
