@@ -4,12 +4,13 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+import time
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from sqlite3 import IntegrityError
 
 import pytest
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, UserRole
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
@@ -100,6 +101,26 @@ async def test_has_users_initially_empty(auth_manager: AuthenticationManager) ->
     """
     has_users = auth_manager.has_users
     assert has_users is False
+
+
+async def test_server_time_command_returns_utc_timestamp(mass_minimal: MusicAssistant) -> None:
+    """Return a public server timestamp for frontend clock synchronization."""
+    before = time.time()
+    result = mass_minimal.get_server_time()
+    after = time.time()
+
+    assert before <= result <= after
+
+
+async def test_role_scopes_are_available_to_frontend(auth_manager: AuthenticationManager) -> None:
+    """Expose the builtin role scopes expected by the frontend."""
+    scopes = await auth_manager.get_role_scopes()
+
+    assert scopes[UserRole.ADMIN] == [Scope.ALL.value]
+    assert Scope.LIBRARY_READ.value in scopes[UserRole.USER]
+    assert Scope.CONFIG_PROVIDERS_OWN.value in scopes[UserRole.USER]
+    assert Scope.LIBRARY_READ.value in scopes[UserRole.GUEST]
+    assert Scope.CONFIG_PLAYERS_WRITE.value in scopes[UserRole.SERVICE]
 
 
 async def test_create_user(auth_manager: AuthenticationManager) -> None:

@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
@@ -304,6 +305,11 @@ class MusicAssistant:
             onboard_done=self.config.onboard_done,
             status=self._state,
         )
+
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """Return the current server time as a UTC timestamp."""
+        return time.time()
 
     @api_command("providers/manifests")
     def get_provider_manifests(self) -> list[ProviderManifest]:

@@ -4,16 +4,43 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from aiohttp import web
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+_GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.LIBRARY_READ,
+        Scope.PLAYERS_READ,
+        Scope.PLAYERS_CONTROL,
+        Scope.QUEUES_READ,
+        Scope.QUEUES_CONTROL,
+        Scope.PROVIDERS_READ,
+        Scope.CONFIG_PLAYERS_READ,
+    }
+)
+_MEMBER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
+    Scope.LIBRARY_WRITE,
+    Scope.CONFIG_PROVIDERS_READ,
+    Scope.CONFIG_CORE_READ,
+    Scope.USERS_INVITE,
+    Scope.SYSTEM_READ,
+}
+ROLE_SCOPES: Final[dict[str, frozenset[Scope]]] = {
+    UserRole.ADMIN: frozenset({Scope.ALL}),
+    UserRole.USER: _MEMBER_SCOPES | {Scope.CONFIG_PROVIDERS_OWN},
+    UserRole.GUEST: _GUEST_SCOPES,
+    UserRole.SERVICE: _MEMBER_SCOPES
+    | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE},
+}
+
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant

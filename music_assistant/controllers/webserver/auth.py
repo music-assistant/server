@@ -15,6 +15,7 @@ from music_assistant_models.auth import (
     AuthProviderType,
     AuthToken,
     User,
+    Scope,
     UserAuthProvider,
     UserRole,
 )
@@ -1390,6 +1391,58 @@ class AuthenticationManager:
             user_row["username"],
             admin_user.username,
         )
+
+    @api_command("auth/scopes")
+    async def get_role_scopes(self) -> dict[str, list[str]]:
+        """Return the scopes granted by each builtin user role."""
+        role_scopes = {
+            UserRole.ADMIN: {Scope.ALL},
+            UserRole.USER: {
+                Scope.LIBRARY_READ,
+                Scope.LIBRARY_WRITE,
+                Scope.PLAYERS_READ,
+                Scope.PLAYERS_CONTROL,
+                Scope.QUEUES_READ,
+                Scope.QUEUES_CONTROL,
+                Scope.PROVIDERS_READ,
+                Scope.CONFIG_PLAYERS_READ,
+                Scope.CONFIG_PROVIDERS_READ,
+                Scope.CONFIG_PROVIDERS_OWN,
+                Scope.CONFIG_CORE_READ,
+                Scope.USERS_INVITE,
+                Scope.SYSTEM_READ,
+            },
+            UserRole.GUEST: {
+                Scope.LIBRARY_READ,
+                Scope.PLAYERS_READ,
+                Scope.PLAYERS_CONTROL,
+                Scope.QUEUES_READ,
+                Scope.QUEUES_CONTROL,
+                Scope.PROVIDERS_READ,
+                Scope.CONFIG_PLAYERS_READ,
+            },
+            UserRole.SERVICE: {
+                Scope.LIBRARY_READ,
+                Scope.LIBRARY_WRITE,
+                Scope.PLAYERS_READ,
+                Scope.PLAYERS_CONTROL,
+                Scope.QUEUES_READ,
+                Scope.QUEUES_CONTROL,
+                Scope.PROVIDERS_READ,
+                Scope.CONFIG_PLAYERS_READ,
+                Scope.CONFIG_PLAYERS_WRITE,
+                Scope.CONFIG_PROVIDERS_READ,
+                Scope.CONFIG_CORE_READ,
+                Scope.USERS_READ,
+                Scope.USERS_INVITE,
+                Scope.USERS_IMPERSONATE,
+                Scope.SYSTEM_READ,
+            },
+        }
+        return {
+            str(role): sorted(str(scope) for scope in scopes)
+            for role, scopes in role_scopes.items()
+        }
 
     @api_command("auth/me")
     async def get_current_user_info(self) -> User:
