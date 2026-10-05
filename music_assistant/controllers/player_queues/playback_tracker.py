@@ -624,8 +624,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if new_state["state"] == PlaybackState.PLAYING:
                 seconds_played = int(new_state["elapsed_time"])
             else:
-                # a player may reset its position on pause/stop, report where it last played
-                seconds_played = int(new_state["last_playing_elapsed_time"])
+                # a player may reset its position on pause/stop, never report less than it played
+                seconds_played = max(
+                    int(new_state["elapsed_time"]), int(new_state["last_playing_elapsed_time"])
+                )
 
         if not item_to_report:
             return  # guard against invalid items

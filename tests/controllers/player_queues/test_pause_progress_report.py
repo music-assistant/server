@@ -7,7 +7,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerType
 from music_assistant_models.media_items import Audiobook, AudioFormat, ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -97,24 +97,52 @@ def _reported_positions(ctrl: PlayerQueuesController) -> list[int]:
     return [call.kwargs["seconds_played"] for call in mark_item_played.call_args_list]
 
 
+@pytest.mark.parametrize("handover", ["resume", "transfer"])
+@pytest.mark.parametrize("pause_reports_position", [False, True])
 @pytest.mark.parametrize("rewind_to", [None, 19000])
-async def test_pause_keeps_the_last_played_position(rewind_to: int | None) -> None:
-    """A player resetting its position on pause moves neither the progress nor the resume back."""
+async def test_pause_keeps_the_last_played_position(
+    rewind_to: int | None, pause_reports_position: bool, handover: str
+) -> None:
+    """A pause outside MA moves neither the progress nor the resume behind where it played."""
     ctrl = _controller(_book())
     await ctrl.play_index(QUEUE_ID, 0, seek_position=RESUMED_AT)
     for stream_elapsed in (0, 91, 121):
         _player_reports(ctrl, PlaybackState.PLAYING, stream_elapsed)
-    played_until = RESUMED_AT + 121
+    session_start, last_reported = RESUMED_AT, 121
     if rewind_to is not None:
         await ctrl.seek(QUEUE_ID, rewind_to)
         for stream_elapsed in (0, 30):
             _player_reports(ctrl, PlaybackState.PLAYING, stream_elapsed)
-        played_until = rewind_to + 30
+        session_start, last_reported = rewind_to, 30
 
-    # paused outside MA, like Sonos, which stops and reports the start of the stream afterwards
-    _player_reports(ctrl, PlaybackState.PAUSED, 0)
-    await ctrl.resume(QUEUE_ID)
+    if pause_reports_position:
+        # a player keeping its position reports a newer one than its last update while playing
+        last_reported += 4
+        _player_reports(ctrl, PlaybackState.PAUSED, last_reported)
+    else:
+        # like Sonos, which stops and reports the start of the stream afterwards
+        _player_reports(ctrl, PlaybackState.PAUSED, 0)
+    played_until = session_start + last_reported
 
     assert _reported_positions(ctrl)[-1] == played_until
-    load_item = cast("AsyncMock", ctrl._load_item)
-    assert load_item.call_args.kwargs["seek_position"] == played_until
+    if handover == "resume":
+        await ctrl.resume(QUEUE_ID)
+        load_item = cast("AsyncMock", ctrl._load_item)
+        assert load_item.call_args.kwargs["seek_position"] == played_until
+    else:
+        target = PlayerQueue(
+            queue_id="target", active=False, display_name="Target", available=True, items=0
+        )
+        ctrl._queue_data["target"] = PlayerQueueData(queue=target)
+        ctrl.mass.players.get_player = Mock(  # type: ignore[method-assign]
+            return_value=SimpleNamespace(
+                state=SimpleNamespace(type=PlayerType.PLAYER, active_group=None, synced_to=None)
+            )
+        )
+        ctrl.stop = AsyncMock()  # type: ignore[method-assign]
+        ctrl.load = AsyncMock()  # type: ignore[method-assign]
+        ctrl.update_items = Mock()  # type: ignore[method-assign]
+        ctrl._clear = Mock()  # type: ignore[method-assign]
+        ctrl._resolve_default_toggles = Mock()  # type: ignore[method-assign]
+        await ctrl.transfer_queue(QUEUE_ID, "target", auto_play=False)
+        assert target.resume_pos == played_until

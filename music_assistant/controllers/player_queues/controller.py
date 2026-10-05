@@ -1974,14 +1974,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def _last_played_position(self, queue: PlayerQueue) -> float:
         """Return where the current item last played, kept when the player resets it."""
         prev_state = self._queue_data[queue.queue_id].prev_state
+        elapsed_time = queue.elapsed_time or 0
         if (
             prev_state
             and queue.current_item
             and prev_state["current_item_id"] == queue.current_item.queue_item_id
-            and prev_state["last_playing_elapsed_time"]
         ):
-            return prev_state["last_playing_elapsed_time"]
-        return queue.elapsed_time or 0
+            return max(elapsed_time, prev_state["last_playing_elapsed_time"])
+        return elapsed_time
 
     def _clamp_skip_target(self, target: float, duration: int) -> float:
         """
