@@ -195,19 +195,9 @@ STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
 # (StreamDetails.stream_title is a derived view whose setter would overwrite it).
 STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"
 
-# The analysis tables live in their own SQLite file, attached onto the music connection
-# under this schema name so candidate/coverage queries can still join provider_mappings.
-AA_DB_SCHEMA: Final[str] = "aa"
+# The analysis tables live in their own SQLite file, on a connection of their own.
 AA_DB_FILENAME: Final[str] = "audio_analysis.db"
 AA_DB_SCHEMA_VERSION: Final[int] = 1
-AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
-AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
-AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
-# Legacy failure rows are copied out of library.db in id ranges of this size, one
-# transaction each.
-RELOCATE_BATCH_SIZE: Final[int] = 5000
-# Legacy JSON rows are converted to the packed format in cursor batches of this size, one
-# transaction each; a fully analysed row is ~230 KB of JSON, so a batch is held in memory
-# twice (decoded and packed) while it converts. Progress is logged once per this many rows.
-MIGRATE_BATCH_SIZE: Final[int] = 100
-MIGRATE_PROGRESS_ROWS: Final[int] = 2000
+AA_TABLE_ANALYSIS: Final[str] = DB_TABLE_AUDIO_ANALYSIS
+AA_TABLE_FAILURES: Final[str] = DB_TABLE_AUDIO_ANALYSIS_FAILURES
+AA_TABLE_SETTINGS: Final[str] = DB_TABLE_SETTINGS

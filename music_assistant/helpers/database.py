@@ -255,14 +255,17 @@ class DatabaseConnection:
 
     async def close(self) -> None:
         """Close db connection on exit."""
-        await self.execute("PRAGMA optimize;")
-        await self.commit()
-        await self._db.close()
-        # mirror the acquire in setup() exactly, so a connection that failed to set up or is
-        # closed twice cannot release a slot that belongs to one of the other connections
-        if self._tracking_loop_stalls:
-            self._tracking_loop_stalls = False
-            _loop_stalls.release()
+        try:
+            await self.execute("PRAGMA optimize;")
+            await self.commit()
+        finally:
+            # an unreadable file fails the optimize, but its connection thread must still end
+            await self._db.close()
+            # mirror the acquire in setup() exactly, so a connection that failed to set up or
+            # is closed twice cannot release a slot that belongs to one of the other connections
+            if self._tracking_loop_stalls:
+                self._tracking_loop_stalls = False
+                _loop_stalls.release()
 
     async def get_rows(
         self,
