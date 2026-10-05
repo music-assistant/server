@@ -1210,7 +1210,9 @@ async def migrate_database(  # noqa: PLR0915
             if "metadata" not in table_columns:
                 continue
             for db_row in await database.get_rows_from_query(
-                f"SELECT item_id, metadata FROM {table} WHERE metadata LIKE '%\"\"%'", limit=0
+                f"SELECT item_id, metadata FROM {table} "
+                'WHERE metadata LIKE \'%"path":""%\' OR metadata LIKE \'%"path": ""%\'',
+                limit=0,
             ):
                 try:
                     metadata = json_loads(db_row["metadata"])
