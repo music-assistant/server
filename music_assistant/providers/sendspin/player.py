@@ -479,8 +479,11 @@ class SendspinBasePlayer(Player):
             raise AbortFlow("already_paired")
         options = self._pairing_method_options(provider)
         wants_pairing = True
-        if self._offers_unpaired_consent and (
-            not self.api.active_roles or self._source_input_pending
+        # A pairing record the device lost blocks guest playback until it is re-paired or removed.
+        if (
+            record is None
+            and self._offers_unpaired_consent
+            and (not self.api.active_roles or self._source_input_pending)
         ):
             # Guest access already carries playback, so the only thing left to consent to is
             # the audio input: finishing keeps guest access and leaves the input off.

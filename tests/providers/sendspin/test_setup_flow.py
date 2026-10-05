@@ -540,6 +540,23 @@ async def test_consent_step_grants_trust() -> None:
     assert session.finish_step_id == FINISH_STEP_SILENT
 
 
+async def test_guest_device_with_a_lost_pairing_pairs_without_the_consent_step() -> None:
+    """Guest access cannot play while this server still holds the pairing the device lost."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
+    provider = _FakeProvider(api, record=object())
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["123456"]
+    assert provider.trust_calls == []
+
+
 async def test_consent_without_pair_methods_still_asks() -> None:
     """The unpaired grant is never automatic: a device without pair methods still asks."""
     api = _FakeApi([], unpaired_access=True)
