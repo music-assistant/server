@@ -128,3 +128,7 @@ PROBED_DURATION_MEDIA_TYPES = (
     MediaType.PODCAST_EPISODE,
     MediaType.AUDIOBOOK,
 )
+
+# A forward skip never lands closer than this to the end of the item. The item then finishes on
+# its own and the queue advances normally.
+SKIP_END_MARGIN = 1

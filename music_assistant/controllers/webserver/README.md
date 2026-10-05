@@ -208,6 +208,7 @@ When running as a Home Assistant add-on:
 - A dedicated webserver TCP site is hosted (on port 8094) bound to the internal HA docker network only
 - Ingress requests include HA user headers (`X-Remote-User-ID`, `X-Remote-User-Name`)
 - Users are auto-created on first access
+- A user whose Music Assistant account is disabled is refused
 - No password required (authentication handled by HA)
 - System user created for HA integration communication
 

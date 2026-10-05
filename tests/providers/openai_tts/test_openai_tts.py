@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ from aiohttp import ClientError, web
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 
 from music_assistant.providers.openai_tts import (
+    CONF_RESPONSE_FORMAT,
     CONF_VOICES,
     DEFAULT_VOICES,
     SUPPORTED_FEATURES,
@@ -108,6 +110,46 @@ async def test_get_tts_message_returns_http_streamdetails() -> None:
     assert streamdetails.path == f"http://mass.local:8095/{INSTANCE_ID}_speech?id={file_id}"
 
 
+async def test_get_tts_message_reports_the_configured_format() -> None:
+    """The clip is announced in the format it was requested in."""
+    provider = create_provider(**{CONF_RESPONSE_FORMAT: "wav"})
+    provider._voices = ["alloy"]
+    with patch.object(provider, "_render_speech", AsyncMock(return_value="a" * 64)):
+        streamdetails = await provider.get_tts_message("hello there")
+    assert streamdetails.audio_format.content_type == ContentType.WAV
+
+
+async def test_response_format_falls_back_on_an_unknown_value() -> None:
+    """A stored format we cannot play back resolves to the default."""
+    assert create_provider(**{CONF_RESPONSE_FORMAT: "pcm"})._response_format == "mp3"
+    assert create_provider()._response_format == "mp3"
+
+
+async def test_render_speech_requests_and_stores_the_configured_format(tmp_path: Path) -> None:
+    """The format is sent to the backend, names the clip and is part of its identity."""
+    provider = create_provider(**{CONF_RESPONSE_FORMAT: "wav"})
+    provider._cache_dir = str(tmp_path)
+    provider._render_lock = asyncio.Lock()
+    provider._clips = {}
+    response = MagicMock(status=200, read=AsyncMock(return_value=b"RIFF"))
+    post = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=False)
+        )
+    )
+    with patch.object(provider.mass.http_session, "post", post):
+        file_id = await provider._render_speech("hello there", "alloy")
+
+    assert post.call_args.kwargs["json"]["response_format"] == "wav"
+    assert provider._clips[file_id] == str(tmp_path / f"{file_id}.wav")
+    mp3_provider = create_provider()
+    mp3_provider._cache_dir = str(tmp_path)
+    mp3_provider._render_lock = asyncio.Lock()
+    mp3_provider._clips = {}
+    with patch.object(mp3_provider.mass.http_session, "post", post):
+        assert await mp3_provider._render_speech("hello there", "alloy") != file_id
+
+
 def create_voices_session(payload: object) -> MagicMock:
     """Return an http session whose voices endpoint responds with the given payload."""
     response = MagicMock()
@@ -156,8 +198,11 @@ async def test_index_cache_adopts_only_rendered_clips(tmp_path: Path) -> None:
     (tmp_path / "not-a-hash.mp3").write_bytes(b"clip")
     (tmp_path / f"{'b' * 64}.txt").write_bytes(b"clip")
     (tmp_path / f"{'c' * 64}.mp3").symlink_to(clip)
+    wav_clip = tmp_path / f"{'d' * 64}.wav"
+    wav_clip.write_bytes(b"clip")
+    (tmp_path / f"{'e' * 64}.pcm").write_bytes(b"clip")
 
-    assert await provider._index_cache() == {"b" * 64: str(clip)}
+    assert await provider._index_cache() == {"b" * 64: str(clip), "d" * 64: str(wav_clip)}
 
 
 async def test_handle_speech_request_rejects_missing_id() -> None:

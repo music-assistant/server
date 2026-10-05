@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from music_assistant_models.media_items import ItemMapping
 
+from music_assistant.providers.tidal.api_client import TidalAPIClient
 from music_assistant.providers.tidal.media import TidalMediaManager
 
 if TYPE_CHECKING:
@@ -73,8 +74,8 @@ def no_throttling() -> Generator[None]:
     Disable rate limiting and retry backoff during tests.
 
     The API client's throttler is class-level shared state: its real-time
-    rate window would otherwise carry over between tests and make every
-    test wait it out.
+    rate window and a rate limit cooldown would otherwise carry over between
+    tests and make every test wait it out, or fail on it.
 
     Note: the sleep patch targets the attribute on the shared asyncio
     module, so asyncio.sleep is mocked process-wide while each test in
@@ -89,5 +90,6 @@ def no_throttling() -> Generator[None]:
             "music_assistant.helpers.throttle_retry.asyncio.sleep",
             new_callable=AsyncMock,
         ),
+        patch.object(TidalAPIClient.throttler, "_cooldown_until", 0.0),
     ):
         yield

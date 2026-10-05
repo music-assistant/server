@@ -1,7 +1,19 @@
 {
   "config_entries": {
     "path": {
-      "label": "Path"
+      "label": "Folder"
+    },
+    "folder": {
+      "label": "Folder: {0}"
+    },
+    "setup_content_type": {
+      "label": "What do you want to add?",
+      "options": {
+        "music": "Music",
+        "audiobooks": "Audiobooks",
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound effects"
+      }
     },
     "content_type": {
       "label": "Content type in media folder(s)",
@@ -31,9 +43,17 @@
     }
   },
   "manifest": {
-    "description": "Play music and audiobooks stored on locally connected drives."
+    "name": "Local files",
+    "description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose a folder"
+    }
   },
   "errors": {
-    "music_directory_not_found": "Music directory {0} does not exist."
+    "music_directory_not_found": "The folder {0} does not exist.",
+    "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
+    "storage_location_unavailable": "The storage location at {0} is not available right now."
   }
 }

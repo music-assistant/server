@@ -15,9 +15,9 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 
-from .auth_providers import get_ha_user_details, get_ha_user_role
+from .auth_providers import get_ha_user_details, get_or_create_ha_user
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.player import Player
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
@@ -117,66 +118,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
     # Check for Home Assistant Ingress connections
     if is_request_from_ingress(request):
-        ingress_user_id = request.headers.get("X-Remote-User-ID")
-        ingress_username = request.headers.get("X-Remote-User-Name")
-        ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
-
-        # Require all Ingress headers to be present for security
-        if not (ingress_user_id and ingress_username):
-            return None
-
-        # Try to find existing user linked to this HA user ID
-        user = await mass.webserver.auth.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ingress_user_id
-        )
-        if not user:
-            user = await mass.webserver.auth.get_user_by_username(ingress_username)
-            if not user:
-                # New user - fetch details from HA
-                ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                    mass, ingress_user_id
-                )
-                role = await get_ha_user_role(mass, ingress_user_id)
-                user = await mass.webserver.auth.create_user(
-                    username=ha_username or ingress_username,
-                    role=role,
-                    display_name=ha_display_name or ingress_display_name,
-                    avatar_url=avatar_url,
-                )
-
-            # Link to Home Assistant provider (or create the link if user already existed)
-            await mass.webserver.auth.link_user_to_provider(
-                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-        # Update user with HA details if available (HA is source of truth)
-        # Fall back to ingress headers if API lookup doesn't return values
-        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-        final_display_name = ha_display_name or ingress_display_name
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
-            "final_display_name=%s, avatar_url=%s",
-            user.username,
-            ha_display_name,
-            ingress_display_name,
-            final_display_name,
-            avatar_url,
-        )
-        if final_display_name or avatar_url:
-            user = await mass.webserver.auth.update_user(
-                user,
-                display_name=final_display_name,
-                avatar_url=avatar_url,
-            )
-            LOGGER.log(
-                VERBOSE_LOG_LEVEL,
-                "Updated user %s: display_name=%s, avatar_url=%s",
-                user.username,
-                user.display_name,
-                user.avatar_url,
-            )
-
+        user = await resolve_ingress_user(mass, request.headers)
         # Store in request context
         request[USER_CONTEXT_KEY] = user
         return user
@@ -204,6 +146,45 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         # Store in request context
         request[USER_CONTEXT_KEY] = user
 
+    return user
+
+
+async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str]) -> User | None:
+    """
+    Resolve the user of a Home Assistant Ingress request, creating it on a first sign-in.
+
+    :param mass: The MusicAssistant instance.
+    :param headers: The request headers Home Assistant Ingress sets.
+    :return: The user, or None when the headers name no Home Assistant user or its
+        account is disabled.
+    """
+    ingress_user_id = headers.get("X-Remote-User-ID")
+    ingress_username = headers.get("X-Remote-User-Name")
+    ingress_display_name = headers.get("X-Remote-User-Display-Name")
+
+    # Require all Ingress headers to be present for security
+    if not (ingress_user_id and ingress_username):
+        return None
+
+    # HA is the source of truth for the user details, the ingress headers are the fallback
+    ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+    # Ingress users are created on first sign-in, as HA already authenticated them
+    user = await get_or_create_ha_user(
+        mass,
+        ingress_user_id,
+        ha_username or ingress_username,
+        ha_display_name or ingress_display_name,
+        avatar_url,
+        allow_create=True,
+    )
+    if user and not user.enabled:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "the Music Assistant account %s is disabled",
+            ingress_username,
+            user.username,
+        )
+        return None
     return user
 
 
@@ -360,6 +341,51 @@ def get_current_user() -> User | None:
     if impersonated_user := get_impersonated_user():
         return impersonated_user
     return current_user.get()
+
+
+def is_own_client_player(player: Player | None) -> bool:
+    """
+    Return whether the given player is the private client player the caller connected on.
+
+    A private client player (browser session, desktop or mobile app) is bound to the
+    connection that announced it, so its owner may always use it regardless of their
+    player filter. Only private players qualify, so a shared speaker cannot be claimed
+    by announcing its id.
+
+    :param player: The player to check, or None.
+    """
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+
+
+def player_access_filter(user: User | None) -> list[str] | None:
+    """
+    Return the player ids the user is limited to, or None when unrestricted.
+
+    An empty player_filter, or the full-access Scope.ALL, leaves the user unrestricted.
+    The private client player exemption is per player and not reflected here; use
+    has_player_access for an access decision that honors it.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    """
+    if user is None or has_scope(user, Scope.ALL):
+        return None
+    return user.player_filter or None
+
+
+def has_player_access(user: User | None, player_id: str, player: Player | None = None) -> bool:
+    """
+    Return whether the given user may use the player (or queue) with the given id.
+
+    A user limited to a player_filter may only use the players in it; an empty filter,
+    or the full-access Scope.ALL, leaves the user unrestricted. A user may always use the
+    private client player they connected on, even when it is not in their filter.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    :param player_id: The id of the player (or queue) to check access to.
+    :param player: The resolved player, when available, to honor the private client exemption.
+    """
+    allowed = player_access_filter(user)
+    return allowed is None or player_id in allowed or is_own_client_player(player)
 
 
 def set_current_user(user: User | None) -> None:

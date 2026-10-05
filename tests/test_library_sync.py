@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
@@ -65,7 +66,7 @@ def create_mock_album(
     provider_mappings: list[ProviderMapping] | None = None,
     provider: str = "library",
     name: str = "Test Album",
-    favorite: bool = False,
+    favorite: bool | None = None,
 ) -> Mock:
     """
     Create a mock Album media item.
@@ -74,7 +75,7 @@ def create_mock_album(
     :param provider_mappings: The provider mappings to set.
     :param provider: The provider string (e.g. 'library', 'spotify').
     :param name: The album name.
-    :param favorite: Whether the item is favorited.
+    :param favorite: The favorite state the source reports, None for none.
     """
     album = Mock(spec=Album)
     album.item_id = item_id
@@ -91,6 +92,23 @@ def create_mock_album(
 async def _noop_deferred_commit() -> AsyncGenerator[None]:
     """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
     yield
+
+
+def _answer_lookups_with(mass: Mock, provider_mock: Mock) -> None:
+    """
+    Let the registry answer every lookup with this provider, as the instance asked for.
+
+    A library write resolves the exact instance instead of widening to a sibling account,
+    so a provider mock needs to carry the instance_id of the mapping being written and to
+    say it is available.
+    """
+    provider_mock.available = True
+
+    def _get_provider(instance_id: str, **_kwargs: object) -> Mock:
+        provider_mock.instance_id = instance_id
+        return provider_mock
+
+    mass.get_provider.side_effect = _get_provider
 
 
 # --- Group 1: Optimistic in_library on add ---
@@ -222,7 +240,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -254,7 +272,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -302,7 +320,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -1195,6 +1213,83 @@ def test_select_provider_id_keeps_an_allowed_mapping_next_to_a_hidden_one() -> N
 
     assert provider_instance == "spotify_1"
     assert provider_item == "music_item"
+
+
+@pytest.fixture
+async def non_streaming_gpodder() -> AsyncGenerator[None]:
+    """Mark gpodder_1 as a non-streaming provider in the global cache for the test."""
+    previous = get_global_cache_value("non_streaming_providers")
+    await set_global_cache_values({"non_streaming_providers": {"gpodder_1"}})
+    yield
+    await set_global_cache_values({"non_streaming_providers": previous})
+
+
+@pytest.mark.usefixtures("non_streaming_gpodder")
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_select_provider_id_prefers_highest_priority_mapping(reverse: bool) -> None:
+    """The subscribed non-streaming source wins over a mapping added by provider matching."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_show",
+        ),
+        create_provider_mapping(
+            provider_instance="gpodder_1",
+            provider_domain="gpodder",
+            item_id="gpodder_feed",
+            in_library=True,
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "gpodder_1"
+    assert provider_item == "gpodder_feed"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_select_provider_id_breaks_priority_ties_deterministically(reverse: bool) -> None:
+    """Mappings of equal priority resolve to the same mapping regardless of order."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="tidal_1",
+            provider_domain="tidal",
+            item_id="tidal_item",
+        ),
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_item",
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "spotify_item"
 
 
 async def test_get_library_item_does_not_filter_in_library() -> None:

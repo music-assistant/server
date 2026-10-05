@@ -60,6 +60,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -96,6 +97,7 @@ BUILTIN_ROLE_NAMES = {
     UserRole.SERVICE: "Service",
 }
 ROLE_NAME_MAX_LENGTH = 50
+USERNAME_MIN_LENGTH = 2
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 12
@@ -319,14 +321,15 @@ class AuthenticationManager:
             return with_derived_provider_filter(self.mass, user)
         return None
 
-    async def get_user(self, user_id: str) -> User | None:
+    async def get_user(self, user_id: str, *, include_disabled: bool = False) -> User | None:
         """
-        Get user by ID, or None if it does not exist or is disabled.
+        Get user by ID, or None if it does not exist (or is disabled, unless included).
 
         :param user_id: The user ID.
+        :param include_disabled: Also return a disabled user.
         """
         user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row or not user_row["enabled"]:
+        if not user_row or not (user_row["enabled"] or include_disabled):
             return None
 
         return User(
@@ -341,11 +344,14 @@ class AuthenticationManager:
             player_filter=json_loads(user_row["player_filter"]),
         )
 
-    async def get_user_by_username(self, username: str) -> User | None:
+    async def get_user_by_username(
+        self, username: str, *, include_disabled: bool = False
+    ) -> User | None:
         """
         Get user by username.
 
         :param username: The username.
+        :param include_disabled: Also return a disabled user.
         :return: User object or None if not found.
         """
         username = normalize_username(username)
@@ -354,16 +360,21 @@ class AuthenticationManager:
         if not user_row:
             return None
 
-        return await self.get_user(user_row["user_id"])
+        return await self.get_user(user_row["user_id"], include_disabled=include_disabled)
 
     async def get_user_by_provider_link(
-        self, provider_type: AuthProviderType, provider_user_id: str
+        self,
+        provider_type: AuthProviderType,
+        provider_user_id: str,
+        *,
+        include_disabled: bool = False,
     ) -> User | None:
         """
         Get user by their provider link.
 
         :param provider_type: The auth provider type.
         :param provider_user_id: The user ID from the provider.
+        :param include_disabled: Also return a disabled user.
         """
         link_row = await self.database.get_row(
             "user_auth_providers",
@@ -375,7 +386,7 @@ class AuthenticationManager:
         if not link_row:
             return None
 
-        return await self.get_user(link_row["user_id"])
+        return await self.get_user(link_row["user_id"], include_disabled=include_disabled)
 
     async def create_user(
         self,
@@ -803,7 +814,8 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT, with an empty
+            token_hash.
         """
         current_user = get_current_user()
         if not current_user:
@@ -826,7 +838,7 @@ class AuthenticationManager:
             order_by="created_at DESC",
             limit=TOKEN_LIST_LIMIT,
         )
-        return [AuthToken.from_dict(dict(row)) for row in token_rows]
+        return [AuthToken.from_dict({**dict(row), "token_hash": ""}) for row in token_rows]
 
     @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
@@ -1077,8 +1089,14 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url.
+        :return: Dictionary with authorization_url, or None plus an error when the provider
+            does not support OAuth or return_url is invalid.
         """
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(return_url, base_url=self.webserver.base_url)
+            if not is_valid:
+                return {"authorization_url": None, "error": "Invalid return_url"}
+
         auth_url = await self.get_authorization_url(provider_id, return_url)
         if not auth_url:
             return {
@@ -1180,7 +1198,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 2 characters).
+        :param username: The username (minimum 2 characters, must not be in use).
         :param password: The password (minimum 8 characters).
         :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
@@ -1189,8 +1207,7 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 2:
-            raise InvalidDataError("Username must be at least 2 characters")
+        await self._ensure_valid_username(username)
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
@@ -1266,6 +1283,8 @@ class AuthenticationManager:
         # the playlists it owned or was given access to outlive it as well; this comes last
         # so the sockets of the user are gone before the deletion first awaits
         await self.mass.music.playlists.release_user_playlists(user_id)
+        # its favorites and dislikes do not outlive it
+        await self.mass.music.favorites.release_user(user_id)
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",
@@ -1517,7 +1536,7 @@ class AuthenticationManager:
         The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
-        :param username: New username (optional).
+        :param username: New username (optional, minimum 2 characters, must not be in use).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
@@ -1547,6 +1566,8 @@ class AuthenticationManager:
 
         if username is not None or password or role:
             _refuse_system_user(target_user.username)
+        if username is not None:
+            await self._ensure_valid_username(username, target_user.user_id)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -1625,7 +1646,7 @@ class AuthenticationManager:
         """
         Get current user's linked authentication providers.
 
-        :return: List of provider links.
+        :return: List of provider links, the builtin link with an empty provider_user_id.
         """
         user = get_current_user()
         if not user:
@@ -1634,6 +1655,10 @@ class AuthenticationManager:
         # Get provider links from database
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        for provider in providers:
+            # the builtin link stores the password hash as its provider user id
+            if provider.provider_type == AuthProviderType.BUILTIN:
+                provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
     @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)
@@ -2232,6 +2257,30 @@ class AuthenticationManager:
                 f"A role named {name} already exists", translation_key="role_name_taken"
             )
         return name
+
+    async def _ensure_valid_username(self, username: str, user_id: str | None = None) -> None:
+        """
+        Raise when the given username is too short, reserved or held by another user.
+
+        A disabled user still holds its name, and a user can always keep its own.
+
+        :param username: The username to check.
+        :param user_id: The id of the user the name is for, None for a new user.
+        """
+        username = normalize_username(username)
+        user_row = await self.database.get_row("users", {"username": username})
+        if user_row and user_row["user_id"] == user_id:
+            return
+        if len(username) < USERNAME_MIN_LENGTH:
+            raise InvalidDataError(
+                f"Username must be at least {USERNAME_MIN_LENGTH} characters",
+                translation_key="username_too_short",
+                translation_args=[USERNAME_MIN_LENGTH],
+            )
+        if user_row or username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError(
+                f"The username {username} is already in use", translation_key="username_taken"
+            )
 
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """
