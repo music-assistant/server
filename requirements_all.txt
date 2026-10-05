@@ -57,7 +57,7 @@ music-assistant-models==1.1.214
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
-numkong==7.8.0
+numkong==7.8.3
 numpy==2.3.5
 onedrive-personal-sdk==0.1.7
 orjson==3.11.6
