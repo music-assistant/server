@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import gettext
 import importlib
 import logging
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
+from functools import lru_cache
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
+import ytmusicapi
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.enums import (
@@ -48,6 +53,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
@@ -56,6 +62,7 @@ from ytmusicapi.parsers.podcasts import Description
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
@@ -90,6 +97,7 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    rate_track,
     search,
 )
 
@@ -143,10 +151,12 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
@@ -260,10 +270,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return parsed_results
         results = await search(
             query=search_query,
-            headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -520,6 +528,24 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         return result
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
+        artists = []
+
+        for similar_artist in artist_obj.get("related", {}).get("results", []):
+            # ytmusicapi returns related artists as if they were tracks,
+            # reshape into something _parse_artist() will understand.
+            fake_artist = {
+                "channelId": similar_artist["browseId"],
+                "name": similar_artist["title"],
+                "thumbnails": similar_artist["thumbnails"],
+            }
+            artists.append(self._parse_artist(fake_artist))
+
+        return artists[:limit]
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -624,6 +650,26 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             # YTM raises if trying to remove an item that is not in the library
             raise NotImplementedError(err) from err
         return result
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Like, dislike or clear the rating of a track on YouTube Music.
+
+        :param prov_item_id: The YouTube Music video id of the track.
+        :param media_type: Media type of the item, only tracks can be rated.
+        :param favorite: True to like, False to dislike, None to clear the rating.
+        """
+        if media_type != MediaType.TRACK:
+            return
+        if favorite is None:
+            rating = LikeStatus.INDIFFERENT
+        else:
+            rating = LikeStatus.LIKE if favorite else LikeStatus.DISLIKE
+        await rate_track(
+            headers=self._headers, prov_track_id=prov_item_id, rating=rating, user=self._yt_user
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
@@ -936,7 +982,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
-            favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(album_obj),
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -955,15 +1001,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 ]
             )
         if "type" in album_obj:
-            if album_obj["type"] == "Single":
-                album_type = AlbumType.SINGLE
-            elif album_obj["type"] == "EP":
-                album_type = AlbumType.EP
-            elif album_obj["type"] == "Album":
-                album_type = AlbumType.ALBUM
-            else:
-                album_type = AlbumType.UNKNOWN
-            album.album_type = album_type
+            album.album_type = _album_type_labels(self.language).get(
+                album_obj["type"].casefold(), AlbumType.UNKNOWN
+            )
 
         # Try inference - override if it finds something more specific
         inferred_type = infer_album_type(name, version)
@@ -996,7 +1036,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
-            favorite=artist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(artist_obj),
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -1029,7 +1069,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
             },
             is_editable=is_editable,
-            favorite=playlist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(playlist_obj),
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -1071,7 +1111,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ),
                 )
             },
-            favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(track_obj),
             # Disc info is not available in YTM, assume a single disc
             disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
@@ -1126,6 +1166,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.publisher = author["name"]
         if thumbnails := podcast_obj.get("thumbnails"):
             podcast.metadata.images = self._parse_thumbnails(thumbnails)
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         return podcast
 
     def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:
@@ -1261,8 +1302,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
             url_base = url.split("=w", maxsplit=1)[0]
-            width: int = img["width"]
-            height: int = img["height"]
+            width: int = img.get("width") or 0
+            height: int = img.get("height") or 0
+            if not width or not height:
+                continue
             image_ratio: float = width / height
             image_type = (
                 ImageType.LANDSCAPE
@@ -1300,3 +1343,33 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+
+
+def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
+    """Translate the like status YouTube Music reports on an item to a favorite state."""
+    match item.get("likeStatus"):
+        case "LIKE":
+            return True
+        case "DISLIKE":
+            return False
+    return None
+
+
+@lru_cache
+def _album_type_labels(language: str) -> dict[str, AlbumType]:
+    """
+    Return the (casefolded) album type labels YouTube Music uses for the given language.
+
+    :param language: The YouTube Music language code.
+    """
+    translation = gettext.translation(
+        "base",
+        localedir=Path(ytmusicapi.__file__).parent / "locales",
+        languages=[language],
+        fallback=True,
+    )
+    labels = {"album": AlbumType.ALBUM, "ep": AlbumType.EP, "single": AlbumType.SINGLE}
+    translated = {label: translation.gettext(label).casefold() for label in labels}
+    # a label shared by several types (e.g. Spanish) can't tell them apart, so it stays unknown
+    counts = Counter(translated.values())
+    return labels | {text: labels[label] for label, text in translated.items() if counts[text] == 1}

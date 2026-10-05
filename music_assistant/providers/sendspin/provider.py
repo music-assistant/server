@@ -82,6 +82,7 @@ from music_assistant.helpers.guest_access import (
     is_session_scoped_owner,
 )
 from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -373,6 +374,7 @@ class SendspinProvider(PlayerProvider):
     _virtual_players: dict[str, str]
     _unloading: bool
     _hass_available: bool
+    _server_start_failed: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -403,6 +405,7 @@ class SendspinProvider(PlayerProvider):
         ] = {}
         self._unloading = False
         self._hass_available = False
+        self._server_start_failed = False
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -1051,11 +1054,22 @@ class SendspinProvider(PlayerProvider):
         self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
-        await self.server_api.start_server(
-            port=SENDSPIN_SERVER_PORT,
-            host=self.mass.streams.bind_ip,
-            advertise_addresses=[self.mass.streams.publish_ip],
-        )
+        try:
+            await self.server_api.start_server(
+                port=SENDSPIN_SERVER_PORT,
+                host=self.mass.streams.bind_ip,
+                advertise_addresses=[self.mass.streams.publish_ip],
+            )
+        except OSError as err:
+            self._server_start_failed = True
+            # without its listener every Sendspin player fails silently,
+            # so surface this as a provider error the user can see
+            self.unload_with_error(
+                SetupFailedError(
+                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: {err}"
+                )
+            )
+            return
         for address in self._manual_ip_config:
             try:
                 url = _manual_client_url(address)
@@ -1092,8 +1106,10 @@ class SendspinProvider(PlayerProvider):
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
-        # Stop the Sendspin server
-        await self.server_api.close()
+        # Stop the Sendspin server. A failed start already cleaned up after itself,
+        # and closing it then raises (aiosendspin keeps a stale site reference).
+        if not self._server_start_failed:
+            await self.server_api.close()
 
         for cb in self.unregister_cbs:
             cb()
@@ -1778,28 +1794,13 @@ class SendspinProvider(PlayerProvider):
 
         :param player_id: Virtual player to remove.
         """
-        last_error: Exception | None = None
-        for delay in VIRTUAL_PLAYER_CLEANUP_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                # another teardown won the race; a config it left behind is not ours
-                # to delete - it is kept for the owner to reclaim, and swept at
-                # startup once that owner is gone
-                if not self.is_virtual_player(player_id):
-                    return
-                # awaited to completion on purpose: a timeout is no reliable bound on
-                # the teardown - parts of it swallow the cancellation (see
-                # AsyncProcess.close), and one that does land leaves the player
-                # half torn down for the next attempt to trip over
-                await self.remove_virtual_player(player_id)
-                return
-            except Exception as err:
-                last_error = err
-        self.logger.warning(
-            "Could not clean up failed virtual player creation %s: %s",
+        await cleanup_virtual_player(
             player_id,
-            last_error,
+            VIRTUAL_PLAYER_CLEANUP_DELAYS,
+            self.is_virtual_player,
+            self.remove_virtual_player,
+            self.logger,
+            "Could not clean up failed virtual player creation %s: %s",
         )
 
     def _on_virtual_player_stream_start(self, _request: ExternalStreamStartRequest) -> None:

@@ -16,8 +16,10 @@ import asyncio
 import builtins
 import time
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
@@ -148,6 +150,29 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
+
+
+class AnnouncementFeature(Enum):
+    """
+    Server-side hints about how a player behaves during an announcement.
+
+    Read by the players controller to route and time an announcement. Not part of
+    PlayerFeature and never sent to clients.
+    """
+
+    SUPPORTS_VOLUME = "supports_volume"
+    """The native announcement route applies a requested volume level."""
+
+    APPLIES_VOLUME = "applies_volume"
+    """The player mixes the clip into running audio and sets/restores the level itself."""
+
+    COORDINATES_START = "coordinates_start"
+    """
+    The player lines up its start with the other members of a group announcement.
+
+    A player reporting this is expected to also report SUPPORTS_VOLUME, so a group
+    announcement that fans out to its members is never diverted to the builtin path.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -841,6 +866,11 @@ class Player(ABC):
         """
         return self._attr_supported_sample_rates
 
+    @asynccontextmanager
+    async def prepare_play_media(self) -> AsyncIterator[None]:
+        """Scope provider preparation across auto-power and the ensuing playback."""
+        yield
+
     async def power(self, powered: bool) -> None:
         """
         Handle POWER command on the player.
@@ -991,6 +1021,18 @@ class Player(ABC):
         """
         return  # Optional callback - no-op by default
 
+    async def on_group_content_takeover(self) -> object | None:
+        """Prepare a protocol group before a new content owner joins it."""
+        return None
+
+    async def on_group_content_takeover_finished(self, token: object) -> None:
+        """Finish a protocol-group content takeover transaction."""
+        return
+
+    async def on_group_content_takeover_aborted(self, token: object) -> None:
+        """Abort a protocol-group content takeover without publishing old content."""
+        return
+
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
         Handle enqueuing of the next (queue) item on the player.
@@ -1014,16 +1056,17 @@ class Player(ABC):
         )
 
     @property
-    def applies_announcement_volume(self) -> bool:
+    def announcement_features(self) -> set[AnnouncementFeature]:
         """
-        Return True if the player applies the announcement volume itself.
+        Return the announcement-behaviour hints for this player.
 
-        A player that mixes an announcement into audio it is already playing knows when
-        the clip becomes audible, so it applies and restores the level at that moment -
-        through the volume control that owns its output. The players controller then
-        leaves the volume alone instead of raising it before the announcement starts.
+        SUPPORTS_VOLUME is reported by default: an announcement played through the
+        builtin path always applies the level via the device volume, and most native
+        routes honour it too. A provider whose native announcement ignores the level
+        drops it, so the controller uses the builtin path once a level is requested.
+        APPLIES_VOLUME and COORDINATES_START are opt-in (see AnnouncementFeature).
         """
-        return False
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -2673,6 +2716,7 @@ class Player(ABC):
             and self._state.playback_state != PlaybackState.IDLE
         ):
             self.__stop_called = False
+            self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif (
             prev_state.playback_state != PlaybackState.IDLE
             and self._state.playback_state == PlaybackState.IDLE
@@ -3279,14 +3323,17 @@ class Player(ABC):
             base_features.add(PlayerFeature.POWER)
         else:
             base_features.discard(PlayerFeature.POWER)
-        if self.volume_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_SET)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_SET)
-        if self.mute_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_MUTE)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Group providers derive volume and mute capabilities from their members;
+        # the group itself intentionally has no native control to resolve here.
+        if self.type != PlayerType.GROUP:
+            if self.volume_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_SET)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_SET)
+            if self.mute_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_MUTE)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
         if self.grouping_locked:

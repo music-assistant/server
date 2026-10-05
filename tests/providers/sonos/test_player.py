@@ -15,10 +15,11 @@ from aiosonos.exceptions import CannotConnect, FailedCommand
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
     SOURCE_LINE_IN,
@@ -225,6 +226,33 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
 
 
 @pytest.mark.asyncio
+async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a Sendspin bridge riding on the AirPlay output also schedules the group restore."""
+    player, client = _bind_player(timer_mass)
+    player._attr_name = "Sonos Player"
+    client.player.is_coordinator = True
+    client.player.group_members = [player.player_id, "sonos_player_2"]
+    airplay_player = MagicMock()
+    airplay_player.provider.domain = "airplay"
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_player.side_effect = lambda pid: (
+        airplay_player if pid == "airplay_player" else None
+    )
+    output_protocol = OutputProtocol(
+        output_protocol_id="sendspin_bridge",
+        name="Sendspin",
+        protocol_domain="sendspin",
+        derived_from="airplay_player",
+    )
+
+    await player.on_protocol_playback(output_protocol)
+
+    assert f"restore_airplay_group_{player.player_id}" in timer_mass._tracked_timers
+
+
+@pytest.mark.asyncio
 async def test_on_unload_unsubscribes_before_disconnecting(timer_mass: MusicAssistant) -> None:
     """Test the registered unload callbacks run before the client is disconnected."""
     player, client = _bind_player(timer_mass)
@@ -388,6 +416,16 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+def test_the_player_reports_its_announcement_features() -> None:
+    """Test the clips honour the requested level and are fired together across members."""
+    player, _ = _make_player()
+
+    assert player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.COORDINATES_START,
+    }
 
 
 @pytest.mark.asyncio
@@ -887,3 +925,42 @@ def test_is_wakeable_reads_the_advertised_device_features(
     """Test the WAKEABLE device feature is read defensively from the discovery info."""
     device: dict[str, Any] = {} if features is None else {"deviceFeatures": features}
     assert _is_wakeable(cast("Any", {"device": device})) is expected
+
+
+@pytest.mark.asyncio
+async def test_set_members_returns_once_the_sonos_group_reports_the_new_member(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test set_members waits for the Sonos group event before returning."""
+    player, client = _bind_player(timer_mass)
+    client.player.group_members = [player.player_id]
+
+    def _apply_new_member(**_kwargs: Any) -> None:
+        asyncio.get_running_loop().call_later(
+            0.3,
+            lambda: setattr(client.player, "group_members", [player.player_id, "sonos_player_2"]),
+        )
+
+    client.player.group.modify_group_members = AsyncMock(side_effect=_apply_new_member)
+
+    await player.set_members(player_ids_to_add=["sonos_player_2"])
+
+    assert "sonos_player_2" in client.player.group_members
+
+
+@pytest.mark.asyncio
+async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_member(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test set_members returns without raising if the group never reports the new member."""
+    player, client = _bind_player(timer_mass)
+    client.player.group_members = [player.player_id]
+    client.player.group.modify_group_members = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.sonos.player.asyncio.timeout",
+        return_value=asyncio.timeout(0.2),
+    ):
+        await player.set_members(player_ids_to_add=["sonos_player_2"])
+
+    assert client.player.group_members == [player.player_id]

@@ -135,6 +135,15 @@
     "static_pin_location_operator": {
       "label": "Enter the code set on the device by its operator"
     },
+    "pairing_psk_location_device": {
+      "label": "Enter the token printed on the device"
+    },
+    "pairing_psk_location_leaflet": {
+      "label": "Enter the token from the leaflet supplied with the device"
+    },
+    "pairing_psk_location_operator": {
+      "label": "Enter the token set on the device by its operator"
+    },
     "dynamic_pin_channel_display": {
       "label": "Enter the code shown on the device's screen"
     },
@@ -202,7 +211,7 @@
     },
     "enter_token": {
       "title": "Enter the pairing token",
-      "description": "Paste the pairing token shown on the device or its leaflet. It starts with SP:."
+      "description": "Paste the device's pairing token to set up a secure connection."
     },
     "confirming": {
       "title": "Finishing pairing",

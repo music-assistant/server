@@ -126,11 +126,13 @@ async def test_run_setup_retries_form_on_login_failure() -> None:
     """A failed login re-renders the form with the error, then succeeds on retry."""
     attempts: list[dict[str, Any]] = []
 
+    login_error = SetupFlowError("Authentication failed", translation_key="login_failed")
+
     async def finish_handler(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
         # snapshot: the flow carries (and mutates) one setup_data dict across retries
         attempts.append(dict(values))
         if len(attempts) == 1:
-            raise SetupFlowError("Authentication failed", translation_key="login_failed")
+            raise login_error
         return {"instance_id": "pandora--test"}
 
     session, _mass = _make_session(finish_handler)
@@ -139,7 +141,7 @@ async def test_run_setup_retries_form_on_login_failure() -> None:
     session.handle_submit({CONF_USERNAME: "listener", CONF_PASSWORD: "wrong"})
 
     error_form = await _wait_for_form(session, with_errors=True)
-    assert error_form.errors == {"base": "login_failed"}
+    assert error_form.errors == {"base": "Authentication failed"}
     # the rejected username is prefilled again so only the password has to be retyped
     entries = {entry.key: entry for entry in error_form.entries}
     assert entries[CONF_USERNAME].value == "listener"
