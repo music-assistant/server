@@ -151,8 +151,6 @@ async def get_config_entries(  # noqa: PLR0915
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ensure plexapi announces "Music Assistant" with a stable client identifier before
-    # any auth/connection happens (so OAuth tokens stay valid across restarts)
     configure_plex_identity(mass.server_id)
 
     # handle action GDM discovery

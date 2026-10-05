@@ -25,16 +25,12 @@ if TYPE_CHECKING:
 
 def configure_plex_identity(client_id: str) -> None:
     """
-    Make every plexapi client announce "Music Assistant" with a stable identity.
-
-    plexapi builds each request's headers from these process-global defaults. The device
-    name otherwise falls back to the machine's hostname, and - critically - the client
-    identifier defaults to the MAC address, which is unstable in containers. Plex binds
-    OAuth tokens to the client identifier, so an unstable one makes plex.tv reject the
-    stored token after a restart. We pin it to Music Assistant's persistent server id.
+    Configure plexapi to identify as Music Assistant with the given client identifier.
 
     :param client_id: Stable client identifier to advertise (Music Assistant's server id).
     """
+    # plexapi defaults the client identifier to the MAC address, which is unstable in
+    # containers. Plex binds OAuth tokens to it, so it must stay stable across restarts.
     plexapi.X_PLEX_PRODUCT = APPLICATION_NAME
     plexapi.X_PLEX_DEVICE_NAME = APPLICATION_NAME
     plexapi.X_PLEX_IDENTIFIER = client_id
