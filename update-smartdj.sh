@@ -2,10 +2,22 @@
 # Smart DJ add-on: force the store to the newest published version, install-or-update, start.
 # Run inside the SSH add-on on HAOS. No args. Safe to re-run.
 set -e
-SLUG=94c360f5_music_assistant_smartdj
 REPO_URL=https://github.com/mattamays-ai/server
 AUTH="Authorization: Bearer $SUPERVISOR_TOKEN"
 BASE=http://hassio
+
+echo "== resolving Smart DJ add-on slug by name (repo-hash prefixes drift)"
+SLUG=$(curl -fsS -H "$AUTH" "$BASE/addons" 2>/dev/null \
+  | grep -o '"slug": *"[^"]*_music_assistant_smartdj"' | head -1 | cut -d'"' -f4)
+if [ -z "$SLUG" ]; then
+  SLUG=$(curl -fsS -H "$AUTH" "$BASE/store/apps" 2>/dev/null \
+    | grep -o '"slug": *"[^"]*_music_assistant_smartdj"' | head -1 | cut -d'"' -f4)
+fi
+if [ -z "$SLUG" ]; then
+  echo "FATAL: could not resolve the Smart DJ slug - is the repo added and the store synced?"
+  exit 1
+fi
+echo "resolved slug: $SLUG"
 
 echo "== expected version (read live from GitHub dev branch)"
 EXPECTED=$(curl -fsSL "https://raw.githubusercontent.com/mattamays-ai/server/dev/smartdj-addon/config.yaml" \
@@ -39,16 +51,15 @@ if [ -n "$EXPECTED" ] && [ "$V" != "$EXPECTED" ]; then
   echo "store offers now: ${V:-unknown}"
 fi
 
-echo "== installed? checking"
-STATE=$(curl -fsS -H "$AUTH" "$BASE/addons/$SLUG/info" 2>/dev/null | grep -o '"state": "[^"]*"' || true)
-if [ -z "$STATE" ]; then
-  echo "== not installed -> installing (fresh /data, onboarding wizard on first open)"
-  curl -fsS -X POST -H "$AUTH" "$BASE/store/apps/$SLUG/install" >/dev/null \
-    && echo ok || echo "install failed"
-else
+echo "== installed? checking (proving presence via /addons, not /info emptiness)"
+if curl -fsS -H "$AUTH" "$BASE/addons" | grep -q "\"$SLUG\""; then
   echo "== installed -> updating in place (data preserved)"
   curl -fsS -X POST -H "$AUTH" "$BASE/store/apps/$SLUG/update" >/dev/null \
     && echo ok || echo "update failed (check version below)"
+else
+  echo "== confirmed absent -> installing (fresh /data, onboarding wizard on first open)"
+  curl -fsS -X POST -H "$AUTH" "$BASE/store/apps/$SLUG/install" >/dev/null \
+    && echo ok || echo "install failed"
 fi
 
 sleep 3
