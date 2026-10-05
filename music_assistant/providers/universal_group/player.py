@@ -382,7 +382,7 @@ class UniversalGroupPlayer(Player):
                 # Use internal handler to get protocol selection and avoid redirect
                 await self._play_media_on_member(
                     player_id,
-                    self._member_media(base_url, player_id, self._attr_current_media),
+                    self._member_media(base_url, player_id, self.state.current_media),
                 )
         # handle removals
         for player_id in player_ids_to_remove or []:

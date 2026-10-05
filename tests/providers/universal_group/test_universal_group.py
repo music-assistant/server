@@ -265,6 +265,39 @@ class TestPowerlessLifecycle:
         assert member_media.album == "Album"
 
     @pytest.mark.asyncio
+    async def test_joining_member_gets_current_track_metadata(self) -> None:
+        """A member joining mid-stream must get the current track, not the first one."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp.stream.session_id = "session-1"
+        ugp._attr_current_media = PlayerMedia(
+            uri="track://old",
+            artist="Old Artist",
+            album="Old Album",
+            image_url="http://test/imageproxy/old.jpg",
+        )
+        ugp._state.current_media = PlayerMedia(
+            uri="track://new",
+            artist="New Artist",
+            album="New Album",
+            image_url="http://test/imageproxy/new.jpg",
+        )
+        mass.players.get_player = MagicMock(return_value=_make_mock_player("m2"))
+
+        with (
+            patch.object(UniversalGroupPlayer, "is_dynamic", True),
+            patch.object(ugp, "update_state"),
+        ):
+            await ugp.set_members(player_ids_to_add=["m2"])
+
+        member_media = mass.players._handle_play_media.await_args_list[0].args[1]
+        assert member_media.image_url == "http://test/imageproxy/new.jpg"
+        assert member_media.artist == "New Artist"
+        assert member_media.album == "New Album"
+
+    @pytest.mark.asyncio
     async def test_stop_releases_members_when_powerless(self) -> None:
         """stop() on a powerless UGP should tear down the stream and release members."""
         mass = _make_mock_mass()
