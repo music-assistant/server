@@ -1,5 +1,7 @@
 """Tests for utility/helper functions."""
 
+import logging
+import os
 import signal
 import subprocess
 import sys
@@ -8,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -19,6 +22,47 @@ from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import _ml_inference_probe, uri, util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
+
+
+def test_redact_sensitive_headers() -> None:
+    """Credential-bearing request headers are redacted without hiding diagnostics."""
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer secret-token",
+        "aUtHoRiZaTiOn-Extra": "secret-extra",
+        "PROXY-AUTHORIZATION": "Basic secret-proxy",
+    }
+
+    assert redact_sensitive_headers(headers) == {
+        "Accept": "application/json",
+        "Authorization": "<redacted>",
+        "aUtHoRiZaTiOn-Extra": "<redacted>",
+        "PROXY-AUTHORIZATION": "<redacted>",
+    }
+    assert "secret-token" not in str(redact_sensitive_headers(headers))
+    assert "secret-proxy" not in str(redact_sensitive_headers(headers))
+
+
+async def test_unhandled_request_log_redacts_sensitive_headers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The catch-all request log never includes an Authorization value."""
+    logger = logging.getLogger("test_webserver")
+    webserver = Webserver(logger, enable_dynamic_routes=True)
+    request = make_mocked_request(
+        "GET",
+        "/unknown",
+        headers={"Authorization": "Bearer secret-token", "Accept": "application/json"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        response = await webserver._handle_catch_all(request)
+
+    assert response.status == 404
+    assert "secret-token" not in caplog.text
+    assert "<redacted>" in caplog.text
+    assert "application/json" in caplog.text
 
 
 def test_version_extract() -> None:
@@ -74,6 +118,37 @@ def test_version_extract() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "Fiji"
     assert version == "Oliver Smith Remix (Mixed)"
+
+
+def test_version_extracts_multiple_qualifiers() -> None:
+    """All recognized title qualifiers contribute to the version."""
+    title, version = util.parse_title_and_version("( ) [Deluxe] [2022 Remaster]")
+
+    assert title == "( )"
+    assert version == "Deluxe 2022 Remaster"
+
+
+@pytest.mark.parametrize(
+    ("test_str", "expected"),
+    [
+        ("Barcelona (Special Edition - Deluxe)", ("Barcelona", "Special Edition - Deluxe")),
+        (
+            "All of Me (Tiësto's Birthday Treatment Remix - Radio Edit)",
+            ("All of Me", "Tiësto's Birthday Treatment Remix - Radio Edit"),
+        ),
+        (
+            "Crime Of The Century (2014 - HD Remaster)",
+            ("Crime Of The Century", "2014 - HD Remaster"),
+        ),
+        ("Song (Live) - Remastered 2011", ("Song", "Live Remastered 2011")),
+        ("Song (Remastered) (Remastered)", ("Song", "Remastered")),
+        ("Allejoppa - Extended [Extended]", ("Allejoppa", "Extended")),
+        ("Song - Single (Deluxe)", ("Song", "Deluxe Single")),
+    ],
+)
+def test_version_extract_sequential_passes(test_str: str, expected: tuple[str, str]) -> None:
+    """Later parsing passes see the title as reduced by earlier passes."""
+    assert util.parse_title_and_version(test_str) == expected
 
 
 def test_with_handling_in_titles() -> None:
@@ -135,6 +210,57 @@ def test_with_handling_in_titles() -> None:
     assert version == "Remix"
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Great Song (with John Smith)", ("John Smith",)),
+        ("Great Song [with Jane Doe]", ("Jane Doe",)),
+        ("Great Song - with John Smith (Duet)", ("John Smith",)),
+        ("Rockin' Around (With You)", ()),
+        ("The Catastrophe (Good Luck with That Man)", ()),
+        # Title-word exceptions must protect arbitrary continuations too.
+        ("Example Song (With You Tonight)", ()),
+        ("Great Song (feat:Alice)", ("Alice",)),
+        # Bare leading markers are part of the title, not a credit.
+        ("Featuring Alice", ()),
+        ("Featuring Bob", ()),
+        ("Ft Bob", ()),
+    ],
+)
+def test_extract_title_artist_credits(title: str, expected: tuple[str, ...]) -> None:
+    """Embedded artist credits use the same title-word exceptions as title parsing."""
+    assert util.extract_title_artist_credits(title) == expected
+
+
+def test_with_artist_credit_preserves_trailing_title_content() -> None:
+    """Search normalization removes the credit without consuming later title content."""
+    assert util.parse_title_and_version(
+        "Great Song - with John Smith (Duet)",
+        strip_for_search=True,
+    ) == ("Great Song (Duet)", "")
+
+
+def test_bare_colon_feature_credit_stripped_for_search() -> None:
+    """A bare, unbracketed colon-form featured credit is stripped like the other forms."""
+    assert util.parse_title_and_version(
+        "Great Song feat:Alice",
+        strip_for_search=True,
+    ) == ("Great Song", "")
+
+
+def test_bare_credit_marker_without_leading_title_is_not_stripped() -> None:
+    """A title that starts with a bare credit marker keeps its full text, not an empty title."""
+    assert util.parse_title_and_version(
+        "Featuring Alice",
+        strip_for_search=True,
+    ) == ("Featuring Alice", "")
+    # Distinct leading-marker titles must stay distinct after normalization.
+    assert util.parse_title_and_version(
+        "Featuring Bob",
+        strip_for_search=True,
+    ) == ("Featuring Bob", "")
+
+
 async def test_uri_parsing() -> None:
     """Test parsing of URI."""
     # test regular uri
@@ -176,6 +302,12 @@ async def test_uri_parsing() -> None:
     # test invalid uri
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("invalid://blah")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://open.spotify.com")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://open.spotify.com/track/")
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://tidal.com/browse/track/")
 
 
 async def test_apple_music_uri_parsing() -> None:
@@ -354,11 +486,29 @@ def test_get_zeroconf_args_dual_stack() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
     assert "192.168.1.10" in result["interfaces"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "freebsd14"])
+def test_get_zeroconf_args_dual_stack_ipv4_fallback(platform: str) -> None:
+    """Test that a dual-stack host falls back to IPv4-only on macOS/FreeBSD."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
+    ]
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", platform),
+    ):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.V4Only
+    assert result["interfaces"] == InterfaceChoice.Default
 
 
 def test_get_zeroconf_args_ipv4_only() -> None:
@@ -400,7 +550,10 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=True)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
@@ -713,6 +866,61 @@ def test_is_arm(machine: str, expected: bool) -> None:
     """is_arm recognizes 32/64-bit ARM and rejects x86."""
     with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
         assert util.is_arm() is expected
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected"),
+    [(1, 1), (2, 1), (4, 1), (8, 2), (12, 3), (32, 8)],
+)
+def test_inference_thread_budget(cpu_count: int, expected: int) -> None:
+    """The inference thread budget is a quarter of the cores, never below one."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_count),
+        patch.dict(os.environ, {}, clear=False),
+    ):
+        os.environ.pop("OMP_NUM_THREADS", None)
+        assert util.inference_thread_budget() == expected
+
+
+def test_inference_thread_budget_follows_operator_override() -> None:
+    """An operator-supplied OMP_NUM_THREADS becomes the torch budget too, so the two agree."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=32),
+        patch.dict(os.environ, {"OMP_NUM_THREADS": "2"}, clear=False),
+    ):
+        assert util.inference_thread_budget() == 2
+
+
+def test_cap_native_thread_pools_sets_env() -> None:
+    """The native pool caps are published to the environment for load-time pickup."""
+    env_vars = (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    )
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=8),
+        patch.dict(os.environ, dict.fromkeys(env_vars, ""), clear=False),
+    ):
+        for env_var in env_vars:
+            del os.environ[env_var]
+        assert util.cap_native_thread_pools() == 2
+        for env_var in env_vars:
+            assert os.environ[env_var] == "2"
+
+
+def test_cap_native_thread_pools_respects_operator_value() -> None:
+    """An operator-supplied cap is kept, reported back, and applied to the other pools."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=8),
+        patch.dict(os.environ, {"OMP_NUM_THREADS": "1"}, clear=False),
+    ):
+        os.environ.pop("OPENBLAS_NUM_THREADS", None)
+        assert util.cap_native_thread_pools() == 1
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert os.environ["OPENBLAS_NUM_THREADS"] == "1"
 
 
 # 4/8/2 GiB expressed in bytes, for cgroup fixture files.

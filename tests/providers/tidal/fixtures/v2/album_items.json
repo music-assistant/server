@@ -1,0 +1,936 @@
+{
+  "data": [
+    {
+      "id": "58756128",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 1,
+        "itemCursor": "IrhNZeXbnyfq"
+      }
+    },
+    {
+      "id": "58756129",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 2,
+        "itemCursor": "IrhNZeXbnyjy"
+      }
+    },
+    {
+      "id": "58756130",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 3,
+        "itemCursor": "IrhNZeXboFBq"
+      }
+    },
+    {
+      "id": "58756131",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 4,
+        "itemCursor": "IrhNZeXboFFy"
+      }
+    },
+    {
+      "id": "58756132",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 5,
+        "itemCursor": "IrhNZeXboFK6"
+      }
+    },
+    {
+      "id": "58756133",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 6,
+        "itemCursor": "IrhNZeXboFOE"
+      }
+    },
+    {
+      "id": "58756134",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 7,
+        "itemCursor": "IrhNZeXboFSM"
+      }
+    },
+    {
+      "id": "58756135",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 8,
+        "itemCursor": "IrhNZeXboFWU"
+      }
+    },
+    {
+      "id": "58756136",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 9,
+        "itemCursor": "IrhNZeXboFac"
+      }
+    },
+    {
+      "id": "58756137",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 10,
+        "itemCursor": "IrhNZeXboFek"
+      }
+    },
+    {
+      "id": "58756138",
+      "type": "tracks",
+      "meta": {
+        "volumeNumber": 1,
+        "trackNumber": 11,
+        "itemCursor": "IrhNZeXboFis"
+      }
+    }
+  ],
+  "links": {
+    "self": "/albums/58756127/relationships/items?include=items.albums.coverArt%2Citems.artists&countryCode=AT"
+  },
+  "included": [
+    {
+      "id": "58756127",
+      "type": "albums",
+      "attributes": {
+        "title": "Lukas Graham (Blue Album) (International Version)",
+        "barcodeId": "00602547852748",
+        "numberOfVolumes": 1,
+        "numberOfItems": 11,
+        "duration": "PT40M5S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2015-05-29",
+        "copyright": {
+          "text": "© 2016 Then We Take The World / Copenhagen Records / Universal Music"
+        },
+        "popularity": 0.13697256118982468,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/58756127",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "ALBUM",
+        "albumType": "ALBUM",
+        "version": "International Version",
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPMMti8ralux",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/58756127/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "4184211",
+      "type": "artists",
+      "attributes": {
+        "name": "Lukas Graham",
+        "popularity": 0.8177526593208313,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/LukasGraham",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "http://instagram.com/lukasinstagraham",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://www.twitter.com/LukeTheDuke_",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/4184211",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "iWOu0yW0IPMMti8ralux",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4a5cea54/6b22/401c/a186/6796bb96fa67/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#775434",
+          "blurHash": "ULM7cP9G_29E?wxv%L%1~ojXD+NK_1ocE3xv",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "58756128",
+      "type": "tracks",
+      "attributes": {
+        "title": "7 Years",
+        "version": null,
+        "isrc": "USWB11506516",
+        "duration": "PT3M57S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 120.0,
+        "popularity": 0.7728257326881044,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756128",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756128/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756128/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756129",
+      "type": "tracks",
+      "attributes": {
+        "title": "Take The World By Storm",
+        "version": null,
+        "isrc": "USWB11506517",
+        "duration": "PT3M12S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "UNKNOWN",
+        "keyScale": "UNKNOWN",
+        "popularity": 0.28360111759247825,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756129",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756129/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756129/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756130",
+      "type": "tracks",
+      "attributes": {
+        "title": "Mama Said",
+        "version": null,
+        "isrc": "DKUM71400126",
+        "duration": "PT3M27S",
+        "copyright": {
+          "text": "℗ 2014 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Bb",
+        "keyScale": "MAJOR",
+        "bpm": 84.0,
+        "popularity": 0.5742448384952146,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756130",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756130/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756130/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756131",
+      "type": "tracks",
+      "attributes": {
+        "title": "Happy Home",
+        "version": null,
+        "isrc": "USWB11506519",
+        "duration": "PT3M39S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MINOR",
+        "bpm": 128.0,
+        "popularity": 0.2901687469791667,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756131",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756131/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756131/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756132",
+      "type": "tracks",
+      "attributes": {
+        "title": "Drunk In The Morning",
+        "version": null,
+        "isrc": "USWB11514268",
+        "duration": "PT3M23S",
+        "copyright": {
+          "text": "℗ 2015 Then We Take The World / Copenhagen Records"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "D",
+        "keyScale": "MAJOR",
+        "bpm": 93.0,
+        "popularity": 0.42337843281398246,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756132",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756132/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756132/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756133",
+      "type": "tracks",
+      "attributes": {
+        "title": "Better Than Yourself (Criminal Mind Pt. 2)",
+        "version": null,
+        "isrc": "DKUM71200983",
+        "duration": "PT4M26S",
+        "copyright": {
+          "text": "℗ 2012 Copenhagen Records / Universal Music"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "CSharp",
+        "keyScale": "MINOR",
+        "bpm": 100.0,
+        "popularity": 0.12433586178011624,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756133",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756133/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756133/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756134",
+      "type": "tracks",
+      "attributes": {
+        "title": "Don't You Worry 'Bout Me",
+        "version": null,
+        "isrc": "USWB11506522",
+        "duration": "PT3M10S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 89.0,
+        "popularity": 0.18735691491775092,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756134",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756134/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756134/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756135",
+      "type": "tracks",
+      "attributes": {
+        "title": "What Happened To Perfect",
+        "version": null,
+        "isrc": "USWB11506523",
+        "duration": "PT3M57S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "A",
+        "keyScale": "MAJOR",
+        "bpm": 140.0,
+        "popularity": 0.118327719706314,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756135",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756135/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756135/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756136",
+      "type": "tracks",
+      "attributes": {
+        "title": "Strip No More",
+        "version": null,
+        "isrc": "USWB11506525",
+        "duration": "PT3M26S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Bb",
+        "keyScale": "MAJOR",
+        "bpm": 131.0,
+        "popularity": 0.1873622267441245,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756136",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756136/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756136/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756137",
+      "type": "tracks",
+      "attributes": {
+        "title": "You're Not There",
+        "version": null,
+        "isrc": "USWB11506526",
+        "duration": "PT3M23S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "F",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.401522608112518,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756137",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756137/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756137/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58756138",
+      "type": "tracks",
+      "attributes": {
+        "title": "Funeral",
+        "version": null,
+        "isrc": "USWB11506527",
+        "duration": "PT4M5S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 95.0,
+        "popularity": 0.21559125215374217,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58756138",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-25T03:36:55Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756138/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58756127",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58756138/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    }
+  ]
+}

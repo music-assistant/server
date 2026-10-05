@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
+    MediaItemTranscriptCue,
     Podcast,
     PodcastEpisode,
     PodcastSummary,
@@ -18,17 +22,17 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import MediaControllerBase, PodcastSyncDetails
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -56,6 +60,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_episode", self.episode, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episode_transcript",
+            self.episode_transcript,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_versions", self.versions, required_scope=Scope.LIBRARY_READ
@@ -86,12 +95,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
         played_only: bool = False,
         *,
         summary: bool = True,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
         Get in-database podcasts.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -100,7 +110,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param genre: Filter by genre id(s).
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -108,10 +124,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            reachable_via=reachable_via,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -127,11 +144,14 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
                 summary=summary,
+                reachable_via=reachable_via,
             )
         return result
 
@@ -163,7 +183,28 @@ class PodcastsController(MediaControllerBase[Podcast]):
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
-        return await prov.get_podcast_episode(item_id)
+        episode = await prov.get_podcast_episode(item_id)
+        await self.restore_resume_position(episode, prov.instance_id)
+        await self._restore_probed_duration(episode)
+        return episode
+
+    async def episode_transcript(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """
+        Return a podcast episode's transcript as (readable text, timed cues).
+
+        Returns (None, None) when no transcript is available for the episode.
+
+        :param item_id: The provider episode id.
+        :param provider_instance_id_or_domain: Provider the episode belongs to.
+        """
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(prov, MusicProvider):
+            raise ProviderUnavailableError("Provider not found")
+        return await prov.get_podcast_episode_transcript(item_id)
 
     async def versions(
         self,
@@ -178,7 +219,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
+            if MediaType.PODCAST not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
@@ -243,7 +284,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
+            if MediaType.PODCAST not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
@@ -253,6 +294,45 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 await self.add_provider_mappings(db_podcast.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
+    async def restore_resume_position(
+        self, episode: PodcastEpisode, provider_instance_id: str
+    ) -> None:
+        """
+        Fill in the current user's resume position and played state for a single episode.
+
+        Skipped when the episode already has resume info set by the provider.
+
+        :param episode: The episode to enrich with resume info.
+        :param provider_instance_id: The provider instance the episode belongs to.
+        """
+        if episode.fully_played is not None or episode.resume_position_ms:
+            return
+        user: User | None = None
+        if session_user := get_current_user():
+            user = session_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            provider_mappings_or_instance_id=provider_instance_id
+        ):
+            user = provider_user
+        match: dict[str, Any] = {
+            "provider": provider_instance_id,
+            "media_type": MediaType.PODCAST_EPISODE,
+            "item_id": episode.item_id,
+        }
+        if user is not None:
+            match["userid"] = user.user_id
+        # without a userid filter several users can hold a row, the newest one wins
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_PLAYLOG, match=match, order_by="timestamp DESC", limit=1
+        )
+        row = rows[0] if rows else None
+        if row is None:
+            return
+        if row["seconds_played"]:
+            episode.resume_position_ms = int(row["seconds_played"] * 1000)
+        if row["fully_played"] is not None:
+            episode.fully_played = bool(row["fully_played"])
+
     async def _add_library_item(self, item: Podcast, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
         db_id = await self.mass.music.database.insert(
@@ -261,7 +341,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "publisher": item.publisher,
                 "total_episodes": item.total_episodes or 0,
@@ -341,23 +420,36 @@ class PodcastsController(MediaControllerBase[Podcast]):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        async def set_resume_position(episode: PodcastEpisode) -> None:
-            if episode.fully_played is not None or episode.resume_position_ms:
-                # provider supports resume info, we can skip
-                return
-            # for providers that do not natively support providing resume info,
-            # we fallback to the playlog db table
-            match = {
-                "item_id": episode.item_id,
+        # fetched in one query on first use instead of one per episode: a podcast can have
+        # thousands of them
+        resume_rows: dict[str, Mapping[str, Any]] | None = None
+
+        async def load_resume_rows() -> dict[str, Mapping[str, Any]]:
+            match: dict[str, Any] = {
                 "provider": prov.instance_id,
                 "media_type": MediaType.PODCAST_EPISODE,
             }
             if user is not None:
                 match["userid"] = user.user_id
-            resume_info_db_row = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
-                match=match,
+            # limit=0 lifts get_rows' 500 row default, which combined with the ascending sort
+            # would drop the newest rows - the part-played episodes this lookup is for. That
+            # sort also picks the newest row per item_id in the map below, where without a
+            # userid filter several users can hold one
+            rows = await self.mass.music.database.get_rows(
+                DB_TABLE_PLAYLOG, match=match, order_by="timestamp", limit=0
             )
+            return {row["item_id"]: row for row in rows}
+
+        async def set_resume_position(episode: PodcastEpisode) -> None:
+            nonlocal resume_rows
+            if episode.fully_played is not None or episode.resume_position_ms:
+                # provider supports resume info, we can skip
+                return
+            # for providers that do not natively support providing resume info,
+            # we fallback to the playlog db table
+            if resume_rows is None:
+                resume_rows = await load_resume_rows()
+            resume_info_db_row = resume_rows.get(episode.item_id)
             if resume_info_db_row is None:
                 return
             if resume_info_db_row["seconds_played"]:
@@ -365,12 +457,23 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if resume_info_db_row["fully_played"] is not None:
                 episode.fully_played = bool(resume_info_db_row["fully_played"])
 
-        # grab the episodes from the provider
-        # note that we do not cache any of this because its
-        # always a rather small list and we want fresh resume info
+        # grab the episodes from the provider. Providers cache their own listing, so resume
+        # info is applied here to keep per-user progress out of those caches
         async for item in prov.get_podcast_episodes(item_id):
             await set_resume_position(item)
+            await self._restore_probed_duration(item)
             yield item
+
+    async def _restore_probed_duration(self, episode: PodcastEpisode) -> None:
+        """
+        Fill in the duration determined during an earlier playback, for feeds that omit it.
+
+        :param episode: The episode to fill the duration of, left untouched when it has one.
+        """
+        if episode.duration or not (uri := episode.uri):
+            return
+        if probed_duration := await get_probed_duration(self.mass, uri):
+            episode.duration = probed_duration
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PodcastSummary:
         """Parse a raw summary db row into a PodcastSummary object."""
@@ -379,3 +482,16 @@ class PodcastsController(MediaControllerBase[Podcast]):
         item.publisher = db_row["publisher"]
         item.total_episodes = db_row["total_episodes"]
         return item
+
+    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+        """Return extra (columns, joins, params) for the podcasts sync-details query."""
+        return f", json_extract({DB_TABLE_PODCASTS}.metadata, '$.genres') AS genres", "", {}
+
+    def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> PodcastSyncDetails:
+        """Parse a raw sync-details db row into a PodcastSyncDetails object."""
+        return PodcastSyncDetails(
+            item_id=db_row["item_id"],
+            date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
+            provider_mappings=self._parse_sync_details_mappings(db_row),
+            genres=set(json_loads(db_row["genres"])) if db_row["genres"] else set(),
+        )

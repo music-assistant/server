@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 import time
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -13,6 +15,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, SonicSessionData
+from music_assistant.providers.sonic_analysis.clap_prompts import SCALAR_PROMPT_PAIRS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +48,8 @@ def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
     p.mass = mass
     p.manifest = manifest
     p._sessions = {}
+    p._finalize_tasks = set()
+    p.unloading = False
     p._clap_model = None
     p._clap_prompt_order = []
     p._clap_text_embeddings = None
@@ -235,3 +240,85 @@ async def test_finalize_raises_when_no_feature_blocks() -> None:
 
     with pytest.raises(AudioAnalysisError, match="no usable audio"):
         await provider._finalize(session_id)
+
+
+# ---------------------------------------------------------------------------
+# Test 5: a partially completed CLAP plan fails retryably instead of persisting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_records_failure_when_clap_windows_incomplete() -> None:
+    """An incomplete CLAP plan must reach record_analysis_failure and suppress persistence."""
+    provider, set_aa, post_analysis = _make_provider()
+    session_id = "test-session-clap-incomplete"
+
+    session = _make_session(provider, session_id)
+    af = session.audio_format
+    # Both windows sit past the end of the 12s stream below, so neither is ever reached.
+    session.clap_target_starts = [100 * af.sample_rate, 120 * af.sample_rate]
+    session.clap_target_buffers = [[], []]
+    session.clap_target_complete = [False, False]
+
+    await provider.process_pcm_chunk(
+        session_id, _make_pcm_sine(sample_rate=af.sample_rate, duration_sec=12.0)
+    )
+
+    await provider.finalize(session_id)
+
+    set_aa.assert_not_called()
+    post_analysis.assert_not_called()
+    record_failure = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
+    record_failure.assert_called_once()
+    call_kwargs = record_failure.call_args.kwargs
+    assert call_kwargs["retry_at"] is not None
+    assert "0 of 2" in call_kwargs["reason"]
+    assert session_id not in provider._sessions
+
+
+# ---------------------------------------------------------------------------
+# Test 6: a sub-7s window completes through the finalize flush
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_flush_completes_short_window_and_persists() -> None:
+    """A window that never fills to 7s is flushed at finalize, so the analysis persists."""
+    provider, set_aa, _post_analysis = _make_provider()
+    provider.mass.create_task = MagicMock(side_effect=asyncio.create_task)  # type: ignore[method-assign]
+    session_id = "test-session-clap-flush"
+
+    session = _make_session(provider, session_id)
+    af = session.audio_format
+    # Starting at 8s of a 12s stream, this window tops out at 4s of audio.
+    session.clap_target_starts = [8 * af.sample_rate]
+    session.clap_target_buffers = [[]]
+    session.clap_target_complete = [False]
+
+    n_pairs = len(SCALAR_PROMPT_PAIRS)
+    flushed: list[int] = []
+
+    def _fake_inference(window_audio: np.ndarray, _source_sr: int) -> tuple[np.ndarray, np.ndarray]:
+        flushed.append(len(window_audio))
+        return (
+            np.ones(1024, dtype=np.float32),
+            np.zeros(2 * n_pairs, dtype=np.float32),
+        )
+
+    provider._single_window_inference_sync = _fake_inference  # type: ignore[method-assign,assignment]
+    provider._clap_model = MagicMock()
+    provider._clap_prompt_order = list(SCALAR_PROMPT_PAIRS.items())
+
+    await provider.process_pcm_chunk(
+        session_id, _make_pcm_sine(sample_rate=af.sample_rate, duration_sec=12.0)
+    )
+    await provider.finalize(session_id)
+
+    assert len(flushed) == 1
+    assert 0 < flushed[0] < 7 * af.sample_rate
+
+    set_aa.assert_called_once()
+    analysis_arg = set_aa.call_args.kwargs["analysis"]
+    assert analysis_arg.danceability is not None
+    assert analysis_arg.extra_data is not None
+    assert "clap_embedding" in analysis_arg.extra_data

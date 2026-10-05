@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ImageType
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
+
+# Hidden conf: Do we still need to promote authors/ narrators to full artists?
+CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
+
+# Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
+AUTHOR_ID_PREFIX: Final[str] = "author:"
+NARRATOR_ID_PREFIX: Final[str] = "narrator:"
 
 CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     default_value="various_artists",
-    help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
+    help_link="https://music-assistant.io/music-providers/local-files/#tagging-files",
     required=False,
     options=[
         ConfigValueOption("track_artist"),
@@ -26,10 +34,12 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 
+# the folder a new source is offered by default, where the caller may use it
+DEFAULT_MEDIA_FOLDER: Final[str] = "/media"
+
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
-    type=ConfigEntryType.STRING,
-    default_value="/media",
+    type=ConfigEntryType.FOLDER,
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
@@ -44,9 +54,27 @@ CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
         ConfigValueOption("sound_effects"),
     ],
 )
-CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
-    {**CONF_ENTRY_CONTENT_TYPE.to_dict(), "read_only": True}
-)
+
+
+def content_type_config_entry(content_type: str) -> ConfigEntry:
+    """
+    Return the read-only mirror of the (setup flow owned) content type for the options page.
+
+    :param content_type: The content type resolved from the provider's setup data.
+    """
+    # mirrored as the entry default so the other entries resolve their depends_on chain
+    # against it without it ever being persisted back into the stored values
+    return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
+
+
+def folder_config_entry(path: str) -> ConfigEntry:
+    """
+    Return the line on the options page that shows which folder a source reads from.
+
+    :param path: The folder of the source.
+    """
+    return ConfigEntry(key="folder", type=ConfigEntryType.LABEL, translation_params=[path])
+
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
@@ -148,6 +176,20 @@ SUPPORTED_EXTENSIONS = {
     *CUE_EXTENSIONS,
 }
 
+# local metadata files (Kodi-style NFO and recognized folder images) are never imported as
+# media: they carry no provider mapping of their own and only feed the lightweight change
+# detection that reparses their representative track when one of them changes on disk
+NFO_FILENAMES = {"album.nfo", "artist.nfo"}
+METADATA_IMAGE_STEMS = {image_type.value for image_type in ImageType} | {
+    "folder",
+    "cover",
+    "album",
+    "artist",
+}
+METADATA_FILE_EXTENSIONS = {"nfo", *IMAGE_EXTENSIONS}
+# the walk collects both imported media and local metadata files in a single pass
+WALK_EXTENSIONS = SUPPORTED_EXTENSIONS | METADATA_FILE_EXTENSIONS
+
 
 class IsChapterFile(Exception):
     """Exception to indicate that a file is part of a multi-part media (e.g. audiobook chapter)."""
@@ -160,5 +202,20 @@ CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
+CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
+# tracks the current change token + representative track of a local metadata file (NFO or
+# folder image); derivative and non-authoritative, so a cache miss is simply ignored
+CACHE_CATEGORY_METADATA_FILE: Final[int] = 9
 
-DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+# a registration is only ever refreshed by actually reading the file again, never on a timer,
+# so it must not expire under normal operation: an infrequently-touched item (an unchanged NFO
+# for months) would otherwise silently fall back to "untracked" once the entry expired
+METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for the provider's life
+
+# how long a podcast episode listing that lost a file to a parse failure is cached for:
+# the missing episode cannot reappear any sooner than this
+PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
+
+# how often storage that went away during a scan is re-checked, so the provider comes
+# back within minutes instead of waiting for the next scheduled sync
+AVAILABILITY_PROBE_INTERVAL: Final[int] = 300

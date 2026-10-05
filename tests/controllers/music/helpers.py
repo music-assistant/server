@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     AudioFormat,
+    ItemMapping,
     ProviderMapping,
     Track,
     UniqueList,
@@ -62,4 +64,59 @@ def create_track(
                 )
             ]
         ),
+    )
+
+
+def create_album(
+    provider_instance: str,
+    item_id: str,
+    name: str = "Test Album",
+    artist_name: str | None = "Test Artist",
+    artist_item_id: str | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> Album:
+    """
+    Create an Album as it would be received from a music provider.
+
+    :param provider_instance: The provider instance id the album originates from.
+    :param item_id: The item id of the album on the provider.
+    :param name: The album name.
+    :param artist_name: The album artist name, or None for an album without artists.
+    :param artist_item_id: The item id of the album artist on the provider,
+        defaults to one derived from the album item id.
+    :param external_ids: External ids (e.g. a MusicBrainz release id) to attach.
+    """
+    provider_domain = provider_instance.split("_", maxsplit=1)[0]
+    artists: UniqueList[Artist | ItemMapping] = UniqueList()
+    if artist_name is not None:
+        artist_id = artist_item_id or f"{item_id}_artist"
+        artists.append(
+            Artist(
+                item_id=artist_id,
+                provider=provider_instance,
+                name=artist_name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=artist_id,
+                        provider_domain=provider_domain,
+                        provider_instance=provider_instance,
+                        audio_format=AudioFormat(),
+                    )
+                },
+            )
+        )
+    return Album(
+        item_id=item_id,
+        provider=provider_instance,
+        name=name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_domain,
+                provider_instance=provider_instance,
+                audio_format=AudioFormat(),
+            )
+        },
+        artists=artists,
+        external_ids=external_ids or set(),
     )

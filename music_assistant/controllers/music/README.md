@@ -20,6 +20,16 @@ Music Assistant's core controller for the music library. It aggregates and norma
 - **Library data model.** Library items use the provider id `library`; provider mappings record which provider item(s) a library item resolves to. Maintenance prunes orphaned mappings and playlog rows.
 - **Schema migrations** are versioned against `DB_SCHEMA_VERSION`: on a version mismatch the database file is backed up before migrating, and a failed migration falls back to a fresh database (triggering a full rescan) so the user is never left without a working library.
 
+## Schema Versions on `dev` vs `stable`
+
+`DB_SCHEMA_VERSION` is a single integer, so it can only describe one linear history. `stable` normally inherits dev's numbering through releases, but a **schema-changing bugfix backported to `stable`** is renumbered against stable's own (lower) counter — from that point the same integer means something different on each branch. A database coming from `stable` then reports a version that is already higher than the `if prev_version <= N:` gates of the dev steps in the gap, so those steps never run and the schema objects they add stay missing. `__create_database_tables` cannot compensate: it is `CREATE TABLE IF NOT EXISTS`, so it never touches an existing table. The user-visible result is a library that queries columns the database never got, which has already happened once when a stable install was moved to the beta image.
+
+Renumbering the stable backport to match dev's number does not fix it either: the database would then claim to have run every dev step in between, which it genuinely never did. Encoding that correctly needs a per-step applied-migrations ledger (alembic-style), which is out of proportion to how rarely this triggers. So when backporting a schema change to `stable`:
+
+1. Record in the backport PR that stable's `DB_SCHEMA_VERSION` now diverges from dev's, and which value it took.
+2. On `dev`, bump `DB_SCHEMA_VERSION` and add an idempotent guard step re-adding every schema object introduced between the last shared version and stable's new one.
+3. Gate that guard at dev's *current* version (`<= DB_SCHEMA_VERSION - 1`), never at stable's — `_setup_database` skips migration entirely when `prev_version` already equals `DB_SCHEMA_VERSION`, so users who upgraded and broke are stamped at the current version and a lower gate never fires for them.
+
 ## Future Enhancements
 
 - Isolate the database connection itself into a dedicated layer (e.g. its own sub-controller), so connection ownership and the SQL/query surface live behind one boundary instead of on `MusicController`. Splitting the migrations (`migrations.py`) and grouping setup in `MusicDatabaseSetupMixin` are first steps toward that; the connection (`_database` and the `database` property) currently still lives on `MusicController`.

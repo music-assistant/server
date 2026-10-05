@@ -14,15 +14,23 @@ from urllib.parse import unquote, urlparse
 
 import aiohttp
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import Artist
     from music_assistant_models.provider import ProviderManifest
 
@@ -44,30 +52,28 @@ async def setup(
     return WikipediaMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return ()
-
-
 class WikipediaMetadataProvider(MetadataProvider):
     """Wikipedia Metadata provider."""
 
-    throttler: Throttler
+    throttler: ThrottlerManager
 
     @property
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 25
 
+    @property
+    def rate_limited(self) -> bool:
+        """Whether Wikipedia is currently holding requests back with a rate limit."""
+        return self.throttler.cooldown_remaining > 0
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.throttler = Throttler(rate_limit=1, period=1)
+        self.throttler = ThrottlerManager(rate_limit=1, period=1)
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on Wikipedia."""
@@ -174,15 +180,16 @@ class WikipediaMetadataProvider(MetadataProvider):
             return extract
         return None
 
+    @throttle_with_retries
     async def _get_json(
         self, url: str, params: dict[str, str] | None = None
     ) -> dict[str, Any] | None:
         """
         Return the parsed JSON from a GET request, or None when the resource is absent.
 
-        Only a 404 yields None; a transient failure (network, another HTTP error or an
-        unparsable response) raises ResourceTemporarilyUnavailable so callers do not cache
-        it as a negative result.
+        Only a 404 yields None; a transient failure (rate limit, network, another HTTP error
+        or an unparsable response) is retried and finally raises, so callers do not cache it
+        as a negative result.
 
         :param url: Request URL.
         :param params: Optional query parameters.
@@ -191,12 +198,17 @@ class WikipediaMetadataProvider(MetadataProvider):
             "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
         }
         try:
-            async with (
-                self.throttler,
-                self.mass.http_session.get(url, params=params, headers=headers) as response,
-            ):
+            async with self.mass.http_session.get(url, params=params, headers=headers) as response:
                 if response.status == 404:
                     return None
+                if response.status == 429:
+                    backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                    raise RateLimited("Wikipedia rate limit", backoff_time=backoff_time)
+                if response.status == 503:
+                    backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                    raise ResourceTemporarilyUnavailable(
+                        "Wikipedia backend overloaded", backoff_time=backoff_time
+                    )
                 response.raise_for_status()
                 return cast("dict[str, Any]", await response.json())
         except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:

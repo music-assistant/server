@@ -1,0 +1,99 @@
+{
+  "data": {
+    "id": "10586",
+    "type": "artists",
+    "attributes": {
+      "name": "Asian Dub Foundation",
+      "popularity": 0.572012722492218,
+      "externalLinks": [
+        {
+          "href": "https://tidal.com/browse/artist/10586",
+          "meta": {
+            "type": "TIDAL_SHARING"
+          }
+        }
+      ],
+      "spotlighted": false,
+      "contributionsEnabled": false,
+      "ownerType": "LABEL"
+    },
+    "relationships": {
+      "biography": {
+        "data": {
+          "id": "10586",
+          "type": "artistBiographies"
+        },
+        "links": {
+          "self": "/artists/10586/relationships/biography?countryCode=AT&locale=en-US"
+        }
+      },
+      "profileArt": {
+        "data": [
+          {
+            "id": "dDmYD0OBhSkdf7HK",
+            "type": "artworks"
+          }
+        ],
+        "links": {
+          "self": "/artists/10586/relationships/profileArt?countryCode=AT&locale=en-US"
+        }
+      }
+    }
+  },
+  "links": {
+    "self": "/artists/10586?include=biography%2CprofileArt&countryCode=AT&locale=en-US"
+  },
+  "included": [
+    {
+      "id": "10586",
+      "type": "artistBiographies",
+      "attributes": {
+        "text": "[wimpLink artistId=\"10586\"]Asian Dub Foundation[/wimpLink] formed in 1993 as an outgrowth of the documentary Identical Beat, a film shot at London's Farringdon Community Music House, the site of a series of summer workshops designed to teach Asian children the essentials of music technology. In charge of the workshops were tutor Aniruddha Das and youth worker John Pandit, also a noted DJ; with one of their students, a 15-year-old Bengali rapper named Deedar Zaman, they soon formed a sound system that they called the Asian Dub Foundation. After each adopted an alias -- bassist/tabla player Das became Dr. Das, Pandit became Pandit G, and Zaman became Master D -- they gradually evolved into a working band with the 1994 addition of former [wimpLink artistId=\"3736674\"]Higher Intelligence Agency[/wimpLink] guitarist Steve Chandra Savale, an innovative performer known for tuning his strings to one note like a sitar, turning up the distortion unit, and playing his instrument with a knife, earning him the nickname \"Chandrasonic.\" Emerging in the midst of considerable anti-Asian violence throughout Britain, [wimpLink artistId=\"10586\"]the Foundation[/wimpLink]'s early demos landed them a contract with Nation Records, and they recorded their debut EP, Conscious, in 1994.<br/>Channeling influences ranging from punk to ambient music to Bengali folk songs, [wimpLink artistId=\"10586\"]Asian Dub Foundation[/wimpLink] quickly gained a strong fan base not only among clubgoers but also among the anti-fascist movement, who applauded the group's vocal stand against racism. After earning a reputation as standout live performers, [wimpLink artistId=\"10586\"]the Foundation[/wimpLink] -- who now included dancer Bubble-E and second DJ Sun-J -- won widespread acclaim for the 1995 single \"Rebel Warrior.\" Their first full-length effort, [wimpLink albumId=\"102761246\"]Facts and Fictions[/wimpLink], followed later that same year, and in 1998 [wimpLink artistId=\"10586\"]Asian Dub Foundation[/wimpLink] returned with [wimpLink albumId=\"82530480\"]Rafi's Revenge[/wimpLink]. [wimpLink albumId=\"82528876\"]Community Music[/wimpLink] appeared in mid-2000, followed later that year by another full-length, R.A.F.I. Subsequent [wimpLink artistId=\"10586\"]Asian Dub Foundation[/wimpLink] albums have included Enemy of the Enemy (2003) and Tank (2005). ~ Jason Ankeny",
+        "source": "TiVo",
+        "editable": false
+      }
+    },
+    {
+      "id": "dDmYD0OBhSkdf7HK",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/e26da9ca/b3a2/4bfe/8db4/0de86b2cc5b8/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e26da9ca/b3a2/4bfe/8db4/0de86b2cc5b8/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e26da9ca/b3a2/4bfe/8db4/0de86b2cc5b8/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e26da9ca/b3a2/4bfe/8db4/0de86b2cc5b8/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#76756F",
+          "blurHash": "UTK1:rM_.8M|~pozWBj@D%t7WBt74nV@xuRj",
+          "status": "OK"
+        }
+      }
+    }
+  ]
+}

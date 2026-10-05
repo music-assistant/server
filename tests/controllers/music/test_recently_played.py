@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import MediaType
+from typing import TYPE_CHECKING
+from unittest.mock import Mock, patch
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
+
+from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
+
+if TYPE_CHECKING:
+    import pytest
+
+GET_CURRENT_USER = "music_assistant.controllers.music.controller.get_current_user"
 
 
 async def _add_playlog_track(
@@ -15,13 +26,14 @@ async def _add_playlog_track(
     *,
     fully_played: bool = True,
     userid: str = "user-a",
+    provider: str = "library",
 ) -> None:
     """Insert a single track row into the playlog."""
     await mass.music.database.insert(
         DB_TABLE_PLAYLOG,
         {
             "item_id": item_id,
-            "provider": "library",
+            "provider": provider,
             "media_type": MediaType.TRACK.value,
             "name": f"Track {item_id}",
             "timestamp": timestamp,
@@ -31,6 +43,34 @@ async def _add_playlog_track(
             "user_initiated": True,
         },
     )
+
+
+async def _add_provider_mapping(
+    mass: MusicAssistant,
+    item_id: int,
+    provider_instance: str,
+    media_type: MediaType = MediaType.TRACK,
+    *,
+    available: bool = True,
+) -> None:
+    """Insert a provider mapping row for a library item."""
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": media_type.value,
+            "item_id": item_id,
+            "provider_domain": provider_instance.rstrip("0123456789_"),
+            "provider_instance": provider_instance,
+            "provider_item_id": f"{provider_instance}-{item_id}",
+            "available": available,
+            "in_library": True,
+        },
+    )
+
+
+def _loaded_music_provider(instance_id: str) -> Mock:
+    """Create a stand-in for a loaded, available music provider instance."""
+    return Mock(instance_id=instance_id, type=ProviderType.MUSIC, available=True)
 
 
 async def test_recently_played_filters_by_played_after_timestamp(mass: MusicAssistant) -> None:
@@ -63,3 +103,146 @@ async def test_recently_played_without_timestamp_returns_all(mass: MusicAssistan
 
     item_ids = {item.item_id for item in result}
     assert {"recent", "old"} <= item_ids
+
+
+async def test_recently_played_filters_direct_provider_entries(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct (non-library) playlog entries are matched against their own provider."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["spotify_1", "local_1"]
+    )
+    await _add_playlog_track(mass, "spotify-track", timestamp=2000, provider="spotify_1")
+    await _add_playlog_track(mass, "local-track", timestamp=1999, provider="local_1")
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a", providers=["local_1"]
+    )
+
+    assert {item.item_id for item in result} == {"local-track"}
+
+
+async def test_recently_played_multiple_providers_or_semantics(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requesting several providers matches entries from any one of them."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["spotify_1", "local_1", "tidal_1"]
+    )
+    await _add_playlog_track(mass, "spotify-track", timestamp=2000, provider="spotify_1")
+    await _add_playlog_track(mass, "local-track", timestamp=1999, provider="local_1")
+    await _add_playlog_track(mass, "tidal-track", timestamp=1998, provider="tidal_1")
+
+    result = await mass.music.recently_played(
+        limit=0,
+        media_types=[MediaType.TRACK],
+        userid="user-a",
+        providers=["spotify_1", "local_1"],
+    )
+
+    assert {item.item_id for item in result} == {"spotify-track", "local-track"}
+
+
+async def test_recently_played_library_item_or_matches_any_mapping(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A library item mapped to Spotify and local remains when only local is requested."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["spotify_1", "local_1"]
+    )
+    await _add_provider_mapping(mass, item_id=1, provider_instance="spotify_1")
+    await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
+    await _add_playlog_track(mass, "1", timestamp=2000, provider="library")
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a", providers=["local_1"]
+    )
+
+    assert {item.item_id for item in result} == {"1"}
+
+
+async def test_recently_played_excludes_unavailable_mapping(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mapping that is no longer available on the requested provider cannot match."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["spotify_1", "local_1"]
+    )
+    await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
+    await _add_provider_mapping(mass, item_id=1, provider_instance="spotify_1", available=False)
+    await _add_playlog_track(mass, "1", timestamp=2000, provider="library")
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a", providers=["spotify_1"]
+    )
+
+    assert result == []
+
+
+async def test_recently_played_explicit_empty_providers_returns_no_items(
+    mass: MusicAssistant,
+) -> None:
+    """An explicit empty provider list returns no items, distinct from omitting the filter."""
+    await _add_playlog_track(mass, "recent", timestamp=2000)
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a", providers=[]
+    )
+
+    assert result == []
+
+
+async def test_recently_played_combines_explicit_and_user_music_sources(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's music sources narrow an explicit filter that would otherwise pass."""
+    # get_active_provider_instances derives the "active" provider set from the loaded music
+    # sources the user may see, so seed both as loaded and let the access records narrow them.
+    for instance_id in ("spotify_1", "local_1"):
+        monkeypatch.setitem(mass._providers, instance_id, _loaded_music_provider(instance_id))
+    set_music_source_access(
+        mass,
+        {
+            "local_1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "spotify_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    user_a = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await _add_provider_mapping(mass, item_id=1, provider_instance="spotify_1")
+    await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
+    await _add_playlog_track(mass, "1", timestamp=2000, provider="library")
+
+    with patch(GET_CURRENT_USER, return_value=user_a):
+        result = await mass.music.recently_played(
+            limit=0, media_types=[MediaType.TRACK], providers=["local_1"]
+        )
+    assert {item.item_id for item in result} == {"1"}
+
+    # requesting a music source the user may not use must not leak the item back
+    # in, even though the item does have a (restricted) mapping to it.
+    with patch(GET_CURRENT_USER, return_value=user_a):
+        result = await mass.music.recently_played(
+            limit=0, media_types=[MediaType.TRACK], providers=["spotify_1"]
+        )
+    assert result == []
+
+
+async def test_recently_played_provider_filter_applied_before_limit(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider filter runs in SQL before LIMIT, so filtered-out rows can't starve results."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["spotify_1", "local_1"]
+    )
+    # newer spotify entries (excluded by the filter) outnumber and outrank the older
+    # local entries; if the filter were applied after LIMIT, they would crowd it out.
+    for i in range(10):
+        await _add_playlog_track(mass, f"spotify-{i}", timestamp=3000 - i, provider="spotify_1")
+    for i in range(5):
+        await _add_playlog_track(mass, f"local-{i}", timestamp=2000 - i, provider="local_1")
+
+    result = await mass.music.recently_played(
+        limit=5, media_types=[MediaType.TRACK], userid="user-a", providers=["local_1"]
+    )
+
+    assert {item.item_id for item in result} == {f"local-{i}" for i in range(5)}

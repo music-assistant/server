@@ -45,6 +45,7 @@ from .helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.media_items import MediaItemType
 
 
@@ -52,9 +53,24 @@ class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
 
     @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
+
+    @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # full catalogue access via search/browse, but only the artist as library item
+        return {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST}
 
     async def search(
         self,

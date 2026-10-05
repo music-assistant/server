@@ -8,11 +8,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -21,10 +22,13 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -35,6 +39,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '',
         'position': None,
@@ -68,11 +74,12 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -81,10 +88,13 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -100,6 +110,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -141,11 +153,12 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
           'metadata': dict({
+            'artist_entity_type': None,
             'chapters': None,
             'collections': None,
             'copyright': None,
@@ -154,10 +167,13 @@
             'explicit': None,
             'genres': None,
             'grouping': None,
+            'has_transcript': None,
             'images': None,
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
+            'life_span': None,
             'links': None,
             'lrc_lyrics': None,
             'lyrics': None,
@@ -168,6 +184,8 @@
             'release_date': None,
             'review': None,
             'style': None,
+            'transcript': None,
+            'transcript_cues': None,
           }),
           'name': 'ゲスト',
           'position': None,
@@ -201,11 +219,12 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -214,10 +233,13 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -233,6 +255,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストシリーズ68461151-527007',
       'position': None,
@@ -272,11 +296,12 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
             'metadata': dict({
+              'artist_entity_type': None,
               'chapters': None,
               'collections': None,
               'copyright': None,
@@ -285,6 +310,7 @@
               'explicit': None,
               'genres': None,
               'grouping': None,
+              'has_transcript': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -296,7 +322,9 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
+              'life_span': None,
               'links': list([
                 dict({
                   'type': 'website',
@@ -312,6 +340,8 @@
               'release_date': None,
               'review': None,
               'style': None,
+              'transcript': None,
+              'transcript_cues': None,
             }),
             'name': 'ゲスト',
             'position': None,
@@ -348,12 +378,13 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
         'media_type': 'track',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -362,6 +393,7 @@
           'explicit': False,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -380,7 +412,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -396,6 +430,8 @@
           'release_date': '2025-01-01T00:00:00+09:00',
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'APIテスト用',
         'position': None,
@@ -438,11 +474,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -451,10 +488,13 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -465,6 +505,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '',
         'position': None,
@@ -498,11 +540,12 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -511,10 +554,13 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -530,6 +576,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -567,11 +615,12 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '4',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -580,6 +629,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -591,7 +641,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -607,6 +659,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '中の',
     'position': None,
@@ -643,11 +697,12 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '68461151',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -656,6 +711,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -667,7 +723,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -683,6 +741,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'ゲスト',
     'position': None,
@@ -722,11 +782,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -735,6 +796,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -746,7 +808,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -762,6 +826,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -798,12 +864,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -812,6 +879,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -830,7 +898,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -846,6 +916,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -886,11 +958,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -899,6 +972,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -910,7 +984,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -926,6 +1002,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -962,12 +1040,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -976,6 +1055,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -994,7 +1074,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1010,6 +1092,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -1043,16 +1127,18 @@
 # ---
 # name: test_converter_with_fixture[playlists/following_mylists.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1061,6 +1147,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1072,7 +1159,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1088,6 +1177,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1126,16 +1217,18 @@
 # ---
 # name: test_converter_with_fixture[playlists/own_mylists.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1144,6 +1237,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1155,7 +1249,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1171,6 +1267,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1210,16 +1308,18 @@
 # name: test_converter_with_fixture[playlists/single_mylist_details.json]
   dict({
     'playlist': dict({
+      'access': None,
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_dynamic': False,
       'is_editable': True,
       'is_playable': True,
       'item_id': '78597499',
       'media_type': 'playlist',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -1228,6 +1328,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1239,7 +1340,9 @@
         ]),
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -1255,6 +1358,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストマイリスト68461151-78597499',
       'owner': '68461151',
@@ -1299,11 +1404,12 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
             'metadata': dict({
+              'artist_entity_type': None,
               'chapters': None,
               'collections': None,
               'copyright': None,
@@ -1312,6 +1418,7 @@
               'explicit': None,
               'genres': None,
               'grouping': None,
+              'has_transcript': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1323,7 +1430,9 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
+              'life_span': None,
               'links': list([
                 dict({
                   'type': 'website',
@@ -1339,6 +1448,8 @@
               'release_date': None,
               'review': None,
               'style': None,
+              'transcript': None,
+              'transcript_cues': None,
             }),
             'name': 'ゲスト',
             'position': None,
@@ -1375,12 +1486,13 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
         'media_type': 'track',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1389,6 +1501,7 @@
           'explicit': False,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1407,7 +1520,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1423,6 +1538,8 @@
           'release_date': '2025-01-01T00:00:00+09:00',
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'APIテスト用',
         'position': None,
@@ -1458,16 +1575,18 @@
 # ---
 # name: test_converter_with_fixture[search/mylist_search.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1476,6 +1595,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1487,7 +1607,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1503,6 +1625,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1548,11 +1672,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1561,10 +1686,13 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -1575,6 +1703,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1608,11 +1738,12 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1621,10 +1752,13 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1640,6 +1774,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -1680,11 +1816,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1693,6 +1830,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1704,7 +1842,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1720,6 +1860,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1756,12 +1898,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1770,6 +1913,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1788,7 +1932,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1804,6 +1950,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -1844,11 +1992,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1857,6 +2006,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1868,7 +2018,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1884,6 +2036,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1920,12 +2074,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1934,6 +2089,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1952,7 +2108,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1968,6 +2126,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2010,7 +2170,7 @@
       'output_format_str': 'mp4',
       'sample_rate': 48000,
     }),
-    'dsp': None,
+    'audio_processing': None,
     'duration': 2,
     'item_id': 'sm45285955',
     'loudness': -7000.0,
@@ -2046,11 +2206,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2059,6 +2220,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2070,7 +2232,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2086,6 +2250,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2122,12 +2288,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2136,6 +2303,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2154,7 +2322,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2170,6 +2340,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2210,11 +2382,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2223,6 +2396,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2234,7 +2408,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2250,6 +2426,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2286,12 +2464,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2300,6 +2479,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2318,7 +2498,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2334,6 +2516,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2375,11 +2559,12 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
           'metadata': dict({
+            'artist_entity_type': None,
             'chapters': None,
             'collections': None,
             'copyright': None,
@@ -2388,6 +2573,7 @@
             'explicit': None,
             'genres': None,
             'grouping': None,
+            'has_transcript': None,
             'images': list([
               dict({
                 'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2399,7 +2585,9 @@
             ]),
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
+            'life_span': None,
             'links': list([
               dict({
                 'type': 'website',
@@ -2415,6 +2603,8 @@
             'release_date': None,
             'review': None,
             'style': None,
+            'transcript': None,
+            'transcript_cues': None,
           }),
           'name': 'ゲスト',
           'position': None,
@@ -2448,11 +2638,12 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -2461,10 +2652,13 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -2480,6 +2674,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストシリーズ68461151-527007',
       'position': None,
@@ -2516,11 +2712,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2529,6 +2726,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2540,7 +2738,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2556,6 +2756,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2592,12 +2794,13 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2610,6 +2813,7 @@
         'テスト動画',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
@@ -2635,7 +2839,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2651,6 +2857,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,

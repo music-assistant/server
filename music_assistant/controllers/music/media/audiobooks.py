@@ -2,34 +2,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import UTC, datetime
 from json import loads as json_loads
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudiobookSummary,
     ItemMapping,
     ItemMappingSummary,
+    MediaCollection,
     ProviderMapping,
     UniqueList,
 )
-from music_assistant_models.media_items.helpers import AudiobookCollection
 
 from music_assistant.constants import (
+    DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_audiobook,
     compare_media_item,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -64,9 +65,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self.mass.register_api_command(
             f"music/{api_base}/audiobook_versions", self.versions, required_scope=Scope.LIBRARY_READ
         )
-        self.mass.register_api_command(
-            f"music/{api_base}/collections", self.collections, required_scope=Scope.LIBRARY_READ
-        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
@@ -88,6 +86,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         SELECT
             audiobooks.*,
             {self._external_ids_query()} AS external_ids,
+            {self._favorite_query()} AS favorite,
             {self._provider_mappings_query()} AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -148,7 +147,63 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             """
         return query, params
 
-    async def library_items(
+    if TYPE_CHECKING:
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
+            **kwargs: Any,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: bool,
+            reachable_via: list[str] | None = None,
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -158,32 +213,35 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
-        without_collections: bool | None = None,
         *,
         summary: bool = True,
+        collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
-    ) -> list[Audiobook]:
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Get in-database audiobooks.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param without_collections: Do not return audiobooks which are part of a collection
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param collapse_collections: Collapse available collections. Items in a collection won't
+            be returned individually.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
-        if without_collections:
-            extra_query_parts = [
-                "WHERE (json_extract(audiobooks.metadata, '$.collections') IS NULL "
-                "OR json_extract(audiobooks.metadata, '$.collections') = '[]')",
-            ]
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -191,12 +249,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            collapse_collections=collapse_collections,
+            reachable_via=reachable_via,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -210,11 +270,15 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
                 summary=summary,
+                collapse_collections=collapse_collections,
+                reachable_via=reachable_via,
             )
         return result
 
@@ -231,7 +295,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
+            if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
@@ -297,7 +361,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
+            if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
@@ -306,54 +370,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_audiobook.item_id, match)
                 cur_provider_domains.add(provider.domain)
-
-    async def collections(
-        self,
-    ) -> list[AudiobookCollection]:
-        """Get all available audiobook collections."""
-        # key is the collections' title
-        collections_dict: dict[str, list[Audiobook]] = {}
-        audiobooks_with_collections = await self.get_library_items_by_query(
-            extra_query_parts=[
-                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
-                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
-            ],
-        )
-        for audiobook in audiobooks_with_collections:
-            if audiobook.metadata.collections is None:
-                # this should never happen
-                continue
-            for collection_info in audiobook.metadata.collections:
-                audiobook_list = collections_dict.get(collection_info.title, [])
-                audiobook_list.append(audiobook)
-                collections_dict[collection_info.title] = audiobook_list
-
-        result: list[AudiobookCollection] = []
-        # Sort collections, first by number then alphabetically
-        for collection_title, audiobook_list in collections_dict.items():
-            audiobooks_with_number: list[tuple[Audiobook, float]] = []
-            audiobooks_with_string: list[tuple[Audiobook, str]] = []
-            audiobooks_with_none: list[Audiobook] = []
-            for audiobook in audiobook_list:
-                assert audiobook.metadata.collections is not None  # for type checking
-                collection_info = next(
-                    x for x in audiobook.metadata.collections if x.title == collection_title
-                )
-                if collection_info.sequence is None:
-                    audiobooks_with_none.append(audiobook)
-                    continue
-                try:
-                    sort_by = float(collection_info.sequence)
-                    audiobooks_with_number.append((audiobook, sort_by))
-                except ValueError:
-                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
-            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
-            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
-            final_list.extend(audiobooks_with_none)
-
-            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
-
-        return result
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
@@ -375,7 +391,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "publisher": item.publisher,
                 "authors": serialize_to_json(_authors),
@@ -401,38 +416,58 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
-        if overwrite:
-            # on overwrite, clear the audiobook_artists table first
+        linked_ids: set[int] = set()
+        updated_types: set[str] = set()
+        for values, artist_type in (
+            (item.authors, ArtistType.AUTHOR),
+            (item.narrators, ArtistType.NARRATOR),
+        ):
+            if not values:
+                # a role the update omits says nothing about its stored links
+                continue
+            updated_types.add(artist_type.value)
+            for artist in values:
+                if isinstance(artist, Artist):
+                    # just to be sure
+                    artist.artist_type = artist_type
+                # a library item names its (already linked) artists as mappings
+                elif not (isinstance(artist, ItemMapping) and artist.provider == "library"):
+                    continue
+                db_artist = await self._set_audiobook_author_narrator(db_id, artist=artist)
+                linked_ids.add(int(db_artist.item_id))
+        if not updated_types:
+            return
+        # links carry no role or source: without overwrite, only drop the links
+        # the reporting provider owns, other providers of the book keep theirs
+        # ownership is per artist, not per book: assumes one provider links a given
+        # artist, which holds while Audiobookshelf is the only one sending links
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT {DB_TABLE_AUDIOBOOK_ARTISTS}.artist_id, {DB_TABLE_ARTISTS}.artist_type, "
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            f"WHERE pm.media_type = '{MediaType.ARTIST.value}' "
+            f"AND pm.item_id = {DB_TABLE_AUDIOBOOK_ARTISTS}.artist_id "
+            "AND pm.provider_instance = :instance_id) AS reported "
+            f"FROM {DB_TABLE_AUDIOBOOK_ARTISTS} JOIN {DB_TABLE_ARTISTS} "
+            f"ON {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_AUDIOBOOK_ARTISTS}.artist_id "
+            "WHERE audiobook_id = :db_id",
+            {"db_id": db_id, "instance_id": item.provider},
+            limit=0,
+        )
+        stale_ids = [
+            row["artist_id"]
+            for row in rows
+            if row["artist_id"] not in linked_ids
+            # one artist row may serve as author and narrator, so an update
+            # covering both roles owns every link
+            and (len(updated_types) == 2 or row["artist_type"] in updated_types)
+            and (overwrite or row["reported"])
+        ]
+        if stale_ids:
             await self.mass.music.database.delete(
                 DB_TABLE_AUDIOBOOK_ARTISTS,
-                {
-                    "audiobook_id": db_id,
-                },
+                query=f"WHERE audiobook_id = {db_id} "
+                f"AND artist_id IN ({','.join(str(x) for x in stale_ids)})",
             )
-        if item.authors and isinstance(item.authors[0], Artist):
-            # only for type checking
-            authors = [author for author in item.authors if isinstance(author, Artist)]
-            for author in authors:
-                # just to be sure
-                author.artist_type = ArtistType.AUTHOR
-            await self._set_audiobook_authors_narrators(db_id, authors)
-        if item.narrators and isinstance(item.narrators[0], Artist):
-            # only for type checking
-            narrators = [narrator for narrator in item.narrators if isinstance(narrator, Artist)]
-            for narrator in narrators:
-                # just to be sure
-                narrator.artist_type = ArtistType.NARRATOR
-            await self._set_audiobook_authors_narrators(db_id, narrators)
-
-    async def _set_audiobook_authors_narrators(
-        self,
-        db_id: int,
-        artists: Iterable[Artist | ItemMapping],
-        overwrite: bool = False,
-    ) -> None:
-        """Write audiobook id and author/ narrator id to DB_TABLE_AUDIOBOOK_ARTISTS."""
-        for artist in artists:
-            await self._set_audiobook_author_narrator(db_id, artist=artist, overwrite=overwrite)
 
     async def _set_audiobook_author_narrator(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
@@ -467,7 +502,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         return ItemMapping.from_item(db_artist)
 
     async def _update_library_item(
-        self, item_id: str | int, update: Audiobook, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Audiobook,
+        overwrite: bool = False,
+        *,
+        set_playlog: bool = True,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
@@ -477,12 +517,19 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             # audiobooks have no image picker, so keep the cover in sync with the
             # provider instead of accumulating merged entries
             metadata.images = update.metadata.images
+        if not overwrite and update.metadata.collections is not None:
+            # always update collections to prevent stale empty ones
+            metadata.collections = update.metadata.collections
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
         # only serialize str narrators/ authors to db
         _update_authors = [author for author in update.authors if isinstance(author, str)]
         _update_narrators = [narrator for narrator in update.narrators if isinstance(narrator, str)]
+        _cur_authors = [author for author in cur_item.authors if isinstance(author, str)]
+        _cur_narrators = [narrator for narrator in cur_item.narrators if isinstance(narrator, str)]
+        # plain names are shared by all providers of the book, so only a sole one replaces them
+        owns_names = {x.provider_instance for x in cur_item.provider_mappings} == {update.provider}
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -493,10 +540,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "metadata": serialize_to_json(metadata),
                 "publisher": cur_item.publisher or update.publisher,
                 "authors": serialize_to_json(
-                    _update_authors if overwrite else cur_item.authors or _update_authors
+                    _update_authors
+                    if overwrite or (owns_names and _update_authors)
+                    else _cur_authors or _update_authors
                 ),
                 "narrators": serialize_to_json(
-                    _update_narrators if overwrite else cur_item.narrators or _update_narrators
+                    _update_narrators
+                    if overwrite or (owns_names and _update_narrators)
+                    else _cur_narrators or _update_narrators
                 ),
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
@@ -518,8 +569,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-        await self._set_playlog(db_id, update)
-        await self._set_artist_mappings(update, db_id)
+        if set_playlog:
+            await self._set_playlog(db_id, update)
+        await self._set_artist_mappings(update, db_id, overwrite=overwrite)
+
+    async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
+        """Merge audiobook model state without applying a source resume position."""
+        await self._update_library_item(item_id, update, set_playlog=False)
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
@@ -605,7 +661,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the audiobooks sync-details query."""
-        # the sync loop needs the (str vs Artist) type of the stored authors/narrators
+        # the sync loop needs the stored authors/narrators (linked and plain)
         # plus the user-scoped resume state to detect changes on the provider side
         params: dict[str, Any] = {}
         # mirror base_query: scope the playlog lookup to the session user (if any) and
@@ -615,20 +671,18 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog_user_clause = "AND p2.userid = :playlog_userid "
             params["playlog_userid"] = session_user.user_id
         extra_columns = f"""
-            , EXISTS (
-                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
+            , (
+                SELECT JSON_GROUP_ARRAY(json_array(
+                    artists.item_id, artists.artist_type, pm.provider_instance, pm.provider_item_id
+                ))
+                FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
                 JOIN artists ON artists.item_id = audiobook_artists.artist_id
+                JOIN provider_mappings pm ON pm.item_id = artists.item_id
+                AND pm.media_type = '{MediaType.ARTIST.value}'
                 WHERE audiobook_artists.audiobook_id = audiobooks.item_id
-                AND artists.artist_type = '{ArtistType.AUTHOR.value}'
-            ) AS has_author_artists
-            , EXISTS (
-                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
-                JOIN artists ON artists.item_id = audiobook_artists.artist_id
-                WHERE audiobook_artists.audiobook_id = audiobooks.item_id
-                AND artists.artist_type = '{ArtistType.NARRATOR.value}'
-            ) AS has_narrator_artists
-            , json_type(audiobooks.authors, '$[0]') AS first_author_type
-            , json_type(audiobooks.narrators, '$[0]') AS first_narrator_type
+            ) AS artist_links
+            , audiobooks.authors AS stored_authors
+            , audiobooks.narrators AS stored_narrators
             , playlog.fully_played AS fully_played
             , playlog.seconds_played * 1000 AS resume_position_ms
         """
@@ -643,18 +697,21 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:
         """Parse a raw sync-details db row into an AudiobookSyncDetails object."""
-        # authors/narrators hydrate as str only when there are no linked Artist records
-        # and the stored JSON column holds plain strings (mirrors _parse_db_row)
         resume_position_ms = db_row["resume_position_ms"]
         return AudiobookSyncDetails(
             item_id=db_row["item_id"],
-            favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
-            author_is_str=not db_row["has_author_artists"]
-            and db_row["first_author_type"] == "text",
-            narrator_is_str=not db_row["has_narrator_artists"]
-            and db_row["first_narrator_type"] == "text",
+            artist_links=frozenset(
+                (int(artist_id), artist_type, inst, item_id)
+                for artist_id, artist_type, inst, item_id in json_loads(db_row["artist_links"])
+            ),
+            authors=tuple(
+                x for x in json_loads(db_row["stored_authors"] or "[]") if isinstance(x, str)
+            ),
+            narrators=tuple(
+                x for x in json_loads(db_row["stored_narrators"] or "[]") if isinstance(x, str)
+            ),
             fully_played=parse_optional_bool(db_row["fully_played"]),
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
         )

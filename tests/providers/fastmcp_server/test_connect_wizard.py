@@ -18,11 +18,13 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
 
+from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
 from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
@@ -31,6 +33,7 @@ from music_assistant.providers.fastmcp_server._init_helpers import (
 from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action
 from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lookup_client
 from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
+from music_assistant.providers.fastmcp_server.connect.page import HTML
 from music_assistant.providers.fastmcp_server.constants import CONF_CONNECT_EXTERNAL_URL
 
 from .conftest import FakeWebserver, build_aiohttp_app
@@ -75,7 +78,7 @@ async def wizard_client(wizard_mass: MagicMock) -> AsyncIterator[TestClient]:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["query:library", "control:playback"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
     )
     async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
@@ -128,31 +131,30 @@ async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> 
     assert resp.headers.get("Cache-Control") == "no-store"
 
 
-async def test_scheme_guard_rejects_plaintext_non_loopback_login(
-    wizard_client: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    ("path", "payload", "auth_attr"),
+    [
+        ("/mcp/v1/connect/login", {"username": "admin", "password": "hunter2"}, "login"),
+        ("/mcp/v1/connect/exchange", {"bootstrap": "boot-1"}, "authenticate_with_token"),
+    ],
+)
+async def test_scheme_guard_rejects_plaintext_non_loopback_credentials(
+    wizard_client: TestClient,
+    wizard_mass: MagicMock,
+    path: str,
+    payload: dict[str, str],
+    auth_attr: str,
 ) -> None:
-    """
-    ``/connect/login`` over plaintext http to a non-loopback host is refused.
-
-    The wizard's only credential-bearing endpoints (login/exchange/token) must
-    not accept plaintext HTTP from a LAN-reachable host — the password and
-    bootstrap tokens would be sniffable. HTTPS is allowed, and so is
-    loopback (the bytes never leave the box). Anything else gets a 400.
-    """
-    # TestClient binds to 127.0.0.1, so the request scheme is http and we'd
-    # naturally pass the loopback exception. Force ``request.host`` to a LAN
-    # address via the Host header to exercise the rejection path.
+    """Credential endpoints refuse plaintext HTTP from a LAN-reachable host."""
     resp = await wizard_client.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
+        path,
+        json=payload,
         headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
     )
     assert resp.status == 400
     body = await resp.json()
     assert body["success"] is False
-    assert "plaintext" in body["error"].lower() or "https" in body["error"].lower()
-    # MA's login must NOT have been called — credentials never crossed the wire.
-    wizard_mass.webserver.auth.login.assert_not_awaited()
+    getattr(wizard_mass.webserver.auth, auth_attr).assert_not_awaited()
 
 
 async def test_scheme_guard_allows_loopback_plaintext_login(
@@ -166,19 +168,6 @@ async def test_scheme_guard_allows_loopback_plaintext_login(
     )
     assert resp.status == 200
     wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_rejects_plaintext_non_loopback_exchange(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Bootstrap exchange over plaintext non-loopback is refused before any MA call."""
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/exchange",
-        json={"bootstrap": "boot-1"},
-        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
-    )
-    assert resp.status == 400
-    wizard_mass.webserver.auth.authenticate_with_token.assert_not_awaited()
 
 
 def _install_fake_ingress_helper(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
@@ -276,7 +265,7 @@ async def wizard_client_trust_proxy(wizard_mass: MagicMock) -> AsyncIterator[Tes
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["query:library", "control:playback"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
         trust_forwarded_proto=True,
     )
@@ -307,57 +296,27 @@ async def test_scheme_guard_trust_proxy_off_ignores_forwarded_proto(
     wizard_mass.webserver.auth.login.assert_not_awaited()
 
 
-async def test_scheme_guard_trust_proxy_allows_forwarded_https(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    "forwarded_headers",
+    [
+        {"X-Forwarded-Proto": "https"},
+        {"X-Forwarded-Scheme": "https"},
+        {"X-Forwarded-Proto": "https, http"},
+    ],
+)
+async def test_scheme_guard_trust_proxy_treats_forwarded_https_as_secure(
+    wizard_client_trust_proxy: TestClient,
+    wizard_mass: MagicMock,
+    forwarded_headers: dict[str, str],
 ) -> None:
-    """
-    Trust on + ``X-Forwarded-Proto: https`` → request is treated as secure.
-
-    Reproduces the reverse-proxy deployment (nginx / NPM / Traefik / Caddy):
-    TLS terminates at the proxy, the proxy-to-MA hop is plain HTTP, and the
-    proxy reports the original scheme via ``X-Forwarded-Proto``.
-    """
+    """Trust on: proxy HTTPS signals make the plaintext MA hop acceptable."""
     resp = await wizard_client_trust_proxy.post(
         "/mcp/v1/connect/login",
         json={"username": "admin", "password": "hunter2"},
         headers={
             "Origin": "http://localhost:8095",
             "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_accepts_forwarded_scheme_header(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: Nginx-Proxy-Manager's ``X-Forwarded-Scheme: https`` also counts."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Scheme": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_multi_hop_uses_first_value(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: a chained ``https, http`` list is read as the client hop (https)."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https, http",
+            **forwarded_headers,
         },
     )
     assert resp.status == 200
@@ -392,7 +351,7 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
         "mount_path",
         "mcp_url_loopback",
         "mcp_url_advertised",
-        "permissions",
+        "default_policy",
         "clients",
         "well_known_url",
     ):
@@ -400,25 +359,51 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
     assert data["mount_path"] == "/mcp/v1"
     assert data["mcp_url_loopback"].endswith("/mcp/v1")
     assert isinstance(data["clients"], list)
-    assert len(data["clients"]) >= 10
-    assert isinstance(data["permissions"], list)
-    assert all(isinstance(p, str) for p in data["permissions"])
+    assert len(data["clients"]) == 15
+    clients = {client["id"]: client for client in data["clients"]}
+    assert {
+        client_id: [method["id"] for method in client["methods"]]
+        for client_id, client in clients.items()
+    } == {
+        "claude-code": ["cli", "project-config"],
+        "cursor": ["user-config", "project-config"],
+        "opencode": ["user-config", "project-config"],
+        "windsurf": ["devin-user", "devin-project", "legacy-cascade"],
+        "vscode": ["user-config", "workspace-config"],
+        "github-copilot-cli": ["cli", "interactive", "user-config", "project-config"],
+        "codex-cli": ["cli", "user-config"],
+        "gemini-cli": ["cli", "user-config", "project-config"],
+        "cline": ["user-config", "cli-wizard"],
+        "roo-code": ["global-config", "project-config"],
+        "zed": ["settings-ui", "user-config", "project-config"],
+        "openclaw": ["cli", "user-config"],
+        "openhands": ["cli", "user-config"],
+        "hermes": ["cli", "user-config", "desktop-editor"],
+        "custom": ["parameters"],
+    }
+    assert "claude-desktop" not in clients
+    assert "chatgpt" not in clients
+    assert data["default_policy"] == {"profile": "Trusted"}
+    assert "permissions" not in data
 
 
-async def test_info_reflects_enabled_tags(wizard_mass: MagicMock) -> None:
-    """``info.permissions`` reflects whatever ``enabled_tags_provider()`` returns."""
+async def test_info_exposes_only_default_profile(wizard_mass: MagicMock) -> None:
+    """Connect metadata never exposes capability matrices or token overrides."""
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["control:playback", "edit:queue"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
     )
     try:
         async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
             resp = await client.get("/mcp/v1/connect/info")
             data = await resp.json()
-            assert "control:playback" in data["permissions"]
-            assert "edit:queue" in data["permissions"]
+            assert data["default_policy"] == {"profile": "Trusted"}
+            assert "permissions" not in data
+            assert "allow" not in data["default_policy"]
+            assert "confirm" not in data["default_policy"]
+            assert "deny" not in data["default_policy"]
     finally:
         unmount()
 
@@ -495,10 +480,10 @@ async def test_exchange_invalid_bootstrap_does_not_revoke(
     wizard_mass.webserver.auth.revoke_token.assert_not_called()
 
 
-async def test_exchange_revoke_failure_still_returns_session(
+async def test_exchange_revoke_failure_does_not_issue_session(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A ``revoke_token`` exception is swallowed; the exchange still issues a session_token."""
+    """A failed bootstrap revoke fails closed: no session while the bootstrap stays valid."""
     auth = wizard_mass.webserver.auth
     auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
 
@@ -507,16 +492,15 @@ async def test_exchange_revoke_failure_still_returns_session(
         json={"bootstrap": "boot-1"},
         headers={"Origin": "http://localhost:8095"},
     )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["session_token"] == "jwt-xyz"
-    auth.create_token.assert_awaited_once()
+    assert resp.status == 500
+    assert "session_token" not in await resp.json()
+    auth.create_token.assert_not_called()
 
 
-async def test_exchange_get_token_id_none_skips_revoke(
+async def test_exchange_unresolved_bootstrap_id_does_not_issue_session(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """When ``get_token_id_from_token`` returns ``None`` the revoke is skipped, mint still happens."""
+    """A bootstrap whose token id cannot be resolved cannot be revoked, so no session is issued."""
     auth = wizard_mass.webserver.auth
     auth.get_token_id_from_token = AsyncMock(return_value=None)
 
@@ -525,9 +509,25 @@ async def test_exchange_get_token_id_none_skips_revoke(
         json={"bootstrap": "boot-1"},
         headers={"Origin": "http://localhost:8095"},
     )
-    assert resp.status == 200
+    assert resp.status == 500
     auth.revoke_token.assert_not_called()
-    auth.create_token.assert_awaited_once()
+    auth.create_token.assert_not_called()
+
+
+async def test_exchange_bootstrap_id_lookup_error_does_not_issue_session(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """A raising token-id lookup fails closed instead of skipping the revoke."""
+    auth = wizard_mass.webserver.auth
+    auth.get_token_id_from_token = AsyncMock(side_effect=RuntimeError("db locked"))
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/exchange",
+        json={"bootstrap": "boot-1"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+    assert resp.status == 500
+    auth.create_token.assert_not_called()
 
 
 # ── Login form fallback ──────────────────────────────────────────────────────
@@ -618,6 +618,34 @@ async def test_login_dataclass_failure_returns_401(
 # ── Per-client token mint ────────────────────────────────────────────────────
 
 
+async def test_token_endpoint_binds_minted_identity(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A successful mint writes the new bearer into the request-identity registry."""
+    bound: list[tuple[str, str, str | None]] = []
+
+    async def _run() -> None:
+        unmount = await mount_connect_wizard(
+            wizard_mass,
+            mount_path="/mcp/v1",
+            default_profile_provider=lambda: "Trusted",
+            identity_binder=lambda bearer, user_id, token_id: bound.append(
+                (bearer, user_id, token_id)
+            ),
+        )
+        async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
+            resp = await client.post(
+                "/mcp/v1/connect/token",
+                json={"session_token": "sess-1", "client_id": "cursor"},
+                headers={"Origin": "http://localhost:8095"},
+            )
+            assert resp.status == 200
+        unmount()
+
+    await _run()
+    assert bound == [("jwt-xyz", mock_user.user_id, "tid:jwt-xyz")]
+
+
 async def test_token_endpoint_mints_named(
     wizard_client: TestClient, wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
@@ -695,10 +723,10 @@ async def test_token_endpoint_server_dedup_revokes_same_name(
     auth.create_token.assert_awaited_once()
 
 
-async def test_token_endpoint_dedup_lookup_failure_does_not_fail_mint(
+async def test_token_endpoint_dedup_lookup_failure_does_not_mint(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A ``get_user_tokens`` exception is logged but the mint still succeeds."""
+    """A failed token listing aborts before minting a second long-lived client token."""
     auth = wizard_mass.webserver.auth
     auth.get_user_tokens = AsyncMock(side_effect=RuntimeError("api down"))
 
@@ -707,8 +735,31 @@ async def test_token_endpoint_dedup_lookup_failure_does_not_fail_mint(
         json={"session_token": "sess-1", "client_id": "cursor"},
         headers={"Origin": "http://localhost:8095"},
     )
-    assert resp.status == 200
-    auth.create_token.assert_awaited_once()
+    assert resp.status == 500
+    assert "token" not in await resp.json()
+    auth.create_token.assert_not_called()
+
+
+async def test_token_endpoint_full_token_page_does_not_mint(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """A token listing that hits MA's cap may hide an older client token, so nothing is minted."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id=f"t{index}", name=f"other {index}", user_id="u1")
+            for index in range(TOKEN_LIST_LIMIT)
+        ]
+    )
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/token",
+        json={"session_token": "sess-1", "client_id": "cursor"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+
+    assert resp.status == 500
+    auth.create_token.assert_not_called()
 
 
 async def test_token_endpoint_no_prior_no_revoke(
@@ -726,10 +777,10 @@ async def test_token_endpoint_no_prior_no_revoke(
     auth.revoke_token.assert_not_called()
 
 
-async def test_token_endpoint_revoke_failure_does_not_fail_mint(
+async def test_token_endpoint_revoke_failure_does_not_mint(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A ``revoke_token`` exception is swallowed; the new mint still happens."""
+    """A failed revoke of the prior client token leaves it as the only credential."""
     auth = wizard_mass.webserver.auth
     auth.get_user_tokens = AsyncMock(
         return_value=[SimpleNamespace(token_id="old", name="MCP — Cursor", user_id="u1")]
@@ -741,8 +792,9 @@ async def test_token_endpoint_revoke_failure_does_not_fail_mint(
         json={"session_token": "sess-1", "client_id": "cursor"},
         headers={"Origin": "http://localhost:8095"},
     )
-    assert resp.status == 200
-    auth.create_token.assert_awaited_once()
+    assert resp.status == 500
+    assert "token" not in await resp.json()
+    auth.create_token.assert_not_called()
 
 
 # ── Origin & mount ───────────────────────────────────────────────────────────
@@ -763,7 +815,7 @@ async def test_mount_unmount_cycle(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=list,
+        default_profile_provider=lambda: "Safe queries",
         extra_origins_csv="",
     )
     assert len(fake_ws.routes) == 5
@@ -776,7 +828,7 @@ async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/custom",
-        enabled_tags_provider=list,
+        default_profile_provider=lambda: "Safe queries",
         extra_origins_csv="",
     )
     try:
@@ -786,18 +838,17 @@ async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
         unmount()
 
 
-# ── ACTION handler (signal_event) ────────────────────────────────────────────
+# ── ACTION handler (returned wizard URL) ─────────────────────────────────────
 
 
 async def test_action_handler_signals_url_with_bootstrap(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
     """Action handler mints a bootstrap token and signals a URL containing it."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
     wizard_mass.webserver.auth.create_token.assert_awaited_with(
@@ -805,9 +856,6 @@ async def test_action_handler_signals_url_with_bootstrap(
         name="MCP — wizard bootstrap",
         is_long_lived=False,
     )
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     # Path-only URL — the MA frontend resolves it against the user's location
     # so the wizard works in Docker / HA add-on deployments where MA's
@@ -827,15 +875,12 @@ async def test_action_handler_uses_url_fragment_for_bootstrap(
     Fragments are never sent to the server, so this is the only form that
     keeps short-lived bootstraps out of log files.
     """
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
-    _, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else wizard_mass.signal_event.call_args[0][-1]
     assert isinstance(url, str)
     assert "#bootstrap=" in url, f"bootstrap should ride in #fragment, got {url!r}"
     assert "?bootstrap=" not in url, (
@@ -847,17 +892,13 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
     """Without a current user we still open the wizard, but without a bootstrap query."""
     wizard_mass.webserver.auth.create_token.reset_mock()
 
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
     wizard_mass.webserver.auth.create_token.assert_not_called()
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     assert "bootstrap=" not in url
 
@@ -871,16 +912,13 @@ async def test_action_handler_external_base_url_prepended(
     Covers HA add-on ingress, where the path-only URL drops the ingress prefix
     and the wizard opens at the wrong location.
     """
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
         external_base_url="https://ha.example.com/d5369777_music_assistant_dev",
     )
 
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     assert url.startswith("https://ha.example.com/d5369777_music_assistant_dev/mcp/v1/connect")
     assert "bootstrap=jwt-xyz" in url
@@ -890,31 +928,50 @@ async def test_action_handler_external_base_url_strips_trailing_slash(
     wizard_mass: MagicMock,
 ) -> None:
     """A trailing slash on ``external_base_url`` must not produce a double-slash."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
         external_base_url="https://ha.example.com/addon/",
     )
 
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert url == "https://ha.example.com/addon/mcp/v1/connect"
+
+
+async def test_action_handler_includes_ingress_aware_setup_callback(
+    wizard_mass: MagicMock,
+) -> None:
+    """A setup callback uses the same ingress prefix as the opened wizard."""
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=None,
+        mount_path="/mcp/v1",
+        external_base_url="https://ha.example.com/addon",
+        setup_callback_path="/setup_flow/callback/a1b2",
+    )
+
+    fragment = parse_qs(urlsplit(url).fragment)
+    assert fragment["setup_callback"] == ["/addon/setup_flow/callback/a1b2"]
+
+
+def test_wizard_signals_setup_after_client_config_is_available() -> None:
+    """The browser wizard retains and signals the setup callback after token generation."""
+    assert 'params.get("setup_callback")' in HTML
+    assert "signalSetupComplete();" in HTML
+    assert "fetch(state.setupCallback" in HTML
 
 
 async def test_action_handler_empty_external_base_url_falls_back_to_path(
     wizard_mass: MagicMock,
 ) -> None:
     """An empty / ``None`` ``external_base_url`` preserves the legacy path-only URL."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
         external_base_url="",
     )
 
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert url == "/mcp/v1/connect"
 
 
@@ -949,24 +1006,67 @@ async def test_open_connect_gcs_prior_wizard_tokens(
         name="MCP — wizard bootstrap",
         is_long_lived=False,
     )
-    wizard_mass.signal_event.assert_called_once()
 
 
-async def test_open_connect_gc_lookup_failure_does_not_block(
+async def test_open_connect_gc_lookup_failure_opens_login_only_wizard(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """A ``get_user_tokens`` exception is swallowed; the new bootstrap mint still happens."""
+    """Prior wizard tokens that cannot be listed are not joined by a fresh bootstrap."""
     auth = wizard_mass.webserver.auth
     auth.get_user_tokens = AsyncMock(side_effect=RuntimeError("api down"))
 
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
     )
 
-    auth.create_token.assert_awaited_once()
-    wizard_mass.signal_event.assert_called_once()
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
+
+
+async def test_open_connect_gc_revoke_failure_opens_login_only_wizard(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A prior wizard token that cannot be revoked stays the only bootstrap-capable credential."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id="boot-old", name="MCP — wizard bootstrap", user_id="u1")
+        ]
+    )
+    auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
+
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=mock_user,
+        mount_path="/mcp/v1",
+    )
+
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
+
+
+async def test_open_connect_full_token_page_opens_login_only_wizard(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A capped token listing may hide old wizard tokens, so no new bootstrap is minted."""
+    auth = wizard_mass.webserver.auth
+    auth.get_user_tokens = AsyncMock(
+        return_value=[
+            SimpleNamespace(token_id=f"t{index}", name=f"other {index}", user_id="u1")
+            for index in range(TOKEN_LIST_LIMIT)
+        ]
+    )
+
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=mock_user,
+        mount_path="/mcp/v1",
+    )
+
+    auth.create_token.assert_not_called()
+    assert "bootstrap" not in url
 
 
 async def test_open_connect_no_user_skips_gc(wizard_mass: MagicMock) -> None:
@@ -996,11 +1096,11 @@ def test_detect_external_base_url_prefers_matching_client() -> None:
     other = SimpleNamespace(user_id="u2", username="someone-else")
     clients = [
         SimpleNamespace(
-            _authenticated_user=other,
+            authenticated_user=other,
             base_url="https://wrong.example.com",
         ),
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         ),
     ]
@@ -1018,10 +1118,10 @@ def test_detect_external_base_url_returns_none_without_match() -> None:
     user = _matching_user()
     clients = [
         SimpleNamespace(
-            _authenticated_user=SimpleNamespace(user_id="other", username="other"),
+            authenticated_user=SimpleNamespace(user_id="other", username="other"),
             base_url="https://other.example.com",
         ),
-        SimpleNamespace(_authenticated_user=user, base_url=None),
+        SimpleNamespace(authenticated_user=user, base_url=None),
     ]
     mass = MagicMock()
     mass.webserver.clients = clients
@@ -1107,26 +1207,21 @@ async def test_dispatch_detects_ws_client_base_url(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = [
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         )
     ]
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
-
-    await _dispatch_open_connect(
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
         mass,
-        {"mount_path": "/mcp/v1", "session_id": "sess-x"},
+        {"mount_path": "/mcp/v1"},
     )
 
-    assert signalled, "expected signal_event to be called"
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("https://ha.example.com/d5369777_music_assistant_dev/mcp/v1/connect")
     assert "bootstrap=jwt-xyz" in url
 
@@ -1138,24 +1233,19 @@ async def test_dispatch_falls_back_to_config_override(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
-
-    await _dispatch_open_connect(
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
         mass,
         {
             "mount_path": "/mcp/v1",
-            "session_id": "sess-y",
             CONF_CONNECT_EXTERNAL_URL: "https://override.example.com",
         },
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("https://override.example.com/mcp/v1/connect")
 
 
@@ -1171,24 +1261,19 @@ async def test_dispatch_rejects_unsafe_override_and_falls_back(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
-
-    await _dispatch_open_connect(
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
         mass,
         {
             "mount_path": "/mcp/v1",
-            "session_id": "sess-bad",
             CONF_CONNECT_EXTERNAL_URL: "javascript:alert(1)",
         },
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("/mcp/v1/connect")
     assert "javascript" not in url
 
@@ -1200,22 +1285,37 @@ async def test_dispatch_falls_back_to_path_only_when_nothing_known(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
-
-    await _dispatch_open_connect(
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
         mass,
-        {"mount_path": "/mcp/v1", "session_id": "sess-z"},
+        {"mount_path": "/mcp/v1"},
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("/mcp/v1/connect")
     assert "://" not in url.split("?", 1)[0]
+
+
+async def test_dispatch_uses_server_base_url_for_direct_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct clients receive an absolute URL that the frontend will open."""
+    user = _matching_user()
+    _install_fake_ma_auth_middleware(monkeypatch, user)
+
+    mass = MagicMock()
+    mass.webserver.clients = []
+    mass.webserver.base_url = "http://192.0.2.20:8095"
+    mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+
+    url = await _dispatch_open_connect(mass, {"mount_path": "/mcp/v1"})
+
+    assert url is not None
+    assert url.startswith("http://192.0.2.20:8095/mcp/v1/connect")
 
 
 # ── Client template integrity ────────────────────────────────────────────────
@@ -1225,13 +1325,65 @@ def test_cursor_template_round_trips() -> None:
     """The Cursor template renders to valid JSON with url + Authorization Bearer header."""
     cursor = lookup_client("cursor")
     assert cursor is not None
-    rendered = cursor.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = cursor.methods[0]
+    assert method.id == "user-config"
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
     parsed = json.loads(rendered)
     server = parsed["mcpServers"]["ma"]
     assert server["url"] == "http://localhost:8095/mcp/v1"
     assert server["headers"]["Authorization"] == "Bearer TOK-123"
+
+
+def test_opencode_template_round_trips() -> None:
+    """The OpenCode preset renders an authenticated remote MCP configuration."""
+    spec = lookup_client("opencode")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    parsed = json.loads(rendered)
+    server = parsed["mcp"]["ma"]
+    assert parsed["$schema"] == "https://opencode.ai/config.json"
+    assert server["type"] == "remote"
+    assert server["url"] == "http://localhost:8095/mcp/v1"
+    assert server["enabled"] is True
+    assert server["oauth"] is False
+    assert server["headers"]["Authorization"] == "Bearer TOK-123"
+
+
+def test_openhands_template_uses_http_transport_and_bearer_header() -> None:
+    """The OpenHands preset follows the documented remote-server CLI syntax."""
+    spec = lookup_client("openhands")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("openhands mcp add ma --transport http")
+    assert '--header "Authorization: Bearer TOK-123"' in rendered
+    assert rendered.endswith("http://localhost:8095/mcp/v1")
+
+
+def test_github_copilot_cli_template_uses_mcp_add_form() -> None:
+    """The Copilot CLI preset supplies every value requested by ``/mcp add``."""
+    spec = lookup_client("github-copilot-cli")
+    assert spec is not None
+    rendered = (
+        spec.methods[1]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("/mcp add\n")
+    assert "Server Name: ma" in rendered
+    assert "Server Type: HTTP" in rendered
+    assert "URL: http://localhost:8095/mcp/v1" in rendered
+    assert 'HTTP Headers: {"Authorization":"Bearer TOK-123"}' in rendered
+    assert "Tools: *" in rendered
 
 
 def test_claude_code_template_uses_positional_url() -> None:
@@ -1243,45 +1395,137 @@ def test_claude_code_template_uses_positional_url() -> None:
     """
     spec = lookup_client("claude-code")
     assert spec is not None
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
-        "{{TOKEN}}", "TOK-123"
+    assert [method.id for method in spec.methods] == ["cli", "project-config"]
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
     )
     assert "--url" not in rendered, "claude mcp add does not accept a --url flag"
     # URL must appear right after the server name (the positional slot).
-    assert "claude mcp add ma http://localhost:8095/mcp/v1" in rendered
+    assert "ma http://localhost:8095/mcp/v1" in rendered
     assert "--transport http" in rendered
+    assert "--scope user" in rendered
     assert '--header "Authorization: Bearer TOK-123"' in rendered
 
 
-def test_openclaw_template_round_trips() -> None:
-    """
-    The OpenClaw preset renders a valid ``openclaw mcp set`` command.
-
-    The embedded JSON must pin the streamable-HTTP transport and carry the
-    minted token as an ``Authorization: Bearer`` header — OpenClaw's bundle-mcp
-    client speaks streamable-HTTP and reads custom headers from this object.
-    """
-    spec = lookup_client("openclaw")
+def test_claude_code_manual_config_round_trips() -> None:
+    """Claude Code's alternate project config remains valid authenticated JSON."""
+    spec = lookup_client("claude-code")
     assert spec is not None
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = spec.methods[1]
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
-    assert rendered.startswith("openclaw mcp set ma ")
-    # The JSON payload is the single-quoted argument to `openclaw mcp set`.
-    start = rendered.index("'")
-    end = rendered.rindex("'")
-    payload = json.loads(rendered[start + 1 : end])
-    assert payload["url"] == "http://localhost:8095/mcp/v1"
-    assert payload["transport"] == "streamable-http"
-    assert payload["headers"]["Authorization"] == "Bearer TOK-123"
+    server = json.loads(rendered)["mcpServers"]["ma"]
+    assert server == {
+        "type": "http",
+        "url": "http://localhost:8095/mcp/v1",
+        "headers": {"Authorization": "Bearer TOK-123"},
+    }
+
+
+def test_current_cli_templates_use_streamable_http_and_bearer_options() -> None:
+    """Reviewed CLI presets use each product's current first-party syntax."""
+    rendered: dict[str, str] = {}
+    for client_id in ("github-copilot-cli", "gemini-cli", "openclaw", "openhands"):
+        spec = lookup_client(client_id)
+        assert spec is not None
+        rendered[client_id] = (
+            spec.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+        )
+    assert rendered["github-copilot-cli"].startswith("copilot mcp add --transport http")
+    assert '--header "Authorization: Bearer TOKEN"' in rendered["github-copilot-cli"]
+    assert rendered["gemini-cli"].startswith("gemini mcp add --scope user --transport http")
+    assert rendered["openclaw"].startswith("openclaw mcp add ma")
+    assert "--transport streamable-http" in rendered["openclaw"]
+    assert rendered["openhands"].startswith("openhands mcp add ma")
+
+
+def test_current_config_templates_use_product_specific_http_keys() -> None:
+    """Reviewed JSON presets retain each client's distinct transport schema."""
+    windsurf = lookup_client("windsurf")
+    vscode = lookup_client("vscode")
+    cline = lookup_client("cline")
+    assert windsurf is not None
+    assert vscode is not None
+    assert cline is not None
+    devin = json.loads(
+        windsurf.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["mcpServers"]["ma"]
+    vs_server = json.loads(
+        vscode.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["servers"]["ma"]
+    cline_server = json.loads(
+        cline.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["mcpServers"]["ma"]
+    assert devin["transport"] == "http"
+    assert vs_server["type"] == "http"
+    assert cline_server["type"] == "streamableHttp"
+
+
+def test_custom_template_exposes_connection_parameters() -> None:
+    """Custom renders product-neutral values needed by any MCP client."""
+    spec = lookup_client("custom")
+    assert spec is not None
+    assert spec.label == "Custom"
+    assert len(spec.methods) == 1
+    method = spec.methods[0]
+    assert method.id == "parameters"
+    assert method.kind == "text"
+    rendered = method.template.replace("{{URL}}", "https://ma.example/mcp/v1").replace(
+        "{{TOKEN}}", "TOK-123"
+    )
+    assert "Server name: ma" in rendered
+    assert "Transport: Streamable HTTP" in rendered
+    assert "URL: https://ma.example/mcp/v1" in rendered
+    assert "Header name: Authorization" in rendered
+    assert "Header value: Bearer TOK-123" in rendered
+
+
+def test_roo_code_template_uses_streamable_http() -> None:
+    """Roo Code renders its documented remote server configuration."""
+    spec = lookup_client("roo-code")
+    assert spec is not None
+    assert [method.id for method in spec.methods] == ["global-config", "project-config"]
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "https://ma.example/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    server = json.loads(rendered)["mcpServers"]["ma"]
+    assert server == {
+        "type": "streamable-http",
+        "url": "https://ma.example/mcp/v1",
+        "headers": {"Authorization": "Bearer TOK-123"},
+        "disabled": False,
+        "alwaysAllow": [],
+    }
+    assert "global" in spec.methods[0].config_path_hint.lower()
+    assert spec.methods[1].config_path_hint == ".roo/mcp.json in the project root."
+
+
+def test_openclaw_template_round_trips() -> None:
+    """The OpenClaw preset uses its current add command and HTTP transport."""
+    spec = lookup_client("openclaw")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("openclaw mcp add ma --url http://localhost:8095/mcp/v1")
+    assert "--transport streamable-http" in rendered
+    assert '--header "Authorization: Bearer TOK-123"' in rendered
 
 
 def test_hermes_template_round_trips() -> None:
     """The Hermes preset renders valid YAML with url + Authorization Bearer header."""
     spec = lookup_client("hermes")
     assert spec is not None
-    assert spec.kind == "yaml"
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = spec.methods[1]
+    assert method.kind == "yaml"
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
     parsed = yaml.safe_load(rendered)
@@ -1298,7 +1542,36 @@ def test_all_clients_have_required_fields() -> None:
         assert spec.id not in seen_ids
         seen_ids.add(spec.id)
         assert spec.label
-        assert spec.kind in {"json", "shell", "toml", "yaml"}
-        assert "{{URL}}" in spec.template
-        assert "{{TOKEN}}" in spec.template
-        assert spec.config_path_hint  # non-empty doc hint
+        assert spec.methods
+        seen_method_ids: set[str] = set()
+        for method in spec.methods:
+            assert method.id
+            assert method.id not in seen_method_ids
+            seen_method_ids.add(method.id)
+            assert method.label
+            assert method.kind in {"json", "shell", "text", "toml", "yaml"}
+            assert method.action in {"copy", "download"}
+            assert "{{URL}}" in method.template
+            assert "{{TOKEN}}" in method.template
+            assert method.config_path_hint
+            if method.kind in {"json", "toml", "yaml"}:
+                assert method.action == "download"
+                assert method.filename
+
+
+def test_page_selects_recommended_method_without_minting() -> None:
+    """Method selection is client-local presentation and cannot mint credentials."""
+    assert "selectedMethodIds: {}" in HTML
+    assert "c.methods[0].id" in HTML
+    assert "selectMethod(c.id, method.id)" in HTML
+    select_method = HTML.split("function selectMethod", 1)[1].split("function ", 1)[0]
+    assert "mintForSelected" not in select_method
+    assert "method-label recommended" in HTML
+
+
+def test_page_uses_network_url_by_default() -> None:
+    """Generated connection details prefer the advertised network endpoint."""
+    assert '<button data-which="network" class="active">Network</button>' in HTML
+    assert '<button data-which="loopback">Loopback</button>' in HTML
+    assert 'urlMode: "network"' in HTML
+    assert 'mode === "network"' in HTML

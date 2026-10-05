@@ -1,0 +1,64 @@
+{
+  "schema_version": "1",
+  "station": {
+    "name": "Mamma Mi Radio",
+    "frequency": "94.7",
+    "theme": "Italia da bere",
+    "hosts": [
+      {
+        "engine_host": "gianni",
+        "display_name": "Gianni",
+        "description": "Anchor host."
+      },
+      {
+        "engine_host": "marco",
+        "display_name": "Marco",
+        "description": "Co-host."
+      }
+    ]
+  },
+  "stream": {
+    "relative_url": "/stream",
+    "audio_format": {
+      "codec": "mp3",
+      "mime_type": "audio/mpeg",
+      "bitrate_kbps": 192,
+      "sample_rate_hz": 44100,
+      "channels": 2
+    },
+    "absolute_url": "http://homeassistant.local:8000/stream"
+  },
+  "now_playing": {
+    "segment_class": "music",
+    "segment_type": "music",
+    "title": "Volare",
+    "started_at": 1746500000.0,
+    "duration_estimate_sec": 210.0,
+    "artist": "Domenico Modugno",
+    "artwork": "https://example.test/art.jpg",
+    "album": "Mr Volare",
+    "year": 1958,
+    "external_ids": {
+      "spotify": "v01",
+      "youtube": "y01"
+    },
+    "host": null,
+    "context": {}
+  },
+  "up_next": [
+    {
+      "segment_class": "music",
+      "segment_type": "music",
+      "title": "Sapore di Sale — Gino Paoli",
+      "predicted": false
+    },
+    {
+      "segment_class": "voice",
+      "segment_type": "banter",
+      "title": "Host banter",
+      "predicted": true
+    }
+  ],
+  "session_state": "live",
+  "changed_at": 1746500000.0
+}

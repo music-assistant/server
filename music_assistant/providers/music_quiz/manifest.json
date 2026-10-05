@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "stage": "experimental",
+  "stage": "beta",
   "domain": "music_quiz",
   "name": "Music Quiz",
   "description": "Host a multiplayer music quiz game where guests join with a QR code.",
@@ -12,5 +12,5 @@
   "documentation": "https://music-assistant.io/plugins/music-quiz",
   "multi_instance": false,
   "builtin": false,
-  "icon": "microphone-question"
+  "icon": "microphone-variant"
 }

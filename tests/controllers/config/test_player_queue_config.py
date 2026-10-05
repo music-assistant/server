@@ -43,7 +43,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
                 "values": {
                     "crossfade_duration": 12,
                     "volume_normalization": False,
-                    "output_limiter": True,  # player/DSP stage -> stays on the player
+                    "tts_pre_announce": False,  # player-scoped -> stays on the player
                     "smart_fades_mode": "disabled",  # legacy off -> consumed, nothing carried over
                 },
             },
@@ -52,7 +52,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
     }
     assert _migrate(data) is True
     # moved keys (and the consumed legacy smart_fades_mode) are gone from the player config
-    assert data["players"]["p1"]["values"] == {"output_limiter": True}
+    assert data["players"]["p1"]["values"] == {"tts_pre_announce": False}
     # ...and now live under the per-queue config (queue_id == player_id)
     assert data["player_queues"]["p1"]["values"] == {
         "crossfade_duration": 12,
@@ -65,7 +65,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
 def test_migrate_player_queue_settings_noop_when_nothing_to_move() -> None:
     """Migration reports no change when there are no queue-scoped values to move."""
     data: dict[str, Any] = {
-        "players": {"p1": {"player_id": "p1", "values": {"output_limiter": True}}}
+        "players": {"p1": {"player_id": "p1", "values": {"tts_pre_announce": False}}}
     }
     assert _migrate(data) is False
     assert "player_queues" not in data

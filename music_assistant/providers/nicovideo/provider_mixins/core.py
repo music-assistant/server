@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, override
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.nicovideo.config import NicovideoConfig
@@ -48,6 +49,13 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         """Return True if the provider is a streaming provider."""
         # For streaming providers return True here but for local file based providers return False.
         return True
+
+    @property
+    @override
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # tracks and albums are served through search, but cannot be listed as library items
+        return {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST}
 
     @override
     async def handle_async_init_for_mixin(self) -> None:

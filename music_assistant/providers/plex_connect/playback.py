@@ -205,8 +205,8 @@ class PlaybackMixin:
             await self._broadcast_timeline()
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling skipTo: {e}")
+        except Exception:
+            LOGGER.exception("Error handling skipTo")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -234,11 +234,17 @@ class PlaybackMixin:
             if "repeat" in request.query:
                 repeat_value = int(request.query["repeat"])
                 if repeat_value == 0:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.OFF)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.OFF
+                    )
                 elif repeat_value == 1:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ONE)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ONE
+                    )
                 elif repeat_value == 2:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ALL)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ALL
+                    )
 
             await self._broadcast_timeline()
         finally:

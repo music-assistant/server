@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
@@ -32,6 +34,26 @@ class DemoPlayerprovider(PlayerProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup input
+        (if any) is collected by a ``setup_flow.py`` module; one-shot buttons are declared
+        here as ``ConfigEntryType.ACTION`` entries and handled in ``handle_config_action``.
+        """
+        return (
+            # example of a ConfigEntry for the number of players to create
+            ConfigEntry(
+                key=CONF_NUMBER_OF_PLAYERS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of Players",
+                required=True,
+                default_value=2,
+                description="Number of demo players to create.",
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

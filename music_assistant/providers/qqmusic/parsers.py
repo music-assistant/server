@@ -23,7 +23,15 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .helpers import clean_text, extract_artist_mid, extract_first_text, normalize_image_url
+from .helpers import (
+    clean_text,
+    extract_album_mid,
+    extract_artist_mid,
+    extract_first_text,
+    extract_playlist_ids,
+    extract_track_mid,
+    normalize_image_url,
+)
 
 
 def extract_song_id(track_obj: dict[str, Any]) -> int | None:
@@ -248,16 +256,7 @@ def parse_album(
     provider_instance_id: str,
 ) -> Album:
     """Parse raw qqmusic album object."""
-    album_id = str(
-        album_obj.get("mid")
-        or album_obj.get("albumMid")
-        or album_obj.get("albumMID")
-        or album_obj.get("album_mid")
-        or album_obj.get("albummid")
-        or album_obj.get("id")
-        or album_obj.get("albumID")
-        or ""
-    )
+    album_id = extract_album_mid(album_obj)
     if not album_id:
         raise InvalidDataError("Album object does not contain id/mid")
     raw_album_name = str(
@@ -354,13 +353,7 @@ def parse_track(  # noqa: PLR0915
     get_max_supported_audio_format: Callable[[dict[str, Any]], tuple[AudioFormat, str | None]],
 ) -> Track:
     """Parse raw qqmusic track object."""
-    track_id = str(
-        track_obj.get("mid")
-        or track_obj.get("songMid")
-        or track_obj.get("songmid")
-        or track_obj.get("id")
-        or ""
-    )
+    track_id = extract_track_mid(track_obj)
     if not track_id:
         raise InvalidDataError("Track object does not contain id/mid")
     raw_track_name = clean_text(
@@ -540,8 +533,7 @@ def parse_playlist(
     provider_instance_id: str,
 ) -> Playlist:
     """Parse raw qqmusic playlist object."""
-    dissid = playlist_obj.get("tid") or playlist_obj.get("dissid") or playlist_obj.get("id") or 0
-    dirid = playlist_obj.get("dirid") or playlist_obj.get("dirId") or 0
+    dissid, dirid = extract_playlist_ids(playlist_obj)
     if not dissid:
         raise InvalidDataError("Playlist object missing dissid/tid")
     playlist_id = build_playlist_id(dissid, dirid)

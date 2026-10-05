@@ -16,7 +16,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import Album, Artist
     from music_assistant_models.provider import ProviderManifest
 
@@ -52,43 +52,30 @@ async def setup(
     return FanartTvMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_ENABLE_ARTIST_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_ALBUM_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_CLIENT_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-    )
-
-
 class FanartTvMetadataProvider(MetadataProvider):
     """Fanart.tv Metadata provider."""
 
     throttler: Throttler
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_ARTIST_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_ALBUM_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_CLIENT_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+            ),
+        )
 
     @property
     def priority(self) -> int:

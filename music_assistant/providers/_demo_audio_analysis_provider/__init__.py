@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -59,25 +59,6 @@ async def setup(
     # you are free to do any preflight checks here but you must return
     # an instance of the provider.
     return DemoAudioAnalysisProvider(mass, manifest, config)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # If your provider needs configuration (e.g. API keys, server URLs),
-    # return ConfigEntry instances here. This demo provider needs no configuration.
-    return ()
 
 
 class DemoAudioAnalysisProvider(AudioAnalysisProvider):
@@ -105,6 +86,17 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     # The controller compares this against the stored version to decide
     # whether to re-analyze a track.
     analysis_version: int = 1
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup
+        input (if any) is collected by a ``setup_flow.py`` module; one-shot buttons
+        are declared here as ``ConfigEntryType.ACTION`` entries and handled in
+        ``handle_config_action``.
+        """
+        return ()
 
     async def loaded_in_mass(self) -> None:
         """

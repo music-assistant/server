@@ -24,6 +24,7 @@ async def _add_playlog_row(
     timestamp: int,
     userid: str = "user-a",
     artist_names: list[str] | None = None,
+    fully_played: bool = True,
 ) -> None:
     """Insert a single row into the playlog."""
     await mass.music.database.insert(
@@ -37,8 +38,8 @@ async def _add_playlog_row(
             if artist_names
             else None,
             "timestamp": timestamp,
-            "fully_played": True,
-            "seconds_played": 180,
+            "fully_played": fully_played,
+            "seconds_played": 180 if fully_played else 30,
             "userid": userid,
             "user_initiated": True,
         },
@@ -105,6 +106,32 @@ async def test_snapshot_builds_song_and_artist_maps(mass: MusicAssistant) -> Non
 
     assert ("library", "t1") in snapshot.song_ts
     assert "the beatles" in snapshot.artist_ts
+
+
+async def test_snapshot_can_include_partially_played_tracks(mass: MusicAssistant) -> None:
+    """Include interrupted tracks only when the caller opts in."""
+    now = int(time.time())
+    await _add_playlog_row(
+        mass,
+        item_id="partial",
+        provider="library",
+        media_type=MediaType.TRACK,
+        name="Partial",
+        timestamp=now - 60,
+        fully_played=False,
+    )
+
+    default_snapshot = await mass.music.recency.snapshot(
+        RecencyWindows(song_seconds=3600), userid="user-a"
+    )
+    inclusive_snapshot = await mass.music.recency.snapshot(
+        RecencyWindows(song_seconds=3600),
+        userid="user-a",
+        include_partially_played=True,
+    )
+
+    assert ("library", "partial") not in default_snapshot.song_ts
+    assert ("library", "partial") in inclusive_snapshot.song_ts
 
 
 async def test_snapshot_is_user_scoped(mass: MusicAssistant) -> None:

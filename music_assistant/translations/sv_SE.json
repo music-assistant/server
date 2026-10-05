@@ -1,12 +1,17 @@
 {
   "common.config_categories.advanced": "Avancerat",
+  "common.config_categories.airplay": "AirPlay specifika inställningar",
   "common.config_categories.announcements": "Meddelanden",
+  "common.config_categories.audio": "Ljud",
+  "common.config_categories.audio_analysis": "Ljudanalys",
   "common.config_categories.builtin_playlists": "Inbyggda spellistor",
+  "common.config_categories.display_settings": "Visa",
   "common.config_categories.dsp": "Digital signalbehandling (DSP)",
   "common.config_categories.generic": "Allmänt",
   "common.config_categories.options": "Spelaralternativ",
   "common.config_categories.playback": "Kö för uppspelning",
   "common.config_categories.player_controls": "Spelarens kontroller",
+  "common.config_categories.preferences": "Inställningar",
   "common.config_categories.protocol_generic": "Allmänt",
   "common.config_categories.protocol_output_settings": "Aktivera {0} support",
   "common.config_categories.protocol_settings": "Utgångsprotokoll",
@@ -182,5 +187,6 @@
   "provider.webdav.config_entries.password.label": "Lösenord",
   "provider.webdav.config_entries.username.label": "Användarnamn",
   "provider.yandex_music.config_entries.delete_wave_preset.action_label": "Radera",
-  "provider.ytmusic.config_entries.username.label": "Användarnamn"
+  "provider.ytmusic.config_entries.username.label": "Användarnamn",
+  "core.metadata.config_entries.language.label": "Föredraget språk"
 }

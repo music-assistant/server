@@ -18,6 +18,8 @@ CONF_HUE_LATENCY_MS: Final[str] = "hue_latency_ms"
 COLOR_MODES: Final[tuple[str, ...]] = ("smooth", "ambient", "flashing", "energetic")
 DEFAULT_COLOR_MODE: Final[str] = COLOR_MODES[0]
 
+DEFAULT_BRIGHTNESS: Final[int] = 100
+
 DEFAULT_HUE_LATENCY_MS: Final[int] = 20
 
 HUE_MDNS_TYPE: Final[str] = "_hue._tcp.local."

@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
+    join_task,
     system_meets_requirements,
     verify_system_meets_requirements,
 )
@@ -38,7 +42,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
@@ -57,6 +61,7 @@ EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
 # CLAP's HTSAT audio encoder takes a fixed 7-second input at 44.1 kHz.
 CLAP_WINDOW_SECONDS: int = 7
 CLAP_SKIP_SECONDS: int = 45
+CLAP_MIN_WINDOW_SECONDS: float = 1.0
 
 CLAP_SAMPLING_FAST: str = "fast"
 CLAP_SAMPLING_BALANCED: str = "balanced"
@@ -78,6 +83,12 @@ MIN_CPU_CORES: int = 2
 # informational notice (see get_config_entries) as it may be tight under load.
 RECOMMENDED_RAM_GB: float = 6.0
 RECOMMENDED_CPU_CORES: int = 4
+
+MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
+
+# Bounds the wait, not the load: a slower first download keeps running and the
+# next setup attempt joins it rather than starting over.
+MODEL_SETUP_GRACE_SECONDS: int = 200
 
 
 @dataclass
@@ -122,44 +133,6 @@ async def setup(
     return SonicAnalysisProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        ConfigEntry(
-            key="resource_warning",
-            type=ConfigEntryType.ALERT,
-            required=False,
-            hidden=system_meets_requirements(
-                min_memory_gb=RECOMMENDED_RAM_GB,
-                min_cpu_cores=RECOMMENDED_CPU_CORES,
-            ),
-        ),
-        ConfigEntry(
-            key=CONF_CLAP_SAMPLING,
-            type=ConfigEntryType.STRING,
-            default_value=CLAP_SAMPLING_FAST,
-            options=[
-                ConfigValueOption(CLAP_SAMPLING_FAST),
-                ConfigValueOption(CLAP_SAMPLING_BALANCED),
-                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
-            ],
-            required=False,
-        ),
-    )
-
-
 def compute_clap_target_starts(
     track_duration_s: float,
     preset_n: int,
@@ -174,7 +147,7 @@ def compute_clap_target_starts(
     :returns: Sample-position offsets at source_sr; length is the effective N
         (capped at what the track length supports without near-duplicates).
     """
-    if track_duration_s < 1.0:
+    if track_duration_s < CLAP_MIN_WINDOW_SECONDS:
         return []
     if track_duration_s < CLAP_WINDOW_SECONDS:
         return [0]
@@ -342,14 +315,39 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key="resource_warning",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=system_meets_requirements(
+                    min_memory_gb=RECOMMENDED_RAM_GB,
+                    min_cpu_cores=RECOMMENDED_CPU_CORES,
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_CLAP_SAMPLING,
+                type=ConfigEntryType.STRING,
+                default_value=CLAP_SAMPLING_FAST,
+                options=[
+                    ConfigValueOption(CLAP_SAMPLING_FAST),
+                    ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                    ConfigValueOption(CLAP_SAMPLING_THOROUGH),
+                ],
+                required=False,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """
-        Load the CLAP model synchronously so provider.available gates analysis until ready.
+        Async initialization of the provider.
 
-        Blocks the provider's setup until the model is loaded (first-run downloads
-        ~500MB). On failure the exception propagates and the provider stays
-        available=False, which the AudioAnalysisController already honors when
-        scheduling work. While idle the model is later unloaded and reloaded on demand.
+        Loads the CLAP model so provider.available only goes True once analysis can run.
+
+        :raises SetupFailedError: When the model is not ready within the grace period,
+            or loading it failed.
         """
         await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -359,7 +357,24 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        await self._load_models()
+        # The ~690MB first load outlives an attempt that gives up: cancelling would not stop
+        # the worker thread, and the task_id makes the next attempt join this same load.
+        task = self.mass.create_task(
+            asyncio.to_thread(self._load_clap),
+            task_id=f"sonic_analysis.model_setup.{self.instance_id}",
+        )
+        try:
+            # The result comes back through the task: a retry is a different instance.
+            models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
+        except TimeoutError:
+            raise SetupFailedError(
+                "The Sonic Analysis model is still being prepared. "
+                "It keeps running in the background; reload the provider once it has "
+                "had time to finish.",
+                translation_key="model_setup_pending",
+                translation_owner=self.translation_owner,
+            ) from None
+        self._clap_model, self._clap_text_embeddings, self._clap_prompt_order = models
         self._models_loaded = True
 
     async def cancel(self, session_id: str) -> None:
@@ -416,10 +431,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self._clap_text_embeddings,
             self._clap_prompt_order,
         ) = await asyncio.to_thread(self._load_clap)
-        self.logger.info(
-            "CLAP model loaded; %d prompt pairs ready",
-            len(self._clap_prompt_order),
-        )
 
     def _free_models(self) -> None:
         """Release the CLAP model and prompt embeddings."""
@@ -429,7 +440,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
-        """Load and return the CLAP model, text embeddings, and prompt ordering."""
+        """
+        Load and return the CLAP model, text embeddings, and prompt ordering.
+
+        Downloads the checkpoint on first use, so only call this off the event loop.
+
+        :raises SetupFailedError: When the checkpoint could not be downloaded.
+        :raises UnsupportedSystemError: When the shipped prompt embeddings are unusable.
+        """
+        # httpx arrives with huggingface-hub; named only for the errors it re-raises below.
+        import httpx  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
         from .vendored_clap import CLAP  # noqa: PLC0415
@@ -437,16 +457,26 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
 
         cached = self._try_load_cached_prompt_embeddings()
-        if cached is not None:
+        if cached is None:
+            # Falling back to a text-enabled model here would download the GPT2 encoder.
+            raise UnsupportedSystemError(
+                "The precomputed CLAP prompt embeddings are missing or out of date. "
+                "Re-run scripts/precompute_clap_prompt_embeddings.py to regenerate them.",
+                translation_key="prompt_embeddings_unavailable",
+                translation_owner=self.translation_owner,
+            )
+        try:
             model = CLAP(version="2023", use_cuda=False, text_enabled=False)
-            return model, torch.from_numpy(cached), prompt_order
-
-        model = CLAP(version="2023", use_cuda=False, text_enabled=True)
-        flat_prompts: list[str] = []
-        for _scalar, (pos, neg) in prompt_order:
-            flat_prompts.extend([pos, neg])
-        text_embeddings = model.get_text_embeddings(flat_prompts)  # type: ignore[no-untyped-call]
-        return model, text_embeddings, prompt_order
+        except (OSError, httpx.HTTPError) as err:
+            # The hub reports most failures as OSError, but re-raises httpx transport errors
+            # verbatim once its resume attempts are spent; only typed errors get retried.
+            raise SetupFailedError(
+                f"Failed to download the Sonic Analysis model: {err}",
+                translation_key="model_assets_download_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+        self.logger.info("CLAP model loaded; %d prompt pairs ready", len(prompt_order))
+        return model, torch.from_numpy(cached), prompt_order
 
     def _try_load_cached_prompt_embeddings(self) -> np.ndarray | None:
         """Return shipped prompt embeddings if present and hash-current, else None."""
@@ -456,7 +486,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
         except FileNotFoundError:
             self.logger.warning(
-                "Precomputed CLAP prompt embeddings missing at %s; loading full text encoder",
+                "Precomputed CLAP prompt embeddings missing at %s; "
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 PRECOMPUTED_EMBEDDINGS_PATH,
             )
             return None
@@ -464,7 +495,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if cached_hash != expected_hash:
             self.logger.warning(
                 "Precomputed CLAP prompt embeddings hash mismatch (%s != %s); "
-                "loading full text encoder. Re-run scripts/precompute_clap_prompt_embeddings.py.",
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 cached_hash[:12],
                 expected_hash[:12],
             )
@@ -564,21 +595,37 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     async def _run_live_clap_if_eligible(
         self, session: SonicSessionData, analysis: AudioAnalysisData
     ) -> None:
-        """Finalize CLAP analysis for the session, writing scalar attributes and the embedding onto analysis."""
+        """
+        Finalize CLAP analysis, writing the scalar attributes and embedding onto the analysis.
+
+        :param session: The analysis session.
+        :param analysis: Analysis object the CLAP scalars and embedding are written onto.
+        :raises AudioAnalysisError: Retryable, when fewer windows completed than were planned.
+        """
         if not session.clap_target_starts:
             return
         if session.clap_inference_tasks:
             await asyncio.gather(*session.clap_inference_tasks, return_exceptions=True)
         n = session.clap_completed_count
+        planned = len(session.clap_target_starts)
         sd = session.streamdetails
-        if n == 0 or session.clap_sum_embedding is None or session.clap_sum_similarities is None:
+        if (
+            n < planned
+            or session.clap_sum_embedding is None
+            or session.clap_sum_similarities is None
+        ):
             self.logger.warning(
-                "Live CLAP for %s/%s: no windows completed (planned %d)",
+                "Live CLAP for %s/%s: only %d of %d planned windows completed — "
+                "failing the analysis so it is retried",
                 sd.provider,
                 sd.item_id,
-                len(session.clap_target_starts),
+                n,
+                planned,
             )
-            return
+            raise AudioAnalysisError(
+                f"live CLAP completed {n} of {planned} planned windows",
+                retry_at=utc() + MODEL_FAILURE_RETRY_DELAY,
+            )
 
         mean_emb = session.clap_sum_embedding / n
         norm = float(np.linalg.norm(mean_emb))
@@ -636,6 +683,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if not session.accumulated.rms_frames:
             raise AudioAnalysisError("no usable audio frames extracted")
 
+        self._flush_incomplete_clap_windows(session, af.sample_rate)
+
         t0 = time.monotonic()
         analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
@@ -664,6 +713,29 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.clap_preset,
         )
         return analysis
+
+    def _flush_incomplete_clap_windows(self, session: SonicSessionData, source_sr: int) -> None:
+        """
+        Dispatch every planned CLAP window that buffered audio but never filled to 7 seconds.
+
+        :param session: The analysis session; the buffers of flushed windows are consumed.
+        :param source_sr: Sample rate the buffered PCM was captured at.
+        """
+        # The vendored wrapper repeat-pads short input, so anything below the floor would
+        # blow a sliver of audio up into a full window and embed noise.
+        min_samples = int(CLAP_MIN_WINDOW_SECONDS * source_sr)
+        for i, buffered in enumerate(session.clap_target_buffers):
+            if session.clap_target_complete[i]:
+                continue
+            if sum(len(arr) for arr in buffered) < min_samples:
+                continue
+            window_audio = np.concatenate(buffered)
+            session.clap_target_buffers[i] = []
+            session.clap_target_complete[i] = True
+            task = self.mass.create_task(
+                self._run_single_clap_window(session, window_audio, source_sr)
+            )
+            session.clap_inference_tasks.append(task)
 
     def _single_window_inference_sync(
         self,

@@ -1,7 +1,7 @@
 """Unit tests for the Spotify provider's curated browse implementation."""
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +10,7 @@ from music_assistant_models.media_items import Album, BrowseFolder, Playlist
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.spotify.provider import SpotifyProvider
+from tests.common import use_real_create_task
 
 
 def _make_album_obj(album_id: str, name: str) -> dict[str, Any]:
@@ -63,11 +64,11 @@ def provider(get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> SpotifyPro
 
     mass = MagicMock()
     mass.metadata.locale = "de_DE"
-    # bypass the use_cache decorator: always miss, swallow the background store task
+    # bypass the use_cache decorator: always miss
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    use_real_create_task(mass)
     prov.mass = mass
 
     monkeypatch.setattr(prov, "_get_data", get_data)
@@ -90,14 +91,14 @@ def patch_super_browse() -> Generator[AsyncMock]:
 async def test_get_new_releases_returns_albums(
     provider: SpotifyProvider, get_data: AsyncMock
 ) -> None:
-    """_get_new_releases parses albums from the browse/new-releases response."""
+    """_get_new_releases parses albums fetched on the global session."""
     get_data.return_value = {
         "albums": {"items": [_make_album_obj("a1", "Album 1"), _make_album_obj("a2", "Album 2")]}
     }
 
     result = await provider._get_new_releases()
 
-    get_data.assert_awaited_once_with("browse/new-releases", limit=50)
+    get_data.assert_awaited_once_with("browse/new-releases", limit=50, use_global_session=True)
     assert len(result) == 2
     assert all(isinstance(a, Album) for a in result)
 
@@ -130,7 +131,7 @@ async def test_get_new_releases_handles_not_found(
 async def test_get_categories_returns_browse_folders(
     provider: SpotifyProvider, get_data: AsyncMock
 ) -> None:
-    """_get_categories maps Spotify categories onto browse folders with stable paths."""
+    """_get_categories maps categories fetched on the global session onto browse folders."""
     get_data.return_value = {
         "categories": {
             "items": [_make_category_obj("pop", "Pop"), _make_category_obj("rock", "Rock")]
@@ -139,7 +140,9 @@ async def test_get_categories_returns_browse_folders(
 
     result = await provider._get_categories("de_DE")
 
-    get_data.assert_awaited_once_with("browse/categories", locale="de_DE", limit=50)
+    get_data.assert_awaited_once_with(
+        "browse/categories", locale="de_DE", limit=50, use_global_session=True
+    )
     assert all(isinstance(f, BrowseFolder) for f in result)
     pop = result[0]
     assert pop.item_id == "pop"
@@ -170,6 +173,22 @@ async def test_get_categories_handles_not_found(
     result = await provider._get_categories("de_DE")
 
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_browse_cache_uses_global_session_checksum(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """New releases and categories only reuse cache entries written by the global session."""
+    get_data.return_value = {}
+    cache_get = cast("AsyncMock", provider.mass.cache.get_with_freshness)
+
+    await provider._get_new_releases()
+    await provider._get_categories("de_DE")
+
+    assert cache_get.await_count == 2
+    for call in cache_get.await_args_list:
+        assert call.kwargs["checksum"] == "global_session_v1"
 
 
 @pytest.mark.asyncio

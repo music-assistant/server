@@ -9,22 +9,35 @@ Thin facade that delegates to specialized manager classes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientError
+from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .gw_client import DeezerGWError, GWClient
+from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .gw_client import (
+    DeezerGWAuthError,
+    DeezerGWError,
+    DeezerGWNoSubscriptionError,
+    GWClient,
+)
 from .media import DeezerMediaManager
+from .rest_client import DeezerRESTClient
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ExternalID
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -39,10 +52,13 @@ if TYPE_CHECKING:
         RecommendationFolder,
         SearchResults,
         Track,
+        UniqueList,
     )
     from music_assistant_models.streamdetails import StreamDetails
 
 SUPPORTED_FEATURES = {
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
@@ -51,6 +67,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_METADATA,
@@ -74,7 +92,7 @@ SUPPORTED_FEATURES = {
 CONF_ARL_TOKEN = "arl_token"
 
 
-class DeezerProvider(MusicProvider):
+class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     """
     Deezer provider support.
 
@@ -83,17 +101,23 @@ class DeezerProvider(MusicProvider):
 
     gql_client: DeezerGQLClient
     gw_client: GWClient
+    rest_client: DeezerRESTClient
     media_manager: DeezerMediaManager
     browse_manager: DeezerBrowseManager
     streaming_manager: DeezerStreamingManager
     user_id: str
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
-        arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
+        arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
 
         try:
             self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
@@ -101,10 +125,40 @@ class DeezerProvider(MusicProvider):
             self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token)
             await self.gw_client.setup()
+        except DeezerGWNoSubscriptionError as err:
+            self.logger.error("Deezer account has no streamable subscription: %s", err)
+            raise LoginFailed(
+                "This Deezer account has no subscription that Music Assistant can stream from.",
+                translation_key="no_subscription",
+                translation_owner=self.translation_owner,
+            ) from err
+        except DeezerGWAuthError as err:
+            self.logger.error("Deezer GW authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not establish a playback session for this account.",
+                translation_key="gw_no_session",
+                translation_owner=self.translation_owner,
+            ) from err
+        except GraphQLClientAuthError as err:
+            self.logger.error("Deezer ARL authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not authenticate with the supplied ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            ) from err
         except (GraphQLClientError, DeezerGWError) as err:
-            raise LoginFailed("Deezer authentication failed. Please check your ARL token.") from err
+            self.logger.error("Deezer authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer authentication failed. See the Music Assistant log for the reason.",
+                translation_key="auth_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+
+        if len(app_var("deezer_decrypt_key")) != DECRYPT_KEY_LENGTH:
+            self.logger.warning(DECRYPT_KEY_ERROR)
 
         self.media_manager = DeezerMediaManager(self)
+        self.rest_client = DeezerRESTClient(self.mass)
         self.browse_manager = DeezerBrowseManager(self)
         self.streaming_manager = DeezerStreamingManager(self)
 
@@ -165,6 +219,18 @@ class DeezerProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return await self.media_manager.get_track(prov_track_id)
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        return await self.media_manager.get_track_by_external_id(external_id, external_id_type)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        return await self.media_manager.get_album_by_external_id(external_id, external_id_type)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -231,6 +297,12 @@ class DeezerProvider(MusicProvider):
         """Remove an item from the provider's library/favorites."""
         return await self.media_manager.library_remove(prov_item_id, media_type)
 
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """Ban or unban a track or artist from the user's Deezer recommendations."""
+        await self.media_manager.set_favorite(prov_item_id, media_type, favorite)
+
     # -- Playlist CRUD --
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -253,9 +325,19 @@ class DeezerProvider(MusicProvider):
         """Browse Deezer content."""
         return await self.browse_manager.browse(path, super().browse)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get Deezer's recommendations including Flow and personalized content."""
-        return await self.browse_manager.recommendations()
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get Deezer's available recommendation rows, without items."""
+        return await self.browse_manager.get_recommendations()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self.browse_manager.get_recommendation_items(item_id)
 
     # -- Streaming --
 
@@ -293,3 +375,7 @@ class DeezerProvider(MusicProvider):
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
         await self.streaming_manager.on_streamed(streamdetails)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
+        return await self.browse_manager._fetch_recommendation_payload()

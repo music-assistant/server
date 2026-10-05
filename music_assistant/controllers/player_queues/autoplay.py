@@ -1,10 +1,12 @@
 """
 Autoplay helper for the Player Queues controller.
 
-Autoplay keeps a queue playing once it runs out by appending a fresh batch of tracks.
-This helper resolves the configured Autoplay mode for a queue and produces the next
-batch of tracks for the library- and playlist-based modes. The similar-tracks (radio)
-modes reuse the controller's existing dynamic-radio machinery.
+Autoplay is the single "keep going" switch of a queue; what it appends depends on the media
+type of the item that is ending. Music continues with a fresh batch of tracks, a podcast
+episode or audiobook with its own successor, and a live source is left alone. This helper
+resolves the configured Autoplay mode for a queue and produces the next batch of tracks for
+the library- and playlist-based modes. The similar-tracks (radio) modes reuse the controller's
+existing dynamic-radio machinery.
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ AUTOPLAY_BATCH_SIZE = 25
 GENRE_SEED_ITEM_COUNT = 3
 # media types that carry a useful genre signal for the library mix
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
+# media types that end on their own but have a natural successor of their own: Autoplay
+# continues these with the next episode/book instead of appending music
+AUTOPLAY_SERIES_MEDIA_TYPES = (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+# media types Autoplay does not apply to: a live source has no natural end (stopping it means
+# the source stopped, not that the queue ran out) and a sound effect is a one-off
+AUTOPLAY_EXCLUDED_MEDIA_TYPES = (
+    MediaType.RADIO,
+    MediaType.AUDIO_SOURCE,
+    MediaType.SOUND_EFFECT,
+)
 
 
 class AutoplayMode(StrEnum):

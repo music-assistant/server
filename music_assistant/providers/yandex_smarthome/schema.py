@@ -11,16 +11,8 @@ Reference: https://github.com/dext0r/yandex_smart_home
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
-
-try:
-    from enum import StrEnum
-except ImportError:
-    # Python < 3.11 fallback (needed for local dev; upstream requires >=3.12)
-    class StrEnum(str, Enum):  # type: ignore[no-redef]  # noqa: UP042
-        """Backport of StrEnum for Python < 3.11."""
-
 
 # ---------------------------------------------------------------------------
 # Enums

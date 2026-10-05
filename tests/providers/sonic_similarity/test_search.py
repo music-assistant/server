@@ -13,6 +13,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin, setup
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+from tests.common import scheduled_call
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=True → plugin advertises SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=True)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=True))
         assert ProviderFeature.SEARCH in plugin.supported_features
 
@@ -60,6 +63,8 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=False → plugin does not advertise SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=False)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         assert ProviderFeature.SEARCH not in plugin.supported_features
 
@@ -175,9 +180,12 @@ class TestSearch:
         assert list(result.tracks) == []
         plugin._load_text_encoder.assert_not_called()
         plugin._clap_index.search.assert_not_called()
-        plugin.mass.create_task.assert_called_once_with(
-            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-        )
+        plugin.mass.create_task.assert_called_once()
+        name, _ = scheduled_call(plugin.mass.create_task.call_args.args[0])
+        assert name.endswith("_get_text_encoder")
+        assert plugin.mass.create_task.call_args.kwargs == {
+            "task_id": "sonic_similarity_text_encoder_warm"
+        }
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_resolved_tracks(

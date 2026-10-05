@@ -106,7 +106,8 @@ class ConverterTestRunner:
     def _process_fixture_file(self, fixture_path: Path) -> None:
         """Process a single fixture file."""
         relative_path = fixture_path.relative_to(self.fixtures_dir)
-        fixture_name = str(relative_path)
+        # as_posix keeps snapshot names identical across platforms
+        fixture_name = relative_path.as_posix()
 
         try:
             # Load fixture data

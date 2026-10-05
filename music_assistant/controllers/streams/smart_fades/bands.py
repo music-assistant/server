@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS, BandProfile
+from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
 
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
+    from music_assistant.controllers.streams.smart_fades.vocal import VocalMask
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 # bars quieter than 1/16th of the track's p95 power carry no usable signal
@@ -155,3 +157,90 @@ def loudness_referenced_level(
     """
     reference = float(profile.total_power[profile.active].mean())
     return window_level(profile, band, start_s, end_s) / reference if reference > 0 else 0.0
+
+
+def detect_low_mix_out(profile: BandProfile, k: float) -> float | None:
+    """
+    Media time of the last bar whose kick (low band) is still present.
+
+    Scans backward from the track end for the last downbeat whose low-band bar
+    power reaches ``k`` x the track's reference low power. Returns ``None``
+    when no bar qualifies, so callers fall back to the full-band anchor.
+
+    :param profile: The track's band profile.
+    :param k: Reference multiplier a bar's low power must reach to qualify.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    threshold = k * profile.reference["low"]
+    qualifying = np.nonzero(profile.bar_power["low"] >= threshold)[0]
+    if len(qualifying) == 0:
+        return None
+    return float(profile.bar_starts[qualifying[-1]])
+
+
+def detect_low_groove_entry(profile: BandProfile, k: float) -> float | None:
+    """
+    Media time where the kick (low band) enters and holds.
+
+    First downbeat whose low-band bar power reaches ``k`` x the track's
+    reference low power AND at least 4x the mean of the preceding 4 bars,
+    sustained for the following 2 bars. Returns ``None`` when absent, so
+    callers fall back to the full-band detector.
+
+    :param profile: The track's band profile.
+    :param k: Reference multiplier a bar's low power must reach to qualify.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    low = profile.bar_power["low"]
+    threshold = k * profile.reference["low"]
+    n = len(low)
+    for i in range(4, n - 1):
+        prior_mean = float(low[i - 4 : i].mean())
+        if low[i] < threshold or low[i] < 4.0 * prior_mean:
+            continue
+        hold_end = min(i + 2, n)
+        if np.all(low[i:hold_end] >= threshold):
+            return float(profile.bar_starts[i])
+    return None
+
+
+def instrumental_claim_confirmed(
+    profile: BandProfile,
+    vocal_mask: VocalMask,
+    start_s: float,
+    end_s: float,
+    *,
+    elevated_ratio: float = 0.5,
+) -> bool:
+    """
+    Whether a VAD-silent region's mid band is quiet enough to trust the instrumental claim.
+
+    True when no VAD-silent bar in ``[start_s, end_s)`` holds mid-band power at
+    or above ``elevated_ratio`` of the track's own mid reference. A bar inside
+    ``vocal_mask`` is exempt (it is not VAD-silent, so it carries no evidence
+    against the claim). (MIR cross-check, spec section Generators.)
+
+    :param profile: The claimed-instrumental deck's band profile.
+    :param vocal_mask: That deck's own vocal-activity mask, in the same time
+        origin as ``profile.bar_starts``.
+    :param start_s: Blend region start in media seconds (inclusive).
+    :param end_s: Blend region end in media seconds (exclusive).
+    :param elevated_ratio: Reference multiplier a VAD-silent bar's mid power
+        must reach to disconfirm the instrumental claim.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    in_range = (profile.bar_starts >= start_s) & (profile.bar_starts < end_s)
+    if not in_range.any():
+        return True
+    vad_silent = np.array(
+        [
+            not point_in_mask(vocal_mask, float(bar_start))
+            for bar_start in profile.bar_starts[in_range]
+        ]
+    )
+    threshold = elevated_ratio * profile.reference["mid"]
+    elevated = profile.bar_power["mid"][in_range][vad_silent] >= threshold
+    return not bool(elevated.any())

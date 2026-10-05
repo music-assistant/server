@@ -72,7 +72,7 @@ class PlayerQueueConfigMixin:
         entries = self.mass.player_queues.get_queue_config_entries(
             playlist_options=await self._library_playlist_options()
         )
-        return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
+        return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER)
 
     @api_command("config/player_queues/get_value", required_scope=Scope.CONFIG_PLAYERS_READ)
     def get_player_queue_config_value(self, queue_id: str, key: str) -> ConfigValueType:

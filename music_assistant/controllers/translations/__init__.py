@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.helpers import create_safe_string
+
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import load_json_dict
 from music_assistant.models.core_controller import CoreController
 
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
 # package paths (this file lives at music_assistant/controllers/translations/__init__.py)
-PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PACKAGE_ROOT = str(Path(__file__).resolve().parents[2])
 # translations/ holds the flat locale files: the generated en.json (English source, pushed to
 # Lokalise) and the downloaded per-language <lang>.json files. The hand-authored sources live in
 # strings.json files (music_assistant/strings.json + per-provider/per-controller strings.json).
@@ -181,7 +183,7 @@ class TranslationController(CoreController):
 
     async def _load_flat(self, path: str) -> dict[str, str]:
         """Load a flat {fq_key: str} translations file, tolerating a missing file or errors."""
-        if not os.path.isfile(path):
+        if not Path(path).is_file():
             return {}
         try:
             data = await load_json_dict(path)
@@ -199,7 +201,7 @@ def _discover_locale_files() -> dict[str, str]:
     English source ``en.json``. Each file is a flat, fully-qualified key->string map.
     """
     locale_files: dict[str, str] = {}
-    if not os.path.isdir(TRANSLATIONS_PATH):
+    if not Path(TRANSLATIONS_PATH).is_dir():
         return locale_files
     for filename in os.listdir(TRANSLATIONS_PATH):  # noqa: PTH208, RUF100
         if not filename.endswith(".json"):

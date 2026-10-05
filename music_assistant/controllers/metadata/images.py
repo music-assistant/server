@@ -3,20 +3,16 @@ Image handling for the Metadata Controller.
 
 Provides the ImageProxyMixin, mixed into the MetaDataController, which resolves
 media images to (proxied) URLs, renders and caches thumbnails, serves the
-``/imageproxy`` HTTP endpoint, extracts colour palettes and builds playlist
-collage images.
+``/imageproxy`` HTTP endpoint and extracts colour palettes.
 """
 
 from __future__ import annotations
 
-import os
-import random
 import threading
 import time
 from base64 import b64encode
 from typing import TYPE_CHECKING, cast
 
-import aiofiles
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
@@ -35,17 +31,16 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette, invalidate_cached_palette
 from music_assistant.helpers.images import (
-    create_collage,
     create_thumb_hash,
     detect_image_content_format,
     get_image_data,
     get_image_thumb,
     invalidate_cached_image,
 )
-from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
+    _ALLOWED_IMAGEPROXY_SIZES_STR,
     _IMAGE_ID_CACHE_TTL,
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
@@ -70,8 +65,7 @@ class ImageProxyMixin:
     Image/imageproxy functionality for the MetaDataController.
 
     Expects to be mixed with a class providing ``mass``, ``cache``, ``logger``,
-    ``domain``, the ``_collage_images_dir`` set during setup and the image-id
-    LRU bookkeeping attributes initialised in ``__init__``.
+    ``domain`` and the image-id LRU bookkeeping attributes initialised in ``__init__``.
     """
 
     if TYPE_CHECKING:
@@ -79,7 +73,6 @@ class ImageProxyMixin:
         cache: CacheController
         logger: logging.Logger
         domain: str
-        _collage_images_dir: str
         _image_id_forward: dict[tuple[str, str], str]
         _image_id_lru: OrderedDict[str, tuple[str, str]]
         _image_id_persisted: dict[str, float]
@@ -312,9 +305,11 @@ class ImageProxyMixin:
             thumbnail_bytes, content_format = await self._resolve_thumbnail(
                 path, provider, size, image_format, flatten_transparency
             )
-        except (MediaNotFoundError, OSError) as err:
+        except (MediaNotFoundError, ProviderUnavailableError, OSError) as err:
             # normalize a missing/unreadable image into one typed error so callers
-            # (and not just the HTTP imageproxy handler) can handle it uniformly
+            # (and not just the HTTP imageproxy handler) can handle it uniformly.
+            # an unavailable provider is included: to a caller it is equally unreadable,
+            # and leaking it would abort sends that only meant to skip the artwork
             raise MediaNotFoundError(f"Image not found or unreadable: {path}") from err
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
@@ -335,13 +330,20 @@ class ImageProxyMixin:
             return web.Response(status=400)
         image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
         if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
-            return web.Response(status=400)
+            return web.Response(status=400, text="Invalid image id")
         try:
             size = int(request.query.get("size", "0"))
         except ValueError:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Invalid size parameter: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR}.",
+            )
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Unsupported size {size}: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR} "
+                "(0 = original size).",
+            )
         resolved = await self.resolve_image_id(image_id)
         if resolved is None:
             return web.Response(status=404)
@@ -350,45 +352,6 @@ class ImageProxyMixin:
             request.query.get("fmt")
         ) or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
-
-    async def create_collage_image(
-        self,
-        images: list[MediaItemImage],
-        filename: str,
-        fanart: bool = False,
-    ) -> MediaItemImage | None:
-        """Create collage thumb/fanart image for (in-library) playlist."""
-        if (len(images) < 8 and fanart) or len(images) < 3:
-            # require at least some images otherwise this does not make a lot of sense
-            return None
-        # limit to 50 images to prevent we're going OOM
-        if len(images) > 50:
-            images = random.sample(images, 50)
-        else:
-            random.shuffle(images)
-        try:
-            # create collage thumb from playlist tracks
-            # if playlist has no default image (e.g. a local playlist)
-            dimensions = (2500, 1750) if fanart else (1500, 1500)
-            img_data = await create_collage(self.mass, images, dimensions)
-            # always overwrite existing path
-            file_path = os.path.join(self._collage_images_dir, filename)
-            async with aiofiles.open(file_path, "wb") as _file:
-                await _file.write(img_data)
-            del img_data
-            return MediaItemImage(
-                type=ImageType.FANART if fanart else ImageType.THUMB,
-                path=f"/collage/{filename}",
-                provider="builtin",
-                remotely_accessible=False,
-            )
-        except Exception as err:
-            self.logger.warning(
-                "Error while creating playlist image: %s",
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(10) else None,
-            )
-        return None
 
     async def _resolve_thumbnail(
         self,
@@ -411,14 +374,6 @@ class ImageProxyMixin:
         :param image_format: Requested output format (jpg/jpeg/png/svg).
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
-        if provider == "builtin" and path.startswith("/collage/"):
-            # special case for collage images
-            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
-            if not is_safe_path(collage_rel):
-                raise FileNotFoundError("Invalid collage path")
-            path = os.path.join(self._collage_images_dir, collage_rel)
         if image_format == "svg":
             return await get_image_data(self.mass, path, provider), "svg"
         thumbnail_bytes = await get_image_thumb(

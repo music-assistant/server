@@ -391,10 +391,14 @@ class HueAudioAnalyzer:
             )
             self._last_beat_in_bar = bib
 
-    def clear_beats(self) -> None:
-        """Drop the entire beat schedule + pending peaks (track change / stream end)."""
+    def clear_beat_schedule(self) -> None:
+        """Drop only the beat schedule (a track change re-pushes it; spectrum keeps flowing)."""
         self._beats.clear()
         self._last_beat_in_bar = -1
+
+    def clear_beats(self) -> None:
+        """Drop the entire beat schedule + pending peaks (seek / stream end)."""
+        self.clear_beat_schedule()
         self._pending_peaks.clear()
         self._peak_boost = 0.0
         self._peak_set_at_us = None

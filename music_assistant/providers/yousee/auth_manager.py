@@ -87,8 +87,8 @@ class YouSeeAuthManager:
             async with self.mass.http_session.post(
                 f"https://login.yousee.dk{post_action_re.group(1)}",
                 data={
-                    "pf.username": self.provider.config.get_value(CONF_USERNAME),
-                    "pf.pass": self.provider.config.get_value(CONF_PASSWORD),
+                    "pf.username": self.provider.get_setup_value(CONF_USERNAME),
+                    "pf.pass": self.provider.get_setup_value(CONF_PASSWORD),
                     "pf.ok": "clicked",
                     "pf.adapterId": "MusicUsernamePasswordAdapter",
                 },

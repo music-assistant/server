@@ -8,20 +8,29 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
+import psutil
 import pytest
 import yappi
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
+from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.profiler import provider as provider_module
 from music_assistant.providers.profiler.helpers import (
+    RECORDER_FIELDS,
     LogErrorCounter,
     collect_object_census,
+    finalize_recorder_entry,
     render_markdown,
     sanitize_code_path,
 )
 from music_assistant.providers.profiler.provider import (
+    CONF_CPU_PROFILE_ENABLED,
     CONF_TRACEMALLOC_ENABLED,
     ProfilerProvider,
 )
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -30,11 +39,58 @@ if TYPE_CHECKING:
 @pytest.fixture
 async def profiler(mass: MusicAssistant) -> ProfilerProvider:
     """Load the profiler provider into a running Music Assistant instance."""
-    await mass.config.save_provider_config("profiler", {})
+    await mass.config._create_provider_instance("profiler", {})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()
     return provider
+
+
+async def test_library_counts_ignore_requesting_user_music_sources(
+    profiler: ProfilerProvider,
+    mass: MusicAssistant,
+) -> None:
+    """Test that the report's library counts are true totals, not the admin's filtered view."""
+    await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Census Artist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="census_artist",
+                    provider_domain="prov_a",
+                    provider_instance="prov_a_inst",
+                    in_library=True,
+                )
+            },
+        )
+    )
+    # the seeded artist lives on another member's private source, which the requesting
+    # admin may not see; the admin's own source keeps its visible set non-empty
+    set_music_source_access(
+        mass,
+        {
+            "prov_a_inst": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "prov_b_inst": ProviderAccess(owner="admin", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    with mock.patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=User(user_id="admin", username="admin", role=UserRole.ADMIN),
+    ):
+        counts = await profiler._get_library_counts()
+        # a user-scoped count really does report 0 for the seeded artist
+        assert await mass.music.artists.library_count() == 0
+    assert counts == {
+        "artist": 1,
+        "album": 0,
+        "track": 0,
+        "playlist": 0,
+        "radio": 0,
+        "audiobook": 0,
+        "podcast": 0,
+    }
 
 
 async def test_report_shape(profiler: ProfilerProvider) -> None:
@@ -52,9 +108,12 @@ async def test_report_shape(profiler: ProfilerProvider) -> None:
         "flight_recorder",
     ):
         assert section in report, f"missing section: {section}"
-    assert report["report_format_version"] == 1
+    assert report["report_format_version"] == 2
     assert report["server"]["uptime_s"] >= 0
     assert report["memory"]["rss_mb"] > 0
+    # the split and cgroup figures are always present, None where the platform lacks them
+    for key in ("rss_anon_mb", "rss_file_mb", "rss_shmem_mb", "cgroup_reported_mb"):
+        assert key in report["memory"]
     assert report["memory"]["asyncio_tasks"] > 0
     assert "library_counts" in report["config_summary"]
     assert report["asyncio_tasks"]["total"] > 0
@@ -66,6 +125,21 @@ async def test_report_shape(profiler: ProfilerProvider) -> None:
     # report files are persisted in the profiler storage dir
     out_files = {path.name for path in Path(profiler._out_dir).iterdir()}
     assert {"report.json", "report.md"} <= out_files
+
+
+async def test_diagnostics_dump_carries_report(profiler: ProfilerProvider) -> None:
+    """Test that the diagnostics dump embeds the full report while the provider is loaded."""
+    dump = await profiler.mass.diagnostics.get_report()
+    section = dump["sections"]["provider.profiler"]
+    assert section["report_format_version"] == 2
+    assert "object_census_top" in section["memory"]
+    assert section["asyncio_tasks"]["total"] > 0
+    recorder = section["flight_recorder"]
+    assert recorder["window_minutes"] == 1440
+    assert recorder["sample_interval_s"] == 300
+    await profiler.mass.unload_provider(profiler.instance_id)
+    dump = await profiler.mass.diagnostics.get_report()
+    assert "provider.profiler" not in dump["sections"]
 
 
 async def test_report_markdown(profiler: ProfilerProvider) -> None:
@@ -117,8 +191,20 @@ async def test_measurement_tasks_running(profiler: ProfilerProvider) -> None:
     mass = profiler.mass
     assert "profiler_lag_monitor" in mass._tracked_tasks
     assert "profiler_flight_recorder" in mass._tracked_tasks
-    assert "profiler_cpu_scheduler" in mass._tracked_tasks
+    # periodic CPU windows are opt-in
+    assert "profiler_cpu_scheduler" not in mass._tracked_tasks
     assert "profiler/report" in mass.command_handlers
+
+
+async def test_periodic_cpu_profile_opt_in(mass: MusicAssistant) -> None:
+    """Test that the periodic CPU profile scheduler runs once the option is enabled."""
+    await mass.config._create_provider_instance("profiler", {CONF_CPU_PROFILE_ENABLED: True})
+    provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
+    assert provider is not None
+    await provider.initialized.wait()
+    assert "profiler_cpu_scheduler" in mass._tracked_tasks
+    await mass.unload_provider(provider.instance_id)
+    assert "profiler_cpu_scheduler" not in mass._tracked_tasks
 
 
 async def test_unload_cleans_up(profiler: ProfilerProvider) -> None:
@@ -135,7 +221,7 @@ async def test_unload_cleans_up(profiler: ProfilerProvider) -> None:
 async def test_tracemalloc_lifecycle(mass: MusicAssistant) -> None:
     """Test that tracemalloc is started/stopped with the provider when enabled."""
     was_tracing = tracemalloc.is_tracing()
-    await mass.config.save_provider_config("profiler", {CONF_TRACEMALLOC_ENABLED: True})
+    await mass.config._create_provider_instance("profiler", {CONF_TRACEMALLOC_ENABLED: True})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()
@@ -201,7 +287,7 @@ def test_log_error_counter() -> None:
 def test_render_markdown() -> None:
     """Test the markdown renderer with nested sections and tables."""
     report = {
-        "report_format_version": 1,
+        "report_format_version": 2,
         "server": {"version": "x", "nested": {"a": 1}},
         "memory": {"rss_mb": 1.0, "sites": [{"location": "a.py:1", "size_kb": 2}]},
     }
@@ -216,3 +302,15 @@ def test_object_census_bounds() -> None:
     census = collect_object_census(top_n=5)
     assert len(census) == 5
     assert all(entry["count"] > 0 for entry in census)
+
+
+def test_recorder_csv_restarts_on_column_change(tmp_path: Path) -> None:
+    """Test that a stats.csv written with older columns is replaced instead of appended to."""
+    csv_path = tmp_path / "stats.csv"
+    csv_path.write_text("ts_unix,rss_mb,cpu_pct\n1,100.0,1.0\n2,101.0,1.0\n")
+    finalize_recorder_entry(psutil.Process(), {"ts_unix": 3}, str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(RECORDER_FIELDS)
+    assert len(lines) == 2
+    assert len(lines[1].split(",")) == len(RECORDER_FIELDS)
+    assert lines[1].startswith("3,")

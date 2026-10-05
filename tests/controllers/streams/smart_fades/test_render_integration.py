@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
+from collections.abc import AsyncGenerator
 
 import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.smart_fades.fades import SmartCrossFade
+from music_assistant.controllers.streams.smart_fades.fades import (
+    SmartCrossFade,
+    StandardCrossFade,
+    _feed_ffmpeg_stdin,
+)
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 PCM = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2)
@@ -173,3 +181,79 @@ async def test_mid_swaps_between_tracks() -> None:
     open_early = _cf_slice(open_mix, open_, 0.05, 0.3)
     assert _band_rms(gated_late, 950, 1050) < 0.7 * _band_rms(open_late, 950, 1050)
     assert _band_rms(gated_early, 1950, 2050) < 0.7 * _band_rms(open_early, 1950, 2050)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_fade_in_ends_the_mix_instead_of_hanging() -> None:
+    """An incoming stream that dies mid-overlap must not leave ffmpeg waiting for input."""
+    fade_out = _tone(220.0, 6.0).tobytes()
+    delivered = _tone(440.0, 1.0).tobytes()
+
+    async def _dying_fade_in() -> AsyncGenerator[bytes]:
+        yield delivered
+        raise RuntimeError("incoming source died")
+
+    fade = StandardCrossFade(logging.getLogger(), crossfade_duration=2)
+    fade.build(len(fade_out), len(_tone(440.0, 4.0).tobytes()), PCM)
+
+    async def _drain_mix() -> None:
+        # the timeout only bounds the failure: without the EOF the mix hangs here
+        async with asyncio.timeout(30):
+            async for _chunk in fade.apply(fade_out, _dying_fade_in(), PCM):
+                pass
+
+    started = asyncio.get_event_loop().time()
+    with pytest.raises(RuntimeError, match="incoming source died"):
+        await _drain_mix()
+    assert asyncio.get_event_loop().time() - started < 10
+
+
+@pytest.mark.asyncio
+async def test_cancelled_feed_does_not_hang_writing_eof() -> None:
+    """A feeder cancelled while blocked on a full stdin pipe must return, not stall on the EOF."""
+    proc = AsyncProcess(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=True,
+        name="stdin-blackhole",
+    )
+    await proc.start()
+
+    async def _endless_zeros() -> AsyncGenerator[bytes]:
+        chunk = b"\x00" * (1024 * 1024)
+        while True:
+            yield chunk
+
+    try:
+        feed_task = asyncio.create_task(_feed_ffmpeg_stdin(proc, _endless_zeros()))
+        # let the feeder fill the pipe and the transport's write buffer, then block
+        await asyncio.sleep(0.5)
+        assert not feed_task.done()
+        feed_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(feed_task, timeout=2)
+    finally:
+        # the child never reads its stdin, so a graceful close would only wait out its timeout
+        await proc.kill()
+
+
+@pytest.mark.asyncio
+async def test_source_cancelled_feed_still_ends_the_input() -> None:
+    """A fade-in that raises CancelledError itself still ends the mixer's input with an EOF."""
+    # the child exits only once its stdin reaches EOF
+    proc = AsyncProcess(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+        stdin=True,
+        name="stdin-reader",
+    )
+    await proc.start()
+
+    async def _cancelled_fade_in() -> AsyncGenerator[bytes]:
+        yield b"\x00" * 1024
+        raise asyncio.CancelledError
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.create_task(_feed_ffmpeg_stdin(proc, _cancelled_fade_in()))
+        assert await proc.wait_with_timeout(2) == 0
+    finally:
+        await proc.close()

@@ -15,12 +15,12 @@ from music_assistant_models.media_items import Track
 
 from music_assistant.helpers.json import json_dumps
 from music_assistant.providers.music_quiz.ai_distractors import (
-    AI_QUERY_TIMEOUT_SECONDS,
     AIDistractorResponse,
     bounded_ai_context,
     parse_ai_distractor_response,
     request_ai_distractors,
 )
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -57,7 +57,7 @@ class GuessTheSongQuizType(QuizType):
     """Quiz type where players guess the currently playing track."""
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
-    warm_up_lyrics = True
+    prefetch_lyrics = True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -166,7 +166,7 @@ class GuessTheSongQuizType(QuizType):
                 translation_key="music_quiz_no_unused_source_tracks",
                 translation_owner=TRANSLATION_OWNER,
             )
-        return secrets.choice(available)
+        return secrets.choice(self._recency_candidates(available))
 
     async def _get_correct_candidate(self, track: Track) -> SuggestionCandidate:
         """Return the correct candidate with artist metadata when it can be resolved."""
@@ -337,6 +337,7 @@ class GuessTheSongQuizType(QuizType):
         response = await request_ai_distractors(
             self.mass,
             prompt,
+            engine_uid=self.config.ai_engine,
             timeout=AI_QUERY_TIMEOUT_SECONDS,
         )
         if response is None:

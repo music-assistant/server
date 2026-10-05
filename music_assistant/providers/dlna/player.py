@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
+from aiohttp import ClientPayloadError
+from aiohttp.http_exceptions import ContentLengthError
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -23,7 +25,7 @@ from .constants import PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
 
     from .provider import DLNAPlayerProvider
@@ -52,7 +54,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
         except UpnpError as err:
             self.force_poll = True
             if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-                self.logger.exception("Error during call %s: %r", func.__name__, err)
+                self.logger.exception("Error during call %s", func.__name__)
             else:
                 self.logger.error("Error during call %s: %r", func.__name__, str(err))
         return None
@@ -94,6 +96,9 @@ class DLNAPlayer(Player):
 
         self.force_poll = False  # used, if connection is lost
 
+        self._observed_playback_state: PlaybackState | None = None
+        self._playing_since: float | None = None
+
         # ssdp_connect_failed: bool = False
         #
         # Track BOOTID in SSDP advertisements for device changes
@@ -121,6 +126,18 @@ class DLNAPlayer(Player):
             self.logger.debug("Ignoring %s - passive stereo pair speaker", self.device.name)
             return False
 
+        if self.device and self._is_raumfeld_zone_renderer():
+            self.logger.debug("Ignoring %s - Raumfeld zone renderer", self.device.name)
+            # Connecting subscribed to its events with auto-renewal, and a player that is
+            # never registered is never unloaded; the host creates a new zone renderer on
+            # every regrouping, so each one would leave a subscription behind.
+            await self._device_disconnect()
+            # Creating this player already stored a config for it, and an install from
+            # before zone renderers were ignored may still link it to a player that keeps
+            # being restored. Deleting the config drops those links as well.
+            self.mass.players.delete_player_config(self.player_id)
+            return False
+
         self.set_static_attributes()
         await self.mass.players.register_or_update(self)
         return True
@@ -139,10 +156,19 @@ class DLNAPlayer(Player):
             return
         assert self.device is not None  # for type checking
         self._attr_name = self.device.name
-        self._attr_volume_level = int((self.device.volume_level or 0) * 100)
-        self._attr_volume_muted = self.device.is_volume_muted or False
+        # a device reports an unknown volume as None (RenderingControl Volume/Mute unset
+        # or not reported yet), which must stay unknown instead of collapsing to 0/unmuted
+        volume_level = self.device.volume_level
+        self._attr_volume_level = int(volume_level * 100) if volume_level is not None else None
+        self._attr_volume_muted = self.device.is_volume_muted
         _playback_state = self._get_playback_state()
         assert _playback_state is not None  # for type checking
+        prev_playback_state = self._observed_playback_state
+        self._observed_playback_state = _playback_state
+        if _playback_state != PlaybackState.PLAYING:
+            self._playing_since = None
+        elif prev_playback_state not in (None, PlaybackState.PLAYING):
+            self._playing_since = time.time()
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
@@ -184,19 +210,21 @@ class DLNAPlayer(Player):
             # No URI - idle or unknown
             self._attr_active_source = None
         # TODO: extend this list with other possible sources
-        if self.device.media_position:
-            # only update elapsed_time if the device actually reports it
-            self._attr_elapsed_time = float(self.device.media_position)
-            if self.device.media_position_updated_at is not None:
-                self._attr_elapsed_time_last_updated = (
-                    self.device.media_position_updated_at.timestamp()
-                )
+        # a device reports 'no position' as None (RelativeTimePosition unset, sent as
+        # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
+        # and is adopted instead of being discarded as 'not reported'.
+        if (media_position := self.device.media_position) is not None:
+            self._attr_elapsed_time = float(media_position)
+            if (position_updated_at := self.device.media_position_updated_at) is not None:
+                anchor = position_updated_at.timestamp()
+                if self._playing_since is not None:
+                    # a device only re-stamps a position that actually changed, so shortly
+                    # after a resume the timestamp still dates from before the pause. The
+                    # position may not be extrapolated across the time it was not playing.
+                    anchor = max(anchor, self._playing_since)
+                self._attr_elapsed_time_last_updated = anchor
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [*PLAYER_CONFIG_ENTRIES]
 
@@ -334,6 +362,13 @@ class DLNAPlayer(Player):
             if isinstance(err.__cause__, UnicodeDecodeError):
                 self.logger.debug("Ignoring non-UTF-8 SOAP response from device: %r", err)
                 return
+            # Some firmware (e.g. Busch-Jaeger 8216 U) announces a Content-Length one byte
+            # larger than the complete body it sends; that is a quirk, not a lost connection.
+            if isinstance(err.__cause__, ClientPayloadError) and isinstance(
+                err.__cause__.__cause__, ContentLengthError
+            ):
+                self.logger.debug("Ignoring Content-Length mismatch from device: %r", err)
+                return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
             raise PlayerUnavailableError from err
@@ -412,6 +447,7 @@ class DLNAPlayer(Player):
             # Indicates a failure to resubscribe, check if device is still available
             self.force_poll = True
             return
+        poll_first = False
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
             for state_variable in state_variables:
                 # Force a state refresh when player begins or pauses playback
@@ -421,7 +457,7 @@ class DLNAPlayer(Player):
                     TransportState.PAUSED_PLAYBACK,
                 ):
                     self.force_poll = True
-                    self.mass.create_task(self.poll())
+                    poll_first = True
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Received new state from event for Player %s: %s",
@@ -429,10 +465,19 @@ class DLNAPlayer(Player):
                         state_variable.value,
                     )
         self.last_seen = time.time()
-        self.mass.create_task(self._update_player())
+        self.mass.create_task(self._update_player(poll_first=poll_first))
 
-    async def _update_player(self) -> None:
-        """Update DLNA Player."""
+    async def _update_player(self, poll_first: bool = False) -> None:
+        """
+        Update DLNA Player.
+
+        :param poll_first: Refresh the device state before reading it, so that the
+            position info belongs to the state that is about to be reported.
+        """
+        if poll_first:
+            # an unavailable device is reported as such by the state update below
+            with suppress(PlayerUnavailableError):
+                await self.poll()
         prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
         prev_state = self.state
         await self.set_dynamic_attributes()
@@ -472,6 +517,24 @@ class DLNAPlayer(Player):
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
         self._attr_supported_features = supported_features
+
+    def _is_raumfeld_zone_renderer(self) -> bool:
+        """Check if this is a virtual zone renderer published by a Teufel Raumfeld host."""
+        if not self.device:
+            return False
+        manufacturer = (self.device.manufacturer or "").lower()
+        # current firmware reports "Lautsprecher Teufel GmbH", older firmware "Raumfeld GmbH"
+        if "teufel" not in manufacturer and "raumfeld" not in manufacturer:
+            return False
+        # A Raumfeld host publishes a renderer for every zone next to the speakers' own
+        # renderers, all under the host's IP and with the host's model, so MA would link
+        # them to the host speaker and list each one as a speaker of its own. They are
+        # created per zone and change with every regrouping. Only a speaker's own renderer
+        # carries the RaumfeldGenerator service.
+        return not any(
+            "RaumfeldGenerator" in service.service_type
+            for service in self.device.profile_device.root_device.all_services
+        )
 
     async def _is_sonos_passive_speaker(self) -> bool:
         """

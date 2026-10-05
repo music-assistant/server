@@ -173,6 +173,41 @@ async def test_cross_provider_lookup_only_retries_without_usable_results() -> No
 
 
 @pytest.mark.asyncio
+async def test_artist_seed_uses_top_tracks_not_full_resolution() -> None:
+    """An artist seed samples base tracks via top_tracks; other seeds still go through the queue."""
+    artist_seed = _seed(MediaType.ARTIST, "art1")
+    album_seed = _seed(MediaType.ALBUM, "alb1")
+    prov = _make_provider({"alb1": [_track("albtrack1")]}, [])
+    prov.mass.music.artists.top_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track("top1")]
+    )
+
+    await prov.get_dynamic_tracks([artist_seed, album_seed], target_size=5)
+
+    prov.mass.music.artists.top_tracks.assert_awaited_once_with("art1", "test")
+    get_tracks_for_playback = cast("Any", prov.mass.player_queues.get_tracks_for_playback)
+    called_item_ids = [call.args[0].item_id for call in get_tracks_for_playback.await_args_list]
+    assert called_item_ids == ["alb1"]
+
+
+@pytest.mark.asyncio
+async def test_artist_seed_without_top_tracks_falls_back() -> None:
+    """An artist whose providers yield no top tracks seeds via the plain tracks listing."""
+    artist_seed = _seed(MediaType.ARTIST, "art1")
+    prov = _make_provider({}, [_track("sim1")])
+    prov.mass.music.artists.top_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    prov.mass.music.artists.tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track("full1")]
+    )
+
+    result = await prov.get_dynamic_tracks([artist_seed], include_base_tracks=True, target_size=5)
+
+    prov.mass.music.artists.tracks.assert_awaited_once_with("art1", "test")
+    cast("Any", prov.mass.player_queues.get_tracks_for_playback).assert_not_awaited()
+    assert any(t.item_id == "full1" for t in result)
+
+
+@pytest.mark.asyncio
 async def test_similar_lookup_failure_keeps_base_tracks() -> None:
     """When no provider supports similar tracks, base tracks still carry the playlist."""
     seed = _seed(MediaType.TRACK, "s1")
@@ -182,3 +217,52 @@ async def test_similar_lookup_failure_keeps_base_tracks() -> None:
     )
     result = await prov.get_dynamic_tracks([seed], include_base_tracks=True, target_size=5)
     assert any(t.item_id == "s1" for t in result)
+
+
+@pytest.mark.asyncio
+async def test_single_track_seed_walks_the_similarity_graph() -> None:
+    """A single track seed fetches similars along a walk instead of only for the seed itself."""
+    seed = _seed(MediaType.TRACK, "s1")
+    similar = [_track(f"sim{i}") for i in range(10)]
+    prov = _make_provider({"s1": [_track("s1")]}, similar)
+
+    await prov.get_dynamic_tracks([seed], include_base_tracks=False)
+
+    similar_tracks = cast("Any", prov.mass.music.tracks.similar_tracks)
+    called_item_ids = [call.args[0] for call in similar_tracks.await_args_list]
+    assert similar_tracks.await_count == 5
+    assert called_item_ids[0] == "s1"
+    assert all(item_id.startswith("sim") for item_id in called_item_ids[1:])
+
+
+@pytest.mark.asyncio
+async def test_single_track_seed_draws_from_neighborhood() -> None:
+    """The batch for a single track seed includes tracks similar to the seed's similar tracks."""
+    seed = _seed(MediaType.TRACK, "s1")
+    first_hop = [_track(f"sim{i}") for i in range(5)]
+    second_hop = {f"sim{i}": [_track(f"sim{i}-a"), _track(f"sim{i}-b")] for i in range(5)}
+    prov = _make_provider({"s1": [_track("s1")]}, first_hop)
+
+    async def _similar(item_id: str, _provider: str, **_kwargs: Any) -> list[MagicMock]:
+        return second_hop.get(item_id, first_hop)
+
+    prov.mass.music.tracks.similar_tracks = AsyncMock(side_effect=_similar)  # type: ignore[method-assign]
+
+    result = await prov.get_dynamic_tracks([seed], include_base_tracks=False, target_size=50)
+
+    second_hop_ids = {t.item_id for tracks in second_hop.values() for t in tracks}
+    assert {t.item_id for t in result} & second_hop_ids
+
+
+@pytest.mark.asyncio
+async def test_multiple_track_seeds_skip_neighborhood_widening() -> None:
+    """Multiple seeds already vary the base sample, so no extra similar lookup happens."""
+    seed_a = _seed(MediaType.TRACK, "a")
+    seed_b = _seed(MediaType.TRACK, "b")
+    prov = _make_provider({"a": [_track("a")], "b": [_track("b")]}, [_track("x")])
+
+    await prov.get_dynamic_tracks([seed_a, seed_b], include_base_tracks=False)
+
+    similar_tracks = cast("Any", prov.mass.music.tracks.similar_tracks)
+    called_item_ids = {call.args[0] for call in similar_tracks.await_args_list}
+    assert called_item_ids == {"a", "b"}

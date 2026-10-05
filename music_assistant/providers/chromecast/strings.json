@@ -9,6 +9,8 @@
     "description": "Cast music and podcasts to Chromecast or Google Cast devices."
   },
   "errors": {
-    "app_launch_timeout": "Timed out launching app on {0}."
+    "app_launch_refused": "{0} refused to launch the cast app. Try toggling the 'Use Music Assistant Cast App' option in the player settings.",
+    "app_launch_timeout": "Timed out launching app on {0}.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }

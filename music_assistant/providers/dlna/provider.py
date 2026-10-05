@@ -18,6 +18,7 @@ from .player import DLNAPlayer
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester
     from async_upnp_client.utils import CaseInsensitiveDict
+    from music_assistant_models.config_entries import ConfigEntry
 
 
 class DLNAPlayerProvider(PlayerProvider):
@@ -29,6 +30,10 @@ class DLNAPlayerProvider(PlayerProvider):
     requester: UpnpRequester
     upnp_factory: UpnpFactory
     notify_server: DLNANotifyServer
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

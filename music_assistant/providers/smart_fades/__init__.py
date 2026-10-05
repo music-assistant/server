@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import UnsupportedSystemError
 
 from music_assistant.helpers.util import (
+    import_module_in_thread,
     system_meets_requirements,
     verify_system_meets_requirements,
 )
@@ -39,8 +39,19 @@ async def setup(
     mass: MusicAssistant,
     manifest: ProviderManifest,
     config: ProviderConfig,
+    *,
+    auto_setup: bool = False,
 ) -> SmartFadesProvider:
     """Set up the Smart Fades provider."""
+    if auto_setup and not system_meets_requirements(
+        min_memory_gb=RECOMMENDED_RAM_GB, min_cpu_cores=RECOMMENDED_CPU_CORES
+    ):
+        # Before the minimum gate, so a refused automatic setup never spawns the ML probe.
+        msg = (
+            f"Smart Fades is not enabled automatically below the recommended hardware "
+            f"({RECOMMENDED_RAM_GB:.0f}GB RAM, {RECOMMENDED_CPU_CORES} CPU cores)"
+        )
+        raise UnsupportedSystemError(msg)
     # Gate before importing the provider module so the heavy torch/beat_this stack is
     # never imported on a host that does not meet the minimal requirements.
     await verify_system_meets_requirements(
@@ -49,27 +60,9 @@ async def setup(
         min_cpu_cores=MIN_CPU_CORES,
         require_ml_inference=True,
     )
-    from .provider import SmartFadesProvider  # noqa: PLC0415
-
-    return SmartFadesProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return config entries for this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key="resource_warning",
-            type=ConfigEntryType.ALERT,
-            required=False,
-            hidden=system_meets_requirements(
-                min_memory_gb=RECOMMENDED_RAM_GB,
-                min_cpu_cores=RECOMMENDED_CPU_CORES,
-            ),
-        ),
+    # the torch/beat_this stack takes many seconds to import, which would stall the event
+    # loop for the whole duration, so hand it to the import thread like any other module
+    module = await import_module_in_thread(".provider", "music_assistant.providers.smart_fades")
+    return cast(
+        "SmartFadesProvider", module.SmartFadesProvider(mass, manifest, config, SUPPORTED_FEATURES)
     )

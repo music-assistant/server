@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "storytel",
+  "stage": "beta",
+  "name": "Storytel",
+  "description": "Storytel, an audiobook and podcast streaming service. Storytel is also known as Mofibo in some regions.",
+  "codeowners": ["@jonasbp2011"],
+  "requirements": ["pycryptodome==3.23.0"],
+  "documentation": "https://music-assistant.io/music-providers/storytel/"
+}

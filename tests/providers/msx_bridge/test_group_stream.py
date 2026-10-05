@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
+from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import SharedGroupStream
+
+if TYPE_CHECKING:
+    from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
 async def _chunks(*data: bytes) -> AsyncIterator[bytes]:
@@ -83,6 +92,38 @@ async def test_concurrent_subscribers_receive_live_chunks() -> None:
     assert len(results[0]) == 3
 
 
+async def test_concurrent_replace_yields_single_stream(provider: MSXBridgeProvider) -> None:
+    """
+    Concurrent replacing get_or_create_shared_stream calls must yield ONE stream.
+
+    Without serialization, both callers pass the "existing" check while the old
+    producer is being awaited, each creates its own stream, and the loser's
+    ffmpeg producer is orphaned — consuming audio with zero subscribers.
+    """
+
+    async def infinite_source() -> AsyncIterator[bytes]:
+        while True:
+            await asyncio.sleep(0.01)
+            yield b"chunk"
+
+    old = await provider.get_or_create_shared_stream("g1", "uri://old", infinite_source())
+    try:
+        results = await asyncio.gather(
+            provider.get_or_create_shared_stream("g1", "uri://new", infinite_source()),
+            provider.get_or_create_shared_stream("g1", "uri://new", infinite_source()),
+        )
+        assert results[0] is results[1]
+        assert provider._shared_streams["g1"] is results[0]
+    finally:
+        await old.stop()
+        for stream in {id(s): s for s in provider._shared_streams.values()}.values():
+            await stream.stop()
+        await asyncio.gather(
+            *(s.stop() for s in results),
+            return_exceptions=True,
+        )
+
+
 async def test_cancel_stops_subscription() -> None:
     """Cancelling a subscriber's task cleans up the subscriber registry."""
 
@@ -108,3 +149,34 @@ async def test_cancel_stops_subscription() -> None:
         stream.producer_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stream.producer_task
+
+
+async def test_shared_stream_paces_output(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """The shared group encoder carries the same pacing ceiling as the per-player one."""
+    server = MSXHTTPServer(provider, 0)
+    player = MagicMock(spec=MSXPlayer)
+    player.player_id = "msx_leader"
+    media = Mock(source_id=None, queue_item_id=None)
+
+    mass_mock.streams = Mock()
+    mass_mock.streams.get_stream = Mock(return_value=_chunks(b"pcm"))
+    mass_mock.streams.audio.get_player_output_plan = Mock(return_value=Mock(filter_params=[]))
+    provider.get_or_create_shared_stream = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("stop here")
+    )
+
+    pcm = AudioFormat(content_type=ContentType.PCM_S16LE)
+    out = AudioFormat(content_type=ContentType.MP3)
+    with (
+        patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_chunks(b"encoded"),
+        ) as ffmpeg_mock,
+        pytest.raises(RuntimeError),
+    ):
+        # leader path: player_id == group_id
+        await server._serve_shared_stream(Mock(), player, media, "msx_leader", pcm, out, {})
+
+    extra_args = ffmpeg_mock.call_args.kwargs["extra_input_args"]
+    assert "-readrate" in extra_args
+    assert "-readrate_initial_burst" in extra_args

@@ -1,13 +1,18 @@
-"""Tests for Podcast Index episode metadata (persons/links) and chapter enrichment."""
+"""Tests for Podcast Index episode metadata (persons/links), chapters and transcripts."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import LinkType
+from music_assistant_models.errors import ProviderUnavailableError
 
-from music_assistant.providers.podcast_index.helpers import parse_episode_from_data
+from music_assistant.providers.podcast_index.helpers import (
+    get_episode_transcripts_from_data,
+    parse_episode_from_data,
+)
 from music_assistant.providers.podcast_index.provider import PodcastIndexProvider
 
 if TYPE_CHECKING:
@@ -27,7 +32,7 @@ def _episode_data(**overrides: Any) -> dict[str, Any]:
 
 
 def _parse(data: dict[str, Any]) -> PodcastEpisode | None:
-    return parse_episode_from_data(data, "feed-1", 0, "podcast_index--test", "podcast_index")
+    return parse_episode_from_data(data, "feed-1", "podcast_index--test", "podcast_index")
 
 
 # --- parse_episode_from_data: persons / links ------------------------------------------------
@@ -126,3 +131,54 @@ async def test_get_podcast_episode_without_chapters_url() -> None:
     episode = await _call_get_episode(provider, "feed-1|123")
     assert session.calls == 0
     assert episode.metadata.chapters is None
+
+
+# --- transcripts ------------------------------------------------------------------------------
+
+TRANSCRIPT = {"url": "https://example.com/ep1.vtt", "type": "text/vtt"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        (
+            {"transcripts": [TRANSCRIPT], "transcriptUrl": "https://example.com/old.srt"},
+            [TRANSCRIPT],
+        ),
+        (
+            {"transcriptUrl": "https://example.com/old.srt"},
+            [{"url": "https://example.com/old.srt"}],
+        ),
+        ({}, None),
+    ],
+)
+def test_episode_transcripts(overrides: dict[str, Any], expected: list[Any] | None) -> None:
+    """The transcripts list wins over the older transcriptUrl, and either marks the episode."""
+    data = _episode_data(**overrides)
+    episode = _parse(data)
+    assert episode is not None
+    assert episode.metadata.has_transcript is (expected is not None)
+    assert get_episode_transcripts_from_data(data) == expected
+
+
+async def test_transcript_is_looked_up_by_episode_id() -> None:
+    """Opening a transcript passes the episode's transcripts on to the shared fetch."""
+    provider = MagicMock()
+    provider._get_episode_transcripts = AsyncMock(return_value=[TRANSCRIPT])
+    with patch(
+        "music_assistant.providers.podcast_index.provider.get_episode_transcript",
+        AsyncMock(return_value=("Some words.", [])),
+    ) as fetch:
+        result = await PodcastIndexProvider.get_podcast_episode_transcript(provider, "feed-1|123")
+    assert result == ("Some words.", [])
+    provider._get_episode_transcripts.assert_awaited_once_with("123")
+    assert fetch.await_args is not None
+    assert fetch.await_args.kwargs["transcripts"] == [TRANSCRIPT]
+
+
+async def test_transcript_during_an_outage_is_none() -> None:
+    """An unreachable Podcast Index shows as no transcript rather than an error."""
+    provider = MagicMock()
+    provider._get_episode_transcripts = AsyncMock(side_effect=ProviderUnavailableError("boom"))
+    result = await PodcastIndexProvider.get_podcast_episode_transcript(provider, "feed-1|123")
+    assert result == (None, None)

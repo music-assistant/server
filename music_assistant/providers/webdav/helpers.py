@@ -22,6 +22,7 @@ PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
         <d:getcontentlength/>
         <d:getlastmodified/>
         <d:displayname/>
+        <d:getetag/>
     </d:prop>
 </d:propfind>"""
 
@@ -35,6 +36,7 @@ class WebDAVItem:
     is_dir: bool
     size: int | None = None
     last_modified: str | None = None
+    etag: str | None = None
 
 
 async def webdav_propfind(
@@ -91,6 +93,14 @@ async def webdav_propfind(
         raise ProviderUnavailableError(f"WebDAV connection error: {err}") from err
 
 
+def _find_prop(props: list[ElementTree.Element], tag: str) -> ElementTree.Element | None:
+    """Return the first match for tag across a response's merged propstat prop elements."""
+    for prop in props:
+        if (elem := prop.find(tag, DAV_NAMESPACE)) is not None:
+            return elem
+    return None
+
+
 def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVItem]:
     """Parse WebDAV PROPFIND XML response."""
     try:
@@ -113,16 +123,21 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         if href.rstrip("/") == base_url_normalized:
             continue
 
-        propstat = response_elem.find("d:propstat", DAV_NAMESPACE)
-        if propstat is None:
-            continue
-
-        prop = propstat.find("d:prop", DAV_NAMESPACE)
-        if prop is None:
+        # a server may split properties it cannot satisfy (e.g. an unsupported getetag) into
+        # a separate propstat with a non-2xx status; merge every successful block's props so a
+        # 404 block returned first does not shadow resourcetype/getlastmodified from a later 200
+        props: list[ElementTree.Element] = []
+        for propstat in response_elem.findall("d:propstat", DAV_NAMESPACE):
+            status_elem = propstat.find("d:status", DAV_NAMESPACE)
+            if status_elem is not None and status_elem.text and " 200 " not in status_elem.text:
+                continue
+            if (prop := propstat.find("d:prop", DAV_NAMESPACE)) is not None:
+                props.append(prop)
+        if not props:
             continue
 
         # Check if it's a directory
-        resourcetype = prop.find("d:resourcetype", DAV_NAMESPACE)
+        resourcetype = _find_prop(props, "d:resourcetype")
         is_collection = (
             resourcetype is not None
             and resourcetype.find("d:collection", DAV_NAMESPACE) is not None
@@ -131,17 +146,23 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         # Get size (only for files)
         size = None
         if not is_collection:
-            contentlength = prop.find("d:getcontentlength", DAV_NAMESPACE)
+            contentlength = _find_prop(props, "d:getcontentlength")
             if contentlength is not None and contentlength.text:
                 with contextlib.suppress(ValueError):
                     size = int(contentlength.text)
 
         # Get last modified
-        lastmodified = prop.find("d:getlastmodified", DAV_NAMESPACE)
+        lastmodified = _find_prop(props, "d:getlastmodified")
         last_modified = lastmodified.text if lastmodified is not None else None
 
+        # Get etag (used only as a higher-precision metadata-file change token)
+        etagelem = _find_prop(props, "d:getetag")
+        etag = None
+        if etagelem is not None and etagelem.text:
+            etag = etagelem.text.strip().removeprefix("W/").strip('"') or None
+
         # Get display name or extract from href
-        displayname = prop.find("d:displayname", DAV_NAMESPACE)
+        displayname = _find_prop(props, "d:displayname")
         if displayname is not None and displayname.text:
             name = displayname.text
         else:
@@ -154,6 +175,7 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
                 is_dir=is_collection,
                 size=size,
                 last_modified=last_modified,
+                etag=etag,
             )
         )
 

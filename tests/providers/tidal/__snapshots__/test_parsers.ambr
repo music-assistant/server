@@ -8,11 +8,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '12345',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -21,6 +22,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -32,7 +34,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -43,6 +47,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'Test Artist',
         'position': None,
@@ -80,11 +86,12 @@
         '123456789012',
       ]),
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '67890',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': '℗ 2023 Test Label',
@@ -93,6 +100,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
@@ -104,7 +112,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -115,6 +125,8 @@
       'release_date': '2023-01-01T00:00:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Album',
     'position': None,
@@ -152,11 +164,12 @@
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '12345',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -165,6 +178,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -176,7 +190,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -187,6 +203,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Artist',
     'position': None,
@@ -219,16 +237,18 @@
 # ---
 # name: test_parse_playlist[mix]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': 'mix_mix_123',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -237,6 +257,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://example.com/mix-medium.jpg',
@@ -248,7 +269,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -259,6 +282,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'My Daily Discovery',
     'owner': 'Created by Tidal',
@@ -297,16 +322,18 @@
 # ---
 # name: test_parse_playlist[playlist]
   dict({
+    'access': None,
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': 'aabbcc-1122-3344-5566',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -315,6 +342,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/playlist/square/image/id/750x750.jpg',
@@ -326,7 +354,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -337,6 +367,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Playlist',
     'owner': 'Tidal',
@@ -397,11 +429,12 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '12345',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -410,6 +443,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -421,7 +455,9 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -432,6 +468,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'Test Artist',
         'position': None,
@@ -472,12 +510,13 @@
         'US1234567890',
       ]),
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '112233',
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': '℗ 2023 Test Label',
@@ -486,6 +525,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
@@ -497,7 +537,9 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -508,6 +550,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Track',
     'position': None,

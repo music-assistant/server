@@ -20,7 +20,7 @@ from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_wi
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -43,26 +43,19 @@ async def setup(
     return LrclibProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_API_URL,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_API_URL,
-            required=False,
-        ),
-    )
-
-
 class LrclibProvider(MetadataProvider):
     """LRCLIB provider for handling synchronized lyrics."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_URL,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_API_URL,
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -1,27 +1,5 @@
 {
   "config_entries": {
-    "auth_token": {
-      "label": "Authentication token for Tidal",
-      "description": "You need to link Music Assistant to your Tidal account."
-    },
-    "refresh_token": {
-      "label": "Refresh token for Tidal",
-      "description": "You need to link Music Assistant to your Tidal account."
-    },
-    "expiry_time": {
-      "label": "Expiry time of auth token for Tidal"
-    },
-    "user_id": {
-      "label": "Your Tidal User ID",
-      "description": "This is your unique Tidal user ID."
-    },
-    "label_ok": {
-      "label": "You are authenticated with Tidal"
-    },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]",
-      "description": "Reset the authentication for Tidal"
-    },
     "quality": {
       "label": "Quality setting for Tidal:",
       "description": "The maximum streaming quality to request from Tidal.",
@@ -33,32 +11,15 @@
         "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
         "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
       }
+    }
+  },
+  "setup_flow": {
+    "device_login": {
+      "title": "Link your Tidal account",
+      "description": "Your code is {0}. Use the button below to open Tidal with the code already filled in, or go to link.tidal.com on another device and enter it there. This screen updates automatically once you approve."
     },
-    "start_pkce_login_label": {
-      "label": "The button below will redirect you to Tidal.com to authenticate.\n\n After authenticating, you will be redirected to a page that prominently displays 'Page Not Found' at the top. That is normal, you need to copy that URL from the address bar and come back here"
-    },
-    "start_pkce_login": {
-      "label": "Starts the auth process via PKCE on Tidal.com",
-      "description": "This button will redirect you to Tidal.com to authenticate. After authenticating, you will be redirected to a page that prominently displays 'Page Not Found' at the top.",
-      "action_label": "Starts the auth process via PKCE on Tidal.com"
-    },
-    "temp_session": {
-      "label": "Temporary session for Tidal"
-    },
-    "oops_url_label": {
-      "label": "Copy the URL from the 'Page Not Found' page that you were previously redirected to and paste it in the field below"
-    },
-    "oops_url": {
-      "label": "Oops URL from Tidal redirect",
-      "description": "This field should be filled manually by you after authenticating on Tidal.com and being redirected to a page that prominently displays 'Page Not Found' at the top."
-    },
-    "complete_pkce_login_label": {
-      "label": "After pasting the URL in the field above, click the button below to complete the process."
-    },
-    "auth": {
-      "label": "Complete the auth process via PKCE on Tidal.com",
-      "description": "Click this after adding the 'Page Not Found' URL above, this will complete the authentication process.",
-      "action_label": "Complete the auth process via PKCE on Tidal.com"
+    "abort": {
+      "login_failed": "Could not link your Tidal account. Please start the setup again."
     }
   },
   "media": {

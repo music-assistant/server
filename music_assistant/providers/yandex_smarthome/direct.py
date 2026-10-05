@@ -100,25 +100,29 @@ class DirectConnectionHandler:
         exposed_ids: set[str] | None = None,
         logger: logging.Logger | None = None,
         on_token_created: Callable[[str], None] | None = None,
+        playlist_uris: tuple[str, ...] | list[str] = (),
     ) -> None:
         """
         Initialize the handler.
 
-        Args:
-            mass: MusicAssistant instance.
-            user_id: User identifier for Yandex API responses.
-            access_token: Current Bearer access token (may be empty on first run).
-            client_secret: OAuth client secret for account linking validation.
-            exposed_ids: Set of player IDs to expose, or None for all.
-            logger: Optional logger instance.
-            on_token_created: Callback invoked with new access token when generated
-                via OAuth flow (to persist in config).
+        :param mass: MusicAssistant instance.
+        :param user_id: User identifier for Yandex API responses.
+        :param access_token: Current Bearer access token (may be empty
+            on first run).
+        :param client_secret: OAuth client secret for account linking
+            validation.
+        :param exposed_ids: Set of player IDs to expose, or ``None`` for
+            all.
+        :param logger: Optional logger instance.
+        :param on_token_created: Callback invoked with new access token
+            when generated via OAuth flow (to persist in config).
         """
         self._mass = mass
         self._user_id = user_id
         self._access_token = access_token
         self._client_secret = client_secret
         self._exposed_ids = exposed_ids
+        self._playlist_uris = tuple(playlist_uris)
         self._logger = logger or _LOGGER
         self._on_token_created = on_token_created
         self._unregister_callbacks: list[Callable[[], None]] = []
@@ -221,7 +225,10 @@ class DirectConnectionHandler:
 
         try:
             device_list = await handle_device_list(
-                self._mass, self._user_id, exposed_ids=self._exposed_ids
+                self._mass,
+                self._user_id,
+                exposed_ids=self._exposed_ids,
+                playlist_uris=self._playlist_uris,
             )
             return web.json_response(build_response(request_id, asdict(device_list)))
         except Exception:
@@ -249,7 +256,10 @@ class DirectConnectionHandler:
                 device_id for d in devices_raw if isinstance(d, dict) and (device_id := d.get("id"))
             ]
             states = await handle_devices_query(
-                self._mass, device_ids, exposed_ids=self._exposed_ids
+                self._mass,
+                device_ids,
+                exposed_ids=self._exposed_ids,
+                playlist_uris=self._playlist_uris,
             )
             return web.json_response(build_response(request_id, asdict(states)))
         except Exception:
@@ -270,7 +280,10 @@ class DirectConnectionHandler:
         try:
             action_payload = parse_action_payload(body)
             result = await handle_devices_action(
-                self._mass, action_payload, exposed_ids=self._exposed_ids
+                self._mass,
+                action_payload,
+                exposed_ids=self._exposed_ids,
+                playlist_uris=self._playlist_uris,
             )
             return web.json_response(build_response(request_id, asdict(result)))
         except Exception:

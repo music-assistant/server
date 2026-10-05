@@ -119,6 +119,22 @@ class ConfigFactory:
             ),
         )
 
+    def pairing_code_config(
+        self, key: str, label: str, code_format: str, description: str = ""
+    ) -> ConfigDescriptor[str | None]:
+        """Create a pairing-code config option rendered as per-character boxes."""
+        return ConfigDescriptor(
+            cast=ConfigFactory.as_str(None),
+            config_entry=self._create_entry(
+                key=key,
+                entry_type=ConfigEntryType.PAIRING_CODE,
+                label=label,
+                default_value=None,
+                description=description,
+                entry_format=code_format,
+            ),
+        )
+
     def _create_entry(
         self,
         key: str,
@@ -127,6 +143,7 @@ class ConfigFactory:
         default_value: ConfigValueType,
         description: str,
         value_range: tuple[int, int] | None = None,
+        entry_format: str | None = None,
     ) -> ConfigEntry:
         """Create and register a ConfigEntry."""
         entry = ConfigEntry(
@@ -138,6 +155,7 @@ class ConfigFactory:
             description=description,
             category=self.category,
             range=value_range,
+            format=entry_format,
         )
         _registry.append(entry)
         return entry
@@ -194,7 +212,11 @@ class ConfigFactory:
         return _cast
 
 
-async def get_config_entries_impl() -> tuple[ConfigEntry, ...]:
+def get_setup_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return the (credential) config entries collected by the setup flow."""
+    return tuple(_registry)
+
+
+async def build_config_entries() -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # Combine entries from logical categories
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_registry)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)

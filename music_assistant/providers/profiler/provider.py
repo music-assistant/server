@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 import psutil
 import yappi
 from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.plugin import PluginProvider
@@ -42,7 +44,7 @@ CONF_CPU_PROFILE_INTERVAL = "cpu_profile_interval"
 CONF_TRACEMALLOC_ENABLED = "tracemalloc_enabled"
 CONF_ACTION_RUN_CPU_PROFILE = "action_run_cpu_profile"
 
-REPORT_FORMAT_VERSION = 1
+REPORT_FORMAT_VERSION = 2
 LAG_MONITOR_INTERVAL = 0.5
 RECORDER_INTERVAL = 10
 # 24 hours of history at the 10 second sample interval (roughly 1-2 MB of memory)
@@ -52,6 +54,10 @@ CPU_PROFILE_MIN_DURATION = 10
 CPU_PROFILE_MAX_DURATION = 300
 CPU_PROFILE_MIN_INTERVAL = 5  # minutes
 CPU_PROFILE_MAX_INTERVAL = 1440  # minutes
+# the diagnostics dump carries the whole report: give the census and tracemalloc snapshot room
+DIAGNOSTICS_SECTION_TIMEOUT = 120
+# one recorder sample per five minutes keeps a full day in the dump at a sane size
+DIAGNOSTICS_RECORDER_STEP = 30
 
 
 class ProfilerProvider(PluginProvider):
@@ -63,6 +69,61 @@ class ProfilerProvider(PluginProvider):
     windows. All collected data is aggregated into a shareable report via
     the `profiler/report` API command.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key="profiler_note",
+                type=ConfigEntryType.LABEL,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=60,
+                range=(CPU_PROFILE_MIN_DURATION, CPU_PROFILE_MAX_DURATION),
+                required=False,
+                advanced=True,
+                depends_on=CONF_CPU_PROFILE_ENABLED,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_INTERVAL,
+                type=ConfigEntryType.INTEGER,
+                default_value=30,
+                range=(CPU_PROFILE_MIN_INTERVAL, CPU_PROFILE_MAX_INTERVAL),
+                required=False,
+                advanced=True,
+                depends_on=CONF_CPU_PROFILE_ENABLED,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_RUN_CPU_PROFILE,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_RUN_CPU_PROFILE,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_TRACEMALLOC_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press."""
+        if action == CONF_ACTION_RUN_CPU_PROFILE:
+            self.start_cpu_profile()
+            return None
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -86,6 +147,7 @@ class ProfilerProvider(PluginProvider):
         self._started_tracemalloc = False
         self._unsubscribe_events: Callable[[], None] | None = None
         self._unregister_api: Callable[[], None] | None = None
+        self._unregister_diagnostics: Callable[[], None] | None = None
 
     async def loaded_in_mass(self) -> None:
         """Start all measurements once the provider is fully loaded."""
@@ -99,12 +161,19 @@ class ProfilerProvider(PluginProvider):
             self.get_config_value(CONF_TRACEMALLOC_ENABLED, False, return_type=bool)
             and not tracemalloc.is_tracing()
         ):
-            tracemalloc.start(15)
+            # the report only reads the innermost frame of each allocation, so a deeper
+            # traceback would only add per-allocation overhead
+            tracemalloc.start()
             self._started_tracemalloc = True
         self.mass.create_task(self._loop_lag_monitor(), task_id="profiler_lag_monitor")
         self.mass.create_task(self._flight_recorder(), task_id="profiler_flight_recorder")
-        if self.get_config_value(CONF_CPU_PROFILE_ENABLED, True, return_type=bool):
+        if self.get_config_value(CONF_CPU_PROFILE_ENABLED, False, return_type=bool):
             self.mass.create_task(self._cpu_profile_scheduler(), task_id="profiler_cpu_scheduler")
+        self._unregister_diagnostics = self.mass.diagnostics.register_section(
+            f"provider.{self.instance_id}",
+            self._get_diagnostics_section,
+            timeout=DIAGNOSTICS_SECTION_TIMEOUT,
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Stop all measurements and clean up."""
@@ -118,6 +187,9 @@ class ProfilerProvider(PluginProvider):
         if self._unregister_api is not None:
             self._unregister_api()
             self._unregister_api = None
+        if self._unregister_diagnostics is not None:
+            self._unregister_diagnostics()
+            self._unregister_diagnostics = None
         if self._unsubscribe_events is not None:
             self._unsubscribe_events()
             self._unsubscribe_events = None
@@ -155,6 +227,15 @@ class ProfilerProvider(PluginProvider):
     def start_cpu_profile(self) -> None:
         """Start a single on-demand CPU profile window (ignored if one is already running)."""
         self.mass.create_task(self._run_cpu_profile_window(), task_id="profiler_cpu_window")
+
+    async def _get_diagnostics_section(self) -> dict[str, Any]:
+        """Return the full report for the diagnostics dump, a day of recorder history thinned."""
+        report = await self._build_report(include_object_census=True, recorder_minutes=1440)
+        recorder = report["flight_recorder"]
+        # keep the newest sample and every step-th one before it
+        recorder["entries"] = recorder["entries"][::-1][::DIAGNOSTICS_RECORDER_STEP][::-1]
+        recorder["sample_interval_s"] = RECORDER_INTERVAL * DIAGNOSTICS_RECORDER_STEP
+        return report
 
     async def _build_report(
         self, include_object_census: bool, recorder_minutes: int
@@ -235,7 +316,11 @@ class ProfilerProvider(PluginProvider):
             self.mass.music.audiobooks,
             self.mass.music.podcasts,
         ):
-            counts[controller.media_type.value] = await controller.library_count()
+            # raw table sizes: a profiler report needs true totals, not the filtered
+            # subset visible to the (admin) user who requested it
+            counts[controller.media_type.value] = await self.mass.music.database.get_count(
+                controller.db_table
+            )
         return counts
 
     def _on_mass_event(self, event: MassEvent) -> None:

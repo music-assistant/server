@@ -9,6 +9,6 @@
     "[ShairPort Sync by Mike Brady](https://github.com/mikebrady/shairport-sync)"
   ],
   "documentation": "https://music-assistant.io/plugins/airplay-receiver/",
-  "multi_instance": true,
+  "multi_instance": false,
   "requirements": []
 }

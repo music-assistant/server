@@ -6,21 +6,17 @@ from typing import Final
 
 # Configuration Keys
 CONF_TOKEN: Final[str] = "token"
+CONF_MANUAL_TOKEN: Final[str] = "manual_token"
 CONF_QUALITY: Final[str] = "quality"
 CONF_BASE_URL: Final[str] = "base_url"
 
 # Actions
-CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
-CONF_ACTION_AUTH_DEVICE: Final[str] = "auth_device"
 CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
-# QR authentication config keys
+# Stored authentication credentials
 CONF_X_TOKEN: Final[str] = "x_token"
 CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
 CONF_REMEMBER_SESSION: Final[str] = "remember_session"
-
-# Session-id key handed to the QR / Device-flow handlers from the MA config flow.
-CONF_SESSION_ID: Final[str] = "session_id"
 
 # Advanced toggle: enable a token-wide concurrency cap to keep MA below
 # Yandex's per-token edge concurrency limit on datacenter / VPN IPs

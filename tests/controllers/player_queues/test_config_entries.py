@@ -17,18 +17,32 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.player_queues.config import (
+    CATEGORY_CLICK_ACTIONS,
     CATEGORY_DEFAULT_ENQUEUE_OPTION,
     CATEGORY_ITEMS_TO_SELECT,
     core_config_entries,
     queue_config_entries,
 )
 from music_assistant.controllers.player_queues.constants import (
+    CLICK_ACTION_BROWSE,
+    CLICK_ACTION_PLAY,
     CONF_AUTOPLAY_MODE,
+    CONF_DEFAULT_CLICK_ACTION_ALBUM,
+    CONF_DEFAULT_CLICK_ACTION_ARTIST,
+    CONF_DEFAULT_CLICK_ACTION_GENRE,
+    CONF_DEFAULT_CLICK_ACTION_PLAYLIST,
+    CONF_DEFAULT_CLICK_ACTION_RADIO,
+    CONF_DEFAULT_CLICK_ACTION_TRACK,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+    CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
     CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    PLAY_ACTION_PLAY_FROM_HERE,
+    PLAY_ACTION_PLAY_TRACK,
 )
 
 if TYPE_CHECKING:
@@ -59,12 +73,58 @@ def test_core_config_entries_enqueue_defaults() -> None:
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION
 
 
+def test_core_config_entries_click_actions() -> None:
+    """
+    The click actions clients read: browsing by default, and a track playing on from where it sits.
+
+    This is a cross-client contract rather than something the server itself reads, so the keys,
+    their option values and their defaults are pinned here: a client resolving a value that is no
+    longer offered would silently fall back to its own behaviour.
+    """
+    by_key = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))
+    click_keys = (
+        CONF_DEFAULT_CLICK_ACTION_ARTIST,
+        CONF_DEFAULT_CLICK_ACTION_ALBUM,
+        CONF_DEFAULT_CLICK_ACTION_TRACK,
+        CONF_DEFAULT_CLICK_ACTION_GENRE,
+        CONF_DEFAULT_CLICK_ACTION_RADIO,
+        CONF_DEFAULT_CLICK_ACTION_PLAYLIST,
+    )
+    for key in click_keys:
+        assert by_key[key].default_value == CLICK_ACTION_BROWSE
+        assert {opt.value for opt in by_key[key].options} == {
+            CLICK_ACTION_BROWSE,
+            CLICK_ACTION_PLAY,
+        }
+    for key in (CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK, CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK):
+        assert by_key[key].default_value == PLAY_ACTION_PLAY_FROM_HERE
+        assert {opt.value for opt in by_key[key].options} == {
+            PLAY_ACTION_PLAY_FROM_HERE,
+            PLAY_ACTION_PLAY_TRACK,
+        }
+    for key in (
+        *click_keys,
+        CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+        CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+    ):
+        assert by_key[key].category == CATEGORY_CLICK_ACTIONS
+        # a hidden entry would never reach the settings UI these are configured from
+        assert by_key[key].hidden is False
+
+
 def test_core_config_entries_global_feature_defaults() -> None:
     """Global (core) feature settings carry no 'global' option and keep the legacy defaults."""
     by_key = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))
     smart_shuffle = by_key[CONF_SMART_SHUFFLE_ENABLED]
     assert smart_shuffle.default_value == CONF_VALUE_DISABLED
     assert {opt.value for opt in smart_shuffle.options} == {CONF_VALUE_ENABLED, CONF_VALUE_DISABLED}
+    # The ordering option is opt-in by default.
+    smart_fades_ordering = by_key[CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES]
+    assert smart_fades_ordering.default_value == CONF_VALUE_DISABLED
+    assert {opt.value for opt in smart_fades_ordering.options} == {
+        CONF_VALUE_ENABLED,
+        CONF_VALUE_DISABLED,
+    }
     volume_normalization = by_key[CONF_VOLUME_NORMALIZATION]
     assert volume_normalization.default_value == CONF_VALUE_ENABLED
     assert CONF_VALUE_GLOBAL not in {opt.value for opt in volume_normalization.options}
@@ -78,6 +138,7 @@ def test_queue_config_entries_offer_global_option() -> None:
     by_key = _by_key(queue_config_entries(_mass(similar_tracks=True, smart_fades=True)))
     for key in (
         CONF_SMART_SHUFFLE_ENABLED,
+        CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
         CONF_VOLUME_NORMALIZATION,
         CONF_CROSSFADE_MODE,
         CONF_AUTOPLAY_MODE,

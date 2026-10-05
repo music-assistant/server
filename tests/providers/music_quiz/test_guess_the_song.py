@@ -13,11 +13,13 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MusicQuizConfig,
 )
+from music_assistant.providers.music_quiz.quiz_types.base import QUIZ_TRACK_RECENCY_SECONDS
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import (
     GuessTheSongQuizType,
     _track_to_candidate,
@@ -96,6 +98,7 @@ def _quiz_type(
     mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
     mass.music.artists.similar_artists = AsyncMock(return_value=[])
     mass.music.artists.top_tracks = AsyncMock(return_value=[])
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     mass.metadata.get_image_url_for_item = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     config = MusicQuizConfig(
@@ -103,6 +106,7 @@ def _quiz_type(
         source_uris=["prov://playlist/1"],
         difficulty=difficulty,
         use_ai_distractors=use_ai,
+        ai_engine="ai--1/engine" if use_ai else None,
     )
     quiz_type = GuessTheSongQuizType(mass, config)
     quiz_type._source_track_pool = {}
@@ -110,10 +114,13 @@ def _quiz_type(
 
 
 def _ai_provider(response: object = None, error: Exception | None = None) -> MagicMock:
-    """Return a mock AI_QUERY-capable plugin provider."""
+    """Return a mock AI_QUERY-capable plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = "ai--1"
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name="ai--1", provider=provider)]
+    )
     return provider
 
 
@@ -143,6 +150,49 @@ def test_reject_track_removes_it_from_the_source_pool() -> None:
     quiz_type.reject_track(failed.uri)
 
     assert quiz_type._source_track_pool == _pool([available])
+
+
+@pytest.mark.asyncio
+async def test_initialize_reads_partial_play_recency() -> None:
+    """Load interrupted playback history for quiz track selection."""
+    quiz_type, mass = _quiz_type()
+    snapshot = RecencySnapshot(now=100)
+    mass.music.recency.snapshot.return_value = snapshot
+
+    await quiz_type.initialize()
+
+    assert quiz_type._recency_snapshot is snapshot
+    mass.music.recency.snapshot.assert_awaited_once_with(
+        RecencyWindows(song_seconds=QUIZ_TRACK_RECENCY_SECONDS),
+        include_partially_played=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_selection_prefers_tracks_not_played_recently() -> None:
+    """Choose a fresh source track while retaining recent tracks as fallback candidates."""
+    quiz_type, _ = _quiz_type()
+    recent = _track("recent", "Teardrop", "Massive Attack")
+    fresh = _track("fresh", "Genesis", "Justice")
+    quiz_type._source_track_pool = _pool([recent, fresh])
+    quiz_type._recency_snapshot = RecencySnapshot(
+        now=100,
+        song_ts={(recent.provider, recent.item_id): 100},
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song.secrets.choice",
+        side_effect=lambda candidates: candidates[0],
+    ) as choose:
+        selected = await quiz_type._get_next_source_track(set())
+        assert quiz_type._recency_snapshot is not None
+        quiz_type._recency_snapshot.song_ts[(fresh.provider, fresh.item_id)] = 100
+        fallback = await quiz_type._get_next_source_track(set())
+
+    assert selected is fresh
+    assert fallback is recent
+    assert choose.call_args_list[0].args[0] == [fresh]
+    assert choose.call_args_list[1].args[0] == [recent, fresh]
 
 
 @pytest.mark.asyncio
@@ -541,10 +591,9 @@ async def test_invalid_primary_ai_response_does_not_try_another_provider() -> No
             extra=True,
         )
     )
-    invalid.instance_id = "ai--a"
     later = _ai_provider()
     later.instance_id = "ai--b"
-    mass.get_providers_supporting_feature.return_value = [later, invalid]
+    mass.get_providers_supporting_feature.return_value = [invalid, later]
     correct_track, correct = _correct()
 
     result = list(await quiz_type._gather_distractors(correct_track, correct))

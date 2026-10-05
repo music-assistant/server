@@ -9,6 +9,9 @@ from aiohttp.client import ClientTimeout
 # we use twice the default values
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
 
+# expire after 5 min of not using them
+STREAMDETAILS_EXPIRATION_S = 300
+
 # CONFIG
 CONF_URL = "url"
 CONF_USERNAME = "username"
@@ -45,9 +48,11 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     AUTHORS = "authors"
     NARRATORS = "narrators"
     SERIES = "series_plural"
+    SERIES_ENTRY = "series_entry"
     COLLECTIONS = "collections"
     PLAYLISTS = "playlists"  # not abs specific
     AUDIOBOOKS = "audiobooks"  # not abs specific
+    AUDIOBOOKS_LIBRARY = "audiobooks_library"
 
 
 class AbsBrowseItemsPodcastTranslationKey(StrEnum):
@@ -55,19 +60,23 @@ class AbsBrowseItemsPodcastTranslationKey(StrEnum):
 
     PLAYLISTS = "playlists"  # not abs specific
     PODCASTS = "podcasts"  # not abs specific
+    PODCASTS_LIBRARY = "podcasts_library"
 
 
 ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
+    AbsBrowseItemsBookTranslationKey.SERIES_ENTRY: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
+    AbsBrowseItemsBookTranslationKey.AUDIOBOOKS_LIBRARY: AbsBrowsePaths.AUDIOBOOKS,
     AbsBrowseItemsBookTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
 }
 
 ABS_BROWSE_ITEMS_PODCAST_TO_PATH: dict[str, str] = {
     AbsBrowseItemsPodcastTranslationKey.PODCASTS: AbsBrowsePaths.PODCASTS,
+    AbsBrowseItemsPodcastTranslationKey.PODCASTS_LIBRARY: AbsBrowsePaths.PODCASTS,
     AbsBrowseItemsPodcastTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
 }
 

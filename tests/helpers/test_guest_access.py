@@ -46,6 +46,24 @@ async def test_get_or_create_guest_user_rejects_non_guest() -> None:
     mass.webserver.auth.create_user.assert_not_awaited()
 
 
+async def test_get_or_create_guest_user_refuses_disabled_guest() -> None:
+    """A disabled guest account is refused, never re-created or re-enabled."""
+    mass = _create_mock_mass()
+    mass.webserver.auth.get_user_by_username.return_value = MagicMock(
+        role=UserRole.GUEST, enabled=False, display_name="Party Guest"
+    )
+
+    with pytest.raises(InvalidDataError) as exc_info:
+        await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
+
+    assert exc_info.value.translation_key == "guest_account_disabled"
+    assert exc_info.value.translation_args == ["Party Guest"]
+    mass.webserver.auth.get_user_by_username.assert_awaited_once_with(
+        "party_guest", include_disabled=True
+    )
+    mass.webserver.auth.create_user.assert_not_awaited()
+
+
 async def test_get_or_create_guest_user_creates_guest() -> None:
     """A missing guest user is created with the GUEST role."""
     mass = _create_mock_mass()
@@ -129,6 +147,24 @@ async def test_revoke_guest_access() -> None:
     mass.webserver.auth.revoke_tokens_for_user.assert_awaited_once_with(user)
 
 
+async def test_revoke_guest_access_disabled_guest() -> None:
+    """Join codes and tokens of a disabled guest user are revoked too."""
+    mass = _create_mock_mass()
+    user = MagicMock(role=UserRole.GUEST, enabled=False, display_name="Party Guest")
+    mass.webserver.auth.get_user_by_username.return_value = user
+    mass.webserver.auth.revoke_join_codes.return_value = 1
+    mass.webserver.auth.revoke_tokens_for_user.return_value = 2
+
+    result = await guest_access.revoke_guest_access(mass, "party_guest")
+
+    assert result == (1, 2)
+    mass.webserver.auth.get_user_by_username.assert_awaited_once_with(
+        "party_guest", include_disabled=True
+    )
+    mass.webserver.auth.revoke_join_codes.assert_awaited_once_with(user)
+    mass.webserver.auth.revoke_tokens_for_user.assert_awaited_once_with(user)
+
+
 async def test_revoke_guest_access_no_user() -> None:
     """Revoking access for an unknown user is a no-op."""
     mass = _create_mock_mass()
@@ -137,3 +173,21 @@ async def test_revoke_guest_access_no_user() -> None:
 
     assert result == (0, 0)
     mass.webserver.auth.revoke_join_codes.assert_not_awaited()
+
+
+def test_credential_owner_encodes_the_lifetime_policy() -> None:
+    """The owner prefix says whether a credential is session-scoped or account-bound."""
+    guest = MagicMock(role=UserRole.GUEST, user_id="g1")
+    user = MagicMock(role=UserRole.USER, user_id="u1")
+    assert guest_access.credential_owner(guest) == "guest-g1"
+    assert guest_access.credential_owner(user) == "user-u1"
+    assert guest_access.is_session_scoped_owner("guest-g1")
+    assert not guest_access.is_session_scoped_owner("user-u1")
+    assert guest_access.credential_owners_for_user_id("x") == ("guest-x", "user-x")
+
+
+def test_credential_owner_user_id_resolves_both_prefixes() -> None:
+    """An owner id resolves back to its account, and other owner kinds resolve to nothing."""
+    assert guest_access.credential_owner_user_id("guest-g1") == "g1"
+    assert guest_access.credential_owner_user_id("user-u1") == "u1"
+    assert guest_access.credential_owner_user_id("token-t1") is None

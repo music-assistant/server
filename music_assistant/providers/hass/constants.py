@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 from enum import IntFlag
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import PlaybackState
+
+if TYPE_CHECKING:
+    import logging
+
+CONF_POWER_CONTROLS = "power_controls"
+CONF_MUTE_CONTROLS = "mute_controls"
+CONF_VOLUME_CONTROLS = "volume_controls"
+
+# Home Assistant entity domains Music Assistant can offer as player controls.
+CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
 
 
 class MediaPlayerEntityFeature(IntFlag):
@@ -48,3 +59,32 @@ StateMap = {
 # HA states that we consider as "powered off"
 OFF_STATES = ("unavailable", "unknown", "standby", "off")
 UNAVAILABLE_STATES = ("unavailable", "unknown")
+
+
+def parse_supported_features(
+    raw_value: Any, entity_id: str, logger: logging.Logger
+) -> MediaPlayerEntityFeature:
+    """
+    Return the features supported by a Home Assistant media_player entity.
+
+    A value that can not be interpreted yields no features at all.
+
+    :param raw_value: Raw value of the entity's supported_features attribute.
+    :param entity_id: Entity id the value belongs to, used for logging.
+    :param logger: Logger to report an invalid value on.
+    """
+    if raw_value is None:
+        # attribute is absent for entities that (currently) have no state
+        return MediaPlayerEntityFeature(0)
+    if isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value >= 0:
+        # unknown bits (features of a newer HA version) are preserved
+        return MediaPlayerEntityFeature(raw_value)
+    # integrations are free to write anything into the attribute, so a value we can not
+    # interpret must not break the handling of all other entities
+    logger.warning(
+        "Home Assistant entity %s reports an invalid supported_features value: %r - "
+        "treating it as if it supports no features",
+        entity_id,
+        raw_value,
+    )
+    return MediaPlayerEntityFeature(0)

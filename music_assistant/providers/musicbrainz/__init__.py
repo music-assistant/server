@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from .models import MusicBrainzReleaseGroup
-from .provider import MusicbrainzProvider, get_config_entries, setup
+from .provider import MusicbrainzProvider, setup
 
 __all__ = [
     "MusicBrainzReleaseGroup",
     "MusicbrainzProvider",
-    "get_config_entries",
     "setup",
 ]

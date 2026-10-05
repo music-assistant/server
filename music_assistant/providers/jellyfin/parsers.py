@@ -143,7 +143,7 @@ def parse_album(
         album.artists.append(_unknown_artist_mapping(instance_id))
 
     user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
-    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    album.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return album
 
 
@@ -179,7 +179,7 @@ def parse_artist(
         artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
     artist.metadata.images = _get_artwork(instance_id, connection, jellyfin_artist)
     user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
-    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    artist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return artist
 
 
@@ -200,7 +200,7 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     return AudioFormat(
         content_type=(ContentType.try_parse(container) if container else ContentType.UNKNOWN),
         codec_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
-        channels=audio_stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
+        channels=audio_stream.get(ITEM_KEY_MEDIA_CHANNELS) or 2,
         sample_rate=audio_stream.get("SampleRate", 44100),
         bit_rate=audio_stream.get("BitRate"),
         bit_depth=audio_stream.get("BitDepth", 16),
@@ -280,7 +280,7 @@ def parse_track(
                 exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
             )
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
-    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     # handle optional loudness measurement tag(s) assuming -18 dB reference according to ReplayGain 2.0
     track_gain = jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN)
@@ -324,7 +324,7 @@ def parse_playlist(
         playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
     playlist.metadata.images = _get_artwork(instance_id, client, jellyfin_playlist)
     user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
-    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    playlist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     playlist.is_editable = False
     return playlist
 

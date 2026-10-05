@@ -7,23 +7,32 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 CONF_INSTANCE_NAME = "instance_name"
 CONF_CONNECTION_TYPE = "connection_type"
+# Override for MA's webserver Base URL — used when generating callback /
+# webhook URLs for Yandex. Lets users keep MA's global Base URL unset (so
+# HA Ingress / local access keep working) while still exposing a public
+# HTTPS URL only to Yandex via a reverse proxy.
+CONF_EXTERNAL_BASE_URL = "external_base_url"
 CONF_CLOUD_INSTANCE_ID = "cloud_instance_id"
 CONF_CLOUD_INSTANCE_PASSWORD = "cloud_instance_password"
 CONF_CLOUD_CONNECTION_TOKEN = "cloud_connection_token"
 CONF_SKILL_ID = "skill_id"
 CONF_SKILL_TOKEN = "skill_token"
 CONF_EXPOSED_PLAYERS = "exposed_players"
+CONF_EXPOSED_PLAYLISTS = "exposed_playlists"
 
-# Auto-create-skill feature state (round-trips through the config form)
+# Auto-create-skill state — a JSON-serialised SkillCreationArtifacts blob carried in
+# the setup flow (and persisted to setup_data) so a reconfigure can resume a partially
+# provisioned skill from the last completed step.
 CONF_AUTO_CREATE_ARTIFACTS = "auto_create_artifacts"
-CONF_AUTO_CREATE_SESSION_ID = "auto_create_session_id"
+# Cached Yandex Passport x_token from the setup flow's Device Flow login. Reused on a
+# reconfigure so the user does not have to confirm the device code every time.
+# Long-lived (months); automatically refreshed on use.
+CONF_AUTH_X_TOKEN = "auth_x_token"
 
-# ---------------------------------------------------------------------------
-# Config actions
-# ---------------------------------------------------------------------------
-CONF_ACTION_REGISTER = "register_cloud"
-CONF_ACTION_GET_OTP = "get_otp"
-CONF_ACTION_AUTO_CREATE = "auto_create_skill"
+# Yandex account source: instance_id of a linked yandex_music provider to
+# borrow the x_token from, or the shared "__own__" sentinel for this
+# provider's own Device Flow (key name matches the other yandex providers).
+CONF_YM_INSTANCE = "ym_instance"
 
 # ---------------------------------------------------------------------------
 # Connection types
@@ -66,6 +75,10 @@ CLOUD_SKILL_WEBHOOK_TEMPLATE = "https://yaha-cloud.ru/api/yandex_smart_home"
 # Direct connection — HTTP endpoints on MA webserver
 # ---------------------------------------------------------------------------
 DIRECT_API_BASE_PATH = "/api/yandex_smarthome/v1.0"
+# What we send to Yandex as the skill Backend URI. Yandex appends /v1.0/...
+# itself when calling our endpoints, so the backend URI must NOT include
+# /v1.0 — otherwise Yandex calls /v1.0/v1.0/user/devices and gets 404.
+DIRECT_BACKEND_URI_PATH = "/api/yandex_smarthome"
 DIRECT_AUTH_BASE_PATH = "/api/yandex_smarthome/auth"
 DIRECT_HEALTH_RESPONSE = "Yandex Smart Home for Music Assistant"
 CONF_DIRECT_ACCESS_TOKEN = "direct_access_token"
@@ -116,6 +129,10 @@ YANDEX_MODE_VALUES = (
     "nine",
     "ten",
 )
+
+# Combined cap for native sources + playlist sources in mode(input_source).
+# Yandex allows max 10 modes per capability.
+MAX_INPUT_SOURCES = len(YANDEX_MODE_VALUES)
 
 # ---------------------------------------------------------------------------
 # Yandex Smart Home API — response codes

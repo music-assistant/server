@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
-from music_assistant.providers.yandex_music import get_config_entries
-from music_assistant.providers.yandex_music.auth import PAGE_CONFIG
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
@@ -30,7 +28,7 @@ _PROVIDER_DIR = provider_dir()
 _DYNAMIC_LABEL_KEYS = {"label_text", "unofficial_provider_note"}
 
 
-def _load_strings() -> dict[str, dict[str, object]]:
+def _load_strings() -> dict[str, Any]:
     """Load the provider's strings.json authoring file."""
     data = json.loads((_PROVIDER_DIR / "strings.json").read_text(encoding="utf-8"))
     assert isinstance(data, dict)
@@ -38,13 +36,12 @@ def _load_strings() -> dict[str, dict[str, object]]:
 
 
 async def _get_entries() -> tuple[ConfigEntry, ...]:
-    """Collect config entries with auth flows stubbed out."""
-    mock_mass = mock.MagicMock()
-    with mock.patch(
-        "music_assistant.providers.yandex_music.perform_device_auth",
-        new=mock.AsyncMock(return_value=("x", "m", "r")),
-    ):
-        return await get_config_entries(mock_mass, None, None, {})
+    """Collect the provider option config entries (auth now lives in the setup flow)."""
+    provider = mock.MagicMock(spec=YandexMusicProvider)
+    provider.get_config_value = mock.MagicMock(
+        side_effect=lambda _key, default=None, **_kw: default
+    )
+    return await YandexMusicProvider.get_config_entries(provider)
 
 
 async def test_strings_json_covers_config_entries() -> None:
@@ -63,6 +60,33 @@ async def test_strings_json_has_media_and_manifest_sections() -> None:
     assert "playlist" in strings["media"]
     assert "recommendations" in strings["media"]
     assert strings["manifest"]["description"]
+
+
+def test_strings_json_covers_manual_auth_controls() -> None:
+    """Manual setup and replacement controls have complete user-facing guidance."""
+    strings = _load_strings()
+    config_entries = strings["config_entries"]
+    method = config_entries["method"]
+
+    assert method["options"]["token"]
+    assert config_entries["token"]["label"]
+    assert "refresh" in str(config_entries["token"]["description"]).lower()
+    assert config_entries["manual_token"]["label"]
+    replacement_description = str(config_entries["manual_token"]["description"])
+    assert "empty" in replacement_description.lower()
+    assert "Reconfigure" in replacement_description
+
+
+def test_device_flow_copy_describes_browser_confirmation() -> None:
+    """Device Flow tells users to enter the code on the shown web page."""
+    device_login = _load_strings()["setup_flow"]["device_login"]
+    description = str(device_login["description"])
+    progress_text = str(device_login["progress_text"])
+
+    assert "address shown" in description.lower()
+    assert "enter the code" in progress_text.lower()
+    assert "verification page" in progress_text.lower()
+    assert "app" not in progress_text.lower()
 
 
 async def test_config_entries_have_no_hardcoded_labels() -> None:
@@ -94,45 +118,6 @@ async def test_quality_options_use_value_first_signature() -> None:
         QUALITY_HIGH,
         QUALITY_SUPERB,
     }
-
-
-async def test_auth_status_label_localized_via_translation_key() -> None:
-    """
-    The dynamic auth status label carries a per-state translation key.
-
-    The post-login "click Save" warning (spec 0002) must be authored in
-    strings.json so Lokalise localizes it like everything else.
-    """
-    strings = _load_strings()
-    mock_mass = mock.MagicMock()
-    with mock.patch(
-        "music_assistant.providers.yandex_music.perform_device_auth",
-        new=mock.AsyncMock(return_value=("x", "m", "r")),
-    ):
-        entries = await get_config_entries(mock_mass, None, "auth_device", {"session_id": "s1"})
-    label = next(e for e in entries if e.key == "label_text")
-    assert label.translation_key is not None
-    authored = strings["config_entries"][label.translation_key]
-    assert isinstance(authored, dict)
-    assert "label" in authored
-
-
-async def test_strings_json_authors_device_page_keys() -> None:
-    """
-    Every device-code page string is authored under page.device_code.
-
-    The HTML ``lang`` attribute is presentation plumbing, not a
-    translatable string, so it stays code-side.
-    """
-    strings = _load_strings()
-    page = strings["page"]
-    assert isinstance(page, dict)
-    authored = page["device_code"]
-    assert isinstance(authored, dict)
-    # "context" is the optional provider paragraph — unused (empty) for this
-    # provider, so it is not authored in strings.json either.
-    expected = set(PAGE_CONFIG.strings_for("en")) - {"lang", "context"}
-    assert set(authored) == expected
 
 
 def _media_label_provider(authored: str | None) -> mock.MagicMock:

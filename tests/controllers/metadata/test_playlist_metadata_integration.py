@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -43,13 +42,11 @@ def _make_playlist() -> Playlist:
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
+async def test_update_playlist_metadata_calls_provider() -> None:
     """_update_playlist_metadata should call get_playlist_metadata on providers."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     # Mock metadata provider
     provider = MagicMock()
@@ -88,13 +85,11 @@ async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_handles_provider_exception(tmp_path: Any) -> None:
+async def test_update_playlist_metadata_handles_provider_exception() -> None:
     """_update_playlist_metadata should handle MusicAssistantError exceptions from providers gracefully."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     # Mock metadata provider that raises MusicAssistantError
     provider = MagicMock()
@@ -116,13 +111,11 @@ async def test_update_playlist_metadata_handles_provider_exception(tmp_path: Any
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_preserves_existing_thumb(tmp_path: Any) -> None:
-    """_update_playlist_metadata should preserve existing non-collage thumb when providers return None."""
+async def test_update_playlist_metadata_preserves_existing_thumb() -> None:
+    """_update_playlist_metadata should preserve the existing thumb when providers return None."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     # Mock metadata provider that returns None
     provider = MagicMock()
@@ -153,59 +146,11 @@ async def test_update_playlist_metadata_preserves_existing_thumb(tmp_path: Any) 
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_preserves_collage_thumb_when_no_new_generated(
-    tmp_path: Any,
-) -> None:
-    """_update_playlist_metadata should preserve existing collage thumb when no new thumb is generated."""
-    enrichment = MetadataEnrichmentMixin()
-    enrichment.logger = MagicMock()
-    enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    os.makedirs(enrichment._collage_images_dir, exist_ok=True)
-    enrichment.create_collage_image = AsyncMock()  # type: ignore[method-assign]
-
-    # Mock metadata provider that returns None
-    provider = MagicMock()
-    provider.name = "playlist_metadata"
-    provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
-    provider.get_playlist_metadata = AsyncMock(return_value=None)
-    enrichment.providers = [provider]  # type: ignore[misc]
-
-    playlist = _make_playlist()
-    # Existing thumb is a collage
-    old_collage_thumb = MediaItemImage(
-        type=ImageType.THUMB,
-        path=f"{enrichment._collage_images_dir}/old_thumb.jpg",
-        provider="builtin",
-        remotely_accessible=False,
-    )
-    playlist.metadata.images = UniqueList([old_collage_thumb])
-
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
-    enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
-
-    await enrichment._update_playlist_metadata(playlist, force_refresh=False)
-
-    # Should preserve old collage, not generate new thumb collage
-    assert any(
-        img.type == ImageType.THUMB and img.path == old_collage_thumb.path
-        for img in (playlist.metadata.images or [])
-    )
-    # create_collage_image may be called for fanart, but not for thumb
-    if enrichment.create_collage_image.called:
-        # All calls should be for fanart=True, never for thumb (fanart=False)
-        for call in enrichment.create_collage_image.call_args_list:
-            assert call.kwargs.get("fanart") is True
-
-
-@pytest.mark.asyncio
-async def test_update_playlist_metadata_skips_providers_without_feature(tmp_path: Any) -> None:
+async def test_update_playlist_metadata_skips_providers_without_feature() -> None:
     """_update_playlist_metadata should skip providers without PLAYLIST_METADATA feature."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     # Provider without PLAYLIST_METADATA feature
     provider_without_feature = MagicMock()
@@ -226,9 +171,7 @@ async def test_update_playlist_metadata_skips_providers_without_feature(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists(
-    tmp_path: Any,
-) -> None:
+async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists() -> None:
     """
     _update_playlist_metadata should call providers even for dynamic playlists.
 
@@ -238,7 +181,6 @@ async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists(
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
 
     # Mock metadata provider that returns None for dynamic playlists
     provider = MagicMock()
@@ -284,13 +226,11 @@ async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists(
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_allows_smart_playlists(tmp_path: Any) -> None:
+async def test_update_playlist_metadata_allows_smart_playlists() -> None:
     """_update_playlist_metadata should allow smart playlists despite is_dynamic=True."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
-    enrichment._collage_images_dir = str(tmp_path / "collage")
-    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     # Mock metadata provider
     provider = MagicMock()

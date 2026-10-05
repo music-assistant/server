@@ -33,6 +33,9 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.util import join_task
+from music_assistant.helpers.virtual_player import cleanup_virtual_player
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -41,7 +44,6 @@ if TYPE_CHECKING:
 SENDSPIN_DOMAIN = "sendspin"
 REMOTE_CREATION_CLEANUP_TIMEOUT = 15.0
 REMOTE_REMOVAL_CLEANUP_DELAYS = (0.0, 1.0, 5.0)
-REMOTE_REMOVAL_CLEANUP_TIMEOUT = 5.0
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +53,17 @@ class SharedPlaybackMode(StrEnum):
 
     VENUE = "venue"
     REMOTE = "remote"
+
+
+def is_remote_session_host(mass: MusicAssistant, player_id: str) -> bool:
+    """
+    Return whether the given player is the virtual host of a REMOTE session.
+
+    :param mass: MusicAssistant instance.
+    :param player_id: Player to inspect.
+    """
+    sendspin = cast("SendspinProvider | None", mass.get_provider(SENDSPIN_DOMAIN))
+    return sendspin is not None and sendspin.is_virtual_player(player_id)
 
 
 class SharedPlaybackSession:
@@ -133,7 +146,9 @@ class SharedPlaybackSession:
             cls._cancel_and_observe_creation(mass, sendspin, creation_task)
             raise
         try:
-            player_id = await asyncio.shield(creation_task)
+            # join: cancelling the caller must not abort the creation halfway, or the
+            # cleanup task can no longer remove the player it left behind
+            player_id = await join_task(creation_task)
         except asyncio.CancelledError:
             cleanup_required.set_result(True)
             raise
@@ -312,22 +327,13 @@ class SharedPlaybackSession:
         :param sendspin: Sendspin provider that owns the virtual player.
         :param player_id: Virtual player to remove.
         """
-        last_error: Exception | None = None
-        for delay in REMOTE_REMOVAL_CLEANUP_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                if not sendspin.is_virtual_player(player_id):
-                    return
-                async with asyncio.timeout(REMOTE_REMOVAL_CLEANUP_TIMEOUT):
-                    await sendspin.remove_virtual_player(player_id)
-                return
-            except Exception as err:
-                last_error = err
-        LOGGER.warning(
-            "Could not clean up cancelled remote session %s: %s",
+        await cleanup_virtual_player(
             player_id,
-            last_error,
+            REMOTE_REMOVAL_CLEANUP_DELAYS,
+            sendspin.is_virtual_player,
+            sendspin.remove_virtual_player,
+            LOGGER,
+            "Could not clean up cancelled remote session %s: %s",
         )
 
     @classmethod

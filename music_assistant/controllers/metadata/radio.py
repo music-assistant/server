@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -30,7 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -212,16 +213,24 @@ class RadioArtworkMixin:
 
     def get_radio_stream_station_image(self, streamdetails: StreamDetails) -> str | None:
         """
-        Get station image URL from queue current item.
+        Get the station image URL of the queue item that owns the given streamdetails.
 
         :param streamdetails: StreamDetails for the radio stream.
         """
         if streamdetails.queue_id and (
             queue := self.mass.player_queues.get(streamdetails.queue_id)
         ):
-            if queue.current_item and queue.current_item.media_item:
-                if station_image := queue.current_item.media_item.image:
-                    return station_image.path
+            current_item = queue.current_item
+            # the first in-band metadata of a freshly started station can arrive while the
+            # queue still reports the previous item as current, so only take the image
+            # from an item that actually holds these streamdetails
+            if (
+                current_item
+                and current_item.streamdetails is streamdetails
+                and current_item.media_item
+                and (station_image := current_item.media_item.image)
+            ):
+                return self.get_image_url(station_image)
         return None
 
     @staticmethod

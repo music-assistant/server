@@ -50,7 +50,7 @@ def _mass_episode() -> PodcastEpisode:
             "guid": "guid-1",
         },
         prov_podcast_id="pod-1",
-        episode_cnt=1,
+        position=1,
         instance_id="gpodder--test",
         domain="gpodder",
     )

@@ -16,20 +16,23 @@ on:
 permissions:
   contents: read
 
+env:
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
+
 jobs:
   sync-manifests:
     name: Back-sync provider manifests
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     permissions:
-      contents: write
+      contents: read
     steps:
-      # persist-credentials: false keeps the (privileged) push token out of the git config while
-      # the checked-out Dependabot branch contents are processed below. The push step re-attaches
-      # the music-assistant-machine credential (PRIVILEGED_GITHUB_TOKEN) only for the push itself,
-      # so the pushed commit re-triggers the required checks (the default GITHUB_TOKEN would not).
+      # Keep the checkout token out of git config while processing the Dependabot branch.
+      # A repository-scoped musicassistant-bot[bot] token is minted only for the push so the
+      # resulting commit re-triggers the required checks.
       - name: Check out the Dependabot branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           persist-credentials: false
@@ -61,7 +64,7 @@ jobs:
 
       - name: Set up Python
         if: steps.bumped.outputs.packages != ''
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -79,13 +82,37 @@ jobs:
           # Unstage the overlay so it is never part of the commit pushed back to the branch.
           git checkout "origin/$BASE_REF" -- scripts/
           git reset -q -- scripts/
-          python -m scripts.sync_manifest_from_requirements $PACKAGES
+          read -ra packages <<< "$PACKAGES"
+          python -m scripts.sync_manifest_from_requirements "${packages[@]}"
           python -m scripts.gen_requirements_all
+
+      - name: Create Dependabot branch token
+        if: steps.bumped.outputs.packages != ''
+        id: push_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        if: steps.bumped.outputs.packages != ''
+        env:
+          APP_SLUG: ${{ steps.push_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.push_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
 
       - name: Commit and push the manifest sync
         if: steps.bumped.outputs.packages != ''
         env:
-          PUSH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.push_token.outputs.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           REPO: ${{ github.repository }}
         run: |

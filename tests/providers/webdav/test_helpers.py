@@ -100,3 +100,69 @@ async def test_webdav_propfind_omits_authorization_header_when_unset() -> None:
 
     assert session.last_headers is not None
     assert "Authorization" not in session.last_headers
+
+
+async def test_webdav_propfind_parses_etag_from_single_propstat() -> None:
+    """A normal single-propstat response yields a normalized (unquoted, non-weak) ETag."""
+    body = f"""<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:">
+    <d:response>
+        <d:href>{BASE_URL}/track.mp3</d:href>
+        <d:propstat>
+            <d:prop>
+                <d:resourcetype/>
+                <d:getcontentlength>1234</d:getcontentlength>
+                <d:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</d:getlastmodified>
+                <d:getetag>W/"abc123"</d:getetag>
+            </d:prop>
+            <d:status>HTTP/1.1 200 OK</d:status>
+        </d:propstat>
+    </d:response>
+</d:multistatus>"""
+    session = _FakeSession(_FakeResponse(207, body))
+
+    items = await webdav_propfind(cast("aiohttp.ClientSession", session), BASE_URL, depth=1)
+
+    assert len(items) == 1
+    assert items[0].name == "track.mp3"
+    assert items[0].is_dir is False
+    assert items[0].size == 1234
+    assert items[0].etag == "abc123"  # weak-tag prefix and quotes stripped
+
+
+async def test_webdav_propfind_merges_split_propstat_blocks() -> None:
+    """
+    A server splitting an unsupported getetag into its own failed propstat is tolerated.
+
+    A response with an earlier 404 propstat (only offering getetag) must not shadow the
+    resourcetype/getlastmodified/getcontentlength carried by a later, successful propstat.
+    """
+    body = f"""<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:">
+    <d:response>
+        <d:href>{BASE_URL}/Album</d:href>
+        <d:propstat>
+            <d:prop>
+                <d:getetag/>
+            </d:prop>
+            <d:status>HTTP/1.1 404 Not Found</d:status>
+        </d:propstat>
+        <d:propstat>
+            <d:prop>
+                <d:resourcetype><d:collection/></d:resourcetype>
+                <d:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</d:getlastmodified>
+                <d:displayname>Album</d:displayname>
+            </d:prop>
+            <d:status>HTTP/1.1 200 OK</d:status>
+        </d:propstat>
+    </d:response>
+</d:multistatus>"""
+    session = _FakeSession(_FakeResponse(207, body))
+
+    items = await webdav_propfind(cast("aiohttp.ClientSession", session), BASE_URL, depth=1)
+
+    assert len(items) == 1
+    assert items[0].name == "Album"
+    assert items[0].is_dir is True  # resourcetype must not be lost to the failed propstat
+    assert items[0].last_modified == "Mon, 01 Jan 2024 00:00:00 GMT"
+    assert items[0].etag is None  # genuinely unsupported by this server

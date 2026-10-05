@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.providers.music_quiz import MusicQuizPlugin
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -155,6 +156,7 @@ def _mass(source_items: Mapping[str, object]) -> MagicMock:
     mass.music.genres.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
     mass.music.tracks.get = AsyncMock()
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     mass.metadata.get_image_url_for_item = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     mass.get_provider = MagicMock(return_value=None)

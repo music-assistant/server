@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -113,13 +113,18 @@ class RecencyEngine:
         self.mass = mass
 
     async def snapshot(
-        self, windows: RecencyWindows, *, userid: str | None = None
+        self,
+        windows: RecencyWindows,
+        *,
+        userid: str | None = None,
+        include_partially_played: bool = False,
     ) -> RecencySnapshot:
         """
         Build a recency snapshot from a single batched, user-scoped playlog query.
 
         :param windows: The lookback windows to read.
         :param userid: The user whose play history to read; falls back to the current user.
+        :param include_partially_played: Include tracks that were stopped before completion.
         """
         now = int(time.time())
         snapshot = RecencySnapshot(now=now)
@@ -137,9 +142,10 @@ class RecencyEngine:
             params["artist_cutoff"] = now - windows.artist_seconds
         if not clauses:
             return snapshot
-        # only fully-played items count as "recently heard" (artist credit rows are always
-        # written fully_played=1, so artist recency is unaffected)
-        where = f"fully_played = 1 AND ({' OR '.join(clauses)})"
+        where = f"({' OR '.join(clauses)})"
+        if not include_partially_played:
+            # Artist credit rows are always fully played, so this only affects track recency.
+            where = f"fully_played = 1 AND {where}"
         if not userid and (user := get_current_user()):
             userid = user.user_id
         if userid:

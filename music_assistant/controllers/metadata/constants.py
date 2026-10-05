@@ -20,6 +20,7 @@ LOCALES = {
     "bg_BG": "Bulgarian",
     "cs_CZ": "Czech",
     "zh_CN": "Chinese",
+    "zh_TW": "Chinese (Traditional)",
     "hr_HR": "Croatian",
     "da_DK": "Danish",
     "de_DE": "German",
@@ -65,21 +66,49 @@ AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "pro
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 
+# a refresh that a metadata provider failed temporarily is due again after this
+REFRESH_RETRY_INTERVAL = 60 * 60 * 24 * 7  # 7 days
+
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
 
 CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 
-MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
+CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ = "link_providers_via_musicbrainz"
+
+# core config key holding, per music provider MusicBrainz links to, since when it is loaded;
+# items looked up on MusicBrainz before that still lack its links
+CONF_MUSICBRAINZ_LINKED_DOMAINS = "musicbrainz_linked_domains"
+
+# keeps its historical artist-only id (and task domain) so existing schedules survive
+MISSING_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
 
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
 
 THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
 
+ALBUM_RECONCILIATION_TASK_ID = "metadata_album_reconciliation_v1"
+
+MUSICBRAINZ_LINK_TASK_ID = "metadata_musicbrainz_link_v1"
+
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 
-METADATA_SCAN_BATCH_SIZE = 5
+METADATA_SCAN_BATCH_SIZE = 25
+
+# how many library items one MusicBrainz link run identifies, across all of its phases
+MUSICBRAINZ_LINK_BATCH_SIZE = 50
+
+# seconds between two items of a MusicBrainz link run, keeping the mirror free for the
+# lookups users are waiting on
+MUSICBRAINZ_LINK_ITEM_INTERVAL = 2.0
+
+# seconds one item of a MusicBrainz link run may take before it is given up on
+MUSICBRAINZ_LINK_ITEM_TIMEOUT = 60
+
+# music providers MusicBrainz links artists and releases to; their share URLs are parsed
+# by the hosts in helpers/uri.py
+MUSICBRAINZ_LINK_DOMAINS = ("spotify", "deezer", "apple_music", "tidal", "qobuz", "ytmusic")
 
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
 
@@ -106,5 +135,8 @@ _IMAGE_ID_CACHE_TTL = 86400 * 365
 # Sizes accepted by the imageproxy. 0 means "no resize". The set is small enough
 # to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
 _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
+
+# Human-readable form of the allowed sizes, used in error responses.
+_ALLOWED_IMAGEPROXY_SIZES_STR = ", ".join(str(size) for size in sorted(_ALLOWED_IMAGEPROXY_SIZES))
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"

@@ -5,21 +5,25 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
-from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        MediaItemType,
+        PlayableMediaItemType,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+    from music_assistant.models.player import Player
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -42,7 +46,7 @@ class CompareState(TypedDict):
     last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
-    output_formats: list[str] | None
+    output_player_ids: list[str] | None
 
 
 class _PlayActionHost(Protocol):
@@ -58,6 +62,10 @@ class _PlayActionHost(Protocol):
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
 
+    def on_player_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None: ...
+
 
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
@@ -65,8 +73,9 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     """
     Decorator for queue playback actions.
 
-    Acquires the shared playback lock for the queue's player (re-entrant)
-    and sets ATTR_PLAY_ACTION_IN_PROGRESS on the queue while the action runs.
+    Acquires the playback lock for the queue's player, preceded by that of the group
+    holding the player (both re-entrant), and sets ATTR_PLAY_ACTION_IN_PROGRESS on the
+    queue while the action runs.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
     :param func: The function to wrap.
@@ -81,7 +90,10 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         if queue_data is None:
             return await func(self, *args, **kwargs)
         queue = queue_data.queue
-        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
+        # a play action on the queue of a player captured by a (sync)group releases the
+        # player from it first, which takes the group's lock - so that one is taken before
+        # the player's own (see PlayerController.get_group_and_player_lock)
+        async with self.mass.players.get_group_and_player_lock(queue_id):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
                 queue_data.play_action_refcount += 1
@@ -94,14 +106,39 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 if queue_data.play_action_refcount <= 0:
                     queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                    # the queue follows the player through a debounced update, which is also
+                    # suppressed while an action is transitioning; recalculate it here so the
+                    # update that clears the flag already carries the action's resulting state
+                    if (player := self.mass.players.get_player(queue_id)) is not None:
+                        self.on_player_update(player, {})
                     self.signal_update(queue_id)
 
     return wrapper
 
 
+def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
+    """Return True if the item supplies its own on-demand track feed."""
+    return isinstance(item, Playlist | Radio) and item.is_dynamic
+
+
+def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
+    """
+    Return the queue's most recently added dynamic source, if it has one.
+
+    Prefers the queue's sources and falls back to what was enqueued on it.
+
+    :param queue_data: The queue to inspect.
+    """
+    for items in (queue_data.source_items, queue_data.enqueued_media_items):
+        for item in reversed(items):
+            if is_dynamic_source(item):
+                return item
+    return None
+
+
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
-    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
-    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+    """Return True if any source supplies its own on-demand track feed (the queue is dynamic)."""
+    return any(is_dynamic_source(item) for item in source_items)
 
 
 def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
@@ -147,6 +184,15 @@ def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
         ),
         "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
         "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
+        # items without a date_added sort as the oldest
+        "timestamp_added": (
+            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
+            False,
+        ),
+        "timestamp_added_desc": (
+            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
+            True,
+        ),
         "track_number": (
             lambda t: (
                 getattr(t, "disc_number", 0) or 0,
@@ -166,6 +212,24 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def committed_index(queue: PlayerQueue) -> int | None:
+    """
+    Return the highest queue index the player owns, or None if it owns none.
+
+    It holds both the playing track and the one handed to it for the transition. Nothing at or
+    below this index can be reordered: the player keeps playing what it was given whatever the
+    queue says, and the buffered position does not follow items that move around it.
+
+    :param queue: The queue to resolve the index for.
+    """
+    if queue.current_index is None:
+        return queue.index_in_buffer
+    if queue.index_in_buffer is None:
+        return queue.current_index
+    # repeat wraps the buffered index back to the front while the last track plays
+    return max(queue.current_index, queue.index_in_buffer)
 
 
 def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
