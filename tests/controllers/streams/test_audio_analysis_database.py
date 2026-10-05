@@ -419,6 +419,40 @@ async def test_relocation_walks_id_ranges_in_batches(
 
 
 @pytest.mark.asyncio
+async def test_relocation_batches_follow_row_count_not_max_id(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sparse legacy ids relocate in ceil(rows / batch) batches, however high MAX(id) is."""
+    monkeypatch.setattr(streams_constants, "RELOCATE_BATCH_SIZE", 2)
+    await _seed_legacy(library_db, n_analysis=0, n_failures=0)
+    for i, legacy_id in enumerate((5, 20, 47, 80, 101)):
+        await library_db.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS}"
+            "(id, media_type, item_id, provider, aa_provider_domain, analysis_data, "
+            " analysis_version, timestamp_created) VALUES "
+            "(:id, 'track', :item, 'fs--a', 'loudness_analysis', '{}', 2, 1000)",
+            {"id": legacy_id, "item": f"t{i}"},
+        )
+    await library_db.commit()
+    ctrl = _make_controller(library_db, tmp_path)
+    real_execute = library_db.execute
+    batch_inserts: list[str] = []
+
+    async def counting_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith(f"INSERT INTO AA.{DB_TABLE_AUDIO_ANALYSIS.upper()} "):
+            batch_inserts.append(query)
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", counting_execute)
+    await ctrl.setup_database()
+
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert {r["item_id"] for r in moved} == {"t0", "t1", "t2", "t3", "t4"}
+    assert len(batch_inserts) == 3
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
+
+
+@pytest.mark.asyncio
 async def test_relocation_failure_keeps_legacy_table(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
