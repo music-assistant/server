@@ -7,6 +7,8 @@ on:
     paths:
       - "music_assistant/providers/smart_dj/**"
       - "docker/smartdj.Dockerfile"
+      - "music_assistant/mass.py"
+      - "music_assistant/controllers/webserver/**"
 
 env:
   REGISTRY: ghcr.io
