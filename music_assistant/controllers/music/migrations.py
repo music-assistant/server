@@ -1198,6 +1198,17 @@ async def migrate_database(  # noqa: PLR0915
             shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
         )
 
+    if prev_version <= 62:
+        # add is_endless to radios; every existing row is an endless stream or feed,
+        # so the default is right
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_endless BOOLEAN DEFAULT 1 NOT NULL"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:

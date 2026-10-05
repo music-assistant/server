@@ -359,3 +359,69 @@ async def test_play_next_mixed_container_transition_no_duplicates() -> None:
     # the album feeds the new pool as a source; its expansion must not also be inserted
     assert any(item_id.startswith("a") for item_id in ids), f"album did not feed the pool: {ids}"
     assert len(ids) == len(set(ids)), f"duplicate items in queue: {ids}"
+
+
+def _finite_radio(item_id: str) -> Radio:
+    """Build a finite Radio (fixed tracklist, not dynamic, not endless) on the 'test' provider."""
+    return Radio(
+        item_id=item_id,
+        provider="test",
+        name=f"Show {item_id}",
+        is_dynamic=False,
+        is_endless=False,
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+async def test_play_finite_radio_records_source_and_enqueues_tracks() -> None:
+    """Playing a finite radio resolves its tracklist and keeps it as a source, not a dynamic one."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=0,
+        state=PlaybackState.IDLE,
+        is_dynamic=False,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
+    show = _finite_radio("show")
+    show_tracks = [_track(f"s{i}", artist=f"Artist{i}") for i in range(3)]
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=show_tracks)  # type: ignore[method-assign]
+
+    await ctrl._handle_play_media("q1", show, QueueOption.REPLACE)
+
+    queue_data = ctrl._queue_data["q1"]
+    assert show in queue_data.source_items
+    assert [source.item_id for source in queue.sources] == ["show"]
+    assert not queue.is_dynamic
+    ids = [item.media_item.item_id for item in queue_data.items if item.media_item is not None]
+    assert ids == ["s0", "s1", "s2"]
+
+
+async def test_add_finite_radio_on_dynamic_queue_feeds_pool() -> None:
+    """ADD of a finite radio on a dynamic queue reaches the pool via its resolved tracklist."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    _dynamic_playing_queue(ctrl, [_track(f"d{i}", artist=f"Artist{i}") for i in range(40)])
+    show = _finite_radio("show")
+    show_tracks = [_track(f"s{i}", artist=f"ShowArtist{i}") for i in range(30)]
+    ctrl.get_tracks_for_playback = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item: show_tracks if item is show else []
+    )
+
+    await ctrl._handle_play_media("q1", show, QueueOption.ADD)
+
+    ctrl.get_tracks_for_playback.assert_any_await(show)
+    ids = [
+        item.media_item.item_id
+        for item in ctrl._queue_data["q1"].items
+        if item.media_item is not None
+    ]
+    assert any(item_id.startswith("s") for item_id in ids), f"show did not feed the pool: {ids}"
+    assert show in ctrl._queue_data["q1"].source_items

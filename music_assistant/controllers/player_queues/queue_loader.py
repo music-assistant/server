@@ -61,6 +61,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
+    is_finite_radio,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -940,16 +941,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # a play-next track never becomes a source: the pool would re-dispatch it later
+                    # a play-next track never becomes a source: the pool would re-dispatch it
+                    # later. A finite radio station (a tracklist, not a live stream) resolves
+                    # like a playlist below but is still recorded here; a dynamic station is
+                    # handled by the is_dynamic_source branch above instead.
                     if (
                         not plays_next_track
                         and not isinstance(media_item, BrowseFolder)
-                        and media_item.media_type
-                        in (
-                            MediaType.TRACK,
-                            MediaType.ALBUM,
-                            MediaType.PLAYLIST,
-                            MediaType.ARTIST,
+                        and (
+                            is_finite_radio(media_item)
+                            or media_item.media_type
+                            in (
+                                MediaType.TRACK,
+                                MediaType.ALBUM,
+                                MediaType.PLAYLIST,
+                                MediaType.ARTIST,
+                            )
                         )
                     ):
                         # record the finite parent as a source (kept for a later dynamic

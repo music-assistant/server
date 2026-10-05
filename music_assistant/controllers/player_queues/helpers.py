@@ -121,6 +121,11 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
+def is_finite_radio(item: MediaItemType | BrowseFolder) -> TypeGuard[Radio]:
+    """Return True for a radio station with a fixed tracklist the queue plays out and ends."""
+    return isinstance(item, Radio) and not item.is_endless and not item.is_dynamic
+
+
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
     """
     Return the queue's most recently added dynamic source, if it has one.
