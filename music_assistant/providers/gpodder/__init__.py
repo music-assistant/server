@@ -447,13 +447,16 @@ class GPodder(MusicProvider):
         """Refresh the cached feeds a few at a time, yielding them in the given order."""
 
         def refresh(feed_url: str) -> tuple[str, asyncio.Task[dict[str, Any]]]:
-            return feed_url, asyncio.create_task(
+            # tracked by mass, so a shutdown cancels it; its errors are handled below
+            return feed_url, self.mass.create_task(
                 refresh_cached_podcast(
                     mass=self.mass,
                     provider_instance_id=self.instance_id,
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
-                )
+                ),
+                task_name="gpodder_feed_refresh",
+                log_exceptions=False,
             )
 
         # only a few refreshed feeds are held at a time, however large the library

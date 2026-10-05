@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -28,6 +29,7 @@ def episode(number: int, guid: str | None = None, **extra: Any) -> dict[str, Any
 def provider() -> GPodder:
     """Return a gPodder provider whose server and cached feeds are stubbed."""
     mass = MagicMock()
+    mass.create_task.side_effect = lambda coro, **_kwargs: asyncio.create_task(coro)
     mass.music.mark_item_played = AsyncMock()
     mass.music.mark_item_unplayed = AsyncMock()
     mass.cache.set = AsyncMock()
