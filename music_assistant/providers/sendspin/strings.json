@@ -27,6 +27,9 @@
     "security_status_paired": {
       "label": "This device is paired. The connection is encrypted and authenticated."
     },
+    "security_status_pairing_lost": {
+      "label": "This device lost its pairing with Music Assistant and cannot play. Use Reconfigure to pair it again, or Unpair to remove the old pairing."
+    },
     "security_status_guest": {
       "label": "This device is connected through guest access. The connection is encrypted but not verified, which the device allows on purpose."
     },

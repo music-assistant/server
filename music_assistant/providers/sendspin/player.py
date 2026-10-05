@@ -877,6 +877,12 @@ class SendspinBasePlayer(Player):
                     provider, provider.pairing_config_snapshot(self.player_id)
                 ),
             )
+        if record is not None:
+            # The device lost its half of this pairing, so it cannot play while the record remains.
+            return (
+                ConfigEntry(key="security_status_pairing_lost", type=ConfigEntryType.LABEL),
+                [action_entry(CONF_ACTION_UNPAIR)],
+            )
 
         trusted_unpaired = (
             await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None

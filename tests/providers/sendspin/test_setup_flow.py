@@ -146,6 +146,7 @@ class _FakeApi:
         self.connection_security: Any = SimpleNamespace(psk_category=psk_category)
         self.active_roles = active_roles
         self.negotiated_role_ids: list[str] = []
+        self.is_connected = True
 
     def roles_by_family(self, family: str) -> list[str]:
         return [role for role in self.active_roles if role.startswith(f"{family}@")]
