@@ -1,4 +1,5 @@
-"""Pure similarity functions — no MA dependencies.
+"""
+Pure similarity functions — no MA dependencies.
 
 Centroid blending, union merging, and MMR diversity re-ranking.
 All functions operate on plain lists of floats and numpy arrays.
@@ -11,7 +12,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .vectors import compute_weighted_distance
+from .vectors import build_dimension_weights, compute_weighted_distance_vec
 
 
 class Candidate(NamedTuple):
@@ -25,7 +26,8 @@ class Candidate(NamedTuple):
 
 
 class ScoredCandidate(NamedTuple):
-    """An ANN-search result without features/generation — the cheap variant of Candidate.
+    """
+    An ANN-search result without features/generation — the cheap variant of Candidate.
 
     Field order matches Candidate and the project's tracks.get(item_id, provider)
     convention, so the CLAP and 18-dim paths can share post-search helpers
@@ -41,7 +43,8 @@ def combine_seeds_centroid(
     seeds: list[list[float]],
     weights: list[float] | None = None,
 ) -> list[float]:
-    """Compute weighted average of seed signature vectors.
+    """
+    Compute weighted average of seed signature vectors.
 
     :param seeds: List of signature vectors (all same dimensionality).
     :param weights: Per-seed weights. If None, equal weighting.
@@ -68,7 +71,8 @@ def combine_seeds_centroid(
 def merge_union_results(
     neighborhoods: list[list[tuple[str, float]]],
 ) -> list[tuple[str, float]]:
-    """Merge per-seed ANN results, keeping the best distance per track.
+    """
+    Merge per-seed ANN results, keeping the best distance per track.
 
     :param neighborhoods: List of result lists, each containing (item_id, distance) pairs.
     """
@@ -93,7 +97,8 @@ def apply_mmr(
     limit: int,
     weights: dict[str, float] | None = None,
 ) -> list[tuple[str, float]]:
-    """Apply Maximal Marginal Relevance to re-rank candidates for diversity.
+    """
+    Apply Maximal Marginal Relevance to re-rank candidates for diversity.
 
     :param candidates: List of (item_id, normalized_features, distance) tuples.
     :param seed_vec: The seed signature vector (normalized).
@@ -111,9 +116,11 @@ def apply_mmr(
     seed_arr = np.array(seed_vec, dtype=np.float64)
 
     if weights is not None:
+        # Build the per-dimension weight vector once; _similarity runs O(n²) times.
+        dim_weights = build_dimension_weights(weights)
 
         def _similarity(a: np.ndarray, b: np.ndarray) -> float:
-            d = compute_weighted_distance(a.tolist(), b.tolist(), weights)
+            d = compute_weighted_distance_vec(a, b, dim_weights)
             return 1.0 / (1.0 + d)
 
         relevance: dict[str, float] = {
@@ -173,7 +180,8 @@ def expand_recursive(
     depth: int,
     branch_factor: int,
 ) -> list[Candidate]:
-    """Expand similarity search across multiple generations.
+    """
+    Expand similarity search across multiple generations.
 
     :param initial_seeds: Seed signature vectors for generation 0.
     :param searcher: Callback that takes (seed_vectors, seen_ids) and returns

@@ -1,0 +1,1870 @@
+{
+  "data": [
+    {
+      "id": "80d6d637-9dba-4984-bf2e-5dec5e4782e4",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-05-05T15:11:57.953747Z"
+      }
+    },
+    {
+      "id": "3f99dc4b-1524-4df0-a1c0-052de6ca5722",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-05-04T14:51:24.614322Z"
+      }
+    },
+    {
+      "id": "dfcfa5e1-52e3-4f74-ad20-44d71c582021",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-05-04T11:05:20.240218Z"
+      }
+    },
+    {
+      "id": "886e6090-7fdd-422a-9901-e69ad8601e49",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-04-21T15:59:55.391784Z"
+      }
+    },
+    {
+      "id": "00162145119b17bdebf4d4da90433e",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-04-20T15:11:21.224442Z"
+      }
+    },
+    {
+      "id": "6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-04-03T15:02:07.507305Z"
+      }
+    },
+    {
+      "id": "00835752c7cbccabf4f88802580c47",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-03-02T16:39:20.650126Z"
+      }
+    },
+    {
+      "id": "001551c78ebf2d6f7cd70511364337",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-02-23T07:28:45.411504Z"
+      }
+    },
+    {
+      "id": "001b71158cd58182a7fd08add7b18c",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2026-02-23T07:28:33.409646Z"
+      }
+    },
+    {
+      "id": "0f72f8b9-6d2f-416c-be04-9bde48e735ce",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-11-28T20:53:43.823872Z"
+      }
+    },
+    {
+      "id": "001201ec16324e0651f9e99a27217f",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-08-17T10:34:34.797357Z"
+      }
+    },
+    {
+      "id": "001bbe5560632fefbd89ea4e0a4f39",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:07:44.228705Z"
+      }
+    },
+    {
+      "id": "00109a13be2e75e2b4f3061e188725",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:07:28.581655Z"
+      }
+    },
+    {
+      "id": "001e849b188999a5b673ce4db37f4f",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:05:53.902820Z"
+      }
+    },
+    {
+      "id": "001a47427032b79e02dd72c3b9d65f",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:05:13.746120Z"
+      }
+    },
+    {
+      "id": "0011883bfcf036107d2d781c4ac36a",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:04:17.375052Z"
+      }
+    },
+    {
+      "id": "0013933ae431aa8835ad1029040136",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:04:00.418944Z"
+      }
+    },
+    {
+      "id": "001583b539faa4dca268ff875b778f",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:03:41.577171Z"
+      }
+    },
+    {
+      "id": "0012c28bc8c89a5991cd888365d956",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:03:16.050124Z"
+      }
+    },
+    {
+      "id": "0015664b81ceacae9c91ec9da096d8",
+      "type": "playlists",
+      "meta": {
+        "addedAt": "2025-06-23T12:02:20.874153Z"
+      }
+    }
+  ],
+  "links": {
+    "self": "/userCollectionPlaylists/me/relationships/items?include=items.coverArt%2Citems.owners&locale=en-US",
+    "next": "/userCollectionPlaylists/me/relationships/items?include=items.coverArt%2Citems.owners&locale=en-US&page%5Bcursor%5D=eyJpZCI6ImNkYjMyY2ZkLWUyODQtOWY1NS1jYWFhLTBmNzY3YzQwYTc1MSIsIm5hbWUiOiJDb21lIFNhaWwgQXdheSIsImFkZGVkQXQiOiIyMDI1LTA2LTIzVDEyOjAyOjIwLjg3NDE1M1oiLCJ1cGRhdGVkQXQiOiIyMDI1LTA2LTIzVDEyOjAyOjIwLjg3NDE1M1oiLCJpdGVtVHlwZSI6IkZBVk9SSVRFX01JWCIsImFydGlzdE5hbWUiOm51bGwsInJlbGVhc2VkQXQiOm51bGwsIm1peFR5cGUiOm51bGx9",
+    "meta": {
+      "nextCursor": "eyJpZCI6ImNkYjMyY2ZkLWUyODQtOWY1NS1jYWFhLTBmNzY3YzQwYTc1MSIsIm5hbWUiOiJDb21lIFNhaWwgQXdheSIsImFkZGVkQXQiOiIyMDI1LTA2LTIzVDEyOjAyOjIwLjg3NDE1M1oiLCJ1cGRhdGVkQXQiOiIyMDI1LTA2LTIzVDEyOjAyOjIwLjg3NDE1M1oiLCJpdGVtVHlwZSI6IkZBVk9SSVRFX01JWCIsImFydGlzdE5hbWUiOm51bGwsInJlbGVhc2VkQXQiOm51bGwsIm1peFR5cGUiOm51bGx9"
+    }
+  },
+  "included": [
+    {
+      "id": "2b7Vtuqr0DkawPbseJyRPJryYZKlZlXc1KyWeix4QKfsGxRFRCNfNebX3",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/65a53dde/8d90/4622/b960/e8020c7f884e/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/65a53dde/8d90/4622/b960/e8020c7f884e/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/65a53dde/8d90/4622/b960/e8020c7f884e/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/65a53dde/8d90/4622/b960/e8020c7f884e/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#7C3B79",
+          "blurHash": "U17nYA7Njs2^8^wHfR+tfRfRfQfQ00;1fR{c",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2b7Vtuqr0H5NFZF6CvAs7Y8LGTDCDDM9Pv4wVVeRZxxJGuf9MNxW4AwPC",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/e20edc84/1724/44a8/aaa0/f32d42b27344/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e20edc84/1724/44a8/aaa0/f32d42b27344/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e20edc84/1724/44a8/aaa0/f32d42b27344/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e20edc84/1724/44a8/aaa0/f32d42b27344/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#A1315F",
+          "blurHash": "UGHm.a[C-BAB7x01M{-VyDI.bYNd}]=xoeI;",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2b7Vtuqr0KOnyQKPOV2FoHTAbWbcujij9EvIzDVCjFU5cajrGYa43EfcW",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/e9448a9a/3ade/4f79/93d2/12e6d8d4b2eb/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e9448a9a/3ade/4f79/93d2/12e6d8d4b2eb/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e9448a9a/3ade/4f79/93d2/12e6d8d4b2eb/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e9448a9a/3ade/4f79/93d2/12e6d8d4b2eb/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#19181C",
+          "blurHash": "U05ONk%M00M_M{ITWA%M00t7~qRi%N?bt7D%",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2b7Vtuqr0MPVb0Bv9GdfSLS1vEu4qTWZHroBfGnLaiSzLrsOVXpVVQt3U",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/8979ac02/d1ba/4797/901f/d0c7b0e5b15e/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/8979ac02/d1ba/4797/901f/d0c7b0e5b15e/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/8979ac02/d1ba/4797/901f/d0c7b0e5b15e/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/8979ac02/d1ba/4797/901f/d0c7b0e5b15e/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#A11916",
+          "blurHash": "UID+i2TxS5bcg*_4W?Io~EObbbs+KSxvsor?",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2b7Vtuqr0MRc9T9XSf3NTnbiu7rLhTRCQXPCfnUGuXHa4uuKUXdvlhBYP",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/f3b13bcf/cbcb/446f/bc14/17b9ea5b1c38/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/f3b13bcf/cbcb/446f/bc14/17b9ea5b1c38/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/f3b13bcf/cbcb/446f/bc14/17b9ea5b1c38/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/f3b13bcf/cbcb/446f/bc14/17b9ea5b1c38/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#580F07",
+          "blurHash": "UGFrej00oz^*17s$oLsp9f%FozIU4U~VWXD%",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2b7Vtuqr19YmDkEjwJ5guh7IXiqDVZG4DKipkUByRuTzARgsS0gGfoxJh",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/d8900392/554c/4719/9c6d/cf2220a3a07f/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/d8900392/554c/4719/9c6d/cf2220a3a07f/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/d8900392/554c/4719/9c6d/cf2220a3a07f/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/d8900392/554c/4719/9c6d/cf2220a3a07f/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#793868",
+          "blurHash": "UZEeJ?0wV[xb}^9safxanlWoj[j@NFxaj[WV",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDusNluawUwqytlhEfvP8OtLnB9gkGv9EfLgAv",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOGNlZDdkMmUvMzQzMS80YTQyLzk5NDkvMDYxZmZkZDM4YTI3GiQzMWYzMWFiZi83ZmM0LzQ3OWMvYjhhZi8wYzQyZWI1M2Q1OWUaJDI3ZTY2ODE4L2ViOTAvNGMyNy9iMWMwL2MyYzgyNzMwNWI1MiILVHJhY2sgUmFkaW8iE0FsbCBZb3UgRXZlciBXYW50ZWQqByNFMkIwQUEwAg?token=ff8fd9d6809099051b692b37778a4c8eba715add",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOGNlZDdkMmUvMzQzMS80YTQyLzk5NDkvMDYxZmZkZDM4YTI3GiQzMWYzMWFiZi83ZmM0LzQ3OWMvYjhhZi8wYzQyZWI1M2Q1OWUaJDI3ZTY2ODE4L2ViOTAvNGMyNy9iMWMwL2MyYzgyNzMwNWI1MiILVHJhY2sgUmFkaW8iE0FsbCBZb3UgRXZlciBXYW50ZWQqByNFMkIwQUEwAg?token=ff8fd9d6809099051b692b37778a4c8eba715add",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokOGNlZDdkMmUvMzQzMS80YTQyLzk5NDkvMDYxZmZkZDM4YTI3GiQzMWYzMWFiZi83ZmM0LzQ3OWMvYjhhZi8wYzQyZWI1M2Q1OWUaJDI3ZTY2ODE4L2ViOTAvNGMyNy9iMWMwL2MyYzgyNzMwNWI1MiILVHJhY2sgUmFkaW8iE0FsbCBZb3UgRXZlciBXYW50ZWQqByNFMkIwQUEwAg?token=261dfb23a150f0edf1660e1c3906d8b1e7af9273",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokOGNlZDdkMmUvMzQzMS80YTQyLzk5NDkvMDYxZmZkZDM4YTI3GiQzMWYzMWFiZi83ZmM0LzQ3OWMvYjhhZi8wYzQyZWI1M2Q1OWUaJDI3ZTY2ODE4L2ViOTAvNGMyNy9iMWMwL2MyYzgyNzMwNWI1MiILVHJhY2sgUmFkaW8iE0FsbCBZb3UgRXZlciBXYW50ZWQqByNFMkIwQUEwAg?token=fe3e2e7342acf2f0cb806b7e00505d1ec9334f35",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDvdG4e8fdH9rQnYDeAV6a2qyGjzTlY7qBoONF",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokYmM5MjhjMWYvZjUwYy80MGY3LzkwNjIvNmQyZTJiOTc3ZGY2GiQ4ZDE5MThiNy8xYWJjLzQxNmUvYmNjZi9lM2Q4YTk1Njk3ZmMaJDA1ZDcyYWU0LzMxOWYvNDIzNy84MjFmLzFkN2FmOWVjOGFjZiILVHJhY2sgUmFkaW8iDEhpZ2hlciBQb3dlcioHIzg5OTdGNzAC?token=15357cc79eade4617526aa11bf8646dc445b345b",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokYmM5MjhjMWYvZjUwYy80MGY3LzkwNjIvNmQyZTJiOTc3ZGY2GiQ4ZDE5MThiNy8xYWJjLzQxNmUvYmNjZi9lM2Q4YTk1Njk3ZmMaJDA1ZDcyYWU0LzMxOWYvNDIzNy84MjFmLzFkN2FmOWVjOGFjZiILVHJhY2sgUmFkaW8iDEhpZ2hlciBQb3dlcioHIzg5OTdGNzAC?token=15357cc79eade4617526aa11bf8646dc445b345b",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokYmM5MjhjMWYvZjUwYy80MGY3LzkwNjIvNmQyZTJiOTc3ZGY2GiQ4ZDE5MThiNy8xYWJjLzQxNmUvYmNjZi9lM2Q4YTk1Njk3ZmMaJDA1ZDcyYWU0LzMxOWYvNDIzNy84MjFmLzFkN2FmOWVjOGFjZiILVHJhY2sgUmFkaW8iDEhpZ2hlciBQb3dlcioHIzg5OTdGNzAC?token=bba5b49a66c4ae19f2a7b05db249d370a5eee821",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokYmM5MjhjMWYvZjUwYy80MGY3LzkwNjIvNmQyZTJiOTc3ZGY2GiQ4ZDE5MThiNy8xYWJjLzQxNmUvYmNjZi9lM2Q4YTk1Njk3ZmMaJDA1ZDcyYWU0LzMxOWYvNDIzNy84MjFmLzFkN2FmOWVjOGFjZiILVHJhY2sgUmFkaW8iDEhpZ2hlciBQb3dlcioHIzg5OTdGNzAC?token=632ea32c63ca718988cf29c7dd2d257bbf2a7362",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDwMs4HjAzb5pAirzHg4UiHb5jLbv9ljGffVrC",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOTFjNWI1NzAvYTNlNy80NjgwLzkwODcvMmJiZmQzM2U3OTUzGiRmMDQ3MjgzNC8yNTg2LzQwZTMvODZhMC8wNTBjODM2ZGFiNDYaJDJjZWEzNTFjL2VjMTYvNDlhZC84MjQ3L2FmMzc3NTgyNWNhNCILVHJhY2sgUmFkaW8iCFRoZSBIaWxsKgcjREY1QTg0MAI?token=dc6704d2e585522510243acb7c8e350762401eb0",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOTFjNWI1NzAvYTNlNy80NjgwLzkwODcvMmJiZmQzM2U3OTUzGiRmMDQ3MjgzNC8yNTg2LzQwZTMvODZhMC8wNTBjODM2ZGFiNDYaJDJjZWEzNTFjL2VjMTYvNDlhZC84MjQ3L2FmMzc3NTgyNWNhNCILVHJhY2sgUmFkaW8iCFRoZSBIaWxsKgcjREY1QTg0MAI?token=dc6704d2e585522510243acb7c8e350762401eb0",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokOTFjNWI1NzAvYTNlNy80NjgwLzkwODcvMmJiZmQzM2U3OTUzGiRmMDQ3MjgzNC8yNTg2LzQwZTMvODZhMC8wNTBjODM2ZGFiNDYaJDJjZWEzNTFjL2VjMTYvNDlhZC84MjQ3L2FmMzc3NTgyNWNhNCILVHJhY2sgUmFkaW8iCFRoZSBIaWxsKgcjREY1QTg0MAI?token=78690cc7cbd797957960f846ccd62d27d3158a3d",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokOTFjNWI1NzAvYTNlNy80NjgwLzkwODcvMmJiZmQzM2U3OTUzGiRmMDQ3MjgzNC8yNTg2LzQwZTMvODZhMC8wNTBjODM2ZGFiNDYaJDJjZWEzNTFjL2VjMTYvNDlhZC84MjQ3L2FmMzc3NTgyNWNhNCILVHJhY2sgUmFkaW8iCFRoZSBIaWxsKgcjREY1QTg0MAI?token=26f240e417fdba4c4f1cb8f7bde0537cae1c6233",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDwWFjLtHPI86yAIGCsdtGi2hkFEJ5PxfUalRG",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokYzg4ZDYyZjEvMTkxOS80YTZjLzk3ZTUvNzM5NWJhYTk0N2Y5GiQzMWRkMzI3NC8yYmEzLzQ2ODUvYjAxNy85NGQ0NDQ1NWI1NmEaJGQxMDhiMjc3LzgyZjkvNDc3Ny85MDc4LzQ3YWYxN2VmNDA1ZiILVHJhY2sgUmFkaW8iCkJ5IFRoZSBXYXkqByNGNzY3QjAwAg?token=ad872a2291c29a328d2b7093d95efdadbedeb203",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokYzg4ZDYyZjEvMTkxOS80YTZjLzk3ZTUvNzM5NWJhYTk0N2Y5GiQzMWRkMzI3NC8yYmEzLzQ2ODUvYjAxNy85NGQ0NDQ1NWI1NmEaJGQxMDhiMjc3LzgyZjkvNDc3Ny85MDc4LzQ3YWYxN2VmNDA1ZiILVHJhY2sgUmFkaW8iCkJ5IFRoZSBXYXkqByNGNzY3QjAwAg?token=ad872a2291c29a328d2b7093d95efdadbedeb203",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokYzg4ZDYyZjEvMTkxOS80YTZjLzk3ZTUvNzM5NWJhYTk0N2Y5GiQzMWRkMzI3NC8yYmEzLzQ2ODUvYjAxNy85NGQ0NDQ1NWI1NmEaJGQxMDhiMjc3LzgyZjkvNDc3Ny85MDc4LzQ3YWYxN2VmNDA1ZiILVHJhY2sgUmFkaW8iCkJ5IFRoZSBXYXkqByNGNzY3QjAwAg?token=d2c117f324366ec0abcf5fc7f7f113b91dab2ecb",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokYzg4ZDYyZjEvMTkxOS80YTZjLzk3ZTUvNzM5NWJhYTk0N2Y5GiQzMWRkMzI3NC8yYmEzLzQ2ODUvYjAxNy85NGQ0NDQ1NWI1NmEaJGQxMDhiMjc3LzgyZjkvNDc3Ny85MDc4LzQ3YWYxN2VmNDA1ZiILVHJhY2sgUmFkaW8iCkJ5IFRoZSBXYXkqByNGNzY3QjAwAg?token=43b7b1a27432aac01c313d6337edcdb6da100aca",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDx9cJxxWTn7Wb3bigLPQv5lGVZVP4xIPVh66o",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokODRhMTQ3YjUvNDhlNy80NjA3L2IwYzQvOGJlZTE1MTAxYmZkGiRjODJhYjhmMi9mNzdhLzRjNGEvYWY2NS8xNDM3NGQ4MmIzM2EaJDRiODg1YjExLzBhZjEvNGRlZS85NTgxLzMzYWE3ODQ4NjgxMSILVHJhY2sgUmFkaW8iB0JlYXQgSXQqByNDOEI0OEMwAg?token=4c2c0e7d7b96478dc56b79eb2e6d427b5cd50453",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokODRhMTQ3YjUvNDhlNy80NjA3L2IwYzQvOGJlZTE1MTAxYmZkGiRjODJhYjhmMi9mNzdhLzRjNGEvYWY2NS8xNDM3NGQ4MmIzM2EaJDRiODg1YjExLzBhZjEvNGRlZS85NTgxLzMzYWE3ODQ4NjgxMSILVHJhY2sgUmFkaW8iB0JlYXQgSXQqByNDOEI0OEMwAg?token=4c2c0e7d7b96478dc56b79eb2e6d427b5cd50453",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokODRhMTQ3YjUvNDhlNy80NjA3L2IwYzQvOGJlZTE1MTAxYmZkGiRjODJhYjhmMi9mNzdhLzRjNGEvYWY2NS8xNDM3NGQ4MmIzM2EaJDRiODg1YjExLzBhZjEvNGRlZS85NTgxLzMzYWE3ODQ4NjgxMSILVHJhY2sgUmFkaW8iB0JlYXQgSXQqByNDOEI0OEMwAg?token=5201a7824b60b902632df1d2f2b7a48d2298e7f9",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokODRhMTQ3YjUvNDhlNy80NjA3L2IwYzQvOGJlZTE1MTAxYmZkGiRjODJhYjhmMi9mNzdhLzRjNGEvYWY2NS8xNDM3NGQ4MmIzM2EaJDRiODg1YjExLzBhZjEvNGRlZS85NTgxLzMzYWE3ODQ4NjgxMSILVHJhY2sgUmFkaW8iB0JlYXQgSXQqByNDOEI0OEMwAg?token=00e528bf1361d636e09255c6db245f764967bb33",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDyf3giTLYdnF75YaogETilLBQ2NmU3DSDV4fX",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNmVhOTNlZmIvNjc5NS80ZGM4LzkxODUvNzUxZGQ1YmE3NmRkGiQwMzYyNzcxMy9iN2QxLzQ4YjcvOWI4Yi8xZjZlMTdiNGY1N2IaJDNiMGI3NmQxLzc2NmYvNDA5MS84ZGY0L2VlYjc2Njc0OTEzOSILVHJhY2sgUmFkaW8iFkxvcyBBbmdlbGVzIChBU09UIDk4NCkqByNEMTU3N0QwAg?token=c84193832b8f1696f52fe3ecf32b11380c472bf0",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNmVhOTNlZmIvNjc5NS80ZGM4LzkxODUvNzUxZGQ1YmE3NmRkGiQwMzYyNzcxMy9iN2QxLzQ4YjcvOWI4Yi8xZjZlMTdiNGY1N2IaJDNiMGI3NmQxLzc2NmYvNDA5MS84ZGY0L2VlYjc2Njc0OTEzOSILVHJhY2sgUmFkaW8iFkxvcyBBbmdlbGVzIChBU09UIDk4NCkqByNEMTU3N0QwAg?token=c84193832b8f1696f52fe3ecf32b11380c472bf0",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokNmVhOTNlZmIvNjc5NS80ZGM4LzkxODUvNzUxZGQ1YmE3NmRkGiQwMzYyNzcxMy9iN2QxLzQ4YjcvOWI4Yi8xZjZlMTdiNGY1N2IaJDNiMGI3NmQxLzc2NmYvNDA5MS84ZGY0L2VlYjc2Njc0OTEzOSILVHJhY2sgUmFkaW8iFkxvcyBBbmdlbGVzIChBU09UIDk4NCkqByNEMTU3N0QwAg?token=29ed16fb31346ab8bf39d1129d5944e2961f41fd",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokNmVhOTNlZmIvNjc5NS80ZGM4LzkxODUvNzUxZGQ1YmE3NmRkGiQwMzYyNzcxMy9iN2QxLzQ4YjcvOWI4Yi8xZjZlMTdiNGY1N2IaJDNiMGI3NmQxLzc2NmYvNDA5MS84ZGY0L2VlYjc2Njc0OTEzOSILVHJhY2sgUmFkaW8iFkxvcyBBbmdlbGVzIChBU09UIDk4NCkqByNEMTU3N0QwAg?token=854f70d95fcbff005dd262250f3e1b1c936ebe3d",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDyfFJ5yb0P2ra85biqC9fgtoLKIdSdMiq73qC",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNGM4YWMyZjIvMzM3Mi80ZmY1LzgyMmUvODFhMDk3MTY0YmE0GiRkMTNkOGRjYi9kNGI1LzQ2NzEvYWVjOS9hOTRlOWZjNWVhYzMaJGNkMGExNWFhLzVkZTcvNGQ3ZC85ZDM5Lzc0MGZlMmQ1Yzg3MyILVHJhY2sgUmFkaW8iDkNvbWUgU2FpbCBBd2F5KgcjRDhDODk4MAI?token=8bb488a844c8322d361367ecd93858aac9fcb291",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNGM4YWMyZjIvMzM3Mi80ZmY1LzgyMmUvODFhMDk3MTY0YmE0GiRkMTNkOGRjYi9kNGI1LzQ2NzEvYWVjOS9hOTRlOWZjNWVhYzMaJGNkMGExNWFhLzVkZTcvNGQ3ZC85ZDM5Lzc0MGZlMmQ1Yzg3MyILVHJhY2sgUmFkaW8iDkNvbWUgU2FpbCBBd2F5KgcjRDhDODk4MAI?token=8bb488a844c8322d361367ecd93858aac9fcb291",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokNGM4YWMyZjIvMzM3Mi80ZmY1LzgyMmUvODFhMDk3MTY0YmE0GiRkMTNkOGRjYi9kNGI1LzQ2NzEvYWVjOS9hOTRlOWZjNWVhYzMaJGNkMGExNWFhLzVkZTcvNGQ3ZC85ZDM5Lzc0MGZlMmQ1Yzg3MyILVHJhY2sgUmFkaW8iDkNvbWUgU2FpbCBBd2F5KgcjRDhDODk4MAI?token=359c13edf76a95447c5946129354c0b53231cd41",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokNGM4YWMyZjIvMzM3Mi80ZmY1LzgyMmUvODFhMDk3MTY0YmE0GiRkMTNkOGRjYi9kNGI1LzQ2NzEvYWVjOS9hOTRlOWZjNWVhYzMaJGNkMGExNWFhLzVkZTcvNGQ3ZC85ZDM5Lzc0MGZlMmQ1Yzg3MyILVHJhY2sgUmFkaW8iDkNvbWUgU2FpbCBBd2F5KgcjRDhDODk4MAI?token=7869bc7d0cd554500556e216ee4ef15645fde5c8",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDyfbzS70lbmPyZvlAAHCIFU95KGFhnwPcJszW",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNGE1Y2VhNTQvNmIyMi80MDFjL2ExODYvNjc5NmJiOTZmYTY3GiQxY2M3M2NlZC8xNzcxLzRiMTAvYjY2ZS85M2NjNmJiMTQzMTYaJGUxNmIyNGJjLzU1N2UvNDQyYi84YmEwLzYzMzI2ZjdiOTIzMSILVHJhY2sgUmFkaW8iGFdoYXQgSGFwcGVuZWQgVG8gUGVyZmVjdCoHIzlBQjdFMzAC?token=3e66595beeab230956a08d6397ec56e2e2dd7b68",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNGE1Y2VhNTQvNmIyMi80MDFjL2ExODYvNjc5NmJiOTZmYTY3GiQxY2M3M2NlZC8xNzcxLzRiMTAvYjY2ZS85M2NjNmJiMTQzMTYaJGUxNmIyNGJjLzU1N2UvNDQyYi84YmEwLzYzMzI2ZjdiOTIzMSILVHJhY2sgUmFkaW8iGFdoYXQgSGFwcGVuZWQgVG8gUGVyZmVjdCoHIzlBQjdFMzAC?token=3e66595beeab230956a08d6397ec56e2e2dd7b68",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokNGE1Y2VhNTQvNmIyMi80MDFjL2ExODYvNjc5NmJiOTZmYTY3GiQxY2M3M2NlZC8xNzcxLzRiMTAvYjY2ZS85M2NjNmJiMTQzMTYaJGUxNmIyNGJjLzU1N2UvNDQyYi84YmEwLzYzMzI2ZjdiOTIzMSILVHJhY2sgUmFkaW8iGFdoYXQgSGFwcGVuZWQgVG8gUGVyZmVjdCoHIzlBQjdFMzAC?token=50a83556fd34d14ba6bff714ef1af206492bf480",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokNGE1Y2VhNTQvNmIyMi80MDFjL2ExODYvNjc5NmJiOTZmYTY3GiQxY2M3M2NlZC8xNzcxLzRiMTAvYjY2ZS85M2NjNmJiMTQzMTYaJGUxNmIyNGJjLzU1N2UvNDQyYi84YmEwLzYzMzI2ZjdiOTIzMSILVHJhY2sgUmFkaW8iGFdoYXQgSGFwcGVuZWQgVG8gUGVyZmVjdCoHIzlBQjdFMzAC?token=863115d4e7c1530b69f412f34f6edac60693dac7",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SDzPb00vBzPn384iSTyZyThvLpenH5PsuNXcpB",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokZjRhMTk2MmUvZDM4NC80NGQzL2E5OGYvYzJhZjNkNmRmMGEwGiQxNWU3MDRmMC9mYjE3LzQ3YWUvYTg0Ny8yZWQ5ZTRjNTgyMTEaJGMyMjdkZDA0LzJhYzEvNGMxNi84YjdhL2JkZDc3OWU2MDlmNSILVHJhY2sgUmFkaW8iCUludGVyY2VwdCoHIzg3RDdFMTAC?token=c0a1a5216a071496ca8351d36c91ac1cf812c654",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokZjRhMTk2MmUvZDM4NC80NGQzL2E5OGYvYzJhZjNkNmRmMGEwGiQxNWU3MDRmMC9mYjE3LzQ3YWUvYTg0Ny8yZWQ5ZTRjNTgyMTEaJGMyMjdkZDA0LzJhYzEvNGMxNi84YjdhL2JkZDc3OWU2MDlmNSILVHJhY2sgUmFkaW8iCUludGVyY2VwdCoHIzg3RDdFMTAC?token=c0a1a5216a071496ca8351d36c91ac1cf812c654",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokZjRhMTk2MmUvZDM4NC80NGQzL2E5OGYvYzJhZjNkNmRmMGEwGiQxNWU3MDRmMC9mYjE3LzQ3YWUvYTg0Ny8yZWQ5ZTRjNTgyMTEaJGMyMjdkZDA0LzJhYzEvNGMxNi84YjdhL2JkZDc3OWU2MDlmNSILVHJhY2sgUmFkaW8iCUludGVyY2VwdCoHIzg3RDdFMTAC?token=09c1ef8a36b11fdb30d5ea34f5345459ca07c984",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokZjRhMTk2MmUvZDM4NC80NGQzL2E5OGYvYzJhZjNkNmRmMGEwGiQxNWU3MDRmMC9mYjE3LzQ3YWUvYTg0Ny8yZWQ5ZTRjNTgyMTEaJGMyMjdkZDA0LzJhYzEvNGMxNi84YjdhL2JkZDc3OWU2MDlmNSILVHJhY2sgUmFkaW8iCUludGVyY2VwdCoHIzg3RDdFMTAC?token=378e31fc9015b01bdead838046d8e2dc3fbda268",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SEW4nyvV7iTMJvPivM4QSxxphirWENBnjuimQQ",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOTExYmI0Y2YvYTk2Ny80MTdkL2JhY2UvMWRmZDFhMWRhZGFjGiRlZDU5M2RlOS9hZGM3LzQ0YzUvYTYxMy85MjA4ZDM4NWQwZjUaJDQ0NzlhMTI3LzAzYTIvNGQzZC85ZjU1L2RhZTExYTI5YzVkZSILVHJhY2sgUmFkaW8iEkNsb3NlciBUbyBUaGUgRWRnZSoHI0Y2OTQ5NjAC?token=3033c8fc2c5c3236dc54ff8cb702523447e15bb9",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokOTExYmI0Y2YvYTk2Ny80MTdkL2JhY2UvMWRmZDFhMWRhZGFjGiRlZDU5M2RlOS9hZGM3LzQ0YzUvYTYxMy85MjA4ZDM4NWQwZjUaJDQ0NzlhMTI3LzAzYTIvNGQzZC85ZjU1L2RhZTExYTI5YzVkZSILVHJhY2sgUmFkaW8iEkNsb3NlciBUbyBUaGUgRWRnZSoHI0Y2OTQ5NjAC?token=3033c8fc2c5c3236dc54ff8cb702523447e15bb9",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokOTExYmI0Y2YvYTk2Ny80MTdkL2JhY2UvMWRmZDFhMWRhZGFjGiRlZDU5M2RlOS9hZGM3LzQ0YzUvYTYxMy85MjA4ZDM4NWQwZjUaJDQ0NzlhMTI3LzAzYTIvNGQzZC85ZjU1L2RhZTExYTI5YzVkZSILVHJhY2sgUmFkaW8iEkNsb3NlciBUbyBUaGUgRWRnZSoHI0Y2OTQ5NjAC?token=1a50665fcfa0002abc00bcb4dc77a60db6add63c",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokOTExYmI0Y2YvYTk2Ny80MTdkL2JhY2UvMWRmZDFhMWRhZGFjGiRlZDU5M2RlOS9hZGM3LzQ0YzUvYTYxMy85MjA4ZDM4NWQwZjUaJDQ0NzlhMTI3LzAzYTIvNGQzZC85ZjU1L2RhZTExYTI5YzVkZSILVHJhY2sgUmFkaW8iEkNsb3NlciBUbyBUaGUgRWRnZSoHI0Y2OTQ5NjAC?token=469db1f0c4a5ffa33c0c8581b0593ab7238e7289",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SEWyOAR7wISmaf3YyQhW9Rx2glfqE4dm6yYd4r",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokMTk0OTY5NDYvMDhlYi80MjFkL2IyOGMvNzM5NTJhYzY2NGE0GiQwNTViMGViNy80Y2NkLzQxNjAvYWFjOC8yODAxOTA1MjFjMDQaJDNhYzNiMWRhLzE2ZGEvNDkxZC85NzBlL2NlNjVhZTRmOTkyNiILVHJhY2sgUmFkaW8iEkJhY2sgVG8gVGhlIEZ1dHVyZSoHI0IzNEY0ODAC?token=8401c2a802fbafde6e48de905331bf50cbcb2527",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokMTk0OTY5NDYvMDhlYi80MjFkL2IyOGMvNzM5NTJhYzY2NGE0GiQwNTViMGViNy80Y2NkLzQxNjAvYWFjOC8yODAxOTA1MjFjMDQaJDNhYzNiMWRhLzE2ZGEvNDkxZC85NzBlL2NlNjVhZTRmOTkyNiILVHJhY2sgUmFkaW8iEkJhY2sgVG8gVGhlIEZ1dHVyZSoHI0IzNEY0ODAC?token=8401c2a802fbafde6e48de905331bf50cbcb2527",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokMTk0OTY5NDYvMDhlYi80MjFkL2IyOGMvNzM5NTJhYzY2NGE0GiQwNTViMGViNy80Y2NkLzQxNjAvYWFjOC8yODAxOTA1MjFjMDQaJDNhYzNiMWRhLzE2ZGEvNDkxZC85NzBlL2NlNjVhZTRmOTkyNiILVHJhY2sgUmFkaW8iEkJhY2sgVG8gVGhlIEZ1dHVyZSoHI0IzNEY0ODAC?token=02ee1b14967d78f4c81dcd3b9f3bad3feba96ca6",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokMTk0OTY5NDYvMDhlYi80MjFkL2IyOGMvNzM5NTJhYzY2NGE0GiQwNTViMGViNy80Y2NkLzQxNjAvYWFjOC8yODAxOTA1MjFjMDQaJDNhYzNiMWRhLzE2ZGEvNDkxZC85NzBlL2NlNjVhZTRmOTkyNiILVHJhY2sgUmFkaW8iEkJhY2sgVG8gVGhlIEZ1dHVyZSoHI0IzNEY0ODAC?token=adb73467129494374da834b07b1bdbd2a6239c02",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SEZ7tb6XrLhOeQSbNH5H5YdkFdE4yScfoNsOLm",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNTQ1Y2NiMmMvMThmZS80OWYyLzliMGYvMGQzZGNkZTliMTlmGiRiZGM4ODkyMy9jYzU5LzQzZmUvOTI4MC8zNTMxYmMyMThkZWQaJDY1NDI5ZDMyLzJhYzAvNDQ2Ny85OWNjLzViOWRmMTVlMjgyNCILVHJhY2sgUmFkaW8iH0NoZWFwIFRocmlsbHMgKGZlYXQuIFNlYW4gUGF1bCkqByNEQTlDOUQwAg?token=5e9ed72334a7900a11e15977add02f4149ae7a6a",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EMACGMACIKABKKAB/CAEQBhokNTQ1Y2NiMmMvMThmZS80OWYyLzliMGYvMGQzZGNkZTliMTlmGiRiZGM4ODkyMy9jYzU5LzQzZmUvOTI4MC8zNTMxYmMyMThkZWQaJDY1NDI5ZDMyLzJhYzAvNDQ2Ny85OWNjLzViOWRmMTVlMjgyNCILVHJhY2sgUmFkaW8iH0NoZWFwIFRocmlsbHMgKGZlYXQuIFNlYW4gUGF1bCkqByNEQTlDOUQwAg?token=5e9ed72334a7900a11e15977add02f4149ae7a6a",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIAFGIAFIMACKMAC/CAEQBhokNTQ1Y2NiMmMvMThmZS80OWYyLzliMGYvMGQzZGNkZTliMTlmGiRiZGM4ODkyMy9jYzU5LzQzZmUvOTI4MC8zNTMxYmMyMThkZWQaJDY1NDI5ZDMyLzJhYzAvNDQ2Ny85OWNjLzViOWRmMTVlMjgyNCILVHJhY2sgUmFkaW8iH0NoZWFwIFRocmlsbHMgKGZlYXQuIFNlYW4gUGF1bCkqByNEQTlDOUQwAg?token=7e71ee6a053a8203531b230aba4faa90bb73eb31",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/ENwLGNwLIO4FKO4F/CAEQBhokNTQ1Y2NiMmMvMThmZS80OWYyLzliMGYvMGQzZGNkZTliMTlmGiRiZGM4ODkyMy9jYzU5LzQzZmUvOTI4MC8zNTMxYmMyMThkZWQaJDY1NDI5ZDMyLzJhYzAvNDQ2Ny85OWNjLzViOWRmMTVlMjgyNCILVHJhY2sgUmFkaW8iH0NoZWFwIFRocmlsbHMgKGZlYXQuIFNlYW4gUGF1bCkqByNEQTlDOUQwAg?token=e1e5b6e4c5d41f8343b5ece3ccfd016f6acd144d",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "86EFpfvW5of7SZuAnUPbEPNobwTEtGDVtNmSyVLwrbDMkw4jJf",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://images.tidal.com/0/EIsCGIsCIKABKKAB/CAEQBRokMjhhMDYwNjgvNmI1OC80YzQ5L2I1MTUvYWNmNmQ2NzI1ZjUxIhBNeSBNb3N0IExpc3RlbmVkIghGRUJSVUFSWSoHI0ZCRDI5MzAE?token=a5274e17d49a70dff52f5abc139ffdbd160fbccc",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EIsCGIsCIKABKKAB/CAEQBRokMjhhMDYwNjgvNmI1OC80YzQ5L2I1MTUvYWNmNmQ2NzI1ZjUxIhBNeSBNb3N0IExpc3RlbmVkIghGRUJSVUFSWSoHI0ZCRDI5MzAE?token=a5274e17d49a70dff52f5abc139ffdbd160fbccc",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EJUEGJUEIMACKMAC/CAEQBRokMjhhMDYwNjgvNmI1OC80YzQ5L2I1MTUvYWNmNmQ2NzI1ZjUxIhBNeSBNb3N0IExpc3RlbmVkIghGRUJSVUFSWSoHI0ZCRDI5MzAE?token=a392ceafef2eda6cca72ff1d7a2199a371eaaa61",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://images.tidal.com/0/EOIJGOIJIO4FKO4F/CAEQBRokMjhhMDYwNjgvNmI1OC80YzQ5L2I1MTUvYWNmNmQ2NzI1ZjUxIhBNeSBNb3N0IExpc3RlbmVkIghGRUJSVUFSWSoHI0ZCRDI5MzAE?token=e6d731686c19687c42566f6044809ad0f8551fdd",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          }
+        ],
+        "visualMetadata": {
+          "status": "NONE"
+        }
+      }
+    },
+    {
+      "id": "00109a13be2e75e2b4f3061e188725",
+      "type": "playlists",
+      "attributes": {
+        "name": "All You Ever Wanted",
+        "description": "Sub Focus, Rag'n'Bone Man",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/00109a13be2e75e2b4f3061e188725",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/00109a13be2e75e2b4f3061e188725/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDusNluawUwqytlhEfvP8OtLnB9gkGv9EfLgAv",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/00109a13be2e75e2b4f3061e188725/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "0011883bfcf036107d2d781c4ac36a",
+      "type": "playlists",
+      "attributes": {
+        "name": "Higher Power",
+        "description": "Coldplay",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/0011883bfcf036107d2d781c4ac36a",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/0011883bfcf036107d2d781c4ac36a/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDvdG4e8fdH9rQnYDeAV6a2qyGjzTlY7qBoONF",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0011883bfcf036107d2d781c4ac36a/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001201ec16324e0651f9e99a27217f",
+      "type": "playlists",
+      "attributes": {
+        "name": "The Hill",
+        "description": "Droid Bishop",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001201ec16324e0651f9e99a27217f",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001201ec16324e0651f9e99a27217f/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDwMs4HjAzb5pAirzHg4UiHb5jLbv9ljGffVrC",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001201ec16324e0651f9e99a27217f/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "0012c28bc8c89a5991cd888365d956",
+      "type": "playlists",
+      "attributes": {
+        "name": "By The Way",
+        "description": "Lukas Graham",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/0012c28bc8c89a5991cd888365d956",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/0012c28bc8c89a5991cd888365d956/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDwWFjLtHPI86yAIGCsdtGi2hkFEJ5PxfUalRG",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0012c28bc8c89a5991cd888365d956/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "0013933ae431aa8835ad1029040136",
+      "type": "playlists",
+      "attributes": {
+        "name": "Beat It",
+        "description": "Michael Jackson",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/0013933ae431aa8835ad1029040136",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/0013933ae431aa8835ad1029040136/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDx9cJxxWTn7Wb3bigLPQv5lGVZVP4xIPVh66o",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0013933ae431aa8835ad1029040136/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001551c78ebf2d6f7cd70511364337",
+      "type": "playlists",
+      "attributes": {
+        "name": "Los Angeles (ASOT 984)",
+        "description": "The Midnight",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001551c78ebf2d6f7cd70511364337",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001551c78ebf2d6f7cd70511364337/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDyf3giTLYdnF75YaogETilLBQ2NmU3DSDV4fX",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001551c78ebf2d6f7cd70511364337/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "0015664b81ceacae9c91ec9da096d8",
+      "type": "playlists",
+      "attributes": {
+        "name": "Come Sail Away",
+        "description": "Styx",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/0015664b81ceacae9c91ec9da096d8",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/0015664b81ceacae9c91ec9da096d8/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDyfFJ5yb0P2ra85biqC9fgtoLKIdSdMiq73qC",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0015664b81ceacae9c91ec9da096d8/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001583b539faa4dca268ff875b778f",
+      "type": "playlists",
+      "attributes": {
+        "name": "What Happened To Perfect",
+        "description": "Lukas Graham",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001583b539faa4dca268ff875b778f",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001583b539faa4dca268ff875b778f/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDyfbzS70lbmPyZvlAAHCIFU95KGFhnwPcJszW",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001583b539faa4dca268ff875b778f/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "00162145119b17bdebf4d4da90433e",
+      "type": "playlists",
+      "attributes": {
+        "name": "Intercept",
+        "description": "Bert H, Edlan",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/00162145119b17bdebf4d4da90433e",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/00162145119b17bdebf4d4da90433e/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SDzPb00vBzPn384iSTyZyThvLpenH5PsuNXcpB",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/00162145119b17bdebf4d4da90433e/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001a47427032b79e02dd72c3b9d65f",
+      "type": "playlists",
+      "attributes": {
+        "name": "Closer To The Edge",
+        "description": "Thirty Seconds To Mars",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001a47427032b79e02dd72c3b9d65f",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001a47427032b79e02dd72c3b9d65f/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SEW4nyvV7iTMJvPivM4QSxxphirWENBnjuimQQ",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001a47427032b79e02dd72c3b9d65f/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001bbe5560632fefbd89ea4e0a4f39",
+      "type": "playlists",
+      "attributes": {
+        "name": "Back To The Future",
+        "description": "Bastille",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001bbe5560632fefbd89ea4e0a4f39",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001bbe5560632fefbd89ea4e0a4f39/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SEWyOAR7wISmaf3YyQhW9Rx2glfqE4dm6yYd4r",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001bbe5560632fefbd89ea4e0a4f39/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "001e849b188999a5b673ce4db37f4f",
+      "type": "playlists",
+      "attributes": {
+        "name": "Cheap Thrills (feat. Sean Paul)",
+        "description": "Sia",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/001e849b188999a5b673ce4db37f4f",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-07-19T20:57:52.290Z",
+        "lastModifiedAt": "2026-07-19T20:57:52.290Z",
+        "accessType": "PUBLIC",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [],
+          "links": {
+            "self": "/playlists/001e849b188999a5b673ce4db37f4f/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SEZ7tb6XrLhOeQSbNH5H5YdkFdE4yScfoNsOLm",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/001e849b188999a5b673ce4db37f4f/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "00835752c7cbccabf4f88802580c47",
+      "type": "playlists",
+      "attributes": {
+        "name": "February 2026",
+        "description": "Wilkinson, Sub Focus, Rammstein and more",
+        "bounded": false,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/mix/00835752c7cbccabf4f88802580c47",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "createdAt": "2026-03-01T08:52:56.905Z",
+        "lastModifiedAt": "2026-03-01T08:52:56.905Z",
+        "accessType": "UNLISTED",
+        "playlistType": "MIX",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/00835752c7cbccabf4f88802580c47/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "86EFpfvW5of7SZuAnUPbEPNobwTEtGDVtNmSyVLwrbDMkw4jJf",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/00835752c7cbccabf4f88802580c47/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "0f72f8b9-6d2f-416c-be04-9bde48e735ce",
+      "type": "playlists",
+      "attributes": {
+        "name": "test-nonetype",
+        "description": "",
+        "bounded": true,
+        "duration": "PT4M28S",
+        "numberOfItems": 1,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/0f72f8b9-6d2f-416c-be04-9bde48e735ce",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/0f72f8b9-6d2f-416c-be04-9bde48e735ce?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/0f72f8b9-6d2f-416c-be04-9bde48e735ce?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/0f72f8b9-6d2f-416c-be04-9bde48e735ce?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2025-11-28T20:53:43.823Z",
+        "lastModifiedAt": "2025-11-28T20:53:46.172Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0f72f8b9-6d2f-416c-be04-9bde48e735ce/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr0DkawPbseJyRPJryYZKlZlXc1KyWeix4QKfsGxRFRCNfNebX3",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/0f72f8b9-6d2f-416c-be04-9bde48e735ce/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "3f99dc4b-1524-4df0-a1c0-052de6ca5722",
+      "type": "playlists",
+      "attributes": {
+        "name": "Daily Discovery May 4th 2026",
+        "description": "",
+        "bounded": true,
+        "duration": "PT39M25S",
+        "numberOfItems": 10,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/3f99dc4b-1524-4df0-a1c0-052de6ca5722",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/3f99dc4b-1524-4df0-a1c0-052de6ca5722?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/3f99dc4b-1524-4df0-a1c0-052de6ca5722?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/3f99dc4b-1524-4df0-a1c0-052de6ca5722?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2026-05-04T14:51:24.614Z",
+        "lastModifiedAt": "2026-05-04T14:51:24.866Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/3f99dc4b-1524-4df0-a1c0-052de6ca5722/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr0H5NFZF6CvAs7Y8LGTDCDDM9Pv4wVVeRZxxJGuf9MNxW4AwPC",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/3f99dc4b-1524-4df0-a1c0-052de6ca5722/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8",
+      "type": "playlists",
+      "attributes": {
+        "name": "My Mix 1 April 3rd 2026",
+        "description": "",
+        "bounded": true,
+        "duration": "PT2H56M29S",
+        "numberOfItems": 40,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2026-04-03T15:02:07.507Z",
+        "lastModifiedAt": "2026-04-03T15:02:07.795Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr0KOnyQKPOV2FoHTAbWbcujij9EvIzDVCjFU5cajrGYa43EfcW",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/6a9f7092-ea04-448f-8b8c-38cbe3e4d6d8/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "80d6d637-9dba-4984-bf2e-5dec5e4782e4",
+      "type": "playlists",
+      "attributes": {
+        "name": "Daily Discovery 5.5.26",
+        "description": "",
+        "bounded": true,
+        "duration": "PT42M16S",
+        "numberOfItems": 10,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/80d6d637-9dba-4984-bf2e-5dec5e4782e4",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/80d6d637-9dba-4984-bf2e-5dec5e4782e4?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/80d6d637-9dba-4984-bf2e-5dec5e4782e4?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/80d6d637-9dba-4984-bf2e-5dec5e4782e4?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2026-05-05T15:11:57.953Z",
+        "lastModifiedAt": "2026-05-05T15:11:58.406Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/80d6d637-9dba-4984-bf2e-5dec5e4782e4/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr0MPVb0Bv9GdfSLS1vEu4qTWZHroBfGnLaiSzLrsOVXpVVQt3U",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/80d6d637-9dba-4984-bf2e-5dec5e4782e4/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "886e6090-7fdd-422a-9901-e69ad8601e49",
+      "type": "playlists",
+      "attributes": {
+        "name": "My Mix 1 April 21st 2026",
+        "description": "",
+        "bounded": true,
+        "duration": "PT2H33M33S",
+        "numberOfItems": 40,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/886e6090-7fdd-422a-9901-e69ad8601e49",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/886e6090-7fdd-422a-9901-e69ad8601e49?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/886e6090-7fdd-422a-9901-e69ad8601e49?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/886e6090-7fdd-422a-9901-e69ad8601e49?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2026-04-21T15:59:55.391Z",
+        "lastModifiedAt": "2026-04-21T15:59:55.685Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/886e6090-7fdd-422a-9901-e69ad8601e49/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr0MRc9T9XSf3NTnbiu7rLhTRCQXPCfnUGuXHa4uuKUXdvlhBYP",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/886e6090-7fdd-422a-9901-e69ad8601e49/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "dfcfa5e1-52e3-4f74-ad20-44d71c582021",
+      "type": "playlists",
+      "attributes": {
+        "name": "My Mix 1 May 4th 2026",
+        "description": "",
+        "bounded": true,
+        "duration": "PT2H18M16S",
+        "numberOfItems": 40,
+        "externalLinks": [
+          {
+            "href": "https://listen.tidal.com/playlist/dfcfa5e1-52e3-4f74-ad20-44d71c582021",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/dfcfa5e1-52e3-4f74-ad20-44d71c582021?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_ANDROID"
+            }
+          },
+          {
+            "href": "https://tidal.com/playlist/dfcfa5e1-52e3-4f74-ad20-44d71c582021?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_IOS"
+            }
+          },
+          {
+            "href": "https://listen.tidal.com/playlist/dfcfa5e1-52e3-4f74-ad20-44d71c582021?play=true",
+            "meta": {
+              "type": "TIDAL_AUTOPLAY_WEB"
+            }
+          }
+        ],
+        "createdAt": "2026-05-04T11:05:20.240Z",
+        "lastModifiedAt": "2026-05-04T11:05:20.533Z",
+        "accessType": "UNLISTED",
+        "playlistType": "USER",
+        "numberOfFollowers": 0
+      },
+      "relationships": {
+        "owners": {
+          "data": [
+            {
+              "id": "178100250",
+              "type": "users"
+            }
+          ],
+          "links": {
+            "self": "/playlists/dfcfa5e1-52e3-4f74-ad20-44d71c582021/relationships/owners?countryCode=AT&locale=en-US"
+          }
+        },
+        "coverArt": {
+          "data": [
+            {
+              "id": "2b7Vtuqr19YmDkEjwJ5guh7IXiqDVZG4DKipkUByRuTzARgsS0gGfoxJh",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/playlists/dfcfa5e1-52e3-4f74-ad20-44d71c582021/relationships/coverArt?countryCode=AT&locale=en-US"
+          }
+        }
+      }
+    },
+    {
+      "id": "178100250",
+      "type": "users",
+      "attributes": {
+        "username": "jozef@krush.at",
+        "country": "AT",
+        "email": "jozef@krush.at",
+        "emailVerified": true,
+        "developerAccessTier": "THIRD_PARTY"
+      }
+    }
+  ]
+}

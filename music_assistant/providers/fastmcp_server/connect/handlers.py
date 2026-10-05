@@ -1,4 +1,5 @@
-"""HTTP handlers backing the Connect Wizard endpoints.
+"""
+HTTP handlers backing the Connect Wizard endpoints.
 
 Five endpoints are mounted under ``<mount_path>/connect``:
 
@@ -38,6 +39,12 @@ class WizardContext:
     mount_path: str
     enabled_tags_provider: Callable[[], list[str]]
     origin_check: Callable[[web.Request], bool]
+    # When True, a trusted reverse proxy's ``X-Forwarded-Proto: https`` (or
+    # ``X-Forwarded-Scheme: https``) is accepted as proof the public hop was
+    # HTTPS, even though MA's own transport sees plain HTTP. Opt-in: forwarded
+    # headers are forgeable by any client that can reach MA directly, so this
+    # is only safe behind a proxy that sets the header and strips client copies.
+    trust_forwarded_proto: bool = False
 
 
 def _origin_guard(ctx: WizardContext, request: web.Request) -> web.Response | None:
@@ -71,7 +78,8 @@ def _is_loopback_host(host: str | None) -> bool:
 
 
 def _is_request_via_ha_ingress(request: web.Request) -> bool:
-    """Return True when MA recognises the request as arriving via HA ingress.
+    """
+    Return True when MA recognises the request as arriving via HA ingress.
 
     Home Assistant terminates TLS at its own ``https://ha.example/...``
     front door and forwards the request to MA over a *local* socket, so the
@@ -85,7 +93,7 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
         from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
             is_request_from_ingress,
         )
-    except (ImportError, ModuleNotFoundError):
+    except ImportError, ModuleNotFoundError:
         # Bare provider venv — MA helper unavailable. Fail closed without noise.
         return False
     except Exception:
@@ -98,8 +106,29 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
         return False
 
 
-def _scheme_guard(request: web.Request) -> web.Response | None:
-    """Reject plaintext-http credential traffic from untrusted-transport hosts.
+def _forwarded_scheme_is_https(request: web.Request) -> bool:
+    """
+    Return True if a reverse proxy reports the public hop was HTTPS.
+
+    Reads ``X-Forwarded-Proto`` (and ``X-Forwarded-Scheme``, which Nginx
+    Proxy Manager and some others set instead). A proxy that chains through
+    several hops sends a comma-separated list (``https, http``); the first
+    value is the scheme the *client* used, which is the one we care about.
+
+    Caller must gate this on :attr:`WizardContext.trust_forwarded_proto`:
+    these headers are trivially forgeable by any client that can reach MA
+    directly, so they are only meaningful behind a trusted proxy.
+    """
+    for header in ("X-Forwarded-Proto", "X-Forwarded-Scheme"):
+        raw = request.headers.get(header)
+        if raw and raw.split(",", 1)[0].strip().lower() == "https":
+            return True
+    return False
+
+
+def _scheme_guard(ctx: WizardContext, request: web.Request) -> web.Response | None:
+    """
+    Reject plaintext-http credential traffic from untrusted-transport hosts.
 
     ``/connect/login`` carries the MA admin password; ``/connect/exchange``
     and ``/connect/token`` carry bootstrap / session tokens. Over plain HTTP
@@ -111,6 +140,10 @@ def _scheme_guard(request: web.Request) -> web.Response | None:
       door and forwards the request to MA over a local socket the HA
       auth-middleware verifies; the public hop *is* HTTPS even though
       MA's transport sees plain HTTP.
+    * **Trusted reverse proxy** — when ``trust_forwarded_proto`` is enabled,
+      an ``X-Forwarded-Proto: https`` from the proxy is accepted as proof the
+      public hop was HTTPS (the standard nginx/Traefik/Caddy/NPM deployment,
+      where TLS terminates at the proxy and the proxy-to-MA hop is plain HTTP).
 
     Everything else gets a JSON 400 the wizard UI can surface to the user.
     """
@@ -119,6 +152,8 @@ def _scheme_guard(request: web.Request) -> web.Response | None:
     if _is_loopback_host(request.host):
         return None
     if _is_request_via_ha_ingress(request):
+        return None
+    if ctx.trust_forwarded_proto and _forwarded_scheme_is_https(request):
         return None
     LOGGER.warning(
         "Connect Wizard: refused plaintext credential request to %r from %s "
@@ -228,7 +263,7 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/exchange`` handler — bootstrap → session token."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request) or _scheme_guard(request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(ctx, request)
         if guard is not None:
             return guard
 
@@ -283,7 +318,7 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/login`` handler — username/password fallback."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request) or _scheme_guard(request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(ctx, request)
         if guard is not None:
             return guard
 
@@ -333,7 +368,7 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/token`` handler — mint per-client long-lived token."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request) or _scheme_guard(request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(ctx, request)
         if guard is not None:
             return guard
 

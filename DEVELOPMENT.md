@@ -5,6 +5,17 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
+* libchromaprint, also at OS level. Install it if you want to run the `acoustid_lookup` provider: without libchromaprint AcoustID refuses to load. The test suite does not need it: the AcoustID tests drive a fake fingerprinter.
+
+      # macOS
+      brew install chromaprint
+
+      # Debian/Ubuntu
+      sudo apt-get install libchromaprint1
+
+    On Apple Silicon, Homebrew installs into `/opt/homebrew`, which is not on the dynamic loader's default search path. `pyacoustid` opens libchromaprint by bare filename, so installing the package is not enough — add this to your shell profile as well:
+
+      export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
@@ -21,7 +32,9 @@ With this repository cloned locally, execute the following commands in a termina
 
 * The setup script will create a separate virtual environment (if needed), install all the project/test dependencies and configure pre-commit for linting and testing.
 * Make sure, that the python interpreter in VS Code is set to the newly generated venv.
-* Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code), or run `python -m music_assistant --log-level debug` from the command line
+* Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code, using the launch configuration in `.vscode/launch.json`), or run `python -m music_assistant --log-level debug` from the command line
+  * asyncio debug mode, with its slow-callback warnings and the scheduling stack in unhandled-error logs, comes from Python's development mode: run `python -X dev -m music_assistant --log-level debug` or set `PYTHONDEVMODE=1`. The VS Code launch configuration already enables it. The environment variable also turns on the slow-query warnings of the database helper. Dev mode records a stack trace for every scheduled callback and future, so expect a slower server while it is on.
+  * Core maintainers: the launch configuration reads the bundled provider credentials (Spotify, Qobuz, ...) from a checkout of the private `appvars` repository next to this one (`../appvars/app_vars.json`). From the command line, point `MASS_APP_VARS_FILE` at that file. Without it the bundled credentials stay empty, see `music_assistant/helpers/app_vars.py`.
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.
@@ -80,7 +93,7 @@ The Music Assistant server is fully built in Python. The Python language has no 
 
 
 ## Building a new Music Provider
-A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
+A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
@@ -100,6 +113,7 @@ The easiest way to get start is to copy the contents of the manifest of an exist
 Create a file called `__init__.py` inside the folder of your provider. This file will contain the logic for the provider. All Music Providers must inherit from the [`MusicProvider`](./music_assistant/models/music_provider.py) base class and override the necessary functions where applicable. A few things to note:
 * The `setup()` function is called by Music Assistant upon initialization of the provider. It gives you the opportunity the prepare the provider for usage. For example, logging in a user or obtaining a token can be done in this function.
 * A provider should let Music Assistant know which [`ProviderFeature`](https://github.com/music-assistant/models/blob/main/music_assistant_models/enums.py) it supports by implementing the property `supported_features`, which returns a list of `ProviderFeature`.
+* A podcast provider must set each episode's `position` so that the oldest episode has the lowest number and the newest the highest. The episode listing is sorted on it and "play from here" queues the selected episode plus everything newer, so a provider that numbers episodes by the order its API happens to return them will show them backwards. Rank on the publication date using `rank_episodes_by_date()` in [`podcast_parsers`](./music_assistant/helpers/podcast_parsers.py), and leave the position at 0 where it is unknown.
 * The actual playback of audio in Music Assistant happens in two phases:
     1. `get_stream_details()` is called to obtain information about the audio, like the quality, format, # of channels etc.
     2. `get_audio_stream()` is called to stream raw bytes of audio to the player. There are a few [helpers](./music_assistant/helpers/audio.py) to help you with this. Note that this function is not applicable to direct url streams.
@@ -108,6 +122,40 @@ Create a file called `__init__.py` inside the folder of your provider. This file
     2. Streaming a direct URL, see the [Youtube Music](./music_assistant/providers/ytmusic/__init__.py) provider as an example
     3. Streaming an https stream that uses an expiring URL, see the [Qobuz](./music_assistant/providers/qobuz/__init__.py) provider as an example
 
+
+**Rules for providers that stream from a music service**
+
+Music Assistant plays music to your own speakers; it is not a way to download or keep
+copies of it. See the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
+A provider that talks to a music service must therefore:
+
+* **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
+  account the user configured. Do not bypass a subscription tier or regional availability.
+* **Decode only what the user is entitled to.** Where a service protects its audio, obtain the
+  key or licence the way its own client does, for the account the user configured. Decode in
+  order to play, never to produce a file. Where there is no licence path for the account, skip
+  the item rather than reaching for one.
+* **Be a well-behaved client of the API.** Put a
+  [`Throttler` or `ThrottlerManager`](./music_assistant/helpers/throttle_retry.py) in front of a
+  service's API and set it to what that service actually tolerates, and put
+  [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
+  instead of asking again. Back off on a 429 rather than retrying into it.
+  The throttler serves playback first, user actions second and background work last. Background
+  work may use only half of the rate limit and is spread evenly over time, which keeps room free
+  for the user. Music Assistant sets the priority where a request starts, so a provider normally
+  does not have to.
+  A provider that hammers a service puts every Music Assistant user's account at risk, not just
+  the developer's.
+* **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
+  does not serialize it. Never place it on a media item, an API result, or a route that hands
+  it to a caller.
+* **Do not persist decoded audio.** Streaming providers must return a stream, not bytes cached
+  to disk.
+* **Honour the service's own limits.** Where a service states how many streams one account may
+  run at once, override `max_concurrent_streams` with that number — see
+  [`MusicProvider`](./music_assistant/models/music_provider.py).
+
+Changes that weaken any of these will not be accepted, however useful they are otherwise.
 
 ## ▶️ Building your own Player Provider
 A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and AirPlay are examples of a Player Provider.
@@ -125,19 +173,24 @@ Will follow soon™
 The manifest file contains metadata and configuration about a provider. The supported properties are:
 | Name  | Description  | Type  |
 |---|---|---|
-| type  | `music`, `player`, `metadata` or `plugin`  | string  |
+| type  | `music`, `player`, `metadata`, `plugin` or `audio_analysis`  | string  |
 | domain  | The internal unique id of the provider, e.g. `spotify` or `ytmusic`  | string  |
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
-| config_entries  | List of configurable properties for the provider, e.g. `username` or `password`*. | array[object]  |
-| config_entries.key  | The unique key of the config entry, used to obtain the value in the provider code  | string  |
-| config_entries.type  | The type of the config entry. Possible values: `string`, `secure_string` (for passwords), `boolean`, `float`, `integer`, `label` (for a single line of text in the settings page)  | string  |
-| config_entries.label | The label of the config entry. Used in the settings page | string |
-| requirements | List of requirements for the provider in pip string format. Supported values are `package==version` and `git+https://gitrepoforpackage` | array[string]
-| documentation | URL to the Github discussion containing the documentation for the provider. | string |
-| multi_instances | Whether multiple instances of the configuration are supported, e.g. multiple user accounts for Spotify | boolean |
+| stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
+| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
+| documentation | URL to the provider's documentation page. | string |
+| multi_instance | Whether multiple instances of the provider are supported, e.g. multiple user accounts for Spotify | boolean |
+| builtin | Whether this is a system/builtin provider that is loaded by default | boolean |
+| allow_disable | Whether a builtin provider may be disabled. Defaults to `true`. | boolean |
+| depends_on | Domain of another provider this provider needs to function | string |
+| icon | Name of the [Material Design Icon](https://pictogrammers.com/library/mdi) to use for the provider | string |
 | mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
+| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
+| credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 
-\* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.
+A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
+
+Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).

@@ -12,7 +12,8 @@ import music_assistant.providers.sonic_analysis.vendored_clap.clap_wrapper as cw
 
 
 def test_import_does_not_add_unscoped_ignore_all_filter() -> None:
-    """Importing clap_wrapper must not inject a process-wide ignore-all entry into warnings.filters.
+    """
+    Importing clap_wrapper must not inject a process-wide ignore-all entry into warnings.filters.
 
     An unscoped filterwarnings("ignore") at module level would silently suppress
     all subsequent warnings across every other MA provider for the lifetime of the
@@ -42,7 +43,8 @@ def test_import_does_not_add_unscoped_ignore_all_filter() -> None:
 
 
 def test_no_module_level_filterwarnings_call_in_source() -> None:
-    """The clap_wrapper source must not contain a bare filterwarnings call at module scope.
+    """
+    The clap_wrapper source must not contain a bare filterwarnings call at module scope.
 
     Parses the AST to detect any top-level Expr containing a call to
     warnings.filterwarnings(), which would install a permanent process-wide filter.

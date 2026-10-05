@@ -6,7 +6,7 @@
   "description": "Stream your personal iBroadcast music collection from anywhere.",
   "codeowners": ["@robsonke"],
   "credits": ["[ibroadcastaio](https://github.com/robsonke/ibroadcastaio)"],
-  "requirements": ["ibroadcastaio==0.6.0"],
+  "requirements": ["ibroadcastaio==0.8.0"],
   "documentation": "https://music-assistant.io/music-providers/ibroadcast/",
   "multi_instance": true
 }

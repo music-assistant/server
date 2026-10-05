@@ -2,18 +2,57 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import pathlib
-from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock
+from collections.abc import AsyncGenerator, Iterator, Mapping
+from types import CoroutineType, MethodType
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
-from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
-from music_assistant_models.event import MassEvent
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProviderType,
+)
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
+from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.providers.sendspin.provider import SendspinProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderAccess
+    from music_assistant_models.event import MassEvent
+
+
+def utf8_safe(value: object) -> object:
+    """
+    Return ``value`` with any non-UTF-8-encodable strings made encodable.
+
+    Lone surrogates (e.g. from undecodable filesystem paths) are replaced with
+    their backslash escapes so the value survives strict-UTF-8 serialization.
+    """
+    if isinstance(value, str):
+        try:
+            value.encode()
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "backslashreplace").decode()
+        return value
+    if isinstance(value, list):
+        return [utf8_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(utf8_safe(item) for item in value)
+    if isinstance(value, dict):
+        return {utf8_safe(key): utf8_safe(item) for key, item in value.items()}
+    return value
 
 
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
@@ -31,6 +70,70 @@ async def get_fixtures_dir(
     for file in await aiofiles.os.listdir(dir_path):
         async with aiofiles.open(dir_path / file, "rb") as fp:
             yield (file, await fp.read())
+
+
+@contextlib.contextmanager
+def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
+    """
+    Capture everything the running loop reports to its exception handler.
+
+    Yields the (initially empty) list the captured contexts are appended to; the loop's
+    own handler is restored on exit. Use it to assert that an operation does not surface
+    an error the server itself already handles, which would otherwise reach the user as
+    an ERROR log entry with a traceback.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    reported: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        yield reported
+    finally:
+        loop.set_exception_handler(previous)
+
+
+class _RecordCollector(logging.Handler):
+    """Log handler that keeps every record it gets."""
+
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        """
+        Initialize the handler at the lowest level.
+
+        :param records: The list the records are appended to.
+        """
+        super().__init__(level=1)
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep a record."""
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def capture_log_records(logger: logging.Logger) -> Iterator[list[logging.LogRecord]]:
+    """
+    Capture every record of a logger, whatever other tests did to the logging setup.
+
+    Yields the (initially empty) list of records. The logger gets a handler of its own and
+    the lowest level, so neither the level an ancestor was given, nor its propagation or the
+    handlers of the root logger, decide what is captured; all of it is restored on exit.
+
+    :param logger: The logger the code under test writes to.
+    """
+    records: list[logging.LogRecord] = []
+    handler = _RecordCollector(records)
+    level, disabled, disabled_below = logger.level, logger.disabled, logging.root.manager.disable
+    logger.addHandler(handler)
+    logger.setLevel(1)
+    logger.disabled = False
+    logging.disable(logging.NOTSET)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        logger.disabled = disabled
+        logging.disable(disabled_below)
 
 
 @contextlib.asynccontextmanager
@@ -53,7 +156,210 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
             release_cb()
 
 
+# the address a fixture's web and stream servers bind to, so a test run never listens
+# on the host's real interfaces
+LOOPBACK_IP = "127.0.0.1"
+
+
+@contextlib.contextmanager
+def use_ephemeral_server_ports() -> Iterator[None]:
+    """
+    Bind a full-server test fixture's web, stream and Sendspin servers to a free loopback port.
+
+    Port 0 has the kernel pick the port during the bind itself, so nothing else can
+    claim it in the meantime. The server also hands the Sendspin port out in the URLs it
+    builds for its own Sendspin clients, so once the provider has bound its listener the
+    fixture must call ``adopt_bound_sendspin_port`` to point those URLs at that port.
+
+    Binding loopback keeps a test run off the host's other interfaces and gives each
+    server a single socket, so it has one assigned port: asyncio binds a wildcard
+    address once per address family, each with its own port.
+    """
+    with (
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
+        # the Sendspin provider binds its own listener; on a fixed port, parallel test
+        # workers collide and the provider unloads itself mid-test
+        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
+        patch("music_assistant.controllers.webserver.controller.SENDSPIN_SERVER_PORT", 0),
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
+        # keep address detection off the host's real interfaces
+        patch(
+            "music_assistant.controllers.streams.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
+    ):
+        yield
+
+
+def bound_sendspin_port(mass: MusicAssistant) -> int | None:
+    """
+    Return the port the Sendspin provider's listener is bound to, if it is listening.
+
+    :param mass: The booted server to inspect.
+    """
+    provider = mass.get_provider("sendspin")
+    if not isinstance(provider, SendspinProvider):
+        return None
+    # aiosendspin keeps its aiohttp runner to itself; the runner's addresses are
+    # the bound sockets' names, which is the only place the kernel-picked port lives
+    runner = provider.server_api._app_runner
+    if runner is None:
+        return None
+    return next((address[1] for address in runner.addresses if address), None)
+
+
+def adopt_bound_sendspin_port(mass: MusicAssistant) -> None:
+    """
+    Point the server's own Sendspin clients at the port its listener actually bound.
+
+    Only meaningful inside ``use_ephemeral_server_ports``, whose patch of the URL
+    builder's port this replaces for the rest of the fixture's lifetime.
+
+    :param mass: The booted server whose Sendspin listener is up.
+    """
+    if (port := bound_sendspin_port(mass)) is not None:
+        setattr(webserver_controller, "SENDSPIN_SERVER_PORT", port)  # noqa: B010
+
+
+@contextlib.contextmanager
+def suppress_auto_loaded_providers() -> Iterator[None]:
+    """
+    Stop a fixture boot from auto-setting-up providers that reach into the host.
+
+    Keeps a booted test instance isolated from the developer's machine: the default
+    device providers (airplay/chromecast/dlna/...) are not auto-configured.
+    """
+    with patch("music_assistant.mass.DEFAULT_PROVIDERS", ()):
+        yield
+
+
+async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
+    """
+    Wait out the events a fixture boot leaves in flight.
+
+    A provider finishes loading in a detached task that registers background tasks, and
+    registering one emits a debounced task list, so without this a test can start watching
+    for events in time to catch the tail of its own fixture's boot.
+
+    :param mass: The started instance to settle.
+    """
+    for provider in mass.providers:
+        await provider.initialized.wait()
+    # twice the window: the debounce a registration already armed, plus the tail of the
+    # post-load work that runs after a provider marks itself initialized
+    await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
+
+
+@contextlib.contextmanager
+def suppress_initial_library_sync() -> Iterator[None]:
+    """
+    Hold a fixture boot's music providers to their recurring library sync only.
+
+    The first sync of a freshly loaded provider otherwise runs seconds into the boot, so on
+    a loaded machine it lands in the middle of whatever test is running by then, rewriting
+    the library under it. Tests that want a sync call ``start_sync()`` themselves.
+    """
+    with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
+        yield
+
+
+def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, Any]]:
+    """
+    Return the name and bound arguments of a coroutine handed to mass.create_task.
+
+    Callers build the coroutine before handing it over, so a test asserting on what was
+    scheduled reads it back off the coroutine. It is closed here, since a test that only
+    asserts on the scheduling never awaits it.
+
+    :param coro: The coroutine the caller passed to create_task.
+    """
+    name = coro.cr_code.co_qualname
+    # cr_frame is None only once a coroutine has finished; one handed to create_task has
+    # not been started yet, so its frame still holds the arguments it was built with
+    assert coro.cr_frame is not None
+    arguments = dict(coro.cr_frame.f_locals)
+    coro.close()
+    return name, arguments
+
+
 # Mock classes for testing
+
+
+def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
+    """
+    Give a mocked MusicAssistant the real create_task implementation.
+
+    Needed for any test that lets a `@use_cache` decorated method run, since the
+    decorator awaits the task it gets back to share one fetch between callers.
+
+    :param mass: The mock standing in for the MusicAssistant instance.
+    """
+    mass._tracked_tasks = {}
+    # on an AsyncMock this call would hand back a coroutine that nobody awaits
+    mass.verify_event_loop_thread = MagicMock()  # type: ignore[method-assign]
+    real_create_task = MethodType(MusicAssistant.create_task, mass)
+
+    def _create_task(target: Any, *args: Any, **kwargs: Any) -> Any:
+        if not (inspect.iscoroutine(target) or inspect.iscoroutinefunction(target)):
+            # tests hand this mocked methods too, which the real one refuses
+            return MagicMock()
+        # resolved per call so this also works from a synchronous fixture
+        mass.loop = asyncio.get_running_loop()
+        return real_create_task(target, *args, **kwargs)
+
+    # kept a mock so tests can still assert on the calls it received
+    mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
+def set_music_source_access(
+    mass: MusicAssistant | MagicMock,
+    access_by_instance: Mapping[str, ProviderAccess | None],
+) -> None:
+    """
+    Give the server the given music sources, each carrying the given access record.
+
+    A user's set of music sources is derived from the access records on the raw provider
+    configs, so this is all a test needs to make a source visible to (or hidden from) a
+    user. Works both on a real server and on a mocked one.
+
+    :param mass: The (real or mocked) MusicAssistant instance.
+    :param access_by_instance: Access record per music source instance id; None means a
+        household source, visible to everyone.
+    """
+    raw_configs = {
+        instance_id: {
+            "type": ProviderType.MUSIC.value,
+            "domain": instance_id.split("--")[0],
+            "instance_id": instance_id,
+            "access": access.to_dict() if access else None,
+        }
+        for instance_id, access in access_by_instance.items()
+    }
+    if isinstance(mass.config, ConfigController):
+        for instance_id, raw_config in raw_configs.items():
+            mass.config.set(f"{CONF_PROVIDERS}/{instance_id}", raw_config)
+        return
+    mass.config.get = MagicMock(
+        side_effect=lambda key, default=None: (
+            raw_configs
+            if key == CONF_PROVIDERS
+            else raw_configs.get(key.removeprefix(f"{CONF_PROVIDERS}/"), default)
+        )
+    )
 
 
 def create_mock_config(name: str) -> MagicMock:
@@ -78,7 +384,12 @@ class MockProvider:
         self.manifest = MagicMock()
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
+        self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
+        self.unloading = False
+        # tests that let their players signal state updates fill this with the
+        # players of this provider, the way a real provider reports them
+        self.players: list[Player] = []
 
 
 class MockPlayer(Player):

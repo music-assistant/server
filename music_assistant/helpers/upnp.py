@@ -204,9 +204,12 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     # - Streaming transfer mode (bit 24)
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
-    duration_str = str(int(media.duration or 0) // 3600).zfill(2) + ":"
-    duration_str += str((int(media.duration or 0) % 3600) // 60).zfill(2) + ":"
-    duration_str += str(int(media.duration or 0) % 60).zfill(2)
+    # the res duration describes the audio we hand over, which is shorter than
+    # the media item when playback starts at a seek position
+    stream_duration = int(media.stream_duration or media.duration or 0)
+    duration_str = str(stream_duration // 3600).zfill(2) + ":"
+    duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
+    duration_str += str(stream_duration % 60).zfill(2)
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'

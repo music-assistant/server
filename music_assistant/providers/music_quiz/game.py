@@ -1,0 +1,232 @@
+"""Game state helpers for the Music Quiz provider."""
+
+from __future__ import annotations
+
+from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.providers.music_quiz.answer_types.base import (
+    QuizAnswerSubmission,
+    QuizAnswerType,
+)
+from music_assistant.providers.music_quiz.errors import (
+    MusicQuizNameTakenError,
+    MusicQuizNotActiveThisRoundError,
+    MusicQuizUnknownPlayerError,
+    MusicQuizWrongPhaseError,
+)
+from music_assistant.providers.music_quiz.models import (
+    MusicQuizGame,
+    MusicQuizPhase,
+    MusicQuizPlayer,
+    MusicQuizRound,
+)
+
+
+def add_player(
+    game: MusicQuizGame,
+    player: MusicQuizPlayer,
+) -> None:
+    """
+    Add a player to a game.
+
+    :param game: Game to mutate.
+    :param player: Player to add.
+    """
+    if player.player_id in game.players:
+        raise InvalidDataError("Player already exists")
+    normalized_name = player.name.casefold()
+    if any(existing.name.casefold() == normalized_name for existing in game.players.values()):
+        raise MusicQuizNameTakenError("Player name must be unique")
+    game.players[player.player_id] = player
+
+
+def remove_player(
+    game: MusicQuizGame,
+    player_id: str,
+    answer_type: QuizAnswerType,
+) -> None:
+    """
+    Remove a player and their answer-specific round state.
+
+    :param game: Game to mutate.
+    :param player_id: Player to remove.
+    :param answer_type: Answer strategy for the game.
+    """
+    if player_id not in game.players:
+        raise MusicQuizUnknownPlayerError("Unknown player")
+    for game_round in game.rounds:
+        answer_type.remove_player(game_round.answer_state, player_id)
+    del game.players[player_id]
+
+
+def submit_answer(
+    game: MusicQuizGame,
+    player_id: str,
+    submission: QuizAnswerSubmission,
+    submitted_at: float,
+    answer_type: QuizAnswerType,
+) -> None:
+    """
+    Submit a validated player answer for the current round.
+
+    :param game: Game to mutate.
+    :param player_id: Player submitting the answer.
+    :param submission: Validated answer submission.
+    :param submitted_at: Server timestamp of the submission.
+    :param answer_type: Answer strategy for the game.
+    """
+    if game.phase != MusicQuizPhase.ANSWERING:
+        raise MusicQuizWrongPhaseError("Answers can only be submitted during the answering phase")
+    current_round = get_current_round(game)
+    if player_id not in game.players:
+        raise MusicQuizUnknownPlayerError("Unknown player")
+    player = game.players[player_id]
+    if player.active_from_round > current_round.round_index:
+        raise MusicQuizNotActiveThisRoundError("Player is not active for this round")
+    answer_type.submit(game, current_round.answer_state, player, submission, submitted_at)
+
+
+def reveal_round(game: MusicQuizGame, answer_type: QuizAnswerType) -> None:
+    """
+    Reveal the current round and apply scores.
+
+    :param game: Game to mutate.
+    :param answer_type: Answer strategy for the game.
+    """
+    current_round = get_current_round(game)
+    if game.phase != MusicQuizPhase.ANSWERING:
+        raise MusicQuizWrongPhaseError("Round can only be revealed during the answering phase")
+    answer_timestamp = answer_type.reveal(game, current_round.answer_state)
+    current_round.ended_at = (
+        answer_timestamp if answer_timestamp is not None else current_round.started_at or 0
+    )
+    game.phase = MusicQuizPhase.REVEAL
+    for player in game.players.values():
+        player.ready = False
+
+
+def start_round(
+    game: MusicQuizGame,
+    music_quiz_round: MusicQuizRound,
+    started_at: float,
+    answer_type: QuizAnswerType,
+) -> None:
+    """
+    Start a new answering round.
+
+    :param game: Game to mutate.
+    :param music_quiz_round: Round to append and make current.
+    :param started_at: Round start timestamp.
+    :param answer_type: Answer strategy for the game.
+    """
+    if game.phase not in (MusicQuizPhase.LOBBY, MusicQuizPhase.REVEAL):
+        raise InvalidDataError("A round cannot be started from the current phase")
+    if len(game.rounds) >= game.config.round_count:
+        raise InvalidDataError("All configured rounds have already been played")
+    expected_index = len(game.rounds)
+    if music_quiz_round.round_index != expected_index:
+        raise InvalidDataError("Round index does not match the game state")
+    answer_type.validate_round(game, music_quiz_round.answer_state)
+    music_quiz_round.started_at = started_at
+    music_quiz_round.ended_at = None
+    game.rounds.append(music_quiz_round)
+    game.current_round_index = music_quiz_round.round_index
+    game.phase = MusicQuizPhase.ANSWERING
+    for player in game.players.values():
+        player.ready = False
+
+
+def mark_player_ready(game: MusicQuizGame, player_id: str) -> None:
+    """
+    Mark a player ready during the reveal/listening phase.
+
+    :param game: Game to mutate.
+    :param player_id: Player ID.
+    """
+    if game.phase != MusicQuizPhase.REVEAL:
+        raise MusicQuizWrongPhaseError("Players can only become ready during reveal")
+    if player_id not in game.players:
+        raise MusicQuizUnknownPlayerError("Unknown player")
+    game.players[player_id].ready = True
+
+
+def are_active_players_ready(game: MusicQuizGame) -> bool:
+    """
+    Return whether every player of the upcoming round is ready.
+
+    :param game: Game to inspect.
+    """
+    current_round = get_current_round(game)
+    # +1: during reveal the next round belongs to late joiners too, so the
+    # game must not advance from under them — capped at the last real round,
+    # because a final-reveal joiner will never play and must not block finish
+    gate_round_index = min(current_round.round_index + 1, game.config.round_count - 1)
+    players = active_players_for_round(game, gate_round_index)
+    return bool(players) and all(player.ready for player in players)
+
+
+def all_active_players_complete(game: MusicQuizGame, answer_type: QuizAnswerType) -> bool:
+    """
+    Return whether every active player completed the current round.
+
+    :param game: Game to inspect.
+    :param answer_type: Answer strategy for the game.
+    """
+    if game.phase != MusicQuizPhase.ANSWERING:
+        return False
+    current_round = get_current_round(game)
+    players = active_players_for_round(game, current_round.round_index)
+    return bool(game.players) and (
+        not players or answer_type.is_round_complete(current_round.answer_state, players)
+    )
+
+
+def finish_game(game: MusicQuizGame) -> None:
+    """
+    Mark a game finished.
+
+    :param game: Game to mutate.
+    """
+    if game.phase != MusicQuizPhase.REVEAL:
+        raise InvalidDataError("A game can only be finished from the reveal phase")
+    game.phase = MusicQuizPhase.FINISHED
+
+
+def reset_game(game: MusicQuizGame) -> None:
+    """
+    Reset a game for a new run with the same config and players.
+
+    :param game: Game to mutate.
+    """
+    game.phase = MusicQuizPhase.LOBBY
+    game.auto_start_at = None
+    game.rounds.clear()
+    game.current_round_index = None
+    for player in game.players.values():
+        player.score = 0
+        player.ready = False
+        player.active_from_round = 0
+
+
+def active_players_for_round(game: MusicQuizGame, round_index: int) -> list[MusicQuizPlayer]:
+    """
+    Return players active for a round.
+
+    :param game: Game to inspect.
+    :param round_index: Round index.
+    """
+    return [player for player in game.players.values() if player.active_from_round <= round_index]
+
+
+def get_current_round(game: MusicQuizGame) -> MusicQuizRound:
+    """
+    Return the current round.
+
+    :param game: Game to inspect.
+    """
+    if game.current_round_index is None:
+        raise InvalidDataError("No current round")
+    try:
+        return game.rounds[game.current_round_index]
+    except IndexError as err:
+        raise InvalidDataError("Current round does not exist") from err

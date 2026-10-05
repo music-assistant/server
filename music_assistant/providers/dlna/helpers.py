@@ -28,6 +28,11 @@ class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
         self.event_handler = UpnpEventHandler(self, requester)
         self.mass.streams.register_dynamic_route("/notify", self._handle_request, method="NOTIFY")
 
+    @property
+    def callback_url(self) -> str:
+        """Return callback URL on which we are callable."""
+        return f"{self.mass.streams.base_url}/notify"
+
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
         if request.method != "NOTIFY":
@@ -58,8 +63,3 @@ class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
             return Response(status=400)
 
         return Response(status=status)
-
-    @property
-    def callback_url(self) -> str:
-        """Return callback URL on which we are callable."""
-        return f"{self.mass.streams.base_url}/notify"

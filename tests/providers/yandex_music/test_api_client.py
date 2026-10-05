@@ -21,7 +21,11 @@ from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.providers.yandex_music.api_client import (
     GET_FILE_INFO_CODECS,
     YandexMusicClient,
@@ -37,7 +41,8 @@ from music_assistant.providers.yandex_music.constants import (
 
 
 def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
-    """Create a YandexMusicClient with a mocked underlying ClientAsync.
+    """
+    Create a YandexMusicClient with a mocked underlying ClientAsync.
 
     Also mocks connect() so that _reconnect() restores the mock client
     instead of trying to create a real connection.
@@ -238,7 +243,8 @@ def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.A
 
 
 def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
-    """Return (args, kwargs) from the most recent await on ``m``.
+    """
+    Return (args, kwargs) from the most recent await on ``m``.
 
     Raises AssertionError when the mock was never awaited — intentionally
     surfacing missed setup rather than letting mypy's `None is not iterable`
@@ -435,7 +441,8 @@ async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> Non
 
 
 async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
-    """Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
+    """
+    Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
 
     Without this mapping the raw ``UnauthorizedError`` from the MarshalX
     client would bubble up through browse / play paths and crash the
@@ -583,7 +590,8 @@ async def test_get_artist_about_returns_none_on_network_error() -> None:
 
 
 def test_lrc_regex_matches_valid_synced_lyrics() -> None:
-    """LRC regex matches valid synced lyrics with proper format [mm:ss.xx].
+    """
+    LRC regex matches valid synced lyrics with proper format [mm:ss.xx].
 
     Uses re.search (no ^ anchor) matching the implementation in api_client.py,
     which intentionally allows timestamps anywhere in the text so that LRC
@@ -755,7 +763,8 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
 
 
 async def test_get_track_file_info_parses_camelcase_download_info() -> None:
-    """get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
+    """
+    get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
 
     The yandex-music v3 client no longer recursively normalises camelCase keys
     inside ``Response.result``. The raw JSON for /get-file-info comes back as
@@ -961,8 +970,8 @@ async def test_circuit_breaker_clears_after_deadline() -> None:
     underlying.tracks.assert_awaited()
 
 
-async def test_bypass_throttler_bypasses_block() -> None:
-    """BYPASS_THROTTLER must allow refresh paths through even while a kind is blocked."""
+async def test_playback_priority_bypasses_block() -> None:
+    """Playback priority passes a blocked kind but still takes a throttler slot."""
     client, underlying = _make_client()
     client._block_until["file_info"] = time.monotonic() + 600
 
@@ -976,20 +985,19 @@ async def test_bypass_throttler_bypasses_block() -> None:
     underlying._request.get = mock.AsyncMock(return_value=raw_response)
     underlying.base_url = "https://api.music.yandex.net"
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert result is not None
     assert result["url"] == "https://example.com/x"
+    cast("mock.AsyncMock", client._throttlers["file_info"].acquire).assert_awaited_once()
 
 
 async def test_captcha_during_bypass_still_engages_block() -> None:
-    """Captcha received during a BYPASS_THROTTLER call must still quarantine the kind.
+    """
+    Captcha received during a playback priority call must still quarantine the kind.
 
-    Stream URL refresh runs under BYPASS_THROTTLER to keep an in-flight track
+    Stream URL refresh runs under playback priority to keep an in-flight track
     alive — but if Yandex returns smart-captcha on that very refresh, we DO
     want the file_info kind quarantined so that subsequent NEW-track plays
     fail fast instead of hitting Yandex and prolonging the edge ban.
@@ -1003,12 +1011,9 @@ async def test_captcha_during_bypass_still_engages_block() -> None:
     # Pre-condition: file_info kind is NOT blocked.
     assert client._block_until["file_info"] == 0.0
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         # get_track_file_info swallows ResourceTemporarilyUnavailable and returns None.
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert result is None
     # The block must have been engaged despite the bypass.
@@ -1088,7 +1093,8 @@ async def test_file_info_cache_hit_skips_network() -> None:
 
 
 async def test_file_info_cache_separates_entries_by_codecs() -> None:
-    """Different codec preference lists must NOT share a cache slot.
+    """
+    Different codec preference lists must NOT share a cache slot.
 
     Yandex picks the codec (and download URL) based on the codec order, so a
     cached response for codecs="flac-mp4,flac" must not be reused when the
@@ -1150,21 +1156,18 @@ async def test_file_info_cache_invalidated_on_bad_request() -> None:
 
     # Trigger the BadRequest code path. A second call WITHOUT bypass would
     # short-circuit on the cache hit and never reach the network — so we use
-    # BYPASS_THROTTLER (the same context that stream URL refresh uses) to skip
+    # playback priority (the same context that stream URL refresh uses) to skip
     # the cache lookup. The 4xx-invalidation runs regardless of bypass.
     underlying._request.get = mock.AsyncMock(side_effect=BadRequestError("nope"))
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
     # Cache invalidated by the BadRequest handler.
     assert cache_key not in client._file_info_cache
 
 
-async def test_file_info_cache_bypassed_when_bypass_throttler_set() -> None:
-    """Under BYPASS_THROTTLER, refresh must hit the network even with cached entry."""
+async def test_file_info_cache_bypassed_under_playback_priority() -> None:
+    """Under playback priority, refresh must hit the network even with cached entry."""
     client, underlying = _make_client()
     underlying._request = mock.MagicMock()
     underlying._request.get = mock.AsyncMock(return_value=_make_file_info_response())
@@ -1172,11 +1175,8 @@ async def test_file_info_cache_bypassed_when_bypass_throttler_set() -> None:
 
     await client.get_track_file_info("42")  # populate cache
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert underlying._request.get.await_count == 2
 
@@ -1215,7 +1215,8 @@ async def test_file_info_cache_lru_eviction(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_check_block_runs_again_after_throttler_acquire() -> None:
-    """A concurrent request that passed the pre-check must bail after acquire().
+    """
+    A concurrent request that passed the pre-check must bail after acquire().
 
     Without the post-acquire re-check, requests already queued in the
     throttler when another request engages the cooldown would proceed to
@@ -1241,7 +1242,8 @@ async def test_check_block_runs_again_after_throttler_acquire() -> None:
 
 
 async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
-    """Rotor session feedback (with_retry=False) must propagate 429s.
+    """
+    Rotor session feedback (with_retry=False) must propagate 429s.
 
     The inner `_do` swallows ordinary NetworkErrors for fire-and-forget
     paths, but a captcha 429 must reach `_call_no_retry` so the rotor
@@ -1272,7 +1274,8 @@ async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
 
 
 async def test_retry_path_classifies_captcha_after_reconnect() -> None:
-    """A captcha 429 on the reconnect-retry attempt must engage the block.
+    """
+    A captcha 429 on the reconnect-retry attempt must engage the block.
 
     Without classification on the retry, the raw NetworkError propagates
     with the full HTML body and the kind cooldown is never set.
@@ -1303,7 +1306,8 @@ async def test_retry_path_classifies_captcha_after_reconnect() -> None:
 
 
 async def test_retry_path_re_checks_block_before_retry() -> None:
-    """A retry after reconnect must re-check the per-kind block.
+    """
+    A retry after reconnect must re-check the per-kind block.
 
     Another concurrent task may engage the cooldown while the reconnect is
     in flight; without a re-check, the retry would still hit Yandex during
@@ -1329,7 +1333,8 @@ async def test_retry_path_re_checks_block_before_retry() -> None:
 
 
 async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
-    """A populated cache must not be served while the file_info kind is blocked.
+    """
+    A populated cache must not be served while the file_info kind is blocked.
 
     Otherwise the streaming layer would happily replay a pre-cooldown URL
     while Yandex is actively rate-limiting our IP/account, defeating the
@@ -1356,7 +1361,8 @@ async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
 
 
 async def test_bypass_refresh_replaces_cached_entry() -> None:
-    """BYPASS_THROTTLER refresh must overwrite the existing cache entry.
+    """
+    Playback priority refresh must overwrite the existing cache entry.
 
     Otherwise the next non-bypass caller keeps receiving the old URL until
     the TTL expires, even though refresh has just proven that entry stale.
@@ -1373,15 +1379,12 @@ async def test_bypass_refresh_replaces_cached_entry() -> None:
     assert first is not None
     assert first["url"] == "https://example.com/old"
 
-    # Refresh under BYPASS_THROTTLER with a fresh URL.
+    # Refresh under playback priority with a fresh URL.
     underlying._request.get = mock.AsyncMock(
         return_value=_make_file_info_response(url="https://example.com/new")
     )
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         refreshed = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert refreshed is not None
     assert refreshed["url"] == "https://example.com/new"
 
@@ -1395,7 +1398,8 @@ async def test_bypass_refresh_replaces_cached_entry() -> None:
 
 
 async def test_file_info_cache_invalidated_on_unauthorized() -> None:
-    """UnauthorizedError on a refresh must clear the cached entry for the track.
+    """
+    UnauthorizedError on a refresh must clear the cached entry for the track.
 
     Otherwise post-re-auth callers could be served a URL tied to the
     expired session.
@@ -1412,11 +1416,8 @@ async def test_file_info_cache_invalidated_on_unauthorized() -> None:
 
     # UnauthorizedError on a bypass refresh — must invalidate.
     underlying._request.get = mock.AsyncMock(side_effect=UnauthorizedError("token expired"))
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
     assert cache_key not in client._file_info_cache
 
@@ -1521,13 +1522,10 @@ async def test_captcha_strikes_per_kind_isolated() -> None:
     underlying._request.get = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     underlying.base_url = "https://api.music.yandex.net"
 
-    # Trip captcha on file_info via the BYPASS_THROTTLER + get_track_file_info path
+    # Trip captcha on file_info via the playback priority + get_track_file_info path
     # (which swallows the exception and returns None).
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
 
     assert len(client._captcha_strikes["file_info"]) == 1
@@ -1841,14 +1839,15 @@ async def test_get_artist_tracks_propagates_captcha_rtu() -> None:
     assert exc_info.value.backoff_time == 15
 
 
-# -- jitter respects BYPASS_THROTTLER (#146) ---------------------------------
+# -- jitter respects playback priority (#146) --------------------------------
 
 
-async def test_jitter_skipped_under_bypass_throttler() -> None:
-    """Stream URL refresh paths run under BYPASS_THROTTLER — jitter must not fire.
+async def test_jitter_skipped_under_playback_priority() -> None:
+    """
+    Stream URL refresh paths run under playback priority — jitter must not fire.
 
-    The helper sits inside the ``if not BYPASS_THROTTLER.get():`` block in
-    both _call_with_retry and _call_no_retry. If a future refactor lifts
+    The helper sits inside the playback priority check in both
+    _call_with_retry and _call_no_retry. If a future refactor lifts
     the jitter call out of that block, stream URL refresh would eat up to
     INITIAL_SYNC_JITTER_S of avoidable latency during the first
     INITIAL_SYNC_WINDOW_S after every connect — exactly when reconnect
@@ -1867,15 +1866,14 @@ async def test_jitter_skipped_under_bypass_throttler() -> None:
     underlying._request.get = mock.AsyncMock(return_value=raw_response)
     underlying.base_url = "https://api.music.yandex.net"
 
-    with mock.patch(
-        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
-        new_callable=mock.AsyncMock,
-    ) as sleep_mock:
-        token = BYPASS_THROTTLER.set(True)
-        try:
-            await client.get_track_file_info("42")
-        finally:
-            BYPASS_THROTTLER.reset(token)
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+            new_callable=mock.AsyncMock,
+        ) as sleep_mock,
+        request_priority(RequestPriority.HIGH),
+    ):
+        await client.get_track_file_info("42")
 
     sleep_mock.assert_not_awaited()
 
@@ -1884,7 +1882,8 @@ async def test_jitter_skipped_under_bypass_throttler() -> None:
 
 
 async def test_search_swallows_bad_request_as_empty_result() -> None:
-    """A 4xx from Yandex search is terminal — return None, do not signal retry.
+    """
+    A 4xx from Yandex search is terminal — return None, do not signal retry.
 
     Wrapping ``BadRequestError`` as ``ResourceTemporarilyUnavailable`` tells
     Music Assistant the request can be retried, which reproduces the same
@@ -1923,7 +1922,8 @@ async def test_get_liked_albums_swallows_bad_request_as_empty_list() -> None:
 
 
 async def test_get_liked_tracks_sort_survives_naive_timestamp() -> None:
-    """Sorting must not crash when ``TrackShort.timestamp`` is timezone-naive.
+    """
+    Sorting must not crash when ``TrackShort.timestamp`` is timezone-naive.
 
     The upstream ``yandex-music`` library is inconsistent about tz on
     ``TrackShort.timestamp``. Comparing a naive ``datetime`` against the
@@ -1951,7 +1951,8 @@ async def test_get_liked_tracks_sort_survives_naive_timestamp() -> None:
 
 
 async def test_call_with_retry_reacquires_throttler_on_reconnect() -> None:
-    """The reconnect-retry path must consume a throttler token too.
+    """
+    The reconnect-retry path must consume a throttler token too.
 
     Skipping ``throttler.acquire()`` on the second attempt doubles the
     effective request rate during connection flap — exactly the conditions
@@ -1974,7 +1975,8 @@ async def test_call_with_retry_reacquires_throttler_on_reconnect() -> None:
 
 
 async def test_jitter_skipped_when_kind_already_blocked() -> None:
-    """A blocked kind must fast-fail BEFORE the jitter sleep.
+    """
+    A blocked kind must fast-fail BEFORE the jitter sleep.
 
     Order contract in _call_with_retry: _check_block -> jitter -> acquire ->
     _check_block. The pre-check raises RTU immediately when the kind is
@@ -2006,7 +2008,8 @@ async def test_jitter_skipped_when_kind_already_blocked() -> None:
 
 
 async def test_parallel_same_endpoint_calls_serialize() -> None:
-    """Parallel calls to the same endpoint must run one-at-a-time.
+    """
+    Parallel calls to the same endpoint must run one-at-a-time.
 
     Yandex's edge treats concurrent requests to the same URL family as a
     scraper signature and trips captcha within ~460 ms. The per-endpoint
@@ -2042,8 +2045,48 @@ async def test_parallel_same_endpoint_calls_serialize() -> None:
     )
 
 
+async def test_restrictive_mode_waiting_calls_hold_no_permit() -> None:
+    """A call still waiting for its throttler slot holds no permit, so playback gets through."""
+    client = YandexMusicClient(token=SecretStr("fake"), restrictive_rate_limits=True)
+    client._client = mock.AsyncMock()
+    client._user_id = 12345
+    for kind in client._throttlers:
+        client._throttlers[kind] = mock.AsyncMock()
+    release_low = asyncio.Event()
+
+    async def _paced_acquire(priority: RequestPriority | None = None) -> float:
+        # background calls sit in the pacer, playback takes its slot at once
+        if (priority or current_priority()) is RequestPriority.LOW:
+            await release_low.wait()
+        return 0.0
+
+    client._throttlers["default"].acquire = _paced_acquire  # type: ignore[method-assign]
+    client._invoke_under_endpoint_lock = mock.AsyncMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock()
+    )
+
+    async def _fake(_c: Any) -> Any:
+        return None
+
+    with request_priority(RequestPriority.LOW):
+        waiting = [
+            asyncio.create_task(client._call_with_retry(_fake, kind="default"))
+            for _ in range(RESTRICTIVE_GLOBAL_CONCURRENCY + 1)
+        ]
+    await asyncio.sleep(0)
+    try:
+        with request_priority(RequestPriority.HIGH):
+            async with asyncio.timeout(1):
+                await client._call_with_retry(_fake, kind="default")
+        assert all(not task.done() for task in waiting)
+    finally:
+        release_low.set()
+        await asyncio.gather(*waiting)
+
+
 async def test_restrictive_mode_caps_global_concurrency() -> None:
-    """Restrictive mode caps total in-flight requests to ``RESTRICTIVE_GLOBAL_CONCURRENCY``.
+    """
+    Restrictive mode caps total in-flight requests to ``RESTRICTIVE_GLOBAL_CONCURRENCY``.
 
     Yandex's edge enforces a per-token concurrency limit on datacenter /
     VPN IPs (empirically ~6 simultaneous before captcha). The
@@ -2114,7 +2157,8 @@ async def test_restrictive_mode_caps_global_concurrency() -> None:
 
 
 async def test_parallel_different_endpoints_run_concurrently() -> None:
-    """Calls to different endpoint methods must NOT block each other.
+    """
+    Calls to different endpoint methods must NOT block each other.
 
     The per-endpoint lock is keyed on the calling method's qualname, so
     parallel calls to distinct YandexMusicClient methods proceed in

@@ -98,7 +98,8 @@ def test_to_brief_radio() -> None:
 
 
 def test_to_brief_player_reads_playback_state() -> None:
-    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
+    """
+    ``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
 
     The expected ``PlayerBrief`` pins every defaulted field explicitly —
     leaving them implicit means the test passes only as long as the
@@ -132,7 +133,8 @@ def test_to_brief_player_reads_playback_state() -> None:
 
 
 def test_to_brief_player_falls_back_to_legacy_state_attr() -> None:
-    """When only the legacy ``state`` attr exists, ``to_brief_player`` still resolves it.
+    """
+    When only the legacy ``state`` attr exists, ``to_brief_player`` still resolves it.
 
     Kept for back-compat with older shims / hand-built test stubs.
     """
@@ -202,7 +204,8 @@ def test_to_brief_player_no_current_media() -> None:
 def test_to_brief_player_powered_prefers_state(
     player_powered: bool, state_powered: bool, expected: bool, case: str
 ) -> None:
-    """When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
+    """
+    When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
 
     MA core builds ``_state.powered`` from ``__final_power_state`` and
     serialises it in the REST API; the raw ``Player.powered`` property
@@ -224,7 +227,8 @@ def test_to_brief_player_powered_prefers_state(
 
 
 def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
-    """Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
+    """
+    Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
 
     Pairs with the parametrized test above to pin both branches of the
     canonical-vs-raw selection: state present (state wins) and state absent
@@ -243,7 +247,8 @@ def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
 
 
 def test_to_brief_player_current_item_uses_state_current_media() -> None:
-    """``current_item`` is cleared when ``Player.state.current_media`` is None.
+    """
+    ``current_item`` is cleared when ``Player.state.current_media`` is None.
 
     After ``stop`` MA core clears ``_state.current_media``, but the raw
     ``_attr_current_media`` may persist until the next playback. The brief
@@ -264,7 +269,8 @@ def test_to_brief_player_current_item_uses_state_current_media() -> None:
 
 
 def test_to_brief_player_exposes_available_and_enabled() -> None:
-    """``available`` / ``enabled`` flow through, and the state ladder fires.
+    """
+    ``available`` / ``enabled`` flow through, and the state ladder fires.
 
     Combined assert: a regression that breaks the state override only
     when both blocker fields are set would otherwise slip through —
@@ -290,7 +296,8 @@ def test_to_brief_player_exposes_available_and_enabled() -> None:
 
 
 def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> None:
-    """Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
+    """
+    Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
 
     Pins back-compat: tests built before this feature use bare
     ``SimpleNamespace`` players, and they must still produce a usable brief.
@@ -309,7 +316,8 @@ def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> 
 
 
 def test_to_brief_player_unavailable_overrides_state() -> None:
-    """``state`` becomes ``"unavailable"`` when the player is offline.
+    """
+    ``state`` becomes ``"unavailable"`` when the player is offline.
 
     Without the override the brief reports the cached ``playback_state``
     (typically ``"idle"``) and an LLM cannot distinguish a quiet speaker
@@ -328,7 +336,8 @@ def test_to_brief_player_unavailable_overrides_state() -> None:
 
 
 def _blocker_stub(**overrides: Any) -> SimpleNamespace:
-    """Build a minimal player stub for state-ladder tests.
+    """
+    Build a minimal player stub for state-ladder tests.
 
     Every blocker field defaults to its "not blocked" value; tests pass
     ``overrides`` for the axis they're exercising.
@@ -363,7 +372,8 @@ def _blocker_stub(**overrides: Any) -> SimpleNamespace:
 def test_to_brief_player_state_override_per_blocker(
     blocker: dict[str, object], expected_state: str
 ) -> None:
-    """Each blocker in isolation produces its dedicated ``state`` value.
+    """
+    Each blocker in isolation produces its dedicated ``state`` value.
 
     Pins the per-rung behaviour of the state ladder. Without these
     overrides the LLM would see ``state="playing"`` (the cached
@@ -401,7 +411,8 @@ def test_to_brief_player_state_override_per_blocker(
 def test_to_brief_player_state_priority_chain(
     blockers: dict[str, object], expected_state: str, case: str
 ) -> None:
-    """When multiple blockers are set, the most-blocking value wins.
+    """
+    When multiple blockers are set, the most-blocking value wins.
 
     The single ``state`` field has to summarise usability; an LLM that
     only reads ``state`` (skipping the explicit booleans) must make the
@@ -424,7 +435,8 @@ def test_to_brief_player_exposes_new_blocker_fields() -> None:
 
 
 def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
-    """Legacy stubs without the new attributes still produce a usable brief.
+    """
+    Legacy stubs without the new attributes still produce a usable brief.
 
     Mirrors the back-compat pattern already pinned for
     ``available`` / ``enabled`` — tests built before this feature use
@@ -445,7 +457,8 @@ def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
 
 
 def test_to_brief_player_prefers_state_active_group_over_raw_attr() -> None:
-    """``Player.state.active_group`` is the canonical sync-membership signal.
+    """
+    ``Player.state.active_group`` is the canonical sync-membership signal.
 
     MA's ``__final_active_group`` walks every GROUP player and resolves
     membership / protocol translation; the raw ``Player.active_group``
@@ -499,7 +512,8 @@ def test_to_brief_player_prefers_state_synced_to_over_raw_attr() -> None:
 
 
 def test_to_brief_player_falls_back_to_raw_when_state_lacks_group_fields() -> None:
-    """Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
+    """
+    Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
 
     The existing ``test_to_brief_player_powered_prefers_state`` already
     exercises a stub whose ``state`` has ``powered`` + ``current_media``
@@ -544,7 +558,8 @@ def test_to_brief_player_prefers_state_volume_muted_over_raw() -> None:
 
 
 def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
-    """``group_volume`` is read from state — SyncGroupPlayer holds it there.
+    """
+    ``group_volume`` is read from state — SyncGroupPlayer holds it there.
 
     The raw ``Player.group_volume`` dataclass attr can lag; the canonical
     property is exposed on ``Player.state`` (line 1497 of MA's
@@ -572,7 +587,8 @@ def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
 
 
 def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() -> None:
-    """Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
+    """
+    Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
 
     Mirrors the back-compat pattern already pinned for the
     ``active_group`` / ``synced_to`` additions.
@@ -592,7 +608,8 @@ def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() 
 
 
 def test_to_brief_player_volume_fields_fall_back_to_raw_when_state_lacks_them() -> None:
-    """Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
+    """
+    Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
 
     Back-compat with stubs that carry ``state`` for ``powered`` /
     ``current_media`` but predate the new volume fields.
@@ -639,11 +656,39 @@ def test_to_brief_queue_with_items() -> None:
     assert brief.shuffle is True
     assert brief.repeat == "off"
     assert len(brief.items) == 2
+    assert brief.items[0].index == 0
+    assert brief.items[1].index == 1
     assert brief.items[0].artists == ["A1"]
 
 
+def test_to_brief_queue_exposes_insert_index_fields() -> None:
+    """``to_brief_queue`` sets index metadata for agent insert planning."""
+    queue = SimpleNamespace(
+        queue_id="kitchen",
+        current_index=2,
+        index_in_buffer=4,
+        items=10,
+        shuffle_enabled=True,
+        repeat_mode=SimpleNamespace(value="off"),
+    )
+    items = [
+        SimpleNamespace(
+            queue_item_id="i1",
+            name="One",
+            duration=120,
+            media_item=SimpleNamespace(artists=[SimpleNamespace(name="A1")]),
+        ),
+    ]
+    brief = to_brief_queue(queue, items=items, items_offset=5)
+    assert brief.index_in_buffer == 4
+    assert brief.next_insertable_index == 5
+    assert brief.items_start_index == 5
+    assert brief.items[0].index == 5
+
+
 def test_to_brief_queue_uses_canonical_items_int_for_count() -> None:
-    """``items`` (int) on the canonical PlayerQueue is the **total** length.
+    """
+    ``items`` (int) on the canonical PlayerQueue is the **total** length.
 
     Earlier code mis-fell back to len(brief_items) (the truncated lookahead),
     under-reporting real queue depth. ``items_count`` from the truncated
@@ -674,7 +719,8 @@ def test_page_args_clamps() -> None:
 
 
 def test_to_brief_queue_returns_none_count_when_unknown() -> None:
-    """When the queue exposes no canonical count, report ``item_count=None``.
+    """
+    When the queue exposes no canonical count, report ``item_count=None``.
 
     A silent ``0`` (formerly returned via ``len(brief_items)`` when the
     truncated lookahead was empty) would tell the LLM the queue is empty
@@ -694,7 +740,8 @@ def test_to_brief_queue_returns_none_count_when_unknown() -> None:
 
 
 def test_to_brief_queue_exposes_available() -> None:
-    """``available`` flows through from ``PlayerQueue`` so callers see the offline case.
+    """
+    ``available`` flows through from ``PlayerQueue`` so callers see the offline case.
 
     Mirrors the parallel fix on the player side: a queue belonging to
     an offline player is still returned by ``get_active_queue`` but
@@ -999,7 +1046,33 @@ _DEBUG_CLASSES = [
     ("QueueInspect", {"queue_id", "raw", "current_item", "truncated"}),
     ("ProviderInspect", {"instance_id", "raw", "manifest", "truncated"}),
     ("LogLine", {"timestamp", "level", "component", "message"}),
-    ("LogTailResult", {"log_path", "lines", "bytes_scanned", "truncated"}),
+    (
+        "LogTailResult",
+        {
+            "log_path",
+            "lines",
+            "bytes_scanned",
+            "truncated",
+            "has_more",
+            "response_truncated",
+            "next_call_hint",
+        },
+    ),
+    ("ComponentCount", {"component", "count"}),
+    (
+        "LogStatsResult",
+        {
+            "log_path",
+            "window_seconds",
+            "total_records",
+            "level_counts",
+            "top_components",
+            "first_timestamp",
+            "last_timestamp",
+            "bytes_scanned",
+            "truncated",
+        },
+    ),
     ("EventRecord", {"timestamp", "event_type", "object_id", "data"}),
     ("EventSnapshot", {"events", "buffer_capacity", "total_seen"}),
     (

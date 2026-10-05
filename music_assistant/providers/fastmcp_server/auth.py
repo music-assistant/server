@@ -1,4 +1,5 @@
-"""Token verifier delegating to MA's existing authentication subsystem.
+"""
+Token verifier delegating to MA's existing authentication subsystem.
 
 The plugin does not implement JWT decoding or scope checks of its own — this
 is intentional. ``mass.webserver.auth.authenticate_with_token`` already handles
@@ -30,7 +31,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _extract_jwt_audience(token: str) -> str | list[str] | None:
-    """Best-effort decode of a JWT payload to extract the ``aud`` claim.
+    """
+    Best-effort decode of a JWT payload to extract the ``aud`` claim.
 
     Returns ``None`` for non-JWT tokens (legacy MA hash tokens), malformed
     payloads, or JWTs without an ``aud`` claim. Does **not** verify the
@@ -47,7 +49,7 @@ def _extract_jwt_audience(token: str) -> str | list[str] | None:
     try:
         raw = base64.urlsafe_b64decode(payload_segment + pad)
         claims = json.loads(raw)
-    except (binascii.Error, ValueError, UnicodeDecodeError):
+    except binascii.Error, ValueError, UnicodeDecodeError:
         return None
     aud = claims.get("aud") if isinstance(claims, dict) else None
     if isinstance(aud, (str, list)) or aud is None:
@@ -75,7 +77,8 @@ class MASTokenVerifier(TokenVerifier):
         public_resource_uri: str | None = None,
         enforce_audience: bool = False,
     ) -> None:
-        """Bind the verifier to a MusicAssistant instance.
+        """
+        Bind the verifier to a MusicAssistant instance.
 
         :param mass: MusicAssistant instance used to authenticate tokens.
         :param base_url: Public base URL of this MA instance (used by FastMCP
@@ -98,7 +101,8 @@ class MASTokenVerifier(TokenVerifier):
         self._enforce_audience = enforce_audience
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Validate the bearer token and produce an ``AccessToken`` for FastMCP.
+        """
+        Validate the bearer token and produce an ``AccessToken`` for FastMCP.
 
         :param token: Raw bearer token from the ``Authorization`` header.
         :return: ``AccessToken`` if the token is valid and the user is enabled,
@@ -132,7 +136,8 @@ class MASTokenVerifier(TokenVerifier):
         )
 
     def _check_audience(self, token: str) -> bool:
-        """Return ``True`` if the token's audience is acceptable for this server.
+        """
+        Return ``True`` if the token's audience is acceptable for this server.
 
         In soft mode (``enforce_audience=False``) — always returns ``True`` and
         only emits a warning when a JWT's ``aud`` is missing or mismatched.

@@ -5,16 +5,16 @@
       "description": "The url of the Jellyfin server to connect to."
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "The username to authenticate to the remote server. For example 'media'."
     },
     "password": {
-      "label": "Password",
-      "description": "The password to authenticate to the remote server."
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
     },
     "verify_ssl": {
-      "label": "Verify SSL",
-      "description": "Whether or not to verify the certificate of SSL/TLS connections."
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
     }
   },
   "manifest": {

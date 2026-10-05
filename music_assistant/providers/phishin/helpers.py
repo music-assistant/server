@@ -28,6 +28,7 @@ from .constants import (
     PHISH_ARTIST_ID,
     PHISH_ARTIST_NAME,
     PHISH_DISCOGS_ID,
+    PHISH_GENRES,
     PHISH_MUSICBRAINZ_ID,
     PHISH_TADB_ID,
     REQUEST_TIMEOUT,
@@ -286,23 +287,19 @@ def track_to_ma_track(
     # Build details string
     details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
 
-    # Create metadata with image
-    metadata = MediaItemMetadata()
-    if show_data:
-        image_url = show_data.get("album_cover_url")
-        if image_url:
-            metadata = MediaItemMetadata(
-                images=UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=image_url,
-                            provider=provider.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ]
+    # Create metadata with genres and image
+    metadata = MediaItemMetadata(genres=set(PHISH_GENRES))
+    if show_data and (image_url := show_data.get("album_cover_url")):
+        metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
                 )
-            )
+            ]
+        )
 
     return Track(
         item_id=track_id,
@@ -417,7 +414,7 @@ def parse_search_results(
 
         return song_title
 
-    artists: list[Artist] = _parse_artists(provider, media_types)
+    artists: list[Artist] = _parse_artists(provider, media_types, search_term)
     albums: list[Album] = _parse_albums(provider, search_data, media_types, contains_search_term)
     tracks: list[Track] = _parse_tracks(
         provider, search_data, media_types, contains_search_term, strip_performance_indicators
@@ -429,10 +426,14 @@ def parse_search_results(
     return artists, albums, tracks, playlists
 
 
-def _parse_artists(provider: MusicProvider, media_types: list[MediaType]) -> list[Artist]:
+def _parse_artists(
+    provider: MusicProvider, media_types: list[MediaType], search_term: str
+) -> list[Artist]:
     """Parse artists from search results."""
     artists: list[Artist] = []
-    if MediaType.ARTIST in media_types:
+    # Phish.in hosts a single artist and its api has no artist search, so only
+    # claim a match when the query is the start of its name.
+    if MediaType.ARTIST in media_types and PHISH_ARTIST_NAME.lower().startswith(search_term):
         metadata = MediaItemMetadata(
             images=UniqueList(
                 [

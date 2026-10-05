@@ -9,23 +9,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-import chromaprint
 import numpy as np
-from music_assistant_models.enums import ExternalID, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, StreamType
 from music_assistant_models.errors import (
     MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnsupportedSystemError,
 )
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
-from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import import_module_in_thread, parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -94,13 +95,202 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """Initialize the provider with an empty per-session state container."""
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
+        # Populated once a real chromaprint fingerprinter is built; stays empty while no
+        # native fingerprinter exists, in which case its errors cannot be raised either.
+        self._fingerprint_errors: tuple[type[BaseException], ...] = ()
+
+    async def handle_async_init(self) -> None:
+        """
+        Handle async initialization of the provider.
+
+        :raises UnsupportedSystemError: When the chromaprint native library is missing.
+        """
+        # pyacoustid binds libchromaprint through ctypes at import time, so this import is
+        # what surfaces a missing native library. Route it through the shared import
+        # executor to keep the dlopen off the event loop; it also warms sys.modules so the
+        # per-session import in _create_fingerprinter is a plain lookup.
+        try:
+            await import_module_in_thread("chromaprint")
+        except ImportError as err:
+            msg = (
+                "AcoustID needs the chromaprint library, which is not installed on this "
+                "system. See the Music Assistant documentation for how to install it."
+            )
+            raise UnsupportedSystemError(msg) from err
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                default_value=None,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_SCORE,
+                type=ConfigEntryType.FLOAT,
+                default_value=DEFAULT_MIN_SCORE,
+                range=(0, 1),
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANALYSE_STREAMING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_WRITE_TAGS_BACK,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
+
+    async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
+        """
+        Feed a PCM chunk into the session's fingerprinter.
+
+        :param session_id: Active analysis session ID.
+        :param pcm_chunk: PCM audio bytes at the session's declared sample rate / format.
+        """
+        data = self._data.get(session_id)
+        if data is None or data.error:
+            return
+        if data.pcm_seconds_fed >= MAX_FINGERPRINT_SECONDS:
+            return
+
+        if data.sample_width != 2:
+            try:
+                pcm_chunk = _downconvert_to_s16(pcm_chunk, data.sample_width)
+            except ValueError as err:
+                self.logger.debug(
+                    "Could not convert PCM to 16-bit for %s (sample_width=%d): %s",
+                    session_id,
+                    data.sample_width,
+                    err,
+                )
+                data.error = f"pcm conversion failed: {err}"
+                return
+
+        feed_errors: tuple[type[BaseException], ...] = (*self._fingerprint_errors, TypeError)
+        try:
+            data.fingerprinter.feed(pcm_chunk)
+        except feed_errors as err:
+            self.logger.debug("Chromaprint rejected PCM chunk for %s: %s", session_id, err)
+            data.error = f"feed failed: {err}"
+            return
+
+        # chunk is now guaranteed s16le; one frame = 2 bytes * channels
+        frame_bytes = 2 * data.channels
+        if frame_bytes <= 0 or data.sample_rate <= 0:
+            return
+        data.pcm_seconds_fed += len(pcm_chunk) / (frame_bytes * data.sample_rate)
+
+    async def cancel(self, session_id: str) -> None:
+        """
+        Cancel an in-progress analysis session.
+
+        :param session_id: Session ID to cancel.
+        """
+        self._data.pop(session_id, None)
+        await super().cancel(session_id)
+
+    async def post_analysis(
+        self,
+        streamdetails: StreamDetails,
+        analysis: AudioAnalysisData,
+    ) -> None:
+        """
+        Persist the matched identifiers to the library row and (optionally) the file.
+
+        :param streamdetails: Stream details for the analysed item.
+        :param analysis: Analysis data produced by :meth:`_finalize`.
+        """
+        extra = analysis.extra_data or {}
+        mbid = extra.get("mbid")
+        acoustid = extra.get("acoustid")
+        if not mbid and not acoustid:
+            return
+
+        # Pull ISRCs and (when write_tags_back is on) artist MBIDs from MB.
+        # ISRCs go to the DB and file tag; artist MBIDs are file-tag only —
+        # the filesystem tag-parser handles the artist-row update on next sync
+        # rather than us reproducing its entity-matching here.
+        want_artist_mbids = bool(self.config.get_value(CONF_WRITE_TAGS_BACK))
+        isrcs, artist_mbids = (
+            await self._fetch_mb_extras(mbid, include_artist_mbids=want_artist_mbids)
+            if mbid
+            else ([], [])
+        )
+
+        await self.mass.music.tracks.set_identifiers(
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            mbid=mbid,
+            acoustid=acoustid,
+            isrcs=isrcs,
+        )
+
+        try:
+            library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                streamdetails.item_id, streamdetails.provider
+            )
+        except MusicAssistantError:
+            library_track = None
+        track_name = _extract_track_title(library_track)
+        album_name = _extract_album_title(library_track)
+        self.logger.info(
+            "AcoustID identified track=%r album=%r as MusicBrainz recording %s",
+            track_name,
+            album_name,
+            mbid,
+        )
+
+        # Album-level consensus is a pure DB write on the album row and is
+        # independent of write_tags_back — must run for every analysis so
+        # tag-write-off users still get MB_RELEASEGROUP populated (which is
+        # what unblocks CoverArtArchive / fanart.tv / TheAudioDB).
+        try:
+            await self._maybe_set_album_release_group(streamdetails, library_track=library_track)
+        # Broad safety net: per-track persistence already succeeded above and must
+        # not be rolled back by a failure in the best-effort consensus path.
+        except Exception as err:
+            self.logger.warning("Album release-group lookup failed: %s", err, exc_info=True)
+
+        if not self.config.get_value(CONF_WRITE_TAGS_BACK):
+            return
+        if not isinstance(streamdetails.path, str) or not streamdetails.path:
+            self.logger.debug(
+                "Skipping tag write — no usable file path (got %r)", streamdetails.path
+            )
+            return
+        source_provider = self.mass.get_provider(streamdetails.provider)
+        if not getattr(source_provider, "write_access", False):
+            self.logger.debug(
+                "Skipping tag write — source provider %s has no write access",
+                streamdetails.provider,
+            )
+            return
+
+        # One open/save cycle for all identifier tags on this file.
+        await write_identifier_tags(
+            streamdetails.path,
+            mbid=mbid,
+            acoustid=acoustid,
+            isrcs=isrcs,
+            artist_mbids=artist_mbids,
+        )
 
     def _resolve_api_key(self) -> str:
         """Return the user-supplied AcoustID API key, falling back to the shared key."""
         user_key = self.config.get_value(CONF_API_KEY)
         if isinstance(user_key, str) and user_key:
             return user_key
-        return str(app_var(14))
+        return str(app_var("acoustid_api_key"))
 
     async def _start_analysis(
         self,
@@ -163,6 +353,19 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             )
             return False
 
+        # Chromaprint only fingerprints mono/stereo audio. Feeding it multichannel
+        # (e.g. 5.1) trips a C-level assertion in its AudioProcessor that aborts the
+        # whole process rather than raising, so it cannot be caught and logged — the
+        # only safe option is to skip the file. See acoustid/chromaprint#90.
+        if audio_format.channels > 2:
+            self.logger.warning(
+                "AcoustID can only scan mono/stereo files; skipping multichannel "
+                "(%d-channel) file: %s",
+                audio_format.channels,
+                streamdetails.path or streamdetails.uri,
+            )
+            return False
+
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
         if fingerprinter is None:
             return False
@@ -197,6 +400,9 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         :param sample_rate: Audio sample rate in Hz.
         :param channels: Number of audio channels.
         """
+        import chromaprint  # noqa: PLC0415
+
+        self._fingerprint_errors = (chromaprint.FingerprintError,)
         try:
             fp = chromaprint.Fingerprinter()
             fp.start(int(sample_rate), int(channels))
@@ -204,54 +410,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.warning("Failed to initialise chromaprint fingerprinter: %s", err)
             return None
         return fp
-
-    async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
-        """
-        Feed a PCM chunk into the session's fingerprinter.
-
-        :param session_id: Active analysis session ID.
-        :param pcm_chunk: PCM audio bytes at the session's declared sample rate / format.
-        """
-        data = self._data.get(session_id)
-        if data is None or data.error:
-            return
-        if data.pcm_seconds_fed >= MAX_FINGERPRINT_SECONDS:
-            return
-
-        if data.sample_width != 2:
-            try:
-                pcm_chunk = _downconvert_to_s16(pcm_chunk, data.sample_width)
-            except ValueError as err:
-                self.logger.debug(
-                    "Could not convert PCM to 16-bit for %s (sample_width=%d): %s",
-                    session_id,
-                    data.sample_width,
-                    err,
-                )
-                data.error = f"pcm conversion failed: {err}"
-                return
-
-        try:
-            data.fingerprinter.feed(pcm_chunk)
-        except (chromaprint.FingerprintError, TypeError) as err:
-            self.logger.debug("Chromaprint rejected PCM chunk for %s: %s", session_id, err)
-            data.error = f"feed failed: {err}"
-            return
-
-        # chunk is now guaranteed s16le; one frame = 2 bytes * channels
-        frame_bytes = 2 * data.channels
-        if frame_bytes <= 0 or data.sample_rate <= 0:
-            return
-        data.pcm_seconds_fed += len(pcm_chunk) / (frame_bytes * data.sample_rate)
-
-    async def cancel(self, session_id: str) -> None:
-        """
-        Cancel an in-progress analysis session.
-
-        :param session_id: Session ID to cancel.
-        """
-        self._data.pop(session_id, None)
-        await super().cancel(session_id)
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
         """
@@ -267,7 +425,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
 
         try:
             fingerprint_raw = data.fingerprinter.finish()
-        except chromaprint.FingerprintError as err:
+        except self._fingerprint_errors as err:
             self.logger.debug("Chromaprint failed to produce a fingerprint: %s", err)
             return None
 
@@ -416,7 +574,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             media_type=streamdetails.media_type,
         )
 
-    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL)
+    # None can signal an auth/bad-request failure as well as "no match", so don't cache it
+    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL, cache_none=False)
     @throttle_with_retries
     async def _lookup(self, api_key: str, fingerprint: str, duration: int) -> dict[str, Any] | None:
         """
@@ -462,92 +621,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.debug("AcoustID response status=%s — discarding", payload.get("status"))
             return None
         return payload
-
-    async def post_analysis(
-        self,
-        streamdetails: StreamDetails,
-        analysis: AudioAnalysisData,
-    ) -> None:
-        """
-        Persist the matched identifiers to the library row and (optionally) the file.
-
-        :param streamdetails: Stream details for the analysed item.
-        :param analysis: Analysis data produced by :meth:`_finalize`.
-        """
-        extra = analysis.extra_data or {}
-        mbid = extra.get("mbid")
-        acoustid = extra.get("acoustid")
-        if not mbid and not acoustid:
-            return
-
-        # Pull ISRCs and (when write_tags_back is on) artist MBIDs from MB.
-        # ISRCs go to the DB and file tag; artist MBIDs are file-tag only —
-        # the filesystem tag-parser handles the artist-row update on next sync
-        # rather than us reproducing its entity-matching here.
-        want_artist_mbids = bool(self.config.get_value(CONF_WRITE_TAGS_BACK))
-        isrcs, artist_mbids = (
-            await self._fetch_mb_extras(mbid, include_artist_mbids=want_artist_mbids)
-            if mbid
-            else ([], [])
-        )
-
-        await self.mass.music.tracks.set_identifiers(
-            item_id=streamdetails.item_id,
-            provider_instance_id_or_domain=streamdetails.provider,
-            mbid=mbid,
-            acoustid=acoustid,
-            isrcs=isrcs,
-        )
-
-        try:
-            library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                streamdetails.item_id, streamdetails.provider
-            )
-        except MusicAssistantError:
-            library_track = None
-        track_name = _extract_track_title(library_track)
-        album_name = _extract_album_title(library_track)
-        self.logger.info(
-            "AcoustID identified track=%r album=%r as MusicBrainz recording %s",
-            track_name,
-            album_name,
-            mbid,
-        )
-
-        # Album-level consensus is a pure DB write on the album row and is
-        # independent of write_tags_back — must run for every analysis so
-        # tag-write-off users still get MB_RELEASEGROUP populated (which is
-        # what unblocks CoverArtArchive / fanart.tv / TheAudioDB).
-        try:
-            await self._maybe_set_album_release_group(streamdetails, library_track=library_track)
-        # Broad safety net: per-track persistence already succeeded above and must
-        # not be rolled back by a failure in the best-effort consensus path.
-        except Exception as err:
-            self.logger.warning("Album release-group lookup failed: %s", err, exc_info=True)
-
-        if not self.config.get_value(CONF_WRITE_TAGS_BACK):
-            return
-        if not isinstance(streamdetails.path, str) or not streamdetails.path:
-            self.logger.debug(
-                "Skipping tag write — no usable file path (got %r)", streamdetails.path
-            )
-            return
-        source_provider = self.mass.get_provider(streamdetails.provider)
-        if not getattr(source_provider, "write_access", False):
-            self.logger.debug(
-                "Skipping tag write — source provider %s has no write access",
-                streamdetails.provider,
-            )
-            return
-
-        # One open/save cycle for all identifier tags on this file.
-        await write_identifier_tags(
-            streamdetails.path,
-            mbid=mbid,
-            acoustid=acoustid,
-            isrcs=isrcs,
-            artist_mbids=artist_mbids,
-        )
 
     async def _fetch_mb_extras(
         self, mbid: str, *, include_artist_mbids: bool = True
@@ -704,7 +777,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return
         try:
             album_item_id = int(album_item_id_raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.logger.debug(
                 "Skipping album lookup — album id %r is not an integer", album_item_id_raw
             )

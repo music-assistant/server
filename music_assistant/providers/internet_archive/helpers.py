@@ -261,7 +261,7 @@ def parse_duration(duration_str: str) -> int | None:
                 return int(minutes * 60 + seconds)
             return None
         return int(float(duration_str))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -307,7 +307,7 @@ def extract_year(date_str: str | list[str] | None) -> int | None:
     try:
         match = re.search(r"\b(19\d{2}|20\d{2})\b", date_text)
         return int(match.group(1)) if match else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 

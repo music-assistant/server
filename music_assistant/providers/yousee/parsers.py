@@ -222,7 +222,8 @@ async def parse_playlist(provider: YouSeeMusikProvider, playlist_obj: JsonLike) 
 
 
 async def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
-    """Parse the YouSee lyrics payload and extract the lyric text in two formats if possible.
+    """
+    Parse the YouSee lyrics payload and extract the lyric text in two formats if possible.
 
     Returns:
         Tuple[str | None, str | None]: lyrics (plain) and lyrics_lrc, if present.

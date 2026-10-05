@@ -76,7 +76,8 @@ async def test_secret_write_blocked_without_secret_tag_e2e(
 async def test_secret_gate_reevaluated_per_request_via_callable(
     mock_config_targets: Any,
 ) -> None:
-    """The secret gate must read a live callable so a hot-swapped toggle takes effect without a restart.
+    """
+    The secret gate must read a live callable so a hot-swapped toggle takes effect without a restart.
 
     Regression for PR #99 review finding A.
     """

@@ -1,4 +1,5 @@
-"""Targeted regression tests for the ``media/*`` sub-server.
+"""
+Targeted regression tests for the ``media/*`` sub-server.
 
 Focus is the ``play_announcement`` URL-scheme guard and volume clamping —
 both newly enforced by the tool to keep an LLM caller (or a malicious

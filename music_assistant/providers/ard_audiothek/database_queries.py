@@ -164,6 +164,7 @@ query Show($showId: ID!, $first: Int, $offset: Int, $filter: ItemFilter) {
         title
         status
         episodeNumber
+        publishDate
         coreId
         summary"""
     + audio_list
@@ -196,9 +197,9 @@ query ShowEpisode($coreId: String!) {
     duration
     title
     episodeNumber
+    publishDate
     coreId
     showId
-    rowId
     synopsis
     summary"""
     + audio_list

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Mamma Mi Radio">
+  <rect width="256" height="256" rx="44" fill="#14110F"/>
+  <circle cx="128" cy="128" r="91" fill="#F4D048"/>
+  <circle cx="128" cy="128" r="67" fill="#14110F"/>
+  <path fill="#B82C20" d="M64 104h128v73a17 17 0 0 1-17 17H81a17 17 0 0 1-17-17z"/>
+  <path fill="#F4D048" d="M85 116h86a9 9 0 0 1 9 9v30a9 9 0 0 1-9 9H85a9 9 0 0 1-9-9v-30a9 9 0 0 1 9-9z"/>
+  <path fill="#14110F" d="M97 136h46v9H97zm0 17h28v9H97z"/>
+  <circle cx="161" cy="149" r="16" fill="#14110F"/>
+  <circle cx="161" cy="149" r="7" fill="#F4D048"/>
+  <path fill="none" stroke="#F4D048" stroke-width="13" stroke-linecap="round" d="m91 97 37-35 37 35"/>
+  <path fill="none" stroke="#F4D048" stroke-width="9" stroke-linecap="round" d="M53 82c-15 23-15 69 0 92m150-92c15 23 15 69 0 92"/>
+</svg>

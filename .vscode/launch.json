@@ -1,7 +1,4 @@
 {
-  // Use IntelliSense to learn about possible attributes.
-  // Hover to view descriptions of existing attributes.
-  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
   "version": "0.2.0",
   "configurations": [
     {
@@ -11,7 +8,12 @@
       "module": "music_assistant",
       "justMyCode": false,
       "args": ["--log-level", "debug"],
-      "env": { "PYTHONDEVMODE": "1" }
+      "env": {
+        "PYTHONDEVMODE": "1",
+        // Bundled provider credentials for core maintainers, read from a checkout of the
+        // private appvars repository next to this one. A missing file just leaves them empty.
+        "MASS_APP_VARS_FILE": "${workspaceFolder}/../appvars/app_vars.json"
+      }
     },
     {
       "name": "Music Assistant: Tests",

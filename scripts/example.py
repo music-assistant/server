@@ -31,7 +31,7 @@ if __name__ == "__main__":
     # configure logging
     logging.basicConfig(level=args.log_level.upper())
 
-    async def run_mass():
+    async def run_mass() -> None:
         """Run the MusicAssistant client."""
         # run the client
         async with MusicAssistantClient(args.url, None) as client:

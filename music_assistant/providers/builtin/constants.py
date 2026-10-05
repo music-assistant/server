@@ -19,7 +19,7 @@ from music_assistant.constants import (
 class StoredItem(TypedDict):
     """Definition of an media item (for the builtin provider) stored in persistent storage."""
 
-    item_id: str  # url or (locally accessible) file path (or id in case of playlist)
+    item_id: str  # stream url for a track/radio (or id in case of playlist)
     name: str
     image_url: NotRequired[str]
     last_updated: NotRequired[int]
@@ -27,7 +27,6 @@ class StoredItem(TypedDict):
 
 CONF_KEY_RADIOS = "stored_radios"
 CONF_KEY_TRACKS = "stored_tracks"
-CONF_KEY_PLAYLISTS = "stored_playlists"
 
 
 ALL_FAVORITE_TRACKS = "all_favorite_tracks"
@@ -53,45 +52,39 @@ BUILTIN_PLAYLISTS = {
 # Playlists that are dynamic: tracks are fetched on demand, never pre-loaded.
 DYNAMIC_BUILTIN_PLAYLISTS = frozenset({INFINITE_MIX, INFINITE_MIX_FAVORITES})
 
-# Optional descriptions shown in the UI for built-in playlists.
-BUILTIN_PLAYLIST_DESCRIPTIONS: dict[str, str] = {
-    INFINITE_MIX: (
-        "An endless, ever-changing playlist that draws 25 random tracks from your full library "
-        "each time the queue is about to run out. No pre-loading — memory usage stays constant "
-        "regardless of library size."
-    ),
-    INFINITE_MIX_FAVORITES: (
-        "Like Infinite Mix, but limited to your favorited tracks. "
-        "25 fresh random favorites are added whenever the queue is nearly empty."
-    ),
-}
-
 BUILTIN_PLAYLISTS_ENTRIES = [
     ConfigEntry(
         key=key,
         type=ConfigEntryType.BOOLEAN,
         label=name,
         default_value=True,
-        description=BUILTIN_PLAYLIST_DESCRIPTIONS.get(key),
         category="generic",
     )
     for key, name in BUILTIN_PLAYLISTS.items()
 ]
 
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
+BUILTIN_PLAYLIST_IMAGES_DIR_NAME = "playlists"
 
-DEFAULT_THUMB = MediaItemImage(
-    type=ImageType.THUMB,
-    path="logo.png",
+# the image caches keep a bundled file by its path, so changed artwork needs a new file name
+BUILTIN_PLAYLIST_THUMBS = {
+    playlist_id: MediaItemImage(
+        type=ImageType.THUMB,
+        path=f"{BUILTIN_PLAYLIST_IMAGES_DIR_NAME}/{playlist_id}.png",
+        provider="builtin",
+        remotely_accessible=False,
+    )
+    for playlist_id in BUILTIN_PLAYLISTS
+}
+
+BUILTIN_PLAYLIST_FANART = MediaItemImage(
+    type=ImageType.FANART,
+    path=f"{BUILTIN_PLAYLIST_IMAGES_DIR_NAME}/fanart.jpg",
     provider="builtin",
     remotely_accessible=False,
 )
 
-DEFAULT_FANART = MediaItemImage(
-    type=ImageType.FANART,
-    path="fanart.jpg",
-    provider="builtin",
-    remotely_accessible=False,
+BUILTIN_PLAYLIST_IMAGE_PATHS = frozenset(
+    {*(img.path for img in BUILTIN_PLAYLIST_THUMBS.values()), BUILTIN_PLAYLIST_FANART.path}
 )
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
@@ -104,13 +97,6 @@ CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN = ConfigEntry.from_dict(
     {
         **CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.to_dict(),
-        "hidden": True,
-        "default_value": True,
-    }
-)
-CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_SYNC_TRACKS.to_dict(),
         "hidden": True,
         "default_value": True,
     }

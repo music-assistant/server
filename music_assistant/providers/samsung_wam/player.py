@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 
@@ -37,10 +35,6 @@ if TYPE_CHECKING:
 class WamPlayer(Player):
     """Representation of a Samsung WAM speaker."""
 
-    _attr_supported_sample_rates = [
-        (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
-    ]
-
     def __init__(
         self,
         prov: SamsungWamProvider,
@@ -49,7 +43,8 @@ class WamPlayer(Player):
         mac: str,
         speaker: Speaker,
     ) -> None:
-        """Initialize the WamPlayer.
+        """
+        Initialize the WamPlayer.
 
         :param prov: The parent provider instance.
         :param ip_address: The IP address of the speaker.
@@ -71,6 +66,9 @@ class WamPlayer(Player):
 
         self.logger = self.prov.logger.getChild(self.player_id)
         self._attr_supported_features = set(PLAYER_FEATURES_BASE)
+        self._attr_supported_sample_rates = [
+            (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+        ]
         self._attr_can_group_with = {prov.instance_id}
         self._attr_needs_poll = True
         self._attr_poll_interval = POLL_INTERVAL
@@ -120,13 +118,10 @@ class WamPlayer(Player):
 
     # --- Configuration ---
 
-    async def get_config_entries(
-        self, action: str | None = None, values: dict[str, Any] | None = None
-    ) -> list[ConfigEntry]:
-        """Return player-specific configuration entries.
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """
+        Return player-specific configuration entries.
 
-        :param action: Action trigger from config UI.
-        :param values: The current configuration values.
         :return: A list of ConfigEntry objects.
         """
         return [CONF_ENTRY_HTTP_PROFILE_WAM, CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN]
@@ -161,7 +156,8 @@ class WamPlayer(Player):
         await self.playback.stop()
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Play media.
+        """
+        Play media.
 
         :param media: The media item to play.
         """
@@ -170,7 +166,8 @@ class WamPlayer(Player):
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
-        """Play an announcement on the player.
+        """
+        Play an announcement on the player.
 
         :param announcement: The announcement media item to play.
         :param volume_level: The volume level to play the announcement at (0..100).
@@ -188,20 +185,15 @@ class WamPlayer(Player):
         if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
             await self.volume.set_volume(volume_level)
 
-        # Samsung speakers auto-resume after a URL stream ends rather than going idle,
-        # so we stop the stream manually at the expected end of the announcement
-        duration: float | None = None
-        with contextlib.suppress(Exception):
-            media_info = await async_parse_tags(announcement.uri, require_duration=True)
-            if media_info.duration:
-                duration = float(media_info.duration)
-
         await self.playback.play_media(announcement)
         await self.await_state_change(
             lambda: self.playback_state == PlaybackState.PLAYING,
             timeout=10.0,
         )
 
+        # Samsung speakers auto-resume after a URL stream ends rather than going idle,
+        # so we stop the stream manually at the expected end of the announcement
+        duration = await self.mass.streams.get_announcement_duration(announcement)
         if duration is not None:
             await asyncio.sleep(duration + 1.0)
         else:
@@ -221,21 +213,24 @@ class WamPlayer(Player):
             await self.mass.player_queues.resume(self.player_id)
 
     async def select_source(self, source: str) -> None:
-        """Select source.
+        """
+        Select source.
 
         :param source: The source identifier to select.
         """
         await self.playback.select_source(source)
 
     async def volume_set(self, volume_level: int) -> None:
-        """Set volume level.
+        """
+        Set volume level.
 
         :param volume_level: The volume level to set.
         """
         await self.volume.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
-        """Set mute state.
+        """
+        Set mute state.
 
         :param muted: True to mute, False to unmute.
         """
@@ -246,7 +241,8 @@ class WamPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle group membership changes.
+        """
+        Handle group membership changes.
 
         :param player_ids_to_add: List of player IDs to add to the group.
         :param player_ids_to_remove: List of player IDs to remove from the group.
@@ -264,7 +260,8 @@ class WamPlayer(Player):
         self._state_update_event.set()
 
     async def await_state_change(self, check: Callable[[], bool], timeout: float) -> None:
-        """Wait for a specific condition in the state.
+        """
+        Wait for a specific condition in the state.
 
         :param check: A callable returning a boolean indicating if the condition is met.
         :param timeout: Maximum time in seconds to wait.

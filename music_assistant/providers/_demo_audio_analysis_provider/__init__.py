@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -61,26 +61,9 @@ async def setup(
     return DemoAudioAnalysisProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # If your provider needs configuration (e.g. API keys, server URLs),
-    # return ConfigEntry instances here. This demo provider needs no configuration.
-    return ()
-
-
 class DemoAudioAnalysisProvider(AudioAnalysisProvider):
-    """Demo Audio Analysis Provider.
+    """
+    Demo Audio Analysis Provider.
 
     This demo provider logs debug messages at each lifecycle stage instead of
     performing actual analysis. Use it as a reference for implementing your own
@@ -104,8 +87,20 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     # whether to re-analyze a track.
     analysis_version: int = 1
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup
+        input (if any) is collected by a ``setup_flow.py`` module; one-shot buttons
+        are declared here as ``ConfigEntryType.ACTION`` entries and handled in
+        ``handle_config_action``.
+        """
+        return ()
+
     async def loaded_in_mass(self) -> None:
-        """Call when the provider is loaded in the MusicAssistant instance.
+        """
+        Call when the provider is loaded in the MusicAssistant instance.
 
         This is an optional callback that is called after the provider is loaded
         into the running MusicAssistant instance. Use it to subscribe to events,
@@ -120,7 +115,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Provider-specific initialization for a new analysis session.
+        """
+        Provider-specific initialization for a new analysis session.
 
         Called by the base class after version gating and session storage.
         Return True to accept the session, False to reject.
@@ -144,7 +140,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         session_id: str,
         pcm_chunk: bytes,
     ) -> None:
-        """Process a PCM audio chunk.
+        """
+        Process a PCM audio chunk.
 
         Called for each 1-second chunk of raw PCM audio during streaming.
         A real provider would feed this data into its analysis algorithm
@@ -162,7 +159,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         )
 
     async def _finalize(self, session_id: str) -> None:
-        """Finalize analysis and return the result.
+        """
+        Finalize analysis and return the result.
 
         Called when the track has finished buffering and all chunks have been
         processed. A real provider would compute its final result and return it
@@ -184,7 +182,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         self.logger.debug("Finalizing analysis session %s", session_id)
 
     async def cancel(self, session_id: str) -> None:
-        """Cancel an in-progress analysis session.
+        """
+        Cancel an in-progress analysis session.
 
         Called when the stream is interrupted (e.g. user skips the track,
         buffer is cleared). A real provider should discard any partial state
@@ -196,7 +195,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         await super().cancel(session_id)
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/removal of the provider.
+        """
+        Handle unload/removal of the provider.
 
         Called when the provider is being unloaded or removed. The base class
         cancels all active sessions automatically.

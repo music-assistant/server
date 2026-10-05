@@ -1,4 +1,5 @@
-"""AI-client catalogue used by the Connect Wizard.
+"""
+AI-client catalogue used by the Connect Wizard.
 
 Each :class:`ClientSpec` is rendered into a copy-paste config snippet by the
 wizard's JavaScript: ``{{URL}}`` is replaced with the chosen MCP endpoint URL
@@ -13,7 +14,8 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True)
 class ClientSpec:
-    """Renderable description of a single AI client.
+    """
+    Renderable description of a single AI client.
 
     :param id: Stable identifier used in API calls and as the per-client token name suffix.
     :param label: Human-readable name shown in the wizard tab and in token names.

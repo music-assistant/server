@@ -19,9 +19,9 @@ from music_assistant.providers.lastfm_recommendations.constants import (
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-    from music_assistant.controllers.media.albums import AlbumsController
-    from music_assistant.controllers.media.artists import ArtistsController
-    from music_assistant.controllers.media.tracks import TracksController
+    from music_assistant.controllers.music.media.albums import AlbumsController
+    from music_assistant.controllers.music.media.artists import ArtistsController
+    from music_assistant.controllers.music.media.tracks import TracksController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.lastfm_recommendations")
 

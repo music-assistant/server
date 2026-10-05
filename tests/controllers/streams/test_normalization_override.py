@@ -1,4 +1,5 @@
-"""Tests for the crossfade volume-normalization pinning (get_queue_item_stream override).
+"""
+Tests for the crossfade volume-normalization pinning (get_queue_item_stream override).
 
 In per-item crossfade mode the next track is streamed twice: once as the crossfade fade-in
 (at prep time) and once as its own body. If the track's loudness measurement lands between
@@ -52,6 +53,7 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
         """AudioBuffer test double: records the filter_params, yields no audio."""
 
         has_error = False
+        pcm_format = PCM_FORMAT
 
         @classmethod
         async def get_buffer(cls, **_kwargs: Any) -> _FakeBuffer:
@@ -62,7 +64,9 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
             output_format: AudioFormat,
             seek_position_ms: int = 0,
             filter_params: list[str] | None = None,
+            exact_seek: bool = False,
         ) -> AsyncGenerator[bytes]:
+            del output_format, seek_position_ms, exact_seek
             captured["filter_params"] = filter_params or []
             empty: tuple[bytes, ...] = ()
             for chunk in empty:
@@ -81,8 +85,9 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
     mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
         return_value=SimpleNamespace(loudness_integrated=MEASURED_LOUDNESS, loudness_album=None)
     )
-    mass.config.get_core_config = AsyncMock(return_value=MagicMock())
+    mass.streams.config.get_value.return_value = VolumeNormalizationMode.FALLBACK_DYNAMIC.value
     mass.config.get_player_config = AsyncMock(return_value=MagicMock())
+    mass.player_queues.queue_data_or_none.return_value = None
     return controller, captured
 
 
@@ -130,7 +135,7 @@ async def test_dynamic_override_forces_loudnorm_and_ignores_measurement(
     # the just-in-time hydration / re-evaluation is skipped entirely
     mass = cast("MagicMock", controller.mass)
     mass.streams.audio_analysis.get_audio_analysis.assert_not_called()
-    mass.config.get_core_config.assert_not_called()
+    mass.streams.config.get_value.assert_not_called()
 
 
 @pytest.mark.asyncio

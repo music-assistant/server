@@ -5,7 +5,10 @@
   "name": "Spotify",
   "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
   "codeowners": ["@music-assistant"],
-  "credits": ["[librespot](https://github.com/librespot-org/librespot)"],
+  "credits": [
+    "[Spotify Soloist (by Spotify)](https://developer.spotify.com/documentation/soloist)",
+    "[librespot (by librespot-org)](https://github.com/librespot-org/librespot)"
+  ],
   "requirements": ["pkce==1.0.3"],
   "documentation": "https://music-assistant.io/music-providers/spotify/",
   "multi_instance": true

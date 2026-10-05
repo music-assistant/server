@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.helpers import create_safe_string
+
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import load_json_dict
 from music_assistant.models.core_controller import CoreController
 
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
 # package paths (this file lives at music_assistant/controllers/translations/__init__.py)
-PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PACKAGE_ROOT = str(Path(__file__).resolve().parents[2])
 # translations/ holds the flat locale files: the generated en.json (English source, pushed to
 # Lokalise) and the downloaded per-language <lang>.json files. The hand-authored sources live in
 # strings.json files (music_assistant/strings.json + per-provider/per-controller strings.json).
@@ -139,7 +141,10 @@ class TranslationController(CoreController):
 
         Lets localized item names be found by the name the user sees: a text search that returns
         nothing literally can be retried against these canonical names (which equal the items'
-        stored ``search_name``). Only ``common.media.*.name`` entries are considered.
+        stored ``search_name``). Only genre and playlist names (``*.media.genre.*`` /
+        ``*.media.playlist.*`` under any owner — ``common.`` or a provider, e.g.
+        ``provider.builtin.media.playlist.*``) are considered — the searchable library media
+        types; browse and recommendation folder titles are display-only and never library items.
 
         The reverse-translation always uses the metadata controller's configured language
         (``CONF_LANGUAGE``), which doubles as the fallback search locale; an English, unknown or
@@ -157,7 +162,9 @@ class TranslationController(CoreController):
             return set()
         matches: set[str] = set()
         for key, value in bundle.items():
-            if not (key.startswith("common.media.") and key.endswith(".name")):
+            if not key.endswith(".name"):
+                continue
+            if ".media.genre." not in key and ".media.playlist." not in key:
                 continue
             if normalized in create_safe_string(value, True, True):
                 if english := self._source.get(key):
@@ -176,7 +183,7 @@ class TranslationController(CoreController):
 
     async def _load_flat(self, path: str) -> dict[str, str]:
         """Load a flat {fq_key: str} translations file, tolerating a missing file or errors."""
-        if not os.path.isfile(path):
+        if not Path(path).is_file():
             return {}
         try:
             data = await load_json_dict(path)
@@ -194,7 +201,7 @@ def _discover_locale_files() -> dict[str, str]:
     English source ``en.json``. Each file is a flat, fully-qualified key->string map.
     """
     locale_files: dict[str, str] = {}
-    if not os.path.isdir(TRANSLATIONS_PATH):
+    if not Path(TRANSLATIONS_PATH).is_dir():
         return locale_files
     for filename in os.listdir(TRANSLATIONS_PATH):  # noqa: PTH208, RUF100
         if not filename.endswith(".json"):
@@ -219,8 +226,9 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
 
     A fully-qualified key (starting with ``provider.``/``core.``/``common.``) is tried
     as-is plus a ``common.`` rewrite that drops the owner segment. A relative key is tried
-    under the owner prefix (if any), then ``common.``, then bare. Any candidate ending in
-    ``.name`` also gets a bare fallback (dropping ``.name``).
+    under the owner prefix (if any), then ``common.``, then bare. Multi-instance providers carry
+    an ``<domain>--<id>`` instance id, so the domain-only prefix is also tried before ``common.``.
+    Any candidate ending in ``.name`` also gets a bare fallback (dropping ``.name``).
     """
     roots = ("provider.", "core.", "common.")
     base_candidates: list[str] = []
@@ -235,6 +243,10 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
     else:
         if owner_prefix:
             base_candidates.append(f"{owner_prefix}.{key}")
+            # a multi-instance owner is "provider.<domain>--<id>"; also try the bare domain
+            domain_prefix = owner_prefix.split("--", 1)[0]
+            if domain_prefix != owner_prefix:
+                base_candidates.append(f"{domain_prefix}.{key}")
         base_candidates.append(f"common.{key}")
         base_candidates.append(key)
     candidates: list[str] = []
@@ -263,5 +275,5 @@ def _format(template: str, params: list[str] | None) -> str:
         return template
     try:
         return template.format(*params)
-    except (IndexError, KeyError, ValueError):
+    except IndexError, KeyError, ValueError:
         return template

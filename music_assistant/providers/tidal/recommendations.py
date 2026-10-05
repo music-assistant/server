@@ -50,72 +50,74 @@ class TidalRecommendationManager:
         module_content_types: dict[str, MediaType] = {}
         module_page_names: dict[str, str] = {}
 
-        try:
-            all_tidal_configs = await self.mass.config.get_provider_configs(ProviderType.MUSIC)
-            tidal_configs = [
-                config for config in all_tidal_configs if config.domain == self.provider.domain
-            ]
-            sorted_instances = sorted(tidal_configs, key=lambda x: x.instance_id)
-            show_user_identifier = len(sorted_instances) > 1
+        all_tidal_configs = await self.mass.config.get_provider_configs(ProviderType.MUSIC)
+        tidal_configs = [
+            config for config in all_tidal_configs if config.domain == self.provider.domain
+        ]
+        sorted_instances = sorted(tidal_configs, key=lambda x: x.instance_id)
+        show_user_identifier = len(sorted_instances) > 1
 
-            for page_path in pages:
-                parser = await self.get_page_content(page_path)
-                page_name = page_path.split("/")[-1].replace("_", " ").title()
+        for page_path in pages:
+            parser = await self.get_page_content(page_path)
+            page_name = page_path.split("/")[-1].replace("_", " ").title()
 
-                for module_info in parser._module_map:
-                    title = module_info.get("title", "Unknown")
-                    if not title or title == "Unknown" or "Videos" in title:
-                        continue
+            for module_info in parser.modules:
+                title = module_info.get("title", "Unknown")
+                # Drop video content: VIDEO_LIST modules outright, plus any module whose
+                # title mentions video (e.g. "Video Playlists", which is a PLAYLIST_LIST
+                # the old "Videos"-substring check missed).
+                if (
+                    not title
+                    or title == "Unknown"
+                    or module_info.get("type") == "VIDEO_LIST"
+                    or "video" in title.lower()
+                ):
+                    continue
 
-                    items, content_type = parser.get_module_items(module_info)
-                    if not items:
-                        continue
+                items, content_type = parser.get_module_items(module_info)
+                if not items:
+                    continue
 
-                    key = f"{self.auth.user_id}_{title}"
-                    if key not in combined_modules:
-                        combined_modules[key] = []
-                        module_content_types[key] = content_type
-                        module_page_names[key] = page_name
+                key = f"{self.auth.user_id}_{title}"
+                if key not in combined_modules:
+                    combined_modules[key] = []
+                    module_content_types[key] = content_type
+                    module_page_names[key] = page_name
 
-                    combined_modules[key].extend(items)
+                combined_modules[key].extend(items)
 
-            for key, items in combined_modules.items():
-                user_id_prefix = f"{self.auth.user_id}_"
-                title = key.removeprefix(user_id_prefix)
+        for key, items in combined_modules.items():
+            user_id_prefix = f"{self.auth.user_id}_"
+            title = key.removeprefix(user_id_prefix)
 
-                unique_items = UniqueList(items)
-                item_id = "".join(
-                    c for c in key.lower().replace(" ", "_") if c.isalnum() or c == "_"
+            unique_items = UniqueList(items)
+            item_id = "".join(c for c in key.lower().replace(" ", "_") if c.isalnum() or c == "_")
+            content_type = module_content_types.get(key, MediaType.PLAYLIST)
+            page_name = module_page_names.get(key, "Tidal")
+
+            folder_name = title
+            if show_user_identifier:
+                raw_user_name = (
+                    self.auth.user.profile_name
+                    or self.auth.user.user_name
+                    or str(self.auth.user_id)
                 )
-                content_type = module_content_types.get(key, MediaType.PLAYLIST)
-                page_name = module_page_names.get(key, "Tidal")
+                user_name = raw_user_name.split("@", 1)[0]
+                folder_name = f"{title} ({user_name})"
 
-                folder_name = title
-                if show_user_identifier:
-                    raw_user_name = (
-                        self.auth.user.profile_name
-                        or self.auth.user.user_name
-                        or str(self.auth.user_id)
-                    )
-                    user_name = raw_user_name.split("@", 1)[0]
-                    folder_name = f"{title} ({user_name})"
-
-                results.append(
-                    RecommendationFolder(
-                        item_id=item_id,
-                        name=folder_name,
-                        provider=self.provider.instance_id,
-                        items=UniqueList[MediaItemType | ItemMapping | BrowseFolder](unique_items),
-                        subtitle=f"From {page_name} • {len(unique_items)} items",
-                        translation_key=item_id,
-                        icon="mdi-playlist-music"
-                        if content_type == MediaType.PLAYLIST
-                        else "mdi-album",
-                    )
+            results.append(
+                RecommendationFolder(
+                    item_id=item_id,
+                    name=folder_name,
+                    provider=self.provider.instance_id,
+                    items=UniqueList[MediaItemType | ItemMapping | BrowseFolder](unique_items),
+                    subtitle=f"From {page_name} • {len(unique_items)} items",
+                    translation_key=item_id,
+                    icon="mdi-playlist-music"
+                    if content_type == MediaType.PLAYLIST
+                    else "mdi-album",
                 )
-
-        except Exception:
-            self.logger.exception("Error fetching recommendations")
+            )
 
         return results
 
@@ -124,34 +126,28 @@ class TidalRecommendationManager:
         if cached := await TidalPageParser.from_cache(self.provider, page_path):
             return cached
 
-        try:
-            locale = self.mass.metadata.locale.replace("_", "-")
-            api_result = await self.api.get(
-                page_path,
-                base_url=WEB_BASE_URL,
-                params={
-                    "locale": locale,
-                    "deviceType": "BROWSER",
-                    "countryCode": self.auth.country_code or "US",
-                },
-            )
+        # Let fetch/parse errors propagate: swallowing them here would make
+        # recommendations() succeed with an empty result, which the caching
+        # wrapper would then store for the full TTL.
+        locale = self.mass.metadata.locale.replace("_", "-")
+        data = await self.api.get(
+            page_path,
+            base_url=WEB_BASE_URL,
+            params={
+                "locale": locale,
+                "deviceType": "BROWSER",
+                "countryCode": self.auth.country_code or "US",
+            },
+        )
 
-            data = api_result[0] if isinstance(api_result, tuple) else api_result
-            parser = TidalPageParser(self.provider)
-            parser.parse_page_structure(data or {}, page_path)
+        parser = TidalPageParser(self.provider)
+        parser.parse_page_structure(data or {}, page_path)
 
-            await self.mass.cache.set(
-                key=page_path,
-                data={
-                    "module_map": parser._module_map,
-                    "content_map": parser._content_map,
-                    "parsed_at": parser._parsed_at,
-                },
-                provider=self.provider.instance_id,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
-                expiration=self.page_cache_ttl,
-            )
-            return parser
-        except Exception:
-            self.logger.exception("Error fetching Tidal page %s", page_path)
-            return TidalPageParser(self.provider)
+        await self.mass.cache.set(
+            key=page_path,
+            data=parser.to_cache(),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            expiration=self.page_cache_ttl,
+        )
+        return parser

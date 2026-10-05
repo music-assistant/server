@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from aiohttp import ClientError
 from music_assistant_models.errors import (
@@ -13,12 +13,12 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
 
 # Built-in Last.fm API key (read-only access, no secret needed)
-_DEFAULT_API_KEY: str = app_var(12)
+_DEFAULT_API_KEY: str = app_var("lastfm_api_key")
 
 if TYPE_CHECKING:
     import logging
@@ -36,7 +36,7 @@ class LastFMAPIClient:
 
     # Map known Last.fm API error codes to MA exceptions. Unmapped codes raise
     # InvalidDataError which callers treat as a recoverable empty response.
-    _ERROR_MAP: dict[int, type[MusicAssistantError]] = {
+    _ERROR_MAP: ClassVar[dict[int, type[MusicAssistantError]]] = {
         4: AuthenticationFailed,
         10: InvalidToken,
         26: InvalidToken,

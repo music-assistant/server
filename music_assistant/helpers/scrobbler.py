@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from music_assistant_models.config_entries import (
     Config,
@@ -13,21 +13,32 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
+
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
     from music_assistant import MusicAssistant
 
 
 class ScrobblerHelper:
-    """Base class to aid scrobbling media items."""
+    """
+    Base class to aid scrobbling media items.
+
+    A plugin declaring ProviderFeature.SCROBBLE forwards its ``on_media_item_played`` hook
+    to this helper, which applies the configured user and player filters.
+    """
 
     logger: logging.Logger
     config: ScrobblerConfig
     supported_media_types: frozenset[MediaType] | None
     currently_playing: str | None = None
     last_scrobbled: str | None = None
+    # Exceptions the concrete scrobble client raises when a submission can't reach
+    # the service (network blips, service-side errors). Subclasses set this to their
+    # client library's error hierarchy so those are logged and swallowed, while any
+    # exception outside the set surfaces as the bug it is.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = ()
 
     def __init__(
         self,
@@ -39,10 +50,7 @@ class ScrobblerHelper:
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
         self.supported_media_types = supported_media_types
-
-    def _is_configured(self) -> bool:
-        """Override if subclass needs specific configuration."""
-        return True
+        self._scrobbles_in_flight: set[str] = set()
 
     def get_name(self, report: MediaItemPlaybackProgressReport) -> str:
         """Get the track name to use for scrobbling, possibly appended with version info."""
@@ -51,18 +59,27 @@ class ScrobblerHelper:
 
         return report.name
 
-    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Send a Now Playing update to the scrobbling service."""
+    def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
+        """Determine if a track should be scrobbled, to be extended later."""
+        if self.last_scrobbled == report.uri or report.uri in self._scrobbles_in_flight:
+            self.logger.debug("skipped scrobbling due to duplicate event")
+            return False
 
-    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Scrobble."""
+        # ideally we want more precise control
+        # but because the event is triggered every 30s
+        # and we don't have full queue details to determine
+        # the exact context in which the event was fired
+        # we can only rely on fully_played for now
+        return bool(report.fully_played)
 
-    async def _on_mass_media_item_played(self, event: MassEvent) -> None:
-        """Media item has finished playing, we'll scrobble the item."""
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """
+        Handle a playback progress report: update now playing and scrobble when due.
+
+        :param report: The playback progress report of the played item.
+        """
         if not self._is_configured():
             return
-
-        report: MediaItemPlaybackProgressReport = event.data
 
         if self.supported_media_types and report.media_type not in self.supported_media_types:
             self.logger.debug("skipped scrobbling for unsupported media type %s", report.media_type)
@@ -94,17 +111,18 @@ class ScrobblerHelper:
                 await self._update_now_playing(report)
                 self.logger.debug(f"track {report.uri} marked as 'now playing'")
                 self.currently_playing = report.uri
-            except Exception as err:
-                # TODO: try to make this a more specific exception instead of a generic one
-                self.logger.exception(err)
+            except self.scrobble_exceptions:
+                self.logger.exception("Error while marking track as 'now playing'")
 
         async def scrobble() -> None:
+            self._scrobbles_in_flight.add(report.uri)
             try:
                 await self._scrobble(report)
                 self.last_scrobbled = report.uri
-            except Exception as err:
-                # TODO: try to make this a more specific exception instead of a generic one
-                self.logger.exception(err)
+            except self.scrobble_exceptions:
+                self.logger.exception("Error while scrobbling track")
+            finally:
+                self._scrobbles_in_flight.discard(report.uri)
 
         # update now playing if needed
         if report.is_playing and (
@@ -115,18 +133,15 @@ class ScrobblerHelper:
         if self.should_scrobble(report):
             await scrobble()
 
-    def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
-        """Determine if a track should be scrobbled, to be extended later."""
-        if self.last_scrobbled == report.uri:
-            self.logger.debug("skipped scrobbling due to duplicate event")
-            return False
+    def _is_configured(self) -> bool:
+        """Override if subclass needs specific configuration."""
+        return True
 
-        # ideally we want more precise control
-        # but because the event is triggered every 30s
-        # and we don't have full queue details to determine
-        # the exact context in which the event was fired
-        # we can only rely on fully_played for now
-        return bool(report.fully_played)
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Send a Now Playing update to the scrobbling service."""
+
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Scrobble."""
 
 
 CONF_VERSION_SUFFIX = "suffix_version"
@@ -157,10 +172,7 @@ class ScrobblerConfig:
             ConfigEntry(
                 key=CONF_VERSION_SUFFIX,
                 type=ConfigEntryType.BOOLEAN,
-                label="Suffix version to track names",
                 required=True,
-                description="Whether to add the version as suffix to track names,"
-                "e.g. 'Amazing Track (Live)'.",
                 default_value=True,
                 value=values.get(CONF_VERSION_SUFFIX) if values else None,
             ),
@@ -182,7 +194,7 @@ class ScrobblerConfig:
 async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntry:
     """Create a reusable configentry to specify a userlist for scrobbling providers."""
     # User options for scrobble filtering
-    ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
+    ma_user_list = await mass.webserver.auth.list_users()
     ma_user_list = [user for user in ma_user_list if user.enabled]
     user_options = [
         ConfigValueOption(user.user_id, title=user.display_name or user.username)
@@ -191,10 +203,7 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
     return ConfigEntry(
         key=CONF_SCROBBLE_USERS,
         type=ConfigEntryType.STRING,
-        label="Scrobble for users",
         required=False,
-        description="Only register scrobbles for the selected users. "
-        "Leave empty to scrobble for all users.",
         options=user_options,
         multi_value=True,
         default_value=[],
@@ -208,15 +217,14 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
         key=lambda player: player.display_name.lower(),
     )
     player_options = [
-        ConfigValueOption(player.player_id, title=player.display_name) for player in ma_player_list
+        ConfigValueOption(player.player_id, title=player.display_name)
+        for player in ma_player_list
+        if player.type in PLAYBACK_TARGET_TYPES
     ]
     return ConfigEntry(
         key=CONF_SCROBBLE_PLAYERS,
         type=ConfigEntryType.STRING,
-        label="Scrobble for players",
         required=False,
-        description="Only register scrobbles for the selected players. "
-        "Leave empty to scrobble for all players.",
         options=player_options,
         multi_value=True,
         default_value=[],

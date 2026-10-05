@@ -38,7 +38,8 @@ class PlaybackMixin:
         ) -> list[str]: ...
 
     async def _seek_to_offset_after_playback(self, player_id: str, offset: int) -> None:
-        """Seek to the specified offset after playback starts.
+        """
+        Seek to the specified offset after playback starts.
 
         :param player_id: The player ID to seek on.
         :param offset: The offset in milliseconds.
@@ -204,9 +205,9 @@ class PlaybackMixin:
             await self._broadcast_timeline()
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling skipTo: {e}")
-            return web.Response(status=500, text=str(e))
+        except Exception:
+            LOGGER.exception("Error handling skipTo")
+            return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
 
@@ -233,11 +234,17 @@ class PlaybackMixin:
             if "repeat" in request.query:
                 repeat_value = int(request.query["repeat"])
                 if repeat_value == 0:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.OFF)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.OFF
+                    )
                 elif repeat_value == 1:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ONE)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ONE
+                    )
                 elif repeat_value == 2:
-                    self.provider.mass.player_queues.set_repeat(self._ma_player_id, RepeatMode.ALL)
+                    await self.provider.mass.player_queues.set_repeat(
+                        self._ma_player_id, RepeatMode.ALL
+                    )
 
             await self._broadcast_timeline()
         finally:

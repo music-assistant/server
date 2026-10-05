@@ -19,7 +19,8 @@ from music_assistant.providers.fastmcp_server.tools import (
 
 @pytest.fixture
 def search_mass(mock_mass: MagicMock) -> MagicMock:
-    """Configure mock_mass.music.search to return shaped results for assertions.
+    """
+    Configure mock_mass.music.search to return shaped results for assertions.
 
     Uses ``SimpleNamespace`` rather than ``MagicMock(name=…)`` deliberately —
     ``MagicMock``'s ``name`` constructor kwarg sets the mock's *repr* name,
@@ -39,7 +40,8 @@ def search_mass(mock_mass: MagicMock) -> MagicMock:
 
 
 async def test_search_tracks_emits_info_log(search_mass: MagicMock) -> None:
-    """``search_tracks`` emits a ``ctx.info`` log notification carrying the query.
+    """
+    ``search_tracks`` emits a ``ctx.info`` log notification carrying the query.
 
     FastMCP delivers ``ctx.info`` calls to clients as ``notifications/message``
     events. The previous test installed the handler via a method that doesn't
@@ -70,7 +72,8 @@ async def test_search_tracks_emits_info_log(search_mass: MagicMock) -> None:
 
 
 async def test_search_tracks_returns_real_track_name(search_mass: MagicMock) -> None:
-    """The returned ``TrackBrief`` carries the fake track's actual ``.name``.
+    """
+    The returned ``TrackBrief`` carries the fake track's actual ``.name``.
 
     Previously the fake was built with ``MagicMock(name="Some Track")``, which
     set the mock's *repr* name rather than the ``.name`` attribute. The
@@ -98,19 +101,47 @@ async def test_search_tracks_returns_real_track_name(search_mass: MagicMock) -> 
 
 async def test_recommendations_runs_under_context(mock_mass: MagicMock) -> None:
     """metadata.recommendations accepts an injected Context and still returns shaped data."""
-    folder = SimpleNamespace(
-        name="Hits",
-        items=[SimpleNamespace(uri="library://track/1")],
-    )
-    mock_mass.music.recommendations = AsyncMock(return_value=[folder])
+    folder = SimpleNamespace(name="Hits", provider="library", item_id="hits")
+    mock_mass.music.recommendations.get_recommendations = AsyncMock(return_value=[folder])
     mcp: FastMCP = FastMCP(name="t")
     mcp.mount(build_metadata_server(mock_mass), namespace="metadata")
 
     async with Client(mcp) as client:
         result = await client.call_tool("metadata_recommendations", {})
 
-    # Assert against the parsed brief's actual ``name``, not against
+    # Assert against the parsed brief's actual fields, not against
     # ``str(mock)`` substring overlap.
+    flat = _parsed_dicts(result)
+    names = [item.get("name") for item in flat]
+    assert "Hits" in names, f"expected 'Hits' folder in parsed result, got {names!r}"
+    hits = next(item for item in flat if item.get("name") == "Hits")
+    assert hits.get("provider") == "library"
+    assert hits.get("item_id") == "hits"
+
+
+async def test_recommendation_items_returns_row_items(mock_mass: MagicMock) -> None:
+    """metadata.recommendation_items serves a row's items via the controller items call."""
+    track = SimpleNamespace(uri="library://track/1", name="Some Track", media_type="track")
+    mock_mass.music.recommendations.get_recommendation_items = AsyncMock(return_value=[track])
+    mcp: FastMCP = FastMCP(name="t")
+    mcp.mount(build_metadata_server(mock_mass), namespace="metadata")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "metadata_recommendation_items",
+            {"provider": "library", "item_id": "hits"},
+        )
+
+    mock_mass.music.recommendations.get_recommendation_items.assert_awaited_once_with(
+        "library", "hits"
+    )
+    flat = _parsed_dicts(result)
+    uris = [item.get("uri") for item in flat]
+    assert "library://track/1" in uris, f"expected track uri in parsed result, got {uris!r}"
+
+
+def _parsed_dicts(result: Any) -> list[dict]:
+    """Flatten a tool result's JSON text blocks into a list of dicts."""
     text_blocks = [c.text for c in result.content if hasattr(c, "text")]
     parsed = [json.loads(t) for t in text_blocks if t.lstrip().startswith(("[", "{"))]
     flat: list[dict] = []
@@ -119,8 +150,7 @@ async def test_recommendations_runs_under_context(mock_mass: MagicMock) -> None:
             flat.extend(entry)
         else:
             flat.append(entry)
-    names = [item.get("name") for item in flat if isinstance(item, dict)]
-    assert "Hits" in names, f"expected 'Hits' folder in parsed result, got {names!r}"
+    return [item for item in flat if isinstance(item, dict)]
 
 
 # Playlists routing tests live in tests/test_playlists.py — that suite covers

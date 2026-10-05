@@ -8,3 +8,14 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # Batch bumps of the libraries we maintain ourselves into a single, easy-to-merge
+      # PR so they stay visible (these live in provider manifest.json files; the
+      # Sync manifests workflow back-propagates the bump into the owning manifest).
+      music-assistant-libs:
+        patterns:
+          - "PyChromecast"
+          - "aiosonos"
+          - "aioslimproto"
+          - "aiosendspin*"
+          - "hass-client"

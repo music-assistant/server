@@ -12,107 +12,83 @@ on:
     branches:
       - dev
 
+# Every run appends to the same backport branch, so runs must not overlap.
+concurrency:
+  group: backport-to-stable
+  cancel-in-progress: false
+  queue: max
+
 jobs:
-  backport:
-    name: Backport PRs with 'backport-to-stable' label to stable
+  find:
+    name: Find merged PRs with 'backport-to-stable' label
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'push' && github.event.commits[0].distinct == true) ||
-      (github.event_name == 'pull_request_target')
+    outputs:
+      prs: ${{ steps.prs.outputs.result }}
+    steps:
+      - name: Resolve merged PRs for this event
+        id: prs
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const label = 'backport-to-stable';
+            const wanted = pr =>
+              pr.merged_at && pr.base.ref === 'dev' && pr.labels.some(l => l.name === label);
+            const entry = pr => ({
+              pr_number: pr.number,
+              pr_title: pr.title,
+              merge_commit_sha: pr.merge_commit_sha,
+            });
+            const result = [];
+
+            if (context.eventName === 'push') {
+              // A merge queue batch lands as one push with several squash commits.
+              for (const commit of context.payload.commits) {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: commit.id,
+                });
+                const pr = prs.find(p => p.merge_commit_sha === commit.id && wanted(p));
+                if (pr) result.push(entry(pr));
+              }
+            } else if (context.payload.label?.name === label) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+              if (wanted(pr)) {
+                result.push(entry(pr));
+              } else {
+                console.log('PR is not merged yet, skipping backport');
+              }
+            }
+
+            console.log(`PRs to backport: ${result.map(p => `#${p.pr_number}`).join(', ') || 'none'}`);
+            return result;
+
+  backport:
+    name: Backport PR ${{ matrix.pr_number }}
+    needs: find
+    if: needs.find.outputs.prs != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.find.outputs.prs) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # Needed for full git history
 
-      - name: Determine workflow trigger and context
-        id: trigger
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Determine if this is a push or label event
-            const isPushEvent = context.eventName === 'push';
-            const isLabelEvent = context.eventName === 'pull_request_target';
-
-            core.setOutput('is_push_event', isPushEvent);
-            core.setOutput('is_label_event', isLabelEvent);
-
-            // Early exit for wrong label in label events
-            if (isLabelEvent) {
-              const labelName = context.payload.label?.name;
-              if (labelName !== 'backport-to-stable') {
-                console.log(`Label '${labelName}' is not backport-to-stable, skipping`);
-                process.exit(0);
-              }
-            }
-
-      - name: Get merged PR info
-        id: prinfo
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const isPushEvent = '${{ steps.trigger.outputs.is_push_event }}' === 'true';
-            const isLabelEvent = '${{ steps.trigger.outputs.is_label_event }}' === 'true';
-
-            let merged;
-
-            if (isPushEvent) {
-              // Existing logic: Find PR from commit
-              const pr = await github.rest.pulls.list({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'closed',
-                base: 'dev',
-                sort: 'updated',
-                direction: 'desc',
-                per_page: 10
-              });
-              merged = pr.data.find(p => p.merge_commit_sha === context.payload.head_commit.id);
-              if (!merged) return core.setFailed('No merged PR found for this commit.');
-            } else if (isLabelEvent) {
-              // New logic: Get PR from label event context
-              const pr = context.payload.pull_request;
-
-              // Verify PR is merged (exit gracefully if not)
-              if (!pr.merged_at) {
-                console.log('PR is not merged yet, skipping backport');
-                process.exit(0);
-              }
-
-              // Fetch full PR details to get merge commit SHA
-              const fullPR = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number
-              });
-              merged = fullPR.data;
-            }
-
-            core.setOutput('pr_number', merged.number);
-            core.setOutput('pr_title', merged.title);
-            core.setOutput('pr_labels', merged.labels.map(l => l.name).join(','));
-            core.setOutput('merge_commit_sha', merged.merge_commit_sha);
-
-      - name: Check for backport-to-stable label
-        id: checklabel
-        run: |
-          echo "PR labels: ${{ steps.prinfo.outputs.pr_labels }}"
-          if [[ "${{ steps.prinfo.outputs.pr_labels }}" == *"backport-to-stable"* ]]; then
-            echo "backport-to-stable label found, proceeding with backport."
-            echo "should_backport=true" >> $GITHUB_OUTPUT
-          else
-            echo "No backport-to-stable label found, skipping backport."
-            echo "should_backport=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Set up Git user
-        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Calculate next patch version
-        if: steps.checklabel.outputs.should_backport == 'true'
         id: nextver
         run: |
           git fetch origin stable --tags
@@ -148,7 +124,6 @@ jobs:
           echo "next_patch_version=$next_version" >> $GITHUB_OUTPUT
 
       - name: Create or update backport branch
-        if: steps.checklabel.outputs.should_backport == 'true'
         id: create_or_update_backport_branch
         run: |
           next_version="${{ steps.nextver.outputs.next_patch_version }}"
@@ -169,16 +144,15 @@ jobs:
           echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
 
       - name: Cherry-pick commit
-        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
           # Check if commit is already in the branch to avoid redundant cherry-picks
-          if git log --format=%H | grep -q "^${{ steps.prinfo.outputs.merge_commit_sha }}$"; then
-            echo "Commit ${{ steps.prinfo.outputs.merge_commit_sha }} already exists in backport branch, skipping cherry-pick"
+          if git log --format=%H | grep -q "^${{ matrix.merge_commit_sha }}$"; then
+            echo "Commit ${{ matrix.merge_commit_sha }} already exists in backport branch, skipping cherry-pick"
             exit 0
           fi
 
           # Try cherry-pick with --empty=drop to handle redundant commits gracefully
-          if git cherry-pick --empty=drop ${{ steps.prinfo.outputs.merge_commit_sha }}; then
+          if git cherry-pick --empty=drop ${{ matrix.merge_commit_sha }}; then
             echo "Cherry-pick successful"
           else
             echo 'Cherry-pick failed, please resolve conflicts manually.'
@@ -186,12 +160,10 @@ jobs:
           fi
 
       - name: Push backport branch
-        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
-          git push origin ${{ steps.create_or_update_backport_branch.outputs.branch_name }}:${{ steps.create_or_update_backport_branch.outputs.branch_name }} --force
+          git push origin ${{ steps.create_or_update_backport_branch.outputs.branch_name }}:${{ steps.create_or_update_backport_branch.outputs.branch_name }}
 
       - name: Create or update backport PR with cherry-picked commits
-        if: steps.checklabel.outputs.should_backport == 'true'
         uses: actions/github-script@v9
         with:
           script: |
@@ -259,8 +231,8 @@ jobs:
               }
             }
         env:
-          pr_number: ${{ steps.prinfo.outputs.pr_number }}
-          pr_title: ${{ steps.prinfo.outputs.pr_title }}
+          pr_number: ${{ matrix.pr_number }}
+          pr_title: ${{ matrix.pr_title }}
           next_patch_version: ${{ steps.nextver.outputs.next_patch_version }}
           branch_name: ${{ steps.create_or_update_backport_branch.outputs.branch_name }}
-          cherry_commit: ${{ steps.prinfo.outputs.merge_commit_sha }}
+          cherry_commit: ${{ matrix.merge_commit_sha }}

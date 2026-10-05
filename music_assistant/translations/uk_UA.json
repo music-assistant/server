@@ -60,7 +60,7 @@
   "common.config_entries.volume_normalization.description": "Увімкнути нормалізацію гучності на основі стандарту EBU-R128, не впливаючи на динамічний діапазон",
   "common.config_entries.volume_normalization.label": "Увімкнути нормалізацію гучності (на основі EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Фіксоване\/падаюче регулювання посилення для доріжок",
-  "common.config_entries.volume_normalization_target.description": "Налаштуйте середню (відчувану) гучність до цього цільового рівня, за замовчуванням -17 LUFS\n\n  **ПОПЕРЕДЖЕННЯ:** встановлення занадто високого рівня може призвести до обрізання!",
+  "common.config_entries.volume_normalization_target.description": "Налаштуйте середню (відчувану) гучність до цього цільового рівня, за замовчуванням -14 LUFS\n\n  **ПОПЕРЕДЖЕННЯ:** встановлення занадто високого рівня може призвести до обрізання!",
   "common.config_entries.volume_normalization_target.label": "Цільовий рівень нормалізації гучності",
   "common.media.albums.name": "Альбоми",
   "common.media.artists.name": "Артисти",

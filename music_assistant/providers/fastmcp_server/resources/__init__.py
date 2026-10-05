@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
 
 def register_resources(mcp: Any, mass: MusicAssistant, config: ProviderConfig) -> None:
-    """Register MCP resources, gated by config toggles.
+    """
+    Register MCP resources, gated by config toggles.
 
     :param mcp: FastMCP root server.
     :param mass: MusicAssistant instance.

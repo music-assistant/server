@@ -18,6 +18,8 @@ from collections.abc import Callable, Coroutine
 from functools import partial, wraps
 from typing import Any, cast, overload
 
+from music_assistant.helpers.diagnostics import DiagnosticsLogHandler
+
 
 class LoggingQueueHandler(logging.handlers.QueueHandler):
     """Process the log in another thread."""
@@ -25,7 +27,8 @@ class LoggingQueueHandler(logging.handlers.QueueHandler):
     listener: logging.handlers.QueueListener | None = None
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        """Prepare a record for queuing.
+        """
+        Prepare a record for queuing.
 
         This is added as a workaround for https://bugs.python.org/issue46755
         """
@@ -34,7 +37,8 @@ class LoggingQueueHandler(logging.handlers.QueueHandler):
         return record
 
     def handle(self, record: logging.LogRecord) -> Any:
-        """Conditionally emit the specified logging record.
+        """
+        Conditionally emit the specified logging record.
 
         Depending on which filters have been added to the handler, push the new
         records onto the backing Queue.
@@ -51,7 +55,8 @@ class LoggingQueueHandler(logging.handlers.QueueHandler):
         return return_value
 
     def close(self) -> None:
-        """Tidy up any resources used by the handler.
+        """
+        Tidy up any resources used by the handler.
 
         This adds shutdown of the QueueListener
         """
@@ -63,7 +68,8 @@ class LoggingQueueHandler(logging.handlers.QueueHandler):
 
 
 def activate_log_queue_handler() -> None:
-    """Migrate the existing log handlers to use the queue.
+    """
+    Migrate the existing log handlers to use the queue.
 
     This allows us to avoid blocking I/O and formatting messages
     in the event loop as log messages are written in another thread.
@@ -75,6 +81,11 @@ def activate_log_queue_handler() -> None:
     migrated_handlers: list[logging.Handler] = []
     for handler in logging.root.handlers[:]:
         if handler is queue_handler:
+            continue
+        # the diagnostics capture handler stays attached directly to the root logger:
+        # the queue handler copies records and strips exc_info, which would break
+        # its exception aggregation (and it never blocks anyway)
+        if isinstance(handler, DiagnosticsLogHandler):
             continue
         logging.root.removeHandler(handler)
         migrated_handlers.append(handler)
@@ -118,7 +129,8 @@ def catch_log_exception(
 def catch_log_exception(
     func: Callable[..., Any], format_err: Callable[..., Any]
 ) -> Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]:
-    """Decorate a function func to catch and log exceptions.
+    """
+    Decorate a function func to catch and log exceptions.
 
     If func is a coroutine function, a coroutine function will be returned.
     If func is a callback, a callback will be returned.

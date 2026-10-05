@@ -7,7 +7,27 @@
     "top_tracks_limit": {
       "label": "Artist Top Tracks search limit",
       "description": "Search limit while getting artist top tracks."
+    },
+    "get_lyrics": {
+      "label": "Fetch song lyrics",
+      "description": "Fetch song lyrics from Bandcamp. One extra Bandcamp request per album or per standalone track, cached for 30 days."
     }
+  },
+  "media": {
+    "recommendations": {
+      "feed": { "name": "Bandcamp Feed" },
+      "wishlist": { "name": "Wishlist" }
+    },
+    "folder": {
+      "collection": { "name": "Collection" },
+      "wishlist": { "name": "Wishlist" },
+      "following": { "name": "Following" },
+      "fans": { "name": "Fans" },
+      "followers": { "name": "Followers" }
+    }
+  },
+  "errors": {
+    "unusable_answer": "Bandcamp did not send the data, often because of a robot check. Try again in a few minutes."
   },
   "manifest": {
     "description": "Stream music from Bandcamp's catalog."

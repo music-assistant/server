@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import platform
 import time
-import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -14,6 +13,7 @@ from music_assistant_models.enums import EventType
 
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
+from .plextv import build_version, compute_client_id
 from .queue_commands import QueueCommandsMixin
 from .queue_sync import QueueSyncMixin
 from .timeline import TimelineMixin
@@ -36,7 +36,8 @@ class PlayerRemoteInstance:
         device_class: str = "speaker",
         remote_control: bool = False,
     ) -> None:
-        """Initialize player remote instance.
+        """
+        Initialize player remote instance.
 
         :param plex_provider: Plex provider instance.
         :param ma_player_id: Music Assistant player ID.
@@ -53,12 +54,7 @@ class PlayerRemoteInstance:
         self.device_class = device_class
         self.remote_control = remote_control
 
-        self.client_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_DNS,
-                f"music-assistant-plex-{plex_provider.instance_id}-{ma_player_id}",
-            )
-        )
+        self.client_id = compute_client_id(plex_provider.instance_id, ma_player_id)
 
         if self.remote_control:
             self.server: PlexRemoteControlServer | None = None
@@ -91,9 +87,7 @@ class PlayerRemoteInstance:
                 publish_ip=str(self.plex_provider.mass.streams.publish_ip),
                 name=self.player_name,
                 product="Music Assistant",
-                version=self.plex_provider.mass.version
-                if self.plex_provider.mass.version != "0.0.0"
-                else "1.0.0",
+                version=build_version(self.plex_provider.mass.version),
                 device_class=self.device_class,
             )
             self.gdm.start()
@@ -123,7 +117,8 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         ma_player_id: str | None = None,
         device_class: str = "speaker",
     ) -> None:
-        """Initialize remote control server.
+        """
+        Initialize remote control server.
 
         :param plex_provider: Plex provider instance.
         :param port: Port for the HTTP server.
@@ -335,7 +330,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
             state = self._resolve_plex_state(player, queue)
 
         local_ip = self.provider.mass.streams.publish_ip
-        version = self.provider.mass.version if self.provider.mass.version != "0.0.0" else "1.0.0"
+        version = build_version(self.provider.mass.version)
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer>

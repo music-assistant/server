@@ -104,7 +104,7 @@ async def _fetch_playlist_folder_children(
     playlists: list[Playlist] = []
     for playlist_entry in playlist_entries:
         playlist_id = cast("str", playlist_entry.get("id"))
-        is_favourite = ratings.get(playlist_id, False)
+        is_favourite = ratings.get(playlist_id)
         attributes = playlist_entry.get("attributes") or {}
         play_params = attributes.get("playParams") or {}
         global_id = play_params.get("globalId")
@@ -131,7 +131,8 @@ async def _fetch_playlist_folder_children(
 
 
 def _playlist_without_global_id(playlist_obj: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy without a catalog ID.
+    """
+    Return a shallow copy without a catalog ID.
 
     Some folders report `hasCatalog=True` but their catalog playlist fetch fails.
     When that happens we strip the bogus `globalId` so downstream parsing sticks
@@ -149,7 +150,8 @@ def _playlist_without_global_id(playlist_obj: dict[str, Any]) -> dict[str, Any]:
 def _apply_library_id(
     playlist: Playlist, library_id: str, provider: AppleMusicProvider
 ) -> Playlist:
-    """Return a copy of `playlist` that always points to the library endpoint.
+    """
+    Return a copy of `playlist` that always points to the library endpoint.
 
     `get_playlist` is cached, so mutating the original object would leak those
     changes to other consumers of the cached catalog playlist.  Instead we clone

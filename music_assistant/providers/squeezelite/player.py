@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-import struct
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -15,7 +14,7 @@ from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -29,15 +28,21 @@ from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    CONF_SMART_FADES_MODE,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
+from music_assistant.models.player import (
+    POSITION_JUMP_THRESHOLD,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -63,15 +68,23 @@ CACHE_CATEGORY_PREV_STATE = (
     1  # category for caching previous player state (bumped to invalidate old format)
 )
 
-PLAYER_DEVICE_TYPES = {
-    # list of device types that are considered real hardware players
-    "squeezebox",
-    "squeezebox2",
-    "transporter",
-    "receiver",
-    "controller",
-    "boom",
-}
+PROTOCOL_ONLY_MODELS = (
+    # Device models where slimproto is only a secondary protocol on a device with
+    # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
+    # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
+    # squeezelite players. These register as PlayerType.PROTOCOL and get linked
+    # to the device's visible player.
+    "wiim",
+    "raopbridge",
+    "castbridge",
+    "upnpbridge",
+)
+
+
+def is_protocol_only_device(device_model: str) -> bool:
+    """Return True if the device uses squeezelite as a secondary protocol only."""
+    device_model_lower = device_model.lower()
+    return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
 class SqueezelitePlayer(Player):
@@ -97,6 +110,14 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
+        # Protocol players are powered on/off with the stream and expose no power
+        # control; full players get native power support (slimproto power can e.g.
+        # drive a GPIO/script wired to an amplifier).
+        if is_protocol_only_device(client.device_model):
+            self._attr_type = PlayerType.PROTOCOL
+        else:
+            self._attr_type = PlayerType.PLAYER
+            self._attr_supported_features.add(PlayerFeature.POWER)
         self._attr_can_group_with = {provider.instance_id}
         max_sr = int(self.client.max_sample_rate)
         self._attr_supported_sample_rates = [
@@ -108,14 +129,6 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
-        self._audio_source_active: bool = False
-        self._low_latency_stream: bool = False
-        # TEMP: patch slimclient send_strm to adjust buffer thresholds
-        # this can be removed when we did a new release of aioslimproto with this change
-        # after this has been tested in beta for a while
-        client._send_strm = lambda *args, **kwargs: _patched_send_strm(
-            client, self, *args, **kwargs
-        )
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -143,13 +156,9 @@ class SqueezelitePlayer(Player):
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries = await super().get_config_entries()
         # create preset entries (for players that support it)
         presets = []
         async for playlist in self.mass.music.playlists.iter_library_items(True):
@@ -162,9 +171,8 @@ class SqueezelitePlayer(Player):
                 key=f"preset_{index}",
                 type=ConfigEntryType.STRING,
                 options=presets,
-                label=f"Preset {index}",
-                description="Assign a playable item to the player's preset. "
-                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                translation_key="preset",
+                translation_params=[str(index)],
                 category="presets",
                 required=False,
             )
@@ -177,6 +185,7 @@ class SqueezelitePlayer(Player):
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
     async def volume_set(self, volume_level: int) -> None:
@@ -209,7 +218,6 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        self._audio_source_active = False
         # Clean up any existing multi-client stream
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -271,20 +279,17 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(
-                self.player_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            if media.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
+        # which can differ from this player when playing on behalf of a group/linked queue
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and queue.overlay_enabled and queue.overlay_source),
         )
 
         # select audio source, we force flow mode
@@ -295,7 +300,10 @@ class SqueezelitePlayer(Player):
 
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source, audio_format=master_audio_format
+            audio_source=audio_source,
+            audio_format=master_audio_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
         )
         base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 
@@ -307,9 +315,7 @@ class SqueezelitePlayer(Player):
         # Per-member output_codec: classic Squeezeboxes silently fail on fixed flac in sync (#5506).
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
-                member_codec = self.mass.config.get_raw_player_config_value(
-                    slimplayer.player_id, CONF_OUTPUT_CODEC, "flac"
-                )
+                member_codec = self._get_member_output_codec(slimplayer.player_id, media)
                 url = f"{base_url}&fmt={member_codec}&child_player_id={slimplayer.player_id}"
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
@@ -319,6 +325,7 @@ class SqueezelitePlayer(Player):
                         send_flush=True,
                         auto_play=False,
                         is_group_playback=True,
+                        mime_type=get_mime_type(member_codec),
                     )
                 )
 
@@ -414,17 +421,9 @@ class SqueezelitePlayer(Player):
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
         # Update player state from slim player
-        self._attr_type = (
-            PlayerType.PLAYER
-            if self.client.device_type in PLAYER_DEVICE_TYPES
-            else PlayerType.PROTOCOL
-        )
-        if self.type == PlayerType.PLAYER:
-            self._attr_supported_features.add(PlayerFeature.POWER)
-        else:
-            self._attr_supported_features.discard(PlayerFeature.POWER)
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
+        self._attr_powered = self.client.powered
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
@@ -467,15 +466,20 @@ class SqueezelitePlayer(Player):
         send_flush: bool = True,
         auto_play: bool = False,
         is_group_playback: bool = False,
+        mime_type: str | None = None,
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
+        if mime_type is None:
+            # derive from the url extension (only reliable for plain file urls; sync
+            # group member urls have no extension, so callers pass the codec mime)
+            mime_type = get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0])
         metadata = {
             "item_id": media.uri,
             "title": media.title,
             "album": media.album,
             "artist": media.artist,
             "image_url": media.image_url,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
@@ -483,17 +487,12 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        audio_source_active = media.media_type == MediaType.AUDIO_SOURCE
-        low_latency_stream = audio_source_active or media.media_type == MediaType.RADIO
-        # set the flags on the player that owns the slimclient (may differ from self
-        # during group playback where self is the leader but slimplayer is a member)
-        target_player = self.mass.players.get_player(slimplayer.player_id)
-        if isinstance(target_player, SqueezelitePlayer):
-            target_player._audio_source_active = audio_source_active
-            target_player._low_latency_stream = low_latency_stream
+        low_latency_stream = media.media_type in (MediaType.AUDIO_SOURCE, MediaType.RADIO)
+        # live streams start on a smaller buffer (KB, tenths of a second) to cut latency
+        stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
         await slimplayer.play_url(
             url=url,
-            mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
+            mime_type=mime_type,
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -501,6 +500,8 @@ class SqueezelitePlayer(Player):
             # instead 'buffer ready' will be called when the buffer is full
             # to coordinate a start of multiple synced players
             autostart=auto_play,
+            stream_threshold=stream_threshold,
+            output_threshold=output_threshold,
         )
         # TODO: When we implement server clock sync, we can remove the pause here
         # and rely on unpause_at + HEADROOM in the buffer_ready handler. LMS
@@ -517,13 +518,13 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=get_mime_type(
-                        url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]
-                    ),
+                    mime_type=mime_type,
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,
                     autostart=True,
+                    stream_threshold=stream_threshold,
+                    output_threshold=output_threshold,
                 ),
             )
 
@@ -534,10 +535,15 @@ class SqueezelitePlayer(Player):
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)
             return
-        # elapsed time change on the player will be auto picked up
-        # by the player manager.
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+        # only involve the state machine when the reported position diverged (e.g. buffering/seek)
+        published_position = self.state.corrected_elapsed_time
+        if (
+            published_position is None
+            or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
+        ):
+            self.update_state()
 
         # handle sync
         if self.synced_to:
@@ -601,12 +607,15 @@ class SqueezelitePlayer(Player):
                 repeat_mode = RepeatMode.ALL
             else:
                 repeat_mode = RepeatMode.OFF
-            self.mass.player_queues.set_repeat(queue.queue_id, repeat_mode)
-            self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
+            await self.mass.player_queues.set_repeat(queue.queue_id, repeat_mode)
+            # publish the requested mode: on a delegated queue the queue snapshot only
+            # updates once the session's options echo lands
+            self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[repeat_mode]
             self.client.signal_update()
         elif event.data == "button shuffle":
-            await self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
-            self.client.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+            shuffle_enabled = not queue.shuffle_enabled
+            await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled)
+            self.client.extra_data["playlist shuffle"] = int(shuffle_enabled)
             self.client.signal_update()
         elif event_data in ("button jump_fwd", "button fwd"):
             await self.mass.player_queues.next(queue.queue_id)
@@ -754,9 +763,22 @@ class SqueezelitePlayer(Player):
             ):
                 yield slimplayer
 
+    def _get_member_output_codec(self, member_player_id: str, media: PlayerMedia) -> str:
+        """Return the stream format to request for a sync group member."""
+        if media.media_type == MediaType.AUDIO_SOURCE:
+            member_player = self.mass.players.get_player(member_player_id)
+            if member_player and member_player.config.get_value(
+                CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
+            ):
+                return "wav"
+        return self.mass.config.get_raw_player_config_value(
+            member_player_id, CONF_OUTPUT_CODEC, "flac"
+        )
+
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """Pause player and schedule unpause after specified duration.
+    """
+    Pause player and schedule unpause after specified duration.
 
     This is used instead of pause_for because WiiM devices
     don't properly auto-unpause after pause_for interval.
@@ -764,45 +786,3 @@ async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> 
     await slim_client.pause()
     unpause_timestamp = slim_client.jiffies + pause_duration_ms
     await slim_client.unpause_at(unpause_timestamp)
-
-
-async def _patched_send_strm(  # noqa: PLR0913
-    self: SlimClient,
-    player: SqueezelitePlayer,
-    command: bytes = b"q",
-    autostart: bytes = b"0",
-    codec_details: bytes = b"p1321",
-    threshold: int = 0,
-    spdif: bytes = b"0",
-    trans_duration: int = 0,
-    trans_type: bytes = b"0",
-    flags: int = 0x20,
-    output_threshold: int = 0,
-    replay_gain: int = 0,
-    server_port: int = 0,
-    server_ip: int = 0,
-    httpreq: bytes = b"",
-) -> None:
-    """Create stream request message based on given arguments."""
-    if player._low_latency_stream:
-        threshold = 64  # KB of input buffer data before autostart or notify
-        output_threshold = (
-            1  # amount of output buffer data before playback starts, in tenths of second
-        )
-    data = struct.pack(
-        "!cc5sBcBcBBBLHL",
-        command,
-        autostart,
-        codec_details,
-        threshold,
-        spdif,
-        trans_duration,
-        trans_type,
-        flags,
-        output_threshold,
-        0,
-        replay_gain,
-        server_port,
-        server_ip,
-    )
-    await self.send_frame(b"strm", data + httpreq)

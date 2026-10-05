@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 320 320"
+   version="1.1"
+   id="svg3"
+   sodipodi:docname="amplipi_logo_v3.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   width="320"
+   height="320"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs3" />
+  <sodipodi:namedview
+     id="namedview3"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.5140625"
+     inkscape:cx="191.8679"
+     inkscape:cy="55.810113"
+     inkscape:window-width="1920"
+     inkscape:window-height="1129"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg3" />
+  <rect
+     width="100%"
+     height="100%"
+     fill="#000000"
+     id="rect1"
+     x="0"
+     y="0" />
+  <g
+     font-family="'Arial Rounded MT Bold', Arial, sans-serif"
+     font-size="78px"
+     font-style="italic"
+     font-weight="700"
+     fill="none"
+     stroke-width="2.2"
+     stroke-linejoin="round"
+     id="g3"
+     transform="translate(4.9535604,51.027864)">
+    <text
+       x="18"
+       y="130"
+       stroke="#f0f0f0"
+       id="text1">Ampli</text>
+    <!-- moved P slightly right; i slightly closer -->
+    <text
+       x="229.50258"
+       y="130"
+       stroke="#c01824"
+       id="text2">P</text>
+    <text
+       x="277.14447"
+       y="130"
+       stroke="#c01824"
+       id="text3">i</text>
+  </g>
+</svg>

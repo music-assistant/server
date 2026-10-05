@@ -13,6 +13,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin, setup
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+from tests.common import scheduled_call
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=True → plugin advertises SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=True)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=True))
         assert ProviderFeature.SEARCH in plugin.supported_features
 
@@ -60,12 +63,15 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=False → plugin does not advertise SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=False)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         assert ProviderFeature.SEARCH not in plugin.supported_features
 
 
 class TestTextEncoderWarmsLazily:
-    """The GPT2 text encoder is not warmed at load; the first search() warms it lazily.
+    """
+    The GPT2 text encoder is not warmed at load; the first search() warms it lazily.
 
     Warming the ~500MB encoder eagerly at startup defeats the point of an opt-in
     feature, so loaded_in_mass leaves it cold and the first cold search() kicks off
@@ -155,7 +161,8 @@ class TestSearch:
 
     @pytest.mark.asyncio
     async def test_schedules_warm_when_encoder_cold(self, make_plugin: Callable[..., Any]) -> None:
-        """A cold encoder short-circuits to empty but kicks off a one-time background warm.
+        """
+        A cold encoder short-circuits to empty but kicks off a one-time background warm.
 
         The encoder loads on first query rather than at startup, but the load runs off
         the request path (via mass.create_task) so the global SEARCH dispatcher never
@@ -173,9 +180,12 @@ class TestSearch:
         assert list(result.tracks) == []
         plugin._load_text_encoder.assert_not_called()
         plugin._clap_index.search.assert_not_called()
-        plugin.mass.create_task.assert_called_once_with(
-            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-        )
+        plugin.mass.create_task.assert_called_once()
+        name, _ = scheduled_call(plugin.mass.create_task.call_args.args[0])
+        assert name.endswith("_get_text_encoder")
+        assert plugin.mass.create_task.call_args.kwargs == {
+            "task_id": "sonic_similarity_text_encoder_warm"
+        }
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_resolved_tracks(
@@ -184,7 +194,7 @@ class TestSearch:
         """Encoded query → CLAP matches → resolved Track objects in SearchResults.tracks."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -208,7 +218,7 @@ class TestSearch:
         """An unresolvable item is silently dropped; the rest pass through."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -236,7 +246,7 @@ class TestSearch:
         """The limit kwarg is forwarded as the k argument to CLAP index search."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=20)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(return_value=[])
         mock_mass.music.tracks.get = AsyncMock()

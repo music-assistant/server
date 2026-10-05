@@ -114,9 +114,9 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         """
         Power a player on or off.
 
-        Does not affect sync-group membership — use ``group_player`` to
-        change that. Setting the current power state again is a no-op.
-        Returns nothing.
+        Does not affect sync-group membership — use ``group_player`` to add a
+        player to a sync group, or ``ungroup_player`` to remove one. Setting
+        the current power state again is a no-op. Returns nothing.
 
         :param player_id: Player identifier from ``PlayerBrief.player_id``.
         :param powered: ``True`` to power on, ``False`` to power off.
@@ -139,12 +139,36 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         Add a player to another player's sync group so both play in lockstep.
 
         Does not change volume — use ``set_group_volume`` on the volume
-        sub-server for that. Returns nothing.
+        sub-server for that. Use ``ungroup_player`` to remove a player from
+        a sync group. Returns nothing.
 
         :param player_id: Player to add to the group.
         :param target_player_id: Player whose sync group ``player_id`` joins
             (typically the group leader).
         """
         await mass.players.cmd_group(player_id, target_player_id)
+
+    @sub.tool(
+        tags={Tag.CONTROL_PLAYERS},
+        annotations=ToolAnnotations(
+            title="Ungroup player from sync group",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def ungroup_player(player_id: str) -> None:
+        """
+        Remove a player from its sync group so it plays independently again.
+
+        If the player is not currently grouped, this is a no-op. Use
+        ``group_player`` to add a player to another player's sync group.
+        Returns nothing.
+
+        :param player_id: Player to remove from any active sync group.
+        """
+        await mass.players.cmd_ungroup(player_id)
 
     return sub

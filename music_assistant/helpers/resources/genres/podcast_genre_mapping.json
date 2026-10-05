@@ -1,0 +1,97 @@
+[
+    {
+        "genre": "Arts",
+        "translation_key": "arts",
+        "aliases": ["Arts", "Books", "Design", "Fashion & Beauty", "Food", "Performing Arts", "Visual Arts"]
+    },
+    {
+        "genre": "Business",
+        "translation_key": "business",
+        "aliases": ["Business", "Careers", "Entrepreneurship", "Investing", "Management", "Marketing", "Non-Profit"]
+    },
+    {
+        "genre": "Comedy",
+        "translation_key": "comedy",
+        "aliases": ["Comedy", "Comedy Interviews", "Improv", "Stand-Up"]
+    },
+    {
+        "genre": "Education",
+        "translation_key": "education",
+        "aliases": ["Education", "Courses", "How To", "Language Learning", "Self-Improvement"]
+    },
+    {
+        "genre": "Fiction",
+        "translation_key": "fiction",
+        "aliases": ["Fiction", "Comedy Fiction", "Drama", "Science Fiction"]
+    },
+    {
+        "genre": "Government",
+        "translation_key": "government",
+        "aliases": ["Government"]
+    },
+    {
+        "genre": "Health & Fitness",
+        "translation_key": "health_and_fitness",
+        "aliases": ["Health & Fitness", "Health and Fitness", "Alternative Health", "Fitness", "Medicine", "Mental Health", "Nutrition", "Sexuality"]
+    },
+    {
+        "genre": "History",
+        "translation_key": "history",
+        "aliases": ["History"]
+    },
+    {
+        "genre": "Kids & Family",
+        "translation_key": "kids_and_family",
+        "aliases": ["Kids & Family", "Kids and Family", "Education for Kids", "Parenting", "Pets & Animals", "Stories for Kids"]
+    },
+    {
+        "genre": "Leisure",
+        "translation_key": "leisure",
+        "aliases": ["Leisure", "Animation & Manga", "Automotive", "Aviation", "Crafts", "Games", "Hobbies", "Home & Garden", "Video Games"]
+    },
+    {
+        "genre": "Music",
+        "translation_key": "music",
+        "aliases": ["Music", "Music Commentary", "Music History", "Music Interviews"]
+    },
+    {
+        "genre": "News",
+        "translation_key": "news",
+        "aliases": ["News", "Business News", "Daily News", "Entertainment News", "News Commentary", "Politics", "Sports News", "Tech News"]
+    },
+    {
+        "genre": "Religion & Spirituality",
+        "translation_key": "religion_and_spirituality",
+        "aliases": ["Religion & Spirituality", "Religion and Spirituality", "Buddhism", "Christianity", "Hinduism", "Islam", "Judaism", "Religion", "Spirituality"]
+    },
+    {
+        "genre": "Science",
+        "translation_key": "science",
+        "aliases": ["Science", "Astronomy", "Chemistry", "Earth Sciences", "Life Sciences", "Mathematics", "Natural Sciences", "Nature", "Physics", "Social Sciences"]
+    },
+    {
+        "genre": "Society & Culture",
+        "translation_key": "society_and_culture",
+        "aliases": ["Society & Culture", "Society and Culture", "Documentary", "Personal Journals", "Philosophy", "Places & Travel", "Relationships"]
+    },
+    {
+        "genre": "Sports",
+        "translation_key": "sports",
+        "aliases": ["Sports", "Baseball", "Basketball", "Cricket", "Fantasy Sports", "American Football", "Golf", "Hockey", "Rugby", "Running", "Soccer", "Swimming", "Tennis", "Volleyball", "Wilderness", "Wrestling"]
+    },
+    {
+        "genre": "Technology",
+        "translation_key": "technology",
+        "aliases": ["Technology", "Tech"]
+    },
+    {
+        "genre": "True Crime",
+        "translation_key": "true_crime",
+        "aliases": ["True Crime"]
+    },
+    {
+        "genre": "TV & Film",
+        "translation_key": "tv_and_film",
+        "aliases": ["TV & Film", "TV and Film", "After Shows", "Film History", "Film Interviews", "Film Reviews", "TV Reviews"]
+    }
+]

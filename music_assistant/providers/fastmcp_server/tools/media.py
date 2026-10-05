@@ -11,50 +11,26 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from ..tags import Tag
-from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY, confirm_or_raise
+from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY, confirm_or_raise, resolve_uri
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
-    """Look up a MediaItem by MA URI, raising ToolError when missing.
-
-    MA's MusicController APIs that mutate library / favorites / play history
-    expect a resolved (media_type, library_item_id) pair or a typed media
-    object — not a raw URI string. This helper centralises the lookup and
-    surfaces a distinct ToolError message per failure class so the LLM
-    caller can distinguish "URI typo" from "provider offline".
-    """
-    from music_assistant_models.errors import (  # noqa: PLC0415
-        InvalidProviderURI,
-        MediaNotFoundError,
-        ProviderUnavailableError,
-    )
-
-    try:
-        return await mass.music.get_item_by_uri(uri)
-    except MediaNotFoundError as exc:
-        raise ToolError(f"Item not found for URI: {uri!r}") from exc
-    except InvalidProviderURI as exc:
-        raise ToolError(f"Malformed Music Assistant URI: {uri!r}") from exc
-    except ProviderUnavailableError as exc:
-        raise ToolError(f"Provider for URI {uri!r} is offline or unreachable") from exc
-
-
 async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
-    """Resolve a URI to its library counterpart, raising ToolError when not in library.
+    """
+    Resolve a URI to its library counterpart, raising ToolError when not in library.
 
     MA's :meth:`MusicController.remove_item_from_favorites` and
     :meth:`remove_item_from_library` expect a library item id. When the
     caller passes a provider-native URI (e.g. ``yandex_music://track/abc``),
-    :func:`_resolve_uri` returns a MediaItem with the provider's id —
+    :func:`resolve_uri` returns a MediaItem with the provider's id —
     feeding that into the controller silently targets the wrong row (or
     fails on ``int(...)``). This helper looks up the library counterpart
     via :meth:`get_library_item_by_prov_id` and raises if the item isn't
     in the library.
     """
-    item = await _resolve_uri(mass, uri)
+    item = await resolve_uri(mass, uri)
     if getattr(item, "provider", None) == "library":
         return item
     lib_item = await mass.music.get_library_item_by_prov_id(
@@ -91,7 +67,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param uri: Music Assistant URI of the artist, album, track,
             playlist or radio station (e.g. as found on ``TrackBrief.uri``).
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.add_item_to_favorites(item)
 
     @sub.tool(
@@ -146,7 +122,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param uri: Music Assistant URI of the artist, album, track,
             playlist or radio station to import.
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.add_item_to_library(item)
 
     @sub.tool(
@@ -198,7 +174,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
 
         :param uri: Music Assistant URI of the item to mark as played.
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.mark_item_played(item)
 
     @sub.tool(

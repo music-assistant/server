@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -31,11 +32,12 @@ from music_assistant.controllers.streams.audio import (
         (48000, [44100, 48000, 96000], 48000),  # exact match
         (50000, [44100, 48000, 96000], 96000),  # snap up to next higher
         (200000, [44100, 48000, 96000], 96000),  # no higher; fall back to max
+        (88200, [44100, 48000], 44100),  # preserve the source sample-rate family
         (40000, [44100, 48000], 44100),  # snap up to lowest higher
     ],
 )
 def test_snap_supported_rate_up(target: int, supported: list[int], expected: int) -> None:
-    """_snap_supported_rate_up picks the lowest supported >= target, else max."""
+    """_snap_supported_rate_up prefers a higher rate, then a source-family divisor."""
     assert _snap_supported_rate_up(target, supported) == expected
 
 
@@ -155,6 +157,90 @@ async def test_select_flow_pcm_format_smart_without_start_format_uses_max() -> N
 
 
 @pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_fallback_rate_without_start_format() -> None:
+    """A caller-provided fallback rate is used when stream details are unavailable."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    fmt = await audio.select_flow_pcm_format(player, fallback_sample_rate=44100)
+    assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_common_output_rates() -> None:
+    """A shared flow only selects sample rates supported by every output player."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 16)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24)
+
+    fmt = await audio.select_flow_pcm_format(
+        leader,
+        start_streamdetails=streamdetails,
+        output_players=(leader, member),
+    )
+
+    assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_rejects_outputs_without_common_rate() -> None:
+    """A shared flow requires at least one sample rate supported by every output."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 16)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+
+    with pytest.raises(AudioError, match="do not share"):
+        await audio.select_flow_pcm_format(
+            leader,
+            output_players=(leader, member),
+        )
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_headroom_for_any_output_dsp() -> None:
+    """DSP on any shared output requires float headroom for the complete flow."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24)
+
+    with patch.object(
+        audio,
+        "_resolve_player_dsp_config",
+        side_effect=(MagicMock(enabled=False), MagicMock(enabled=True)),
+    ):
+        fmt = await audio.select_flow_pcm_format(
+            leader,
+            start_streamdetails=streamdetails,
+            output_players=(leader, member),
+        )
+
+    assert fmt.content_type == ContentType.PCM_F32LE
+    assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
 async def test_select_flow_pcm_format_bit_perfect_matches_track() -> None:
     """'bit_perfect' mode also anchors on the first track's sample rate."""
     audio = _make_streams_audio()
@@ -184,7 +270,7 @@ async def test_select_flow_pcm_format_uses_source_bit_depth_without_processing()
 
 
 @pytest.mark.asyncio
-async def test_select_flow_pcm_format_uses_f32_when_smartfades_enabled() -> None:
+async def test_select_flow_pcm_format_uses_f32_when_crossfade_enabled() -> None:
     """Smartfades requires F32 headroom; bit depth must be 32 regardless of source."""
     audio = _make_streams_audio()
     player = _make_player(
@@ -193,9 +279,78 @@ async def test_select_flow_pcm_format_uses_f32_when_smartfades_enabled() -> None
     )
     streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
     fmt = await audio.select_flow_pcm_format(
-        player, start_streamdetails=streamdetails, smartfades_enabled=True
+        player, start_streamdetails=streamdetails, crossfade_enabled=True
     )
     assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_f32_when_overlay_active() -> None:
+    """An active audio overlay requires F32 headroom for clipping-free mixing."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
+    fmt = await audio.select_flow_pcm_format(
+        player, start_streamdetails=streamdetails, overlay_active=True
+    )
+    assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_uses_stereo_f32_for_radio_overlay() -> None:
+    """A mixed radio overlay gets float headroom and a stereo pivot."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
+    streamdetails.media_type = MediaType.RADIO
+    streamdetails.audio_format.channels = 1
+
+    fmt = await audio.select_pcm_format(
+        player,
+        streamdetails,
+        crossfade_enabled=False,
+        overlay_active=True,
+    )
+
+    assert fmt.content_type == ContentType.PCM_F32LE
+    assert fmt.bit_depth == 32
+    assert fmt.channels == 2
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_folds_surround_source_to_stereo() -> None:
+    """A surround source is narrowed to stereo, since no output format carries more."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24, channels=6)
+
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
+
+    assert fmt.channels == 2
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_keeps_mono_source_mono() -> None:
+    """A mono source is not widened when no processing stage needs a stereo pivot."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24, channels=1)
+
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
+
+    assert fmt.channels == 1
 
 
 @pytest.mark.asyncio
@@ -238,7 +393,7 @@ async def test_select_pcm_format_audio_source_passthrough_when_supported() -> No
     streamdetails = _make_streamdetails(
         sample_rate=48000, bit_depth=24, channels=1, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=True)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=True)
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == 24
     assert fmt.channels == 1
@@ -252,7 +407,7 @@ async def test_select_pcm_format_audio_source_snaps_down_unsupported_rate() -> N
     streamdetails = _make_streamdetails(
         sample_rate=88200, bit_depth=24, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == 24
 
@@ -265,7 +420,7 @@ async def test_select_pcm_format_audio_source_falls_back_to_min_supported() -> N
     streamdetails = _make_streamdetails(
         sample_rate=22050, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
     assert fmt.sample_rate == 44100
 
 
@@ -285,7 +440,7 @@ async def test_select_flow_pcm_format_audio_source_bypasses_flow_mode() -> None:
         sample_rate=44100, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
     )
     fmt = await audio.select_flow_pcm_format(
-        player, start_streamdetails=streamdetails, smartfades_enabled=True
+        player, start_streamdetails=streamdetails, crossfade_enabled=True
     )
     assert fmt.sample_rate == 44100
     assert fmt.bit_depth == 16
@@ -471,6 +626,60 @@ def test_needs_restart_returns_false_when_streamdetails_missing() -> None:
     )
 
 
+# --- _flow_restart_context ---
+
+
+def test_flow_restart_context_prefers_protocol_player() -> None:
+    """The given (protocol) player's config and rates win over the queue player's."""
+    audio = _make_streams_audio()
+    protocol_player = _make_player(
+        supported=[(44100, 16), (96000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    )
+    # queue (wrapper) player without audio config entries: 44100-only fallback
+    wrapper_player = _make_player(supported=[(44100, 16)])
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=wrapper_player
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", protocol_player)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    assert rates == [44100, 96000]
+    audio.mass.players.get_player.assert_not_called()
+
+
+def test_flow_restart_context_falls_back_to_queue_player() -> None:
+    """Without a protocol player, the queue's own player is used."""
+    audio = _make_streams_audio()
+    queue_player = _make_player(
+        supported=[(48000, 16)], flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    )
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=queue_player
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", None)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    assert rates == [48000]
+    audio.mass.players.get_player.assert_called_once_with("queue-1")
+
+
+def test_flow_restart_context_without_any_player() -> None:
+    """When no player can be resolved, the raw queue config and empty rates are used."""
+    audio = _make_streams_audio()
+    audio.mass.players.get_player = MagicMock(return_value=None)  # type: ignore[method-assign]
+    audio.mass.config.get_raw_player_config_value = MagicMock(  # type: ignore[method-assign]
+        return_value=FLOW_MODE_SAMPLE_RATE_SMART
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", None)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_SMART
+    assert rates == []
+
+
 # --- helpers ---
 
 
@@ -514,6 +723,9 @@ def _make_streamdetails(
     streamdetails.audio_format = AudioFormat(
         sample_rate=sample_rate, bit_depth=bit_depth, channels=channels
     )
+    # a real StreamDetails leaves this unset unless the provider handed over
+    # already-decoded audio, and a MagicMock attribute would read as one
+    streamdetails.decoded_audio_format = None
     streamdetails.volume_normalization_mode = volume_normalization_mode
     streamdetails.media_type = media_type
     return streamdetails

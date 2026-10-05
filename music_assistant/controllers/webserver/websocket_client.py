@@ -8,8 +8,10 @@ import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
+from uuid import uuid4
 
 from aiohttp import WSMsgType, web
 from music_assistant_models.api import (
@@ -18,7 +20,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -28,19 +30,28 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.favorite_update import FavoriteUpdate
+from music_assistant_models.media_items import MediaItem, Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
+    has_scope,
     is_request_from_ingress,
+    player_access_filter,
+    resolve_command_impersonation,
+    resolve_ingress_user,
+    set_current_client_id,
     set_current_token,
     set_current_user,
+    set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -57,6 +68,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
+        self.client_id = uuid4().hex
         self.wsock = web.WebSocketResponse(heartbeat=25)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
@@ -68,9 +80,12 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
+        self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # uris of the personal playlists this client was told are gone
+        self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -80,11 +95,50 @@ class WebsocketClientHandler:
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
             self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
+    @property
+    def token_id(self) -> str | None:
+        """Return the id of the auth token this client authenticated with, if any."""
+        return self._token_id
+
+    @property
+    def authenticated_user(self) -> User | None:
+        """Return the user this client authenticated as, if any."""
+        return self._authenticated_user
+
+    @property
+    def webrtc_session_id(self) -> str | None:
+        """Return the id of the WebRTC session this client connected through, if any."""
+        return self._webrtc_session_id
+
+    def matches_token(self, token: str) -> bool:
+        """
+        Return True if this client authenticated with the given access token.
+
+        :param token: The access token to compare against.
+        """
+        return self._current_token == token
+
+    def bind_sendspin_player(self, player_id: str) -> None:
+        """
+        Bind a sendspin web player to this connection.
+
+        :param player_id: Id of the sendspin player this connection owns.
+        """
+        self._sendspin_player_id = player_id
+        self._sendspin_player_is_private = False
+
     async def disconnect(self) -> None:
-        """Disconnect client."""
-        self._cancel()
+        """Disconnect client and wait for its writer to finish."""
+        self.cancel()
         if self._writer_task is not None:
             await self._writer_task
+
+    def cancel(self) -> None:
+        """Cancel the connection, without waiting for its writer to finish."""
+        if self._handle_task is not None:
+            self._handle_task.cancel()
+        if self._writer_task is not None:
+            self._writer_task.cancel()
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle a websocket response."""
@@ -108,19 +162,23 @@ class WebsocketClientHandler:
 
         # Block until onboarding is complete
         if not self.webserver.auth.has_users and not self._is_ingress:
-            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await self._send_message(
+                ErrorResultMessage(
+                    "connection", 503, "Setup required", translation_key="setup_required"
+                )
+            )
             await wsock.close()
             return wsock
-
-        # For Ingress connections, auto-create/link user and subscribe to events immediately
-        # For regular connections, events will be subscribed after successful authentication
-        if self._is_ingress:
-            await self._handle_ingress_auth()
-            self._subscribe_to_events()
 
         disconnect_warn = None
 
         try:
+            # For Ingress connections, auto-create/link user and subscribe to events immediately
+            # For regular connections (and Ingress without a signed-in user), events will be
+            # subscribed after successful authentication
+            if self._is_ingress:
+                await self._handle_ingress_auth()
+
             while not wsock.closed:
                 msg = await wsock.receive()
 
@@ -155,6 +213,9 @@ class WebsocketClientHandler:
             # Unregister from webserver tracking
             self.webserver.unregister_websocket_client(self)
 
+            # Drop any dashboard registrations owned by this connection
+            self.mass.dashboard.handle_client_disconnected(self.client_id)
+
             try:
                 self._to_write.put_nowait(None)
                 # Make sure all error messages are written before closing
@@ -173,7 +234,7 @@ class WebsocketClientHandler:
 
     async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
-        self._logger.debug("Handling command %s", msg.command)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Handling command %s", msg.command)
 
         # Handle special "auth" command
         if msg.command == "auth":
@@ -194,13 +255,24 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
+                    translation_key="invalid_command",
                 )
             )
             self._logger.warning("Invalid command: %s", msg.command)
             return
 
+        # Put this connection's identity in context for the API methods. ContextVars live
+        # for as long as the connection does, so every command sets all of them: an
+        # unauthenticated handler must see this connection's own (possibly absent) user
+        # rather than whatever the command before it left behind.
+        set_current_client_id(self.client_id)
+        set_current_user(self._authenticated_user)
+        set_current_token(self._current_token)
+        set_sendspin_player_id(self._sendspin_player_id)
+        set_request_priority(RequestPriority.NORMAL)
+
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
+        if handler.authenticated or handler.required_scope:
             # For Ingress, user should already be set from _handle_ingress_auth
             # For regular connections, user must be set via auth command
             if self._authenticated_user is None:
@@ -209,26 +281,24 @@ class WebsocketClientHandler:
                         msg.message_id,
                         AuthenticationRequired.error_code,
                         "Authentication required. Please send auth command first.",
+                        translation_key="authentication_required",
                     )
                 )
                 return
 
-            # Set user, token and sendspin player in context for API methods
-            set_current_user(self._authenticated_user)
-            set_current_token(self._current_token)
-            set_sendspin_player_id(self._sendspin_player_id)
-
-            # Check role if required
-            if handler.required_role == "admin":
-                if self._authenticated_user.role != UserRole.ADMIN:
-                    await self._send_message(
-                        ErrorResultMessage(
-                            msg.message_id,
-                            InsufficientPermissions.error_code,
-                            "Admin access required",
-                        )
+            # Check scope if required
+            if handler.required_scope and not has_scope(
+                self._authenticated_user, handler.required_scope
+            ):
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        InsufficientPermissions.error_code,
+                        f"This command requires the {handler.required_scope_label} scope",
+                        translation_key="insufficient_permissions",
                     )
-                    return
+                )
+                return
 
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))
@@ -236,6 +306,10 @@ class WebsocketClientHandler:
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         """Run command handler and send response."""
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and msg.args:
+                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
@@ -257,7 +331,18 @@ class WebsocketClientHandler:
             # Log at warning level since these are normal error responses, not crashes.
             self._logger.warning("%s: %s", msg.command, err)
             err_msg = str(err) or err.__class__.__name__
-            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
+            # err_msg is the English fallback; the translation_key (per-type default or a
+            # provider override) localizes `details` to the connection locale at serialization.
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    err.error_code,
+                    err_msg,
+                    translation_key=err.translation_key,
+                    translation_args=err.translation_args,
+                    translation_owner=err.translation_owner,
+                )
+            )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -284,7 +369,8 @@ class WebsocketClientHandler:
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:
-        """Send a message to the client (for large response messages).
+        """
+        Send a message to the client (for large response messages).
 
         Runs JSON serialization in executor to avoid blocking for large messages.
         Closes connection if the client is not reading the messages.
@@ -312,10 +398,11 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
-        """Send a message from a sync context (for small messages like events).
+        """
+        Send a message from a sync context (for small messages like events).
 
         Serializes inline without executor overhead since events are typically small.
         """
@@ -334,10 +421,11 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     async def _handle_auth_command(self, msg: CommandMessage) -> None:
-        """Handle WebSocket authentication command.
+        """
+        Handle WebSocket authentication command.
 
         :param msg: The auth command message with access token.
         """
@@ -363,6 +451,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidToken.error_code,
                     "Invalid or expired token",
+                    translation_key="invalid_token",
                 )
             )
             return
@@ -396,7 +485,10 @@ class WebsocketClientHandler:
         await self._send_message(
             SuccessResultMessage(
                 msg.message_id,
-                {"authenticated": True, "user": user.to_dict()},
+                {
+                    "authenticated": True,
+                    "user": with_derived_provider_filter(self.mass, user).to_dict(),
+                },
             )
         )
 
@@ -407,7 +499,8 @@ class WebsocketClientHandler:
         self.webserver.register_websocket_client(self)
 
     async def _handle_set_locale_command(self, msg: CommandMessage) -> None:
-        """Handle the WebSocket set_locale command (updates the connection's UI locale).
+        """
+        Handle the WebSocket set_locale command (updates the connection's UI locale).
 
         :param msg: The set_locale command message; expects a "locale" arg.
         """
@@ -426,58 +519,34 @@ class WebsocketClientHandler:
         await self._send_message(SuccessResultMessage(msg.message_id, {"locale": locale}))
 
     async def _handle_ingress_auth(self) -> None:
-        """Handle authentication for Ingress connections (auto-create/link user)."""
-        ingress_user_id = self.request.headers.get("X-Remote-User-ID")
-        ingress_username = self.request.headers.get("X-Remote-User-Name")
-        ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
-
-        if ingress_user_id and ingress_username:
-            # Try to find existing user linked to this HA user ID
-            user = await self.webserver.auth.get_user_by_provider_link(
-                AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-            if not user:
-                # Check if a user with this username already exists
-                user = await self.webserver.auth.get_user_by_username(ingress_username)
-
-                if not user:
-                    # New user - fetch details from HA
-                    ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                        self.mass, ingress_user_id
-                    )
-                    # Auto-create user for Ingress (they're already authenticated by HA)
-                    role = await get_ha_user_role(self.mass, ingress_user_id)
-                    user = await self.webserver.auth.create_user(
-                        username=ha_username or ingress_username,
-                        role=role,
-                        display_name=ha_display_name or ingress_display_name,
-                        avatar_url=avatar_url,
-                    )
-
-                # Link to Home Assistant provider (or create the link if user already existed)
-                await self.webserver.auth.link_user_to_provider(
-                    user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-                )
-
-            # Update user with HA details if available (HA is source of truth)
-            # Fall back to ingress headers if API lookup doesn't return values
-            _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
-            final_display_name = ha_display_name or ingress_display_name
-            if final_display_name or avatar_url:
-                user = await self.webserver.auth.update_user(
-                    user,
-                    display_name=final_display_name,
-                    avatar_url=avatar_url,
-                )
-
+        """Handle authentication for Ingress connections (auto-create/link user, subscribe)."""
+        if user := await resolve_ingress_user(self.mass, self.request.headers):
             self._authenticated_user = user
             self._logger.debug("Ingress user authenticated: %s", user.username)
+            self._subscribe_to_events()
         else:
-            # No HA user headers - allow homeassistant system user to connect with token
+            # No (enabled) HA user - allow homeassistant system user to connect with token
             # This allows the Home Assistant integration to connect via the internal network
-            # The token authentication happens in _handle_auth_message
-            self._logger.debug("Ingress connection without user headers, expecting token auth")
+            # The token authentication happens in _handle_auth_command
+            self._logger.debug("Ingress connection without a signed-in user, expecting token auth")
+
+    def _is_own_private_player(self, object_id: str | None) -> bool:
+        """
+        Return whether the object is the private client player this connection announced.
+
+        Binding can happen before the sendspin player registers, so the private status is
+        latched the first time an event for the bound id arrives while the player exists,
+        and kept afterwards so the owner still receives its player's removal event. A
+        shared speaker announced as the client id never latches, so it stays filtered.
+
+        :param object_id: The event's object id (a player or queue id), or None.
+        """
+        if object_id is None or object_id != self._sendspin_player_id:
+            return False
+        if not self._sendspin_player_is_private:
+            player = self.mass.players.get_player(object_id)
+            self._sendspin_player_is_private = player is not None and player.private
+        return self._sendspin_player_is_private
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""
@@ -486,25 +555,74 @@ class WebsocketClientHandler:
             return
 
         def handle_event(event: MassEvent) -> None:
+            # Latch the bound player's private status on every event, before applying the
+            # filter: the user may be unrestricted now and restricted later, and the flag
+            # must already be set so the owner still receives the player's removal event.
+            own_private_player = self._is_own_private_player(event.object_id)
             # filter events for objects the user has no access to
+            player_filter = player_access_filter(self._authenticated_user)
             if (
-                self._authenticated_user
-                and self._authenticated_user.player_filter
+                player_filter is not None
                 and event.event
                 in (
                     EventType.PLAYER_ADDED,
                     EventType.PLAYER_REMOVED,
                     EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
                     EventType.QUEUE_ADDED,
                     EventType.QUEUE_ITEMS_UPDATED,
                     EventType.QUEUE_TIME_UPDATED,
                     EventType.QUEUE_UPDATED,
                 )
                 and event.object_id
-                and event.object_id not in self._authenticated_user.player_filter
-                and event.object_id != self._sendspin_player_id
+                and event.object_id not in player_filter
+                # the private client player this connection announced is always allowed
+                and not own_private_player
             ):
                 return
+
+            if event.event == EventType.SETUP_FLOW_UPDATED:
+                # setup flow steps carry prefilled values, OAuth urls and the
+                # flow_id guarding the unauthenticated callback route - only
+                # users who could interact with the flow may receive them
+                user = self._authenticated_user
+                if user is None:
+                    return
+                access = (
+                    self.mass.config.get_setup_flow_access(event.object_id)
+                    if event.object_id
+                    else None
+                )
+                if access is None:
+                    # flow already popped (terminal step race): the flow kind is no
+                    # longer known, so require both config scopes to be safe
+                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
+                        user, Scope.CONFIG_PLAYERS_WRITE
+                    ):
+                        return
+                elif not access.allows(user):
+                    return
+
+            if isinstance(event.data, Playlist) and not self._forward_playlist_event(
+                event, event.data
+            ):
+                return
+
+            if isinstance(event.data, FavoriteUpdate) and (
+                self._authenticated_user is None
+                or event.data.user_id != self._authenticated_user.user_id
+            ):
+                # a like or dislike is the business of its own user only
+                return
+
+            if isinstance(event.data, MediaItem) and event.data.favorite is not None:
+                # a library item carries the favorite state of the user that touched it; every
+                # client keeps its own and learns of changes through the favorite event
+                event = MassEvent(
+                    event=event.event,
+                    object_id=event.object_id,
+                    data=replace(event.data, favorite=None),
+                )
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:
@@ -519,14 +637,47 @@ class WebsocketClientHandler:
                 )
                 return
 
+            if event.event == EventType.PROVIDERS_UPDATED:
+                # the payload is signalled unfiltered, so narrow it down to the
+                # music sources this client's user may see
+                if self._authenticated_user is None:
+                    return
+                provider_data = self.mass.get_providers_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=provider_data,
+                    )
+                )
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
 
-    def _cancel(self) -> None:
-        """Cancel the connection."""
-        if self._handle_task is not None:
-            self._handle_task.cancel()
-        if self._writer_task is not None:
-            self._writer_task.cancel()
+    def _forward_playlist_event(self, event: MassEvent, playlist: Playlist) -> bool:
+        """
+        Return whether an event about a playlist may reach this client as it was signalled.
+
+        A personal playlist is only announced to the users who may see it. A client whose
+        user may no longer see it is instead told once that the playlist is gone, so it
+        drops the row it may still hold.
+
+        :param event: The event about the playlist.
+        :param playlist: The playlist the event carries.
+        """
+        uri = event.object_id
+        if playlist.access is None or access_allows(playlist.access, self._authenticated_user):
+            if uri:
+                self._hidden_playlists.discard(uri)
+            return True
+        if not uri or uri in self._hidden_playlists:
+            return False
+        self._hidden_playlists.add(uri)
+        # only an update can take a playlist away from a client that still holds it; one
+        # created or removed out of sight was never held, nor is anything held before login
+        if event.event == EventType.MEDIA_ITEM_UPDATED and self._authenticated_user:
+            self._send_message_sync(MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=uri))
+        return False

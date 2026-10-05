@@ -1,4 +1,5 @@
-"""End-to-end tests through the real ASGI bridge loop (C11).
+"""
+End-to-end tests through the real ASGI bridge loop (C11).
 
 These tests exercise ``mount_into_mass`` against an aiohttp ``TestServer``
 hosting a hand-rolled ASGI app. They cover the bits that pure-helper unit
@@ -113,7 +114,8 @@ async def test_delete_method_reaches_asgi(method_echo_client: TestClient) -> Non
 
 
 async def test_get_method_reaches_asgi(method_echo_client: TestClient) -> None:
-    """GET is forwarded to the ASGI app — not rejected at the bridge with a 405.
+    """
+    GET is forwarded to the ASGI app — not rejected at the bridge with a 405.
 
     This pins the *bridge-level* guarantee only: the verb reaches the mounted
     app instead of being short-circuited. It does not exercise the real FastMCP
@@ -135,7 +137,8 @@ async def test_get_method_reaches_asgi(method_echo_client: TestClient) -> None:
 async def test_bare_mount_path_without_trailing_slash_reaches_asgi(
     method_echo_client: TestClient,
 ) -> None:
-    """``/mcp/v1`` (no trailing slash) must hit the ASGI bridge too.
+    """
+    ``/mcp/v1`` (no trailing slash) must hit the ASGI bridge too.
 
     This is the URL the wizard advertises and that MCP clients connect to.
     MA's real ``_handle_catch_all`` (``helpers/webserver.py``) matches a

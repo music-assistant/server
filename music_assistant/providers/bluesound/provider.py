@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
 from zeroconf import ServiceStateChange
 
@@ -17,6 +17,7 @@ from .const import MUSP_MDNS_TYPE
 from .player import BluesoundPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -33,7 +34,11 @@ class BluesoundDiscoveryInfo(TypedDict):
 class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
-    player_map: dict[tuple[str, int], str] = {}
+    player_map: ClassVar[dict[tuple[str, int], str]] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Set up legacy BluOS devices."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

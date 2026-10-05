@@ -65,7 +65,7 @@
   "common.config_entries.volume_normalization.description": "Iespējot skaļuma normalizēšanu, pamatojoties uz EBU-R128 standartu, neietekmējot skaņās dinamisko diapazonu",
   "common.config_entries.volume_normalization.label": "Iespējot skaļuma normalizēšanu (pēc EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fiksēta\/rezerves pastiprinājuma regulēšana priekš dziesmām",
-  "common.config_entries.volume_normalization_target.description": "Pielāgot vidējo (uztverto) skaļumu uz šo mērķa līmeni, noklusējuma vērtība ir -17 LUFS \n \n **BRĪDINĀJUMS:** Pārāk augsta līmeņa iestatīšana var izraisīt audio apcipršanu (clipping)!",
+  "common.config_entries.volume_normalization_target.description": "Pielāgot vidējo (uztverto) skaļumu uz šo mērķa līmeni, noklusējuma vērtība ir -14 LUFS \n \n **BRĪDINĀJUMS:** Pārāk augsta līmeņa iestatīšana var izraisīt audio apcipršanu (clipping)!",
   "common.config_entries.volume_normalization_target.label": "Mērķa līmenis skaļuma normalizēšanai",
   "common.media.albums.name": "Albumi",
   "common.media.ambient.name": "Noskaņu",

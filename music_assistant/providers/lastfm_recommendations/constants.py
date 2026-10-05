@@ -48,8 +48,9 @@ TOP_ITEMS_TO_TAKE = 3
 # A small window so a genuine match ranked behind a fuzzier one is still caught.
 LIBRARY_MATCH_SCAN_LIMIT = 5
 
-# Number of similar items to fetch before filtering to target count
-SIMILAR_ITEMS_BUFFER = 12
+# Number of similar artists to resolve before filtering to target count. Over-fetched above the
+# target to absorb resolution misses and artists excluded because already in the library.
+SIMILAR_ITEMS_BUFFER = 18
 
 # Number of similar tracks to resolve before filtering to target count. Larger than the
 # artist buffer to absorb this row's extra attrition: artist+title verification and the
@@ -62,11 +63,16 @@ SIMILAR_ITEMS_PER_SEED = 5
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5
 
-# Number of recently played tracks to scan when ranking top artists by appearances
-RECENT_TRACKS_SCAN_LIMIT = 200
+# Number of recent tracks used as similar-track seeds; kept high so a single album playthrough
+# doesn't fill the whole seed set, and so enough seeds are recognised by Last.fm
+TOP_TRACKS_LIMIT = 20
 
-# Number of top tracks fetched as seeds; over-fetched so enough are recognised by Last.fm
-TOP_TRACKS_LIMIT = 10
+# Recent-listening window (days) for personalized seeds. Seeds are drawn from plays in this
+# window so they track current listening; the playlog is pruned at 90 days.
+RECENT_PLAYS_WINDOW_DAYS = 30
+
+# Maximum number of recent play events to scan when ranking seeds.
+RECENT_PLAYS_SCAN_LIMIT = 200
 
 # Number of derived genres; the genre rows cycle through them daily
 TOP_GENRES_LIMIT = 3

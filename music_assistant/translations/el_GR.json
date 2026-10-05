@@ -65,7 +65,7 @@
   "common.config_entries.volume_normalization.description": "Ενεργοποίηση ομαλοποίησης έντασης ήχου με βάση το πρότυπο EBU-R128 χωρίς να επηρεάζεται το δυναμικό εύρος",
   "common.config_entries.volume_normalization.label": "Ενεργοποίηση ομαλοποίησης έντασης ήχου (με βάση το EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Διορθωμένη\/επαναφερόμενη ρύθμιση ενίσχυσης για κομμάτια",
-  "common.config_entries.volume_normalization_target.description": "Ρυθμίστε τη μέση (αντιληπτή) ένταση ήχου σε αυτό το επίπεδο-στόχο, η προεπιλογή είναι -17 LUFS\n\n**ΠΡΟΣΟΧΗ:** Η ρύθμιση του επιπέδου σε πολύ υψηλά επίπεδα μπορεί να οδηγήσει σε ψαλίδισμα!",
+  "common.config_entries.volume_normalization_target.description": "Ρυθμίστε τη μέση (αντιληπτή) ένταση ήχου σε αυτό το επίπεδο-στόχο, η προεπιλογή είναι -14 LUFS\n\n**ΠΡΟΣΟΧΗ:** Η ρύθμιση του επιπέδου σε πολύ υψηλά επίπεδα μπορεί να οδηγήσει σε ψαλίδισμα!",
   "common.config_entries.volume_normalization_target.label": "Επίπεδο-στόχος για την ομαλοποίηση της έντασης",
   "common.media.albums.name": "Αλμπουμ",
   "common.media.artists.name": "Καλλιτέχνες",

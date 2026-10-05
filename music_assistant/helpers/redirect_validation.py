@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -101,9 +101,44 @@ def is_allowed_redirect_url(
         LOGGER.info("Redirect URL is external (requires consent): %s", url)
         return True, "external"
 
-    except Exception as e:
-        LOGGER.exception("Error validating redirect URL: %s", e)
+    except Exception:
+        LOGGER.exception("Error validating redirect URL")
         return False, "blocked"
+
+
+def build_code_redirect_url(
+    return_url: str,
+    token: str,
+    extra_params: dict[str, str] | None = None,
+) -> str:
+    """
+    Build a redirect URL with the auth code appended to the query string.
+
+    The code (and any extra params) are inserted before a possible hash fragment
+    so they end up in the query string rather than inside the fragment.
+
+    :param return_url: The validated destination URL to redirect to.
+    :param token: The auth token to pass along as the ``code`` query parameter.
+    :param extra_params: Optional additional query parameters to append.
+    """
+    params = f"code={quote(token, safe='')}"
+    if extra_params:
+        for key, value in extra_params.items():
+            params += f"&{quote(key, safe='')}={quote(value, safe='')}"
+
+    if "#" in return_url:
+        base_part, hash_part = return_url.split("#", 1)
+        return f"{_append_query_params(base_part, params)}#{hash_part}"
+
+    return _append_query_params(return_url, params)
+
+
+def _append_query_params(base: str, params: str) -> str:
+    """Append query params to a URL part, reusing a trailing ? or & separator if present."""
+    if base.endswith(("?", "&")):
+        return f"{base}{params}"
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{params}"
 
 
 def _is_private_ip(hostname: str) -> bool:

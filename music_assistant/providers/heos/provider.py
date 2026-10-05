@@ -7,6 +7,8 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
@@ -22,11 +24,17 @@ from .constants import (
     CONNECT_INITIAL_RETRY_DELAY,
     CONNECT_MAX_ATTEMPTS,
     CONNECT_RETRY_BACKOFF_FACTOR,
+    DEFAULT_TIMEOUT,
 )
 from .player import HeosPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.mass import MusicAssistant
 
 
 class HeosPlayerProvider(PlayerProvider):
@@ -34,10 +42,41 @@ class HeosPlayerProvider(PlayerProvider):
 
     _heos: Heos | None = None
     _heos_queue: Heos | None = None
-    _music_source_list: list[PlayerSource] = []
-    _input_source_list: list[MediaItem] = []
     _player_discovery_running: bool = False
     _controller_discovery_running: bool = False
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the HEOS player provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._music_source_list: list[PlayerSource] = []
+        self._input_source_list: list[MediaItem] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_IP_ADDRESS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                advanced=True,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_TIMEOUT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_TIMEOUT,
+                required=False,
+                range=(10, 60),
+                requires_reload=True,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -99,6 +138,7 @@ class HeosPlayerProvider(PlayerProvider):
 
         try:
             self._heos.add_on_controller_event(self._handle_controller_event)
+            self._heos.add_on_disconnected(self._on_heos_disconnected)
             await self._populate_sources()
         except HeosError as err:
             self.logger.error("Unexpected error setting up HEOS controller: %s", err)
@@ -225,6 +265,14 @@ class HeosPlayerProvider(PlayerProvider):
             with suppress(Exception):
                 await self._heos_queue.disconnect()
             self._heos_queue = None
+
+    async def _on_heos_disconnected(self) -> None:
+        """Mark all HEOS players unavailable when the controller loses connection."""
+        self.logger.warning("HEOS controller disconnected, marking players unavailable")
+        for player in self.mass.players.all_players(provider_filter=self.instance_id):
+            assert isinstance(player, HeosPlayer)
+            player.set_device_info()
+            player.update_state()
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""

@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "\U0001F41B Report a bug"
+    url: https://github.com/music-assistant/support/issues/new/choose
+    about: All Music Assistant bug reports are tracked in our central support repository.
+  - name: "\U0001F4AC Discord community & support"
+    url: https://discord.gg/kaVm8hGpne
+    about: Chat with the community and get help from other users.
+  - name: "❓ Questions & how-to (Q&A)"
+    url: https://github.com/music-assistant/support/discussions/categories/q-a
+    about: Ask how-to questions and search previous answers.
+  - name: "\U0001F4A1 Feature requests & ideas"
+    url: https://github.com/music-assistant/support/discussions/categories/feature-requests-and-ideas
+    about: Suggest and vote on new features and enhancements.

@@ -2,7 +2,7 @@
 
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -24,9 +24,11 @@ SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
 }
 
-MUSIC_APP_TOKEN = app_var(8)
+MUSIC_APP_TOKEN = app_var("apple_music_token")
 WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
@@ -38,3 +40,8 @@ CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
 MAX_ARTWORK_DIMENSION = 1000
 BLOBSTORE_DOMAIN = "blobstore.apple.com"
+# blobstore artwork URLs are presigned with a ~24h expiry, so resolved artwork
+# URLs may only be cached well below that lifetime
+ARTWORK_CACHE_EXPIRATION = 12 * 60 * 60
+# Bump to re-parse cached api responses whenever the parsed representation changes
+PARSED_ITEM_CACHE_CHECKSUM = "artist_fallback_v1"

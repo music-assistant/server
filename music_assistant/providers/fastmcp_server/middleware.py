@@ -1,4 +1,5 @@
-"""Tag-filter middleware: hide tools / resources / prompts whose tags are disabled.
+"""
+Tag-filter middleware: hide tools / resources / prompts whose tags are disabled.
 
 FastMCP v3's built-in ``restrict_tag`` is scope-based authorization (token must
 carry a specific OAuth scope). What we need here is **config-driven visibility**:
@@ -22,7 +23,7 @@ permission set therefore cannot reach a now-disabled tool.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from fastmcp.exceptions import NotFoundError, PromptError, ResourceError, ToolError
 from fastmcp.server.middleware import Middleware
@@ -35,8 +36,27 @@ ComponentKind = Literal["tool", "resource", "prompt"]
 TagsLookup = Callable[[ComponentKind, str], Awaitable[set[str] | None]]
 
 
+def tags_visible(tags: set[str] | None, allowed: set[str]) -> bool:
+    """
+    Apply the shared visibility rule for a component's tag set.
+
+    ``None`` means the component is unknown (blocked); an empty set means
+    untagged always-on infrastructure; otherwise at least one tag must be
+    allowed.
+
+    :param tags: The component's tag set, or ``None`` when it does not exist.
+    :param allowed: The currently allowed tag set.
+    """
+    if tags is None:
+        return False
+    if not tags:
+        return True
+    return any(str(t) in allowed for t in tags)
+
+
 class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
-    """Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
+    """
+    Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
 
     ``Middleware`` is typed as ``Any`` upstream; under
     ``disallow_subclassing_any`` we suppress the misc-rule on the class
@@ -48,7 +68,8 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
         allowed_tags_provider: Callable[[], set[str]],
         lookup_component_tags: TagsLookup,
     ) -> None:
-        """Initialise the middleware.
+        """
+        Initialise the middleware.
 
         :param allowed_tags_provider: zero-arg callable returning the *current*
             set of allowed tags. Wrapped in a callable so the operator can
@@ -135,7 +156,7 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
 
     # Error class chosen so the SDK reports the failure under the right RPC
     # method (tools/resources/prompts) rather than always as a tool error.
-    _ERROR_BY_KIND: dict[ComponentKind, type[Exception]] = {
+    _ERROR_BY_KIND: ClassVar[dict[ComponentKind, type[Exception]]] = {
         "tool": ToolError,
         "resource": ResourceError,
         "prompt": PromptError,
@@ -144,11 +165,8 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _is_visible(self, component: Any) -> bool:
-        tags = getattr(component, "tags", None) or set()
-        if not tags:
-            return True
-        allowed = self._allowed()
-        return any(str(t) in allowed for t in tags)
+        tags = {str(t) for t in (getattr(component, "tags", None) or set())}
+        return tags_visible(tags, self._allowed())
 
     async def _reject_if_hidden(self, kind: ComponentKind, key: str) -> None:
         if not key:
@@ -160,9 +178,6 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
             # "method-not-allowed" / "not-found" path rather than 500.
             msg = f"{kind.capitalize()} {key!r} not found"
             raise NotFoundError(msg)
-        if not tags:
-            return  # untagged → always-on
-        allowed = self._allowed()
-        if not any(t in allowed for t in tags):
+        if not tags_visible(tags, self._allowed()):
             msg = f"{kind.capitalize()} {key!r} is currently disabled by configuration"
             raise self._ERROR_BY_KIND[kind](msg)

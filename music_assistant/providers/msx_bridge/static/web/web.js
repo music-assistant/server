@@ -13,6 +13,8 @@
  * - kiosk: Enable kiosk mode (e.g., ?kiosk=1)
  * - sendspin: Use Sendspin SDK in kiosk mode (e.g., ?kiosk=1&sendspin=1)
  * - sendspin_url: Custom Sendspin server URL (e.g., ?sendspin_url=http://ma:8927)
+ * - controls / party / viz / lyrics: kiosk display toggles, on by default,
+ *   "=0" disables (e.g., ?kiosk=1&controls=0&lyrics=0)
  */
 
 // --- URL Parameters ---
@@ -20,6 +22,13 @@ const urlParams = new URLSearchParams(window.location.search);
 const KIOSK_MODE = urlParams.get('kiosk') === '1';
 const SENDSPIN_MODE = KIOSK_MODE && urlParams.get('sendspin') === '1';
 const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
+
+// Kiosk display toggles: every feature is on unless explicitly "=0"
+function kioskFlag(name) { return urlParams.get(name) !== '0'; }
+const KIOSK_SHOW_CONTROLS = kioskFlag('controls');
+const KIOSK_SHOW_PARTY = kioskFlag('party');
+const KIOSK_SHOW_VIZ = kioskFlag('viz');
+const KIOSK_SHOW_LYRICS = kioskFlag('lyrics');
 
 (function () {
     'use strict';
@@ -119,11 +128,35 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         return url + (url.indexOf('?') >= 0 ? '&' : '?') + param;
     }
 
+    function isHttpUrl(url) {
+        return url.indexOf('http://') === 0 || url.indexOf('https://') === 0;
+    }
+
+    // Resolve a content/audio URL. The bridge only ever hands out URLs pointing
+    // at itself, so anything targeting another host is rejected here.
     function resolveUrl(url) {
         if (!url) return '';
-        if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return url;
+        if (isHttpUrl(url)) {
+            try {
+                var parsed = new URL(url);
+                if (parsed.host !== location.host) return '';
+                // rebuild from parsed parts so a "//evil.com/x" pathname can't change the host
+                return BASE + parsed.pathname + parsed.search;
+            } catch (e) {
+                return '';
+            }
+        }
         if (url.charAt(0) === '/') return BASE + url;
-        return url;
+        return '';
+    }
+
+    // Image URLs may legitimately point at remote CDNs (album art), so any
+    // http(s) URL is allowed here — but never other schemes like javascript:.
+    function safeImageUrl(url) {
+        if (!url) return '';
+        if (isHttpUrl(url)) return url;
+        if (url.charAt(0) === '/') return BASE + url;
+        return '';
     }
 
     function parseMsx(text) {
@@ -160,19 +193,33 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         sendspinUrl = SENDSPIN_URL_PARAM || getDefaultSendspinUrl();
 
         try {
-            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@1.0.0/dist/index.js';
-            var module = await import(sdkUrl);
+            // Vendored @sendspin/sendspin-js (see scripts/vendor-sendspin-js.sh):
+            // TVs on LAN-only setups have no CDN access. web.js is loaded as a
+            // module, so the relative specifier resolves against this file's
+            // URL (/web/web.js) and survives reverse-proxy path prefixes.
+            var module = await import('./sendspin-js/index.js');
             var SendspinPlayer = module.SendspinPlayer;
 
             console.log('[Sendspin] SDK loaded, connecting to:', sendspinUrl);
 
-            sendspinPlayer = new SendspinPlayer({
-                playerId: 'web-kiosk-' + deviceId.substring(0, 8),
+            // When opened by the Sendspin bridge, connect with the bridge's
+            // client id so the server upgrades the pre-registered client
+            // instead of creating a new player.
+            var bridgeClientId = urlParams.get('sendspin_client_id');
+            var playerConfig = {
+                playerId: bridgeClientId || ('web-kiosk-' + deviceId.substring(0, 8)),
                 baseUrl: sendspinUrl,
-                clientName: 'Web Kiosk Player',
+                clientName: bridgeClientId ? 'MSX TV (Sendspin)' : 'Web Kiosk Player',
                 correctionMode: 'sync',
                 onStateChange: onSendspinStateChange
-            });
+            };
+            // Without WebCodecs the SDK's opus fallback needs the opus-encdec
+            // package, which is not vendored (bare dynamic import, browser-
+            // unloadable). Don't advertise opus so the server picks FLAC/PCM.
+            if (typeof AudioDecoder === 'undefined') {
+                playerConfig.codecs = ['flac', 'pcm'];
+            }
+            sendspinPlayer = new SendspinPlayer(playerConfig);
 
             await sendspinPlayer.connect();
             sendspinReady = true;
@@ -198,11 +245,13 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 title: meta.title || '',
                 artist: meta.artist || '',
                 image: meta.artwork_url || '',
-                duration: meta.track_duration ? meta.track_duration / 1000 : 0
+                duration: meta.progress && meta.progress.track_duration
+                    ? meta.progress.track_duration / 1000 : 0
             });
         }
 
-        updateSendspinStatus(sendspinPlayer.isClockSynced ? 'synced' : 'syncing');
+        var syncInfo = sendspinPlayer.timeSyncInfo;
+        updateSendspinStatus(syncInfo && syncInfo.synced ? 'synced' : 'syncing');
     }
 
     function updateSendspinProgress() {
@@ -255,16 +304,22 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         var artistEl = document.getElementById('kiosk-artist');
         var durEl = document.getElementById('kiosk-dur');
 
+        var imgUrl = safeImageUrl(track.image);
         if (bgImg) {
-            if (track.image) {
-                bgImg.src = track.image;
+            if (imgUrl) {
+                bgImg.src = imgUrl;
                 bgImg.style.opacity = '1';
             } else {
                 bgImg.style.opacity = '0';
             }
         }
         if (artCenter) {
-            artCenter.src = track.image || '';
+            if (imgUrl) {
+                artCenter.src = imgUrl;
+                artCenter.style.display = '';
+            } else {
+                artCenter.style.display = 'none';
+            }
         }
         if (titleEl) titleEl.textContent = track.title || '';
         if (artistEl) artistEl.textContent = track.artist || '';
@@ -422,10 +477,11 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             // Build img container via DOM to safely assign src without innerHTML injection
             var imgContainer = document.createElement('div');
-            if (item.image) {
+            var cardImgUrl = safeImageUrl(item.image);
+            if (cardImgUrl) {
                 imgContainer.className = 'card-img';
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = cardImgUrl;
                 img.alt = '';
                 img.loading = 'lazy';
                 imgContainer.appendChild(img);
@@ -459,9 +515,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             var sub = esc(item.titleFooter || item.label || '');
 
             // Build art element via DOM to safely assign src without innerHTML injection
-            if (item.image) {
+            var trackArtUrl = safeImageUrl(item.image);
+            if (trackArtUrl) {
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = trackArtUrl;
                 img.alt = '';
                 img.className = 'track-art';
                 img.loading = 'lazy';
@@ -576,7 +633,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         document.getElementById('bar-title').textContent = track.title;
         document.getElementById('bar-artist').textContent = track.artist;
         var art = document.getElementById('player-art');
-        if (track.image) { art.src = track.image; art.style.display = ''; }
+        var imgUrl = safeImageUrl(track.image);
+        if (imgUrl) { art.src = imgUrl; art.style.display = ''; }
         else { art.style.display = 'none'; }
         document.getElementById('bar-dur').textContent = track.duration ? fmtDur(track.duration) : '';
         syncPlayBtn();
@@ -584,8 +642,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function updateFullPlayer(track) {
         var art = document.getElementById('full-art');
+        var imgUrl = safeImageUrl(track.image);
         if (art) {
-            if (track.image) { art.src = track.image; art.style.display = ''; }
+            if (imgUrl) { art.src = imgUrl; art.style.display = ''; }
             else { art.style.display = 'none'; }
         }
         var titleEl = document.getElementById('full-title');
@@ -615,12 +674,23 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (kioskPlay) kioskPlay.innerHTML = html;
     }
 
+    // sendspin-js 3.x throws when the server's supported_commands list
+    // excludes the command (1.x sent it unconditionally) — don't let that
+    // kill the button handler.
+    function sendspinCommand(cmd) {
+        try {
+            sendspinPlayer.sendCommand(cmd);
+        } catch (e) {
+            console.warn('[Sendspin] Command rejected:', cmd, e.message);
+        }
+    }
+
     function togglePlay() {
         if (isSendspinMode() && sendspinPlayer) {
             if (sendspinPlayer.isPlaying) {
-                sendspinPlayer.sendCommand('pause');
+                sendspinCommand('pause');
             } else {
-                sendspinPlayer.sendCommand('play');
+                sendspinCommand('play');
             }
         } else {
             if (audio.paused) audio.play();
@@ -630,7 +700,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function nextTrack() {
         if (isSendspinMode() && sendspinPlayer) {
-            sendspinPlayer.sendCommand('next');
+            sendspinCommand('next');
             return;
         }
         if (playlist.length <= 1) { stopPosReport(); return; }
@@ -640,7 +710,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function prevTrack() {
         if (isSendspinMode() && sendspinPlayer) {
-            sendspinPlayer.sendCommand('previous');
+            sendspinCommand('previous');
             return;
         }
         if (!playlist.length) return;
@@ -822,8 +892,19 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         document.documentElement.style.setProperty('--lyrics-bottom-offset', panelH + 'px');
     }
 
+    // --- Kiosk display toggles (URL params) ---
+    function applyKioskDisplayFlags() {
+        var kp = document.getElementById('kiosk-player');
+        if (!kp) return;
+        if (!KIOSK_SHOW_CONTROLS) kp.classList.add('kiosk-hide-controls');
+        if (!KIOSK_SHOW_PARTY) kp.classList.add('kiosk-hide-party');
+        if (!KIOSK_SHOW_VIZ) kp.classList.add('kiosk-hide-viz');
+        if (!KIOSK_SHOW_LYRICS) kp.classList.add('kiosk-hide-lyrics');
+    }
+
     // --- Kiosk Auto-Hide Controls ---
     function showKioskControls() {
+        if (!KIOSK_SHOW_CONTROLS) return;
         var kp = document.getElementById('kiosk-player');
         if (kp) kp.classList.remove('controls-hidden');
         document.body.classList.add('controls-visible');
@@ -945,6 +1026,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     }
 
     function fetchLyrics(playerId) {
+        if (KIOSK_MODE && !KIOSK_SHOW_LYRICS) return;
         clearTimeout(lyricsFetchTimer);
         lyricsFetchTimer = setTimeout(function() {
             fetch('/api/lyrics/' + encodeURIComponent(playerId))
@@ -955,14 +1037,15 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     }
 
     // --- CSS Text Equalizer ---
+    var EQ_BAR_COUNT = 32;
+
     function buildEqualizer() {
         var container = document.getElementById('eq-bars');
         if (!container || container.children.length > 0) return;
-        var BAR_COUNT = 32;
-        for (var i = 0; i < BAR_COUNT; i++) {
+        for (var i = 0; i < EQ_BAR_COUNT; i++) {
             var bar = document.createElement('div');
             bar.className = 'eq-bar';
-            // Randomize animation parameters for organic look
+            // Randomize animation parameters for organic look (CSS fallback)
             var dur = (0.6 + Math.random() * 0.9).toFixed(2);
             var delay = (Math.random() * 0.8).toFixed(2);
             var minH = (4 + Math.random() * 8).toFixed(0);
@@ -973,6 +1056,110 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             bar.style.setProperty('--eq-max', maxH + 'px');
             container.appendChild(bar);
         }
+    }
+
+    // --- Real spectrum visualizer (HTTP kiosk only) ---
+    // Sendspin decodes/schedules audio inside its SDK with no exposed audio
+    // graph, so a live analyzer is only possible in HTTP mode where playback
+    // goes through our own <audio> element. Any Web Audio failure leaves the
+    // decorative CSS animation in place.
+    var audioAnalyser = null;
+    var audioAnalyserData = null;
+    var audioSourceNode = null;
+    var vizRaf = null;
+
+    function setupVisualizer() {
+        if (!isKioskHtml5Mode() || audioAnalyser) return;
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx || !audio) return;
+        try {
+            var ctx = new Ctx();
+            // MediaElementSource may be created only once per element.
+            audioSourceNode = ctx.createMediaElementSource(audio);
+            audioAnalyser = ctx.createAnalyser();
+            audioAnalyser.fftSize = 128;
+            audioAnalyser.smoothingTimeConstant = 0.8;
+            // Keep the output audible — the analyzer is a tap, not a sink.
+            audioSourceNode.connect(audioAnalyser);
+            audioAnalyser.connect(ctx.destination);
+            audioAnalyserData = new Uint8Array(audioAnalyser.frequencyBinCount);
+            audioAnalyser._ctx = ctx;
+        } catch (e) {
+            console.warn('[Visualizer] Web Audio unavailable, using CSS fallback:', e);
+            audioAnalyser = null;
+        }
+    }
+
+    function startVisualizer() {
+        if (!KIOSK_SHOW_VIZ) return;
+        setupVisualizer();
+        if (!audioAnalyser) return;
+        // A suspended context (autoplay policy) never produces data until resumed.
+        if (audioAnalyser._ctx && audioAnalyser._ctx.state === 'suspended') {
+            audioAnalyser._ctx.resume().catch(function () {});
+        }
+        var container = document.getElementById('eq-bars');
+        if (!container) return;
+        // Real data drives inline heights; disable the keyframe animation.
+        container.classList.add('eq-live');
+        if (vizRaf) return;
+        var bars = container.children;
+        var bins = audioAnalyserData.length;
+
+        function frame() {
+            vizRaf = requestAnimationFrame(frame);
+            audioAnalyser.getByteFrequencyData(audioAnalyserData);
+            for (var i = 0; i < bars.length; i++) {
+                // Log-ish bin mapping: low bars from low bins, spread the rest.
+                var idx = Math.min(bins - 1, Math.floor((i / bars.length) * bins));
+                var mag = audioAnalyserData[idx] / 255; // 0..1
+                var h = Math.max(4, Math.round(mag * mag * 320));
+                bars[i].style.height = h + 'px';
+            }
+        }
+        frame();
+    }
+
+    function stopVisualizer() {
+        if (vizRaf) {
+            cancelAnimationFrame(vizRaf);
+            vizRaf = null;
+        }
+    }
+
+    // --- Party Mode (kiosk QR overlay) ---
+    var PARTY_POLL_INTERVAL = 30000;
+
+    function updatePartyOverlay() {
+        fetch('/api/party')
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (data) {
+                var panel = document.getElementById('kiosk-party');
+                if (!panel) return;
+                var qrUrl = data && data.active ? resolveUrl(data.qr_url) : '';
+                if (!qrUrl) { panel.hidden = true; return; }
+                // the version param changes only when the join code rotates, so the
+                // TV refetches the image exactly then (no flicker on idle polls)
+                var src = addParam(qrUrl, 'v=' + encodeURIComponent(data.qr_version || ''));
+                var img = document.getElementById('kiosk-party-qr');
+                if (img.src !== src) img.src = src;
+                document.getElementById('kiosk-party-name').textContent = data.name || '';
+                document.getElementById('kiosk-party-text').textContent =
+                    data.qr_text || 'Scan to join the party';
+                panel.hidden = false;
+            })
+            .catch(function (e) {
+                // keep the last shown state on transient network errors
+                console.warn('Party status fetch failed:', e);
+            });
+    }
+
+    function startPartyPolling() {
+        updatePartyOverlay();
+        setInterval(updatePartyOverlay, PARTY_POLL_INTERVAL);
     }
 
     // --- Kiosk Queue ---
@@ -1022,9 +1209,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 '</div>' +
                 '<div class="kiosk-queue-dur">' + durStr + '</div>';
 
-            if (item.image) {
+            var kioskArtUrl = safeImageUrl(item.image);
+            if (kioskArtUrl) {
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = kioskArtUrl;
                 img.alt = '';
                 img.className = 'kiosk-queue-art';
                 img.loading = 'lazy';
@@ -1102,9 +1290,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             // Build img element via DOM to safely assign src without innerHTML injection
             var artEl;
-            if (item.image) {
+            var artUrl = safeImageUrl(item.image);
+            if (artUrl) {
                 artEl = document.createElement('img');
-                artEl.src = item.image;
+                artEl.src = artUrl;
                 artEl.alt = '';
                 artEl.className = 'queue-item-art';
                 artEl.loading = 'lazy';
@@ -1147,6 +1336,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (SENDSPIN_MODE) {
             // Kiosk + Sendspin mode: synchronized audio via Sendspin SDK
             document.body.classList.add('kiosk-mode');
+            applyKioskDisplayFlags();
 
             // Build CSS equalizer bars
             buildEqualizer();
@@ -1165,10 +1355,13 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             updateLyricsOffset();
             window.addEventListener('resize', updateLyricsOffset);
 
+            if (KIOSK_SHOW_PARTY) startPartyPolling();
+
             console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
         } else if (KIOSK_MODE) {
             // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
             document.body.classList.add('kiosk-mode');
+            applyKioskDisplayFlags();
 
             // Build CSS equalizer bars
             buildEqualizer();
@@ -1187,12 +1380,14 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             audio.addEventListener('ended', nextTrack);
             audio.addEventListener('pause', function () {
                 syncPlayBtn();
+                stopVisualizer();
                 if (pausedByWS) { pausedByWS = false; return; }
                 sendWS({ type: 'pause', position: audio.currentTime });
                 stopPosReport();
             });
             audio.addEventListener('play', function () {
                 syncPlayBtn();
+                startVisualizer();
                 if (resumedByWS) { resumedByWS = false; return; }
                 sendWS({ type: 'resume' });
                 startPosReport();
@@ -1221,6 +1416,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             hideKioskControls(); // start in hidden state
             updateLyricsOffset();
             window.addEventListener('resize', updateLyricsOffset);
+
+            if (KIOSK_SHOW_PARTY) startPartyPolling();
 
             console.log('[WebPlayer] Kiosk mode initialized with HTML5 streaming');
         } else {

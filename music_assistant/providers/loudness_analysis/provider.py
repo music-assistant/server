@@ -6,14 +6,18 @@ import contextlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import VolumeNormalizationMode
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
+from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
@@ -28,11 +32,15 @@ if TYPE_CHECKING:
 MAX_DURATION_SECONDS = 600
 MIN_DURATION_SECONDS = 10
 
+# The ebur128 process consumes PCM the server decoded itself, so its death is an
+# infrastructure fault, not a track property: record it with a retry horizon.
+DECODE_FAILURE_RETRY_DELAY = timedelta(hours=24)
+
 CONF_WRITE_REPLAYGAIN_TAGS = "write_replaygain_tags"
 
 _INTEGRATED_RE = re.compile(r"Integrated loudness:.*?I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.DOTALL)
 _LRA_RE = re.compile(r"Loudness range:.*?LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", re.DOTALL)
-_TRUE_PEAK_RE = re.compile(r"True peak:.*?Peak:\s*(-?\d+(?:\.\d+)?)\s*dBTP", re.DOTALL)
+_TRUE_PEAK_RE = re.compile(r"True peak:.*?Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", re.DOTALL)
 
 
 @dataclass
@@ -47,7 +55,7 @@ class LoudnessSessionData:
 class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
-    analysis_version: int = 1
+    analysis_version: int = 2
 
     def __init__(
         self,
@@ -60,6 +68,17 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, LoudnessSessionData] = {}
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_WRITE_REPLAYGAIN_TAGS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
+
     async def process_pcm_chunk(
         self,
         session_id: str,
@@ -69,111 +88,34 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         data = self._data.get(session_id)
         if not data or data.eof_sent:
             return
+        if data.ffmpeg.closed:
+            # writes to a closed process are dropped silently, so without this the rest of
+            # the track streams into nothing and the session ends with no measurement
+            raise AudioAnalysisError(
+                "audio decoding failed during loudness measurement",
+                retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
+            )
+        try:
+            await data.ffmpeg.write(pcm_chunk)
+        except OSError as err:
+            # the closed check races with ffmpeg dying mid-write: a broken pipe is the
+            # same infrastructure fault and must carry the same retry window
+            raise AudioAnalysisError(
+                "audio decoding failed during loudness measurement",
+                retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
+            ) from err
         data.chunks_received += 1
-        await data.ffmpeg.write(pcm_chunk)
         if data.chunks_received >= MAX_DURATION_SECONDS:
             # cap the analysis window for very long streams
             await self._send_eof(data)
 
     async def cancel(self, session_id: str) -> None:
-        """Abort an in-progress loudness analysis session."""
+        """Cancel an in-progress loudness analysis session and release its decoder."""
         data = self._data.pop(session_id, None)
         if data:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await data.ffmpeg.close()
         await super().cancel(session_id)
-
-    async def _start_analysis(
-        self,
-        session_id: str,
-        streamdetails: StreamDetails,
-        audio_format: AudioFormat,
-    ) -> bool:
-        """Prepare provider state for a new analysis session."""
-        # skip when the requesting player has explicitly opted out of normalization;
-        # the nightly background job will pick up the measurement if ever needed
-        if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DISABLED:
-            return False
-        ffmpeg = FFMpeg(
-            audio_input="-",
-            input_format=audio_format,
-            output_format=audio_format,
-            audio_output="NULL",
-            filter_params=["ebur128=framelog=verbose"],
-            collect_log_history=True,
-            loglevel="info",
-        )
-        await ffmpeg.start()
-        self._data[session_id] = LoudnessSessionData(ffmpeg=ffmpeg)
-        return True
-
-    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """Persist the final loudness measurement for the session."""
-        data = self._data.pop(session_id, None)
-        if not data:
-            return None
-
-        await self._send_eof(data)
-        try:
-            await data.ffmpeg.wait()
-        except Exception as err:
-            self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
-            await data.ffmpeg.close()
-            return None
-
-        metrics = _parse_ebur128_metrics(data.ffmpeg.log_history)
-        await data.ffmpeg.close()
-
-        session = self._sessions.get(session_id)
-        if session is None:
-            return None
-
-        if data.chunks_received < MIN_DURATION_SECONDS:
-            self.logger.debug(
-                "Loudness analysis for %s skipped: "
-                "insufficient audio data (%s/%s seconds analyzed)",
-                session.streamdetails.uri,
-                data.chunks_received,
-                MIN_DURATION_SECONDS,
-            )
-            return None
-
-        loudness, loudness_range, true_peak = metrics
-        if loudness is None:
-            self.logger.debug(
-                "Could not determine loudness of %s from buffer analysis",
-                session.streamdetails.uri,
-            )
-            return None
-
-        if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            # ebur128 reports ~-70 LUFS on near-silence / cancelled streams,
-            # which would cause huge gain corrections on subsequent plays.
-            self.logger.debug(
-                "Loudness measurement for %s discarded: "
-                "%s LUFS is below the reliability threshold (%s LUFS)",
-                session.streamdetails.uri,
-                loudness,
-                LOUDNESS_MEASUREMENT_MIN_LUFS,
-            )
-            return None
-
-        analysis = AudioAnalysisData(
-            loudness_integrated=round(loudness, 2),
-            loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
-            true_peak=round(true_peak, 2) if true_peak is not None else None,
-        )
-        # update in-memory streamdetails so subsequent seeks use the measurement
-        # instead of dynamic normalization
-        session.streamdetails.loudness = round(loudness, 2)
-        self.logger.debug(
-            "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",
-            session.streamdetails.uri,
-            loudness,
-            loudness_range,
-            true_peak,
-        )
-        return analysis
 
     async def post_analysis(
         self,
@@ -197,12 +139,114 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 track_gain_db,
             )
 
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """Prepare provider state for a new analysis session."""
+        # skip when nothing here normalizes on our side: the player opted out, or the
+        # source levelled the audio itself and measuring its output would store that
+        # level as the track's own. The nightly background job picks the measurement
+        # up if it is ever needed
+        if streamdetails.volume_normalization_mode in (
+            VolumeNormalizationMode.DISABLED,
+            VolumeNormalizationMode.SOURCE,
+        ):
+            return False
+        # a music provider already supplied this track's loudness; measuring it again
+        # would be wasted work (the provider value wins during playback anyway)
+        provider_loudness = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(PROVIDER_LOUDNESS_DOMAIN,),
+        )
+        if provider_loudness is not None:
+            return False
+        ffmpeg = FFMpeg(
+            audio_input="-",
+            input_format=audio_format,
+            output_format=audio_format,
+            audio_output="NULL",
+            filter_params=["ebur128=framelog=verbose:peak=true"],
+            collect_log_history=True,
+            loglevel="info",
+        )
+        await ffmpeg.start()
+        self._data[session_id] = LoudnessSessionData(ffmpeg=ffmpeg)
+        return True
+
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """Persist the final loudness measurement for the session."""
+        data = self._data.pop(session_id, None)
+        if not data:
+            return None
+
+        await self._send_eof(data)
+        try:
+            await data.ffmpeg.wait()
+        except Exception as err:
+            # ffmpeg.wait() can surface process/pipe errors plus anything the ebur128
+            # subprocess raises; broad so a failed measurement becomes a recorded,
+            # retryable failure rather than crashing finalize.
+            self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
+            await data.ffmpeg.close()
+            raise AudioAnalysisError(
+                "audio decoding failed during loudness measurement",
+                retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
+            ) from err
+
+        metrics = _parse_ebur128_metrics(data.ffmpeg.log_history)
+        await data.ffmpeg.close()
+
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+
+        if data.chunks_received < MIN_DURATION_SECONDS:
+            raise AudioAnalysisError("track too short for loudness measurement")
+
+        loudness, loudness_range, true_peak = metrics
+        if loudness is None:
+            self.logger.debug(
+                "Could not determine loudness of %s from buffer analysis",
+                session.streamdetails.uri,
+            )
+            raise AudioAnalysisError(
+                "could not measure loudness of this track",
+                retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
+            )
+
+        if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+            # ebur128 reports ~-70 LUFS on a near-silent track; below the reliability floor
+            # it would cause huge gain corrections, and the reading is deterministic per file.
+            raise AudioAnalysisError("track too quiet to measure loudness")
+
+        analysis = AudioAnalysisData(
+            loudness_integrated=round(loudness, 2),
+            loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
+            true_peak=round(true_peak, 2) if true_peak is not None else None,
+        )
+        # update in-memory streamdetails so subsequent seeks use the measurement
+        # instead of dynamic normalization
+        session.streamdetails.loudness = round(loudness, 2)
+        self.logger.debug(
+            "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",
+            session.streamdetails.uri,
+            loudness,
+            loudness_range,
+            true_peak,
+        )
+        return analysis
+
     async def _send_eof(self, data: LoudnessSessionData) -> None:
         """Signal end-of-input to the session's ffmpeg process (idempotent)."""
         if data.eof_sent:
             return
         data.eof_sent = True
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             await data.ffmpeg.write_eof()
 
 

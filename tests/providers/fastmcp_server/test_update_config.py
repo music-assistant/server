@@ -1,4 +1,5 @@
-"""Tests for ``MCPServerProvider.update_config`` routing.
+"""
+Tests for ``MCPServerProvider.update_config`` routing.
 
 The provider strips the ``values/`` prefix MA's ConfigController prepends to
 each changed key, then dispatches to either a hot-swap (when every changed
@@ -29,7 +30,8 @@ import pytest
 # is intentional: if a future test environment has the real ``hass_client``
 # installed we want to use it.
 def _install_hass_client_stub() -> None:
-    """Inject a minimal stub for ``hass_client`` + submodules touched by MA's auth chain.
+    """
+    Inject a minimal stub for ``hass_client`` + submodules touched by MA's auth chain.
 
     Each submodule supplies just enough attribute surface for ``import``
     statements to succeed. The provider's update_config tests never actually
@@ -63,7 +65,8 @@ from music_assistant.providers.fastmcp_server.provider import MCPServerProvider 
 
 
 def _provider_with_mock_runtime(mock_mass: MagicMock, mock_config: MagicMock) -> MCPServerProvider:
-    """Build a provider with an injected mock runtime (no real start required).
+    """
+    Build a provider with an injected mock runtime (no real start required).
 
     ``MCPServerProvider`` is a plugin subclass with framework init we don't
     want to invoke here; we set the attributes the update_config branches
@@ -147,7 +150,8 @@ async def test_update_config_noop_when_runtime_is_none(
 async def test_values_prefix_stripped_off_every_key(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """Mixed prefixed/non-prefixed keys all normalise correctly.
+    """
+    Mixed prefixed/non-prefixed keys all normalise correctly.
 
     MA's ConfigController prepends ``values/`` to each changed config key,
     but the prefix is an MA implementation detail — the provider must not

@@ -13,5 +13,8 @@
   },
   "manifest": {
     "description": "Stream high-resolution music from Qobuz’s catalogue — ideal for audiophiles."
+  },
+  "errors": {
+    "create_playlist_failed": "Failed to create playlist: {0}"
   }
 }
