@@ -336,16 +336,7 @@ class UniversalGroupPlayer(Player):
                 tg.create_task(
                     self._play_media_on_member(
                         member.player_id,
-                        PlayerMedia(
-                            uri=f"{base_url}?player_id={member.player_id}",
-                            media_type=MediaType.FLOW_STREAM,
-                            title=self.display_name,
-                            source_id=self.player_id,
-                            queue_session_id=self.stream.session_id,
-                            custom_data={
-                                "ugp_player_id": self.player_id,
-                            },
-                        ),
+                        self._member_media(base_url, member.player_id, media),
                     )
                 )
 
@@ -391,16 +382,7 @@ class UniversalGroupPlayer(Player):
                 # Use internal handler to get protocol selection and avoid redirect
                 await self._play_media_on_member(
                     player_id,
-                    PlayerMedia(
-                        uri=f"{base_url}?player_id={player_id}",
-                        media_type=MediaType.FLOW_STREAM,
-                        title=self.display_name,
-                        source_id=self.player_id,
-                        queue_session_id=self.stream.session_id,
-                        custom_data={
-                            "ugp_player_id": self.player_id,
-                        },
-                    ),
+                    self._member_media(base_url, player_id, self._attr_current_media),
                 )
         # handle removals
         for player_id in player_ids_to_remove or []:
@@ -443,6 +425,26 @@ class UniversalGroupPlayer(Player):
         """Play media directly on a group member under its playback lock."""
         async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
             await self.mass.players._handle_play_media(player_id, media)
+
+    def _member_media(
+        self, base_url: str, player_id: str, media: PlayerMedia | None
+    ) -> PlayerMedia:
+        """Build the PlayerMedia a member plays the group stream from."""
+        assert self.stream is not None  # for type checking
+        return PlayerMedia(
+            uri=f"{base_url}?player_id={player_id}",
+            media_type=MediaType.FLOW_STREAM,
+            title=self.display_name,
+            # members that render metadata from the play command need the track details
+            artist=media.artist if media else None,
+            album=media.album if media else None,
+            image_url=media.image_url if media else None,
+            source_id=self.player_id,
+            queue_session_id=self.stream.session_id,
+            custom_data={
+                "ugp_player_id": self.player_id,
+            },
+        )
 
     async def _capture_members(self) -> None:
         """
