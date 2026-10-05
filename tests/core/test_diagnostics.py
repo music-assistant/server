@@ -6,7 +6,7 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
@@ -29,6 +29,7 @@ from music_assistant.helpers.diagnostics import (
     sanitize_text,
 )
 from music_assistant.helpers.json import json_dumps
+from music_assistant.models.provider import Provider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -425,6 +426,26 @@ async def test_section_failure_isolation(mass: MusicAssistant) -> None:
     finally:
         unregister_broken()
         unregister_slow()
+
+
+async def test_provider_section_named_by_domain(mass: MusicAssistant) -> None:
+    """
+    Test that a provider section carries the domain next to the instance id.
+
+    :param mass: Full Music Assistant test instance.
+    """
+
+    class _ConvertedProvider(Provider):
+        async def get_diagnostics(self) -> dict[str, Any]:
+            return {"sync_running": False}
+
+    provider = object.__new__(_ConvertedProvider)
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider.config = MagicMock(instance_id="filesystem_smb--abc123")
+    with patch.object(type(mass), "providers", PropertyMock(return_value=[provider])):
+        report = await mass.diagnostics.get_report()
+    section = report["sections"]["provider.filesystem_local.filesystem_smb--abc123"]
+    assert section == {"sync_running": False}
 
 
 async def test_register_section_own_timeout(mass: MusicAssistant) -> None:
