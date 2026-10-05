@@ -6,11 +6,12 @@ import hashlib
 import socket
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from aiojellyfin import DEFAULT_FIELDS, ItemType, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
-from aiojellyfin import NotFound, authenticate_by_name
+from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
@@ -33,6 +34,7 @@ from music_assistant.providers.jellyfin.parsers import (
     audio_format,
     parse_album,
     parse_artist,
+    parse_loudness,
     parse_playlist,
     parse_track,
 )
@@ -48,6 +50,7 @@ from .const import (
     ITEM_KEY_MEDIA_TYPE,
     ITEM_KEY_NAME,
     ITEM_KEY_RUNTIME_TICKS,
+    ITEM_KEY_TYPE,
     MEDIA_TYPE_AUDIO,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
@@ -152,7 +155,7 @@ class JellyfinProvider(MusicProvider):
         )
         tracks = []
         for item in resultset["Items"]:
-            tracks.append(parse_track(self.mass, self.logger, self.instance_id, self._client, item))
+            tracks.append(parse_track(self.logger, self.instance_id, self._client, item))
         return tracks
 
     async def _search_album(self, search_query: str, limit: int) -> list[Album]:
@@ -279,7 +282,7 @@ class JellyfinProvider(MusicProvider):
                         "Invalid track %s: Does not have any media streams", track[ITEM_KEY_NAME]
                     )
                     continue
-                yield parse_track(self.mass, self.logger, self.instance_id, self._client, track)
+                yield parse_track(self.logger, self.instance_id, self._client, track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
@@ -315,9 +318,7 @@ class JellyfinProvider(MusicProvider):
             .request()
         )
         return [
-            parse_track(
-                self.mass, self.logger, self.instance_id, self._client, jellyfin_album_track
-            )
+            parse_track(self.logger, self.instance_id, self._client, jellyfin_album_track)
             for jellyfin_album_track in jellyfin_album_tracks["Items"]
         ]
 
@@ -353,7 +354,7 @@ class JellyfinProvider(MusicProvider):
             track = await self._client.get_track(prov_track_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {prov_track_id} not found")
-        return parse_track(self.mass, self.logger, self.instance_id, self._client, track)
+        return parse_track(self.logger, self.instance_id, self._client, track)
 
     @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -380,7 +381,7 @@ class JellyfinProvider(MusicProvider):
             pos = (page * 100) + index
             try:
                 if track := parse_track(
-                    self.mass, self.logger, self.instance_id, self._client, jellyfin_track
+                    self.logger, self.instance_id, self._client, jellyfin_track
                 ):
                     track.position = pos
                     result.append(track)
@@ -407,7 +408,7 @@ class JellyfinProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         try:
-            jellyfin_track = await self._client.get_track(item_id)
+            jellyfin_track = await self._get_raw_track(item_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {item_id} not found")
         audio_url = self._client.audio_url(
@@ -415,7 +416,7 @@ class JellyfinProvider(MusicProvider):
         )
         url = _normalize_jellyfin_media_url(audio_url)
         runtime_ticks = jellyfin_track.get(ITEM_KEY_RUNTIME_TICKS)
-        return StreamDetails(
+        stream_details = StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
             audio_format=audio_format(jellyfin_track),
@@ -429,6 +430,17 @@ class JellyfinProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+        if loudness := parse_loudness(jellyfin_track):
+            stream_details.loudness, stream_details.loudness_album = loudness
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=stream_details.item_id,
+                    provider_instance_id_or_domain=self.instance_id,
+                    loudness=stream_details.loudness,
+                    loudness_album=stream_details.loudness_album,
+                )
+            )
+        return stream_details
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -437,7 +449,7 @@ class JellyfinProvider(MusicProvider):
             prov_track_id, limit=limit, fields=TRACK_FIELDS
         )
         return [
-            parse_track(self.mass, self.logger, self.instance_id, self._client, track)
+            parse_track(self.logger, self.instance_id, self._client, track)
             for track in resp["Items"]
         ]
 
@@ -460,6 +472,18 @@ class JellyfinProvider(MusicProvider):
             if library.get(ITEM_KEY_COLLECTION_TYPE) == COLLECTION_TYPE_PLAYLISTS:
                 result.append(library)
         return result
+
+    async def _get_raw_track(self, item_id: str) -> JellyTrack:
+        """Fetch a track item as raw JSON, keeping the fields aiojellyfin's decoder loses."""
+        client = self._client
+        # aiojellyfin's (unmaintained) TypedDict decoder truncates NormalizationGain to int
+        # and drops AlbumNormalizationGain, so fetch the raw JSON through its session instead
+        raw = await client._session.get_json(
+            f"/Users/{client._user_id}/Items/{item_id}", params={"Fields": DEFAULT_FIELDS}
+        )
+        if raw.get(ITEM_KEY_TYPE) != ItemType.Audio:
+            raise NotFound(item_id)
+        return cast("JellyTrack", raw)
 
 
 def _normalize_jellyfin_media_url(url: str) -> str:

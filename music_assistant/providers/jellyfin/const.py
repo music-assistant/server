@@ -39,6 +39,7 @@ ITEM_KEY_ARTIST_ITEMS: Final = "ArtistItems"
 ITEM_KEY_CAN_DOWNLOAD: Final = "CanDownload"
 ITEM_KEY_PARENT_INDEX_NUM: Final = "ParentIndexNumber"
 ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
+ITEM_KEY_TYPE: Final = "Type"
 ITEM_KEY_USER_DATA: Final = "UserData"
 ITEM_KEY_TRACK_NORMALIZATION_GAIN: Final = "NormalizationGain"
 ITEM_KEY_ALBUM_NORMALIZATION_GAIN: Final = "AlbumNormalizationGain"
@@ -58,7 +59,6 @@ ALBUM_FIELDS: Final = [
     ItemFields.Overview,
     ItemFields.ProviderIds,
     ItemFields.SortName,
-    ItemFields.NormalizationGain,
 ]
 TRACK_FIELDS: Final = [
     ItemFields.ProviderIds,
@@ -66,8 +66,6 @@ TRACK_FIELDS: Final = [
     ItemFields.SortName,
     ItemFields.MediaSources,
     ItemFields.MediaStreams,
-    ItemFields.NormalizationGain,
-    ItemFields.AlbumNormalizationGain,
 ]
 
 USER_APP_NAME: Final = "Music Assistant"

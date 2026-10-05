@@ -1,19 +1,20 @@
 """Test we can parse Jellyfin models into Music Assistant models."""
 
+import json
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 import aiohttp
 import pytest
 from aiojellyfin import Artist, Connection
+from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from music_assistant_models.enums import ContentType
 
-from music_assistant.mass import MusicAssistant
 from music_assistant.providers.jellyfin.const import (
     ITEM_KEY_CONTAINER,
     ITEM_KEY_MEDIA_CHANNELS,
@@ -26,6 +27,7 @@ from music_assistant.providers.jellyfin.parsers import (
     audio_format,
     parse_album,
     parse_artist,
+    parse_loudness,
     parse_track,
 )
 
@@ -85,15 +87,49 @@ async def test_parse_albums(
 
 @pytest.mark.parametrize("example", TRACK_FIXTURES, ids=lambda val: str(val.stem))
 async def test_parse_tracks(
-    mass: MusicAssistant, example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
+    example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
     async with aiofiles.open(example, encoding="utf-8") as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
-    parsed = parse_track(mass, _LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
+    parsed = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"]
     assert snapshot == parsed
+
+
+async def test_parse_loudness_from_fixture() -> None:
+    """Test track loudness is derived from the fixture's ReplayGain track gain."""
+    # plain json keeps the float gain that aiojellyfin's decoder would truncate
+    fixture = FIXTURES_DIR / "tracks" / "do_i_wanna_know.json"
+    async with aiofiles.open(fixture, encoding="utf-8") as fp:
+        raw_data = json.loads(await fp.read())
+    result = parse_loudness(cast("JellyTrack", raw_data))
+    assert result is not None
+    assert result[0] == pytest.approx(-9.6)
+    assert result[1] is None
+
+
+@pytest.mark.parametrize(
+    ("track", "expected"),
+    [
+        ({"NormalizationGain": -8.4}, (-9.6, None)),
+        ({"NormalizationGain": -8.4, "AlbumNormalizationGain": -10.0}, (-9.6, -8.0)),
+        ({"NormalizationGain": -11}, (-7.0, None)),
+    ],
+)
+def test_parse_loudness(track: dict[str, Any], expected: tuple[float, float | None]) -> None:
+    """Test ReplayGain gains are converted to loudness relative to -18 LUFS."""
+    result = parse_loudness(cast("JellyTrack", track))
+    assert result is not None
+    assert result[0] == pytest.approx(expected[0])
+    assert result[1] == (pytest.approx(expected[1]) if expected[1] is not None else None)
+
+
+@pytest.mark.parametrize("track", [{"AlbumNormalizationGain": -10.0}, {"NormalizationGain": None}])
+def test_parse_loudness_without_gain(track: dict[str, Any]) -> None:
+    """Test no loudness is returned when Jellyfin has no track gain."""
+    assert parse_loudness(cast("JellyTrack", track)) is None
 
 
 def test_audio_format_empty_mediastreams() -> None:

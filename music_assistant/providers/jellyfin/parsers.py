@@ -23,7 +23,6 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.mass import MusicAssistant
 
 from .const import (
     DOMAIN,
@@ -207,12 +206,16 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     )
 
 
+def parse_loudness(jellyfin_track: JellyTrack) -> tuple[float, float | None] | None:
+    """Return track and optional album loudness in LUFS from Jellyfin's ReplayGain fields."""
+    track_loudness = _gain_to_loudness(jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN))
+    if track_loudness is None:
+        return None
+    return track_loudness, _gain_to_loudness(jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN))
+
+
 def parse_track(
-    mass: MusicAssistant,
-    logger: Logger,
-    instance_id: str,
-    client: Connection,
-    jellyfin_track: JellyTrack,
+    logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
 ) -> Track:
     """Parse a Jellyfin Track response to a Track model object."""
     available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
@@ -281,25 +284,6 @@ def parse_track(
             )
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
     track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
-
-    # handle optional loudness measurement tag(s) assuming -18 dB reference according to ReplayGain 2.0
-    track_gain = jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN)
-    if track_gain is not None:
-        track_loudness = -18.0 - track_gain
-
-        album_gain = jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN)
-
-        album_loudness = -18.0 - album_gain if album_gain is not None else None
-
-        mass.create_task(
-            mass.streams.audio_analysis.set_track_loudness(
-                track.item_id,
-                instance_id,
-                track_loudness,
-                album_loudness,
-            )
-        )
-
     return track
 
 
@@ -366,3 +350,11 @@ def _get_artwork(
             )
 
     return images
+
+
+def _gain_to_loudness(value: object) -> float | None:
+    """Convert a Jellyfin normalization gain in dB to loudness in LUFS."""
+    if not isinstance(value, (int, float)):
+        return None
+    # Jellyfin's gain targets the ReplayGain 2.0 reference level of -18 LUFS
+    return -18.0 - float(value)
