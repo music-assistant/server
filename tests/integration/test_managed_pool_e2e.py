@@ -270,8 +270,9 @@ async def test_dynamic_source_is_not_materialized(e2e_mass: MusicAssistant) -> N
     assert queue is not None
     e2e_mass.player_queues.queue_data(queue_id).userid = TEST_USER
 
-    # a dynamic radio playlist (self-managing) mixed with a finite album (materialized)
-    seed = await test_prov.get_track("4_4_0")
+    # a dynamic radio playlist (self-managing) mixed with a finite album (materialized); the seed
+    # sits mid-catalogue so its forward similar-track walk never reaches (and drains) the album
+    seed = await test_prov.get_track("2_0_0")
     radio = await e2e_mass.music.get_item_by_uri(radio_playlist_uri(seed))
     assert isinstance(radio, Playlist)
     assert radio.is_dynamic

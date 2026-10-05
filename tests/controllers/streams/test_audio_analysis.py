@@ -23,6 +23,7 @@ from music_assistant_models.media_items import AudioFormat, ProviderMapping, Tra
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    FILESYSTEM_PROVIDER_DOMAINS,
     _default_background_scan_concurrency,
 )
 from music_assistant.controllers.streams.audio_analysis import (
@@ -1711,7 +1712,7 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
 async def test_count_candidates_missing_analysis_queries_with_available_filesystem() -> None:
     """With an available filesystem provider, the NOT EXISTS count query runs with bound params."""
     c, db = _stub_controller(count_result=7)
-    domain = next(iter(audio_analysis_mod.FILESYSTEM_PROVIDER_DOMAINS))
+    domain = next(iter(FILESYSTEM_PROVIDER_DOMAINS))
     fs_prov = MagicMock()
     fs_prov.domain = domain
     fs_prov.available = True

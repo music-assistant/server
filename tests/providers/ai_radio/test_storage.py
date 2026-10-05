@@ -12,10 +12,16 @@ import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.ai_radio import storage as storage_module
+from music_assistant.providers.ai_radio.constants import (
+    EVENT_SECTIONS_UPDATED,
+    EVENT_STATIONS_UPDATED,
+)
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
+from .events import ProviderEventRecorder
 
-class DummyStorage(AIRadioStorageMixin):
+
+class DummyStorage(ProviderEventRecorder, AIRadioStorageMixin):
     """Minimal storage harness for unit testing helper methods."""
 
     def __init__(self) -> None:
@@ -342,3 +348,45 @@ def test_normalize_station_v3_returns_slim_schema() -> None:
     assert normalized["host_id"] == "rick"
     for legacy_key in ("general", "sections", "section_ids", "section_order", "merge_section_id"):
         assert legacy_key not in normalized
+
+
+def test_write_sections_emits_a_sections_hint(tmp_path: Any) -> None:
+    """Persisting the sections announces a refetch hint, and nothing else."""
+    dummy = DummyStorage()
+    dummy._sections_file = tmp_path / "sections.json"
+    dummy._sections = {"Intro": _section("Intro")}
+
+    asyncio.run(dummy._write_sections())
+
+    assert dummy.provider_events == [{"event": EVENT_SECTIONS_UPDATED}]
+
+
+def test_write_stations_emits_a_stations_hint(tmp_path: Any) -> None:
+    """Persisting the stations announces a refetch hint, and nothing else."""
+    dummy = DummyStorage()
+    dummy._stations_file = tmp_path / "stations.json"
+    dummy._stations = {"s1": {"id": "s1", "name": "Station", "host_id": "rick"}}
+
+    asyncio.run(dummy._write_stations())
+
+    assert dummy.provider_events == [{"event": EVENT_STATIONS_UPDATED}]
+
+
+def test_write_sections_emits_nothing_when_the_write_fails(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed write persists nothing, so clients must not be told to refetch."""
+    dummy = DummyStorage()
+    dummy._sections_file = tmp_path / "sections.json"
+    dummy._sections = {"Intro": _section("Intro")}
+
+    def failing_fsync(_fd: int) -> None:
+        """Raise to simulate a failed disk write."""
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cast("Any", storage_module).os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(dummy._write_sections())
+
+    assert not hasattr(dummy, "provider_events")

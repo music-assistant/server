@@ -393,16 +393,22 @@ class DatabaseConnection:
         await self._db.execute(sql_query, values)
         await self._maybe_commit()
 
-    async def upsert_many(self, table: str, values: Sequence[dict[str, Any]]) -> None:
+    async def upsert_many(
+        self, table: str, values: Sequence[dict[str, Any]], immutable: Sequence[str] = ()
+    ) -> int:
         """
         Upsert multiple rows in the given table with a single commit.
 
         :param table: The table to upsert the rows into.
         :param values: The rows to upsert, each given as a column->value dict.
             Rows do not need to share the same set of columns.
+        :param immutable: Columns an existing row keeps: a conflicting row whose value
+            differs from the given one is left untouched instead of updated. A row
+            that leaves such a column out is not guarded on it.
+        :return: The number of rows left untouched.
         """
         if not values:
-            return
+            return 0
         # rows are grouped by their column set so each group can be executed as a
         # single (prepared) statement, while omitted columns keep their existing
         # value on conflict - identical to calling upsert() per row
@@ -411,13 +417,22 @@ class DatabaseConnection:
             # Filter out UNSET values so database defaults are used
             filtered_row = {k: v for k, v in row.items() if v is not UNSET}
             rows_per_column_set.setdefault(tuple(sorted(filtered_row)), []).append(filtered_row)
+        untouched = 0
         for keys, rows in rows_per_column_set.items():
             sql_query = (
                 f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
             )
             sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
-            await self._db.executemany(sql_query, rows)
+            if guards := [x for x in immutable if x in keys]:
+                # IS also holds for a NULL on both sides, unlike =
+                sql_query += " WHERE " + " AND ".join(
+                    f"{table}.{x} IS excluded.{x}" for x in guards
+                )
+            cursor = await self._db.executemany(sql_query, rows)
+            # a row neither inserted nor updated was held back by the guard
+            untouched += len(rows) - cursor.rowcount
         await self._maybe_commit()
+        return untouched
 
     async def update(
         self,

@@ -62,6 +62,11 @@ class WikipediaMetadataProvider(MetadataProvider):
         """Priority for this provider (lower = more preferred)."""
         return 25
 
+    @property
+    def rate_limited(self) -> bool:
+        """Whether Wikipedia is currently holding requests back with a rate limit."""
+        return self.throttler.cooldown_remaining > 0
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()

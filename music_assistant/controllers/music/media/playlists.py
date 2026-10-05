@@ -63,8 +63,8 @@ from music_assistant.helpers.provider_access import access_allows, visible_music
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider
 
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
@@ -587,7 +587,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return_unavailable=True,
         )
         if (
-            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            not isinstance(source_provider_obj, MediaCatalogMixin)
             or source_provider_obj.instance_id != source_provider
             or not source_provider_obj.available
         ):
@@ -824,7 +824,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return_unavailable=True,
         )
         if (
-            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            not isinstance(source_provider_obj, MediaCatalogMixin)
             or source_provider_obj.instance_id != source_provider
             or not source_provider_obj.available
         ):
@@ -1447,7 +1447,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 else None,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
@@ -1551,7 +1550,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError(
                 f"Provider {provider_instance_id_or_domain} is not available"
             )
-        if not isinstance(provider, MusicProvider | PluginProvider):
+        if not isinstance(provider, MediaCatalogMixin):
             return []
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)

@@ -608,7 +608,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # on task_id while a load is in flight, and re-attempts after a previous load failed.
         if self._text_encoder is None:
             self.mass.create_task(
-                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+                self._get_text_encoder(), task_id="sonic_similarity_text_encoder_warm"
             )
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)

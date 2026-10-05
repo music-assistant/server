@@ -59,6 +59,13 @@ class PocketCastsClient:
             raise LoginFailed("No token in Pocket Casts login response")
         self.logger.info("Successfully logged in to Pocket Casts")
 
+    async def has_paid_plan(self) -> bool:
+        """Return whether the account is on a paid Pocket Casts plan (Plus or Patron)."""
+        data = await self._request("GET", f"{API_BASE_URL}/subscription/status")
+        paid = data.get("paid") == 1
+        self.logger.debug("Pocket Casts account is on a %s plan", "paid" if paid else "free")
+        return paid
+
     async def get_subscribed_podcasts(self) -> list[dict[str, Any]]:
         """Return the user's subscribed podcasts."""
         data = await self._request("POST", f"{API_BASE_URL}/user/podcast/list")
@@ -98,9 +105,9 @@ class PocketCastsClient:
 
     async def get_show_notes(self, podcast_uuid: str) -> dict[str, dict[str, Any]]:
         """
-        Return the show notes and artwork, keyed by episode UUID, for a podcast.
+        Return the show notes, artwork and transcripts, keyed by episode UUID, for a podcast.
 
-        Episodes carrying neither are left out.
+        Episodes carrying none of these are left out.
 
         :param podcast_uuid: The podcast UUID.
         """
@@ -110,8 +117,8 @@ class PocketCastsClient:
             auth=False,
             allow_redirects=True,
         )
-        # one call covers every episode, and no other endpoint carries these two fields. The
-        # rest of the response is dropped here to keep the cached entry small.
+        # One call covers every episode and no other endpoint has these fields. The listing's
+        # has_generated_transcript misses publisher `transcripts`, so it cannot replace this call.
         show_notes: dict[str, dict[str, Any]] = {}
         for episode in data.get("podcast", {}).get("episodes", []):
             if not (uuid := episode.get("uuid")):
@@ -121,10 +128,19 @@ class PocketCastsClient:
                 details["description"] = description
             if image := episode.get("image"):
                 details["image"] = image
+            if transcripts := episode.get("transcripts"):
+                details["transcripts"] = transcripts
+            if generated := episode.get("pocket_casts_transcripts"):
+                details["generated_transcripts"] = generated
             if details:
                 show_notes[uuid] = details
         self.logger.debug(
-            "Retrieved show notes for %d episodes of podcast %s", len(show_notes), podcast_uuid
+            "Retrieved show notes for %d episodes of podcast %s "
+            "(%d with a publisher transcript, %d with a generated transcript)",
+            len(show_notes),
+            podcast_uuid,
+            sum(1 for details in show_notes.values() if "transcripts" in details),
+            sum(1 for details in show_notes.values() if "generated_transcripts" in details),
         )
         return show_notes
 

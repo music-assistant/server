@@ -31,9 +31,10 @@ async def mount_connect_wizard(
     mass: MusicAssistant,
     mount_path: str,
     *,
-    enabled_tags_provider: Callable[[], list[str]],
+    default_profile_provider: Callable[[], str],
     extra_origins_csv: str = "",
     trust_forwarded_proto: bool = False,
+    identity_binder: Callable[[str, str, str | None], None] | None = None,
 ) -> Callable[[], None]:
     """
     Register the wizard routes and return a callable that unregisters them.
@@ -41,23 +42,24 @@ async def mount_connect_wizard(
     :param mass: MusicAssistant instance.
     :param mount_path: HTTP path prefix where the MCP server is mounted
         (e.g. ``/mcp/v1``); wizard routes nest under ``<mount_path>/connect``.
-    :param enabled_tags_provider: Zero-arg callable returning the list of
-        currently-enabled permission tag strings; called per-request so
-        permission hot-swaps surface in the UI without remount.
+    :param default_profile_provider: Zero-arg callable returning only the
+        current default policy profile name.
     :param extra_origins_csv: Comma-separated additional ``Origin`` values to
         accept beyond the auto-derived loopback + base_url + publish_ip set.
     :param trust_forwarded_proto: When True, accept a trusted reverse proxy's
         ``X-Forwarded-Proto: https`` as proof the public hop was HTTPS, so the
         credential-bearing endpoints work behind a TLS-terminating proxy.
+    :param identity_binder: Optional bind(bearer, user_id, token_id) for minted tokens.
     :return: Callable that, when invoked, unregisters every wizard route.
     """
     allowlist = compute_origin_allowlist(mass, extra_origins_csv)
     ctx = WizardContext(
         mass=mass,
         mount_path=mount_path,
-        enabled_tags_provider=enabled_tags_provider,
+        default_profile_provider=default_profile_provider,
         origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
         trust_forwarded_proto=trust_forwarded_proto,
+        identity_binder=identity_binder,
     )
 
     base = "/" + mount_path.strip("/")

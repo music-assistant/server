@@ -17,7 +17,7 @@ import pytest
 import torch
 from beat_this.inference import Spect2Frames
 from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 from music_assistant_models.media_items import AudioFormat
 from torchaudio.transforms import SpectralCentroid
 
@@ -964,3 +964,25 @@ async def test_beat_windows_are_paced_only_while_a_player_streams(
     assert bool(delays) is expect_paced
     if expect_paced:
         assert delays == [0.4 * BEAT_WINDOW_PACE_RATIO]
+
+
+@pytest.mark.parametrize("auto_setup", [True, False], ids=["auto_refused", "manual_allowed"])
+async def test_auto_setup_refused_below_recommended_hardware(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock, auto_setup: bool
+) -> None:
+    """Below the recommended tier only an automatic default setup is refused."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=3.8),
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=4),
+        patch("music_assistant.providers.smart_fades.verify_system_meets_requirements"),
+        patch("music_assistant.providers.smart_fades.import_module_in_thread") as import_module,
+    ):
+        if auto_setup:
+            with pytest.raises(UnsupportedSystemError):
+                await smart_fades.setup(mass_mock, manifest_mock, config_mock, auto_setup=True)
+            import_module.assert_not_awaited()
+        else:
+            await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+            import_module.assert_awaited_once()

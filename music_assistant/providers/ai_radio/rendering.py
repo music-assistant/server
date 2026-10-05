@@ -47,6 +47,7 @@ from .constants import (
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
+    EVENT_SESSIONS_UPDATED,
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
@@ -474,3 +475,4 @@ class AIRadioRenderMixin:
             return
         session.skipped_sections += 1
         session.last_render_error = error
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})

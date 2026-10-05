@@ -23,7 +23,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
+from mcp.shared.exceptions import McpError
 
+from music_assistant.providers.fastmcp_server.resource_helpers import (
+    to_brief_player,
+    to_brief_queue,
+    to_resource_text,
+)
 from music_assistant.providers.fastmcp_server.resources.library_resources import (
     register_library_resources,
 )
@@ -39,6 +45,11 @@ _LIBRARY_KINDS = [
     ("playlist", "playlists", "library://playlist/17"),
     ("radio", "radio", "library://radio/17"),
 ]
+
+
+def test_resource_helpers_have_a_tool_independent_public_module() -> None:
+    """Resources retain their converters after the custom tool package is removed."""
+    assert all(callable(helper) for helper in (to_resource_text, to_brief_player, to_brief_queue))
 
 
 @pytest.mark.parametrize(("kind", "controller_attr", "uri"), _LIBRARY_KINDS)
@@ -103,6 +114,22 @@ async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock)
     assert parsed["player_id"] == "p1"
     assert parsed["state"] == "playing"
     assert parsed["powered"] is True
+
+
+async def test_player_resource_does_not_hide_queue_controller_failures(
+    mock_mass: MagicMock,
+) -> None:
+    """An unexpected queue-controller failure surfaces instead of a plausible snapshot."""
+    mock_mass.players.get_player.return_value = SimpleNamespace(
+        player_id="p1", display_name="P1", name="P1", state=None
+    )
+    mock_mass.player_queues.get_active_queue.side_effect = RuntimeError("queue controller bug")
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        with pytest.raises(McpError):
+            await client.read_resource("player://p1")
 
 
 async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> None:
