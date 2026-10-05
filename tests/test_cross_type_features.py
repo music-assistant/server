@@ -128,6 +128,7 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
 async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     """A transport failure from one mapping does not prevent trying the next provider."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     failed_prov = Mock(spec=MusicProvider)
     failed_prov.name = "Failed"
     failed_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -171,6 +172,7 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
 async def test_similar_tracks_normalizes_provider_transport_failure() -> None:
     """An all-provider transport failure is exposed as a typed MA provider error."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     provider = Mock(spec=MusicProvider)
     provider.name = "Failed"
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -202,6 +204,7 @@ async def test_similar_tracks_normalizes_provider_transport_failure() -> None:
 async def test_similar_tracks_preserves_typed_provider_error() -> None:
     """A typed provider failure is re-raised unchanged when no provider responds."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     provider = Mock(spec=MusicProvider)
     provider.name = "Failed"
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -233,6 +236,7 @@ async def test_similar_tracks_preserves_typed_provider_error() -> None:
 async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty() -> None:
     """A failed cross-provider lookup does not override an earlier valid empty response."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -307,6 +311,7 @@ async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
 async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented() -> None:
     """An unsupported matched lookup does not discard an earlier provider failure."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -387,6 +392,7 @@ async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
 async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> None:
     """A valid empty response is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -417,6 +423,7 @@ async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> N
 async def test_similar_tracks_failure_wins_without_lookup_provider() -> None:
     """A provider failure is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -461,6 +468,7 @@ def _artist(item_id: str, name: str, instance: str) -> Artist:
 async def test_similar_artists_aggregates_across_providers() -> None:
     """Similar artists for a library artist aggregate (and dedupe) across all its providers."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     music_prov = Mock(spec=MusicProvider)
     music_prov.available = True
     music_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
@@ -498,6 +506,7 @@ async def test_similar_artists_aggregates_across_providers() -> None:
 async def test_similar_artists_provider_queries_named_provider() -> None:
     """Similar artists for a provider artist should query only that provider."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     music_prov = Mock(spec=MusicProvider)
     music_prov.name = "Music Provider A"
     music_prov.available = True

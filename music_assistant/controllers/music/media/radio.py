@@ -188,13 +188,15 @@ class RadioController(MediaControllerBase[Radio]):
             # a dynamic station is its provider's own, so a same-named station is a different one
             return []
         # perform a search on all provider(types) to collect all versions/variants
+        providers = [
+            provider
+            for provider_id in self.mass.music.get_unique_providers()
+            if (provider := self.mass.music.get_visible_provider(provider_id))
+        ]
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[
-                    self.search(radio.name, provider_domain)
-                    for provider_domain in self.mass.music.get_unique_providers()
-                ]
+                *[self.search(radio.name, provider.instance_id) for provider in providers]
             )
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)

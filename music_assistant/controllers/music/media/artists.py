@@ -622,7 +622,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Audiobook]:
         """Return audiobooks for an author on given provider."""
         assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
@@ -641,7 +641,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Audiobook]:
         """Return audiobooks for an author on given provider."""
         assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
@@ -663,8 +663,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each track is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
+        provider = cast(
+            "MusicProvider | None",
+            self.mass.music.get_visible_provider(provider_instance_id_or_domain),
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
@@ -753,8 +754,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each album is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
+        provider = cast(
+            "MusicProvider | None",
+            self.mass.music.get_visible_provider(provider_instance_id_or_domain),
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
@@ -839,8 +841,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
         """Return all tracks for an artist on given provider."""
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
+        provider = cast(
+            "MusicProvider | None",
+            self.mass.music.get_visible_provider(provider_instance_id_or_domain),
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
@@ -900,8 +903,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
+        provider = cast(
+            "MusicProvider | None",
+            self.mass.music.get_visible_provider(provider_instance_id_or_domain),
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
@@ -991,8 +995,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each artist is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
+        provider = cast(
+            "MusicProvider | None",
+            self.mass.music.get_visible_provider(provider_instance_id_or_domain),
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
@@ -1248,8 +1253,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and provider_mapping.provider_instance not in allowed:
                 continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+            music_prov = cast(
+                "MusicProvider | None",
+                self.mass.music.get_visible_provider(provider_mapping.provider_instance),
             )
             if music_prov is None or feature not in music_prov.supported_features:
                 continue

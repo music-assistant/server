@@ -991,8 +991,11 @@ async def test_provider_reads_refuse_a_source_the_user_may_not_see(
         await read(counted_mass)
 
 
+# two accounts of one streaming service, the user's own one unavailable: a lookup of it
+# must not be served by the other account
+@pytest.mark.parametrize("same_service", [False, True])
 async def test_similar_tracks_skip_a_source_the_user_may_not_see(
-    counted_mass: MusicAssistant,
+    counted_mass: MusicAssistant, same_service: bool
 ) -> None:
     """Similar tracks of a library track never come from a source the user may not see."""
     track = next(
@@ -1006,7 +1009,9 @@ async def test_similar_tracks_skip_a_source_the_user_may_not_see(
         provider = Mock(spec=MusicProvider)
         provider.instance_id = instance_id
         provider.type = ProviderType.MUSIC
-        provider.available = True
+        provider.domain = "service" if same_service else instance_id
+        provider.is_streaming_provider = same_service
+        provider.available = not (same_service and instance_id == PROV_A)
         provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
         providers[instance_id] = provider
     # only the source the user may not see knows similar tracks
@@ -1025,12 +1030,18 @@ async def test_similar_tracks_skip_a_source_the_user_may_not_see(
             ),
         ),
     ):
-        with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
-            assert await counted_mass.music.tracks.similar_tracks(track.item_id, "library") == [
-                similar
-            ]
-        with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
-            assert await counted_mass.music.tracks.similar_tracks(track.item_id, "library") == []
+        for user, expected in ((USER_ALL, [similar]), (USER_A, [])):
+            with (
+                patch(GET_CURRENT_USER, return_value=_user(user)),
+                patch(
+                    "music_assistant.controllers.music.controller.get_current_user",
+                    return_value=_user(user),
+                ),
+            ):
+                similar_tracks = await counted_mass.music.tracks.similar_tracks(
+                    track.item_id, "library"
+                )
+            assert similar_tracks == expected
 
 
 async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:

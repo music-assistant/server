@@ -2261,6 +2261,36 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"{provider_instance_id_or_domain} is not a music source of this user"
         )
 
+    def get_visible_provider(
+        self, provider_instance_id_or_domain: str
+    ) -> ProviderInstanceType | None:
+        """
+        Return the available provider serving the given instance id or domain to the current user.
+
+        Like `mass.get_provider`, an unavailable account or a domain resolves to another
+        account of that streaming service, but only to one of the user's music sources.
+
+        :param provider_instance_id_or_domain: The requested provider instance id or domain.
+        """
+        requested = self.mass.get_provider(provider_instance_id_or_domain, return_unavailable=True)
+        if requested is not None and requested.type != ProviderType.MUSIC:
+            # metadata and plugin providers are household-wide
+            return self.mass.get_provider(provider_instance_id_or_domain)
+        available = [prov for prov in self.providers if prov.available]
+        if exact := next(
+            (prov for prov in available if prov.instance_id == provider_instance_id_or_domain),
+            None,
+        ):
+            return exact
+        domain = provider_instance_id_or_domain
+        if requested is not None and requested.instance_id == provider_instance_id_or_domain:
+            if not getattr(requested, "is_streaming_provider", False):
+                # an instance of a local source holds data no other instance has
+                return None
+            domain = requested.domain
+        # accounts of a streaming service resolve the very same item ids
+        return next((prov for prov in available if prov.domain == domain), None)
+
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
         deleted_providers = self.mass.config.get_raw_core_config_value(

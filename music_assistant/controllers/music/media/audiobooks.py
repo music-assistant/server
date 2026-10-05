@@ -297,14 +297,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         search_query = audiobook.name
         result: UniqueList[Audiobook] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
+            provider = self.mass.music.get_visible_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
             if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
-                for prov_item in await self.search(search_query, provider_id)
+                for prov_item in await self.search(search_query, provider.instance_id)
                 if loose_compare_strings(audiobook.name, prov_item.name)
                 # make sure that the 'base' version is NOT included
                 and not audiobook.provider_mappings.intersection(prov_item.provider_mappings)
