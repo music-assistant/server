@@ -9,6 +9,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ImageType, ProviderSharing
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -98,6 +99,12 @@ def _metadata_with_covers(cover_art_id: str) -> MediaItemMetadata:
             ]
         )
     )
+
+
+@pytest.fixture(autouse=True)
+async def loaded_accounts() -> None:
+    """Have both accounts loaded, as on a running server."""
+    await set_global_cache_values({"available_providers": {SONIC_A, SONIC_B}})
 
 
 @pytest.fixture
