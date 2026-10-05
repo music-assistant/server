@@ -554,6 +554,19 @@ class MyDemoMusicprovider(MusicProvider):
         # stream_type is set to CUSTOM in the get_stream_details method.
         yield  # type: ignore[misc]
 
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """
+        Handle callback when the first audio of given streamdetails reaches a player.
+
+        Called once per playback, so unlike get_stream_details never for a preload.
+        A playback that triggers this callback is always followed by on_streamed.
+        """
+        # This is an OPTIONAL callback that is called when an item starts playing.
+        # You can use this e.g. to report the start of playback to the music service.
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
