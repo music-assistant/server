@@ -1045,7 +1045,7 @@ async def test_similar_tracks_skip_a_source_the_user_may_not_see(
 
 
 async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:
-    """The library items listed for a genre or a track are the ones the user may see."""
+    """The library items listed for a genre, a track or an artist are the ones the user may see."""
     mass = counted_mass
     genre = await mass.music.genres.add_item_to_library(
         Genre(item_id="0", provider="library", name="Listing Genre", provider_mappings=set())
@@ -1056,8 +1056,10 @@ async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssis
         await mass.music.genres.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id)
     for album in albums:
         await mass.music.genres.add_media_mapping(genre.item_id, MediaType.ALBUM, album.item_id)
-    # Track 01 sits on Album 01 (PROV_A), and also appears on Album 02 (PROV_B)
+    # Track 01 sits on Album 01 (PROV_A), and also appears on Album 02 (PROV_B), whose
+    # album artist is not Track 01's artist
     track_01 = next(track for track in tracks if track.name == "Track 01")
+    artist_01 = track_01.artists[0].item_id
     album_02 = next(album for album in albums if album.name == "Album 02")
     await mass.music.albums._set_album_track(int(album_02.item_id), int(track_01.item_id), track_01)
     await mass.music.database.commit()
@@ -1069,6 +1071,9 @@ async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssis
         genre_albums = await mass.music.genres.albums(genre.item_id)
         overview = await mass.music.genres.get_overview(genre.item_id)
         track_albums = await mass.music.tracks.get_library_track_albums(track_01.item_id)
+        appears_on = await mass.music.artists.get_library_artist_appears_on(artist_01)
+    with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
+        appears_on_all = await mass.music.artists.get_library_artist_appears_on(artist_01)
 
     assert {track.name for track in genre_tracks} == visible_tracks
     assert {album.name for album in genre_albums} == visible_albums
@@ -1077,6 +1082,8 @@ async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssis
         "genre_album": visible_albums,
     }
     assert {album.name for album in track_albums} == {"Album 01"}
+    assert {album.name for album in appears_on_all} == {"Album 02", "Album 04"}
+    assert appears_on == []
     # guard against a vacuous pass: the user's music sources must actually exclude something
     assert {track.name for track in tracks} - visible_tracks
     assert {album.name for album in albums} - visible_albums

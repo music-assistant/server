@@ -979,6 +979,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"albums.item_id NOT IN ({own_albums})",
             ],
             extra_query_params=query_params,
+            # a visible track can sit on an album that only a hidden source holds
+            provider_filter=provider_instances,
             limit=0,  # no limit, the full list is returned
             order_by="year_desc",
             summary=True,
