@@ -46,7 +46,7 @@ the button is only needed for a first pairing.
 | Scenario | What it shows |
 | --- | --- |
 | Open Speaker | Guest access, with only the token offered as the secure alternative |
-| Guest Speaker | Guest access with pairing offered as the optional secure alternative |
+| Guest Speaker | Guest access with a dynamic PIN offered as the optional secure alternative |
 | PIN Speaker | Six-digit dynamic PIN on a display |
 | Spoken PIN Speaker | Dynamic PIN spoken instead of displayed |
 | Static PIN Speaker | Fixed eight-digit PIN, always gesture-gated |
