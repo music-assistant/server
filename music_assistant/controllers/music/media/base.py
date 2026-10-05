@@ -10,7 +10,7 @@ from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast, final, overload
 
 import aiohttp
 from music_assistant_models.auth import Scope
@@ -29,8 +29,6 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
@@ -86,6 +84,7 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
@@ -141,16 +140,12 @@ PROVIDER_FEATURE_BY_MEDIA_TYPE = {
 
 # external ids tried per provider before cross-provider matching falls back to a text search
 MAX_EXTERNAL_ID_MATCH_LOOKUPS = 3
-# expected failures of a provider lookup by external id: the id is unknown or unsupported
-# there, or the provider is (temporarily) unreachable; the match then falls back to a search
-EXTERNAL_ID_LOOKUP_ERRORS = (
+# expected failures of a provider lookup by external id, after which the match falls back
+# to a search. On top of the fetch failures: a provider that advertises the lookup feature
+# but does not implement it for this kind of id
+EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     NotImplementedError,
-    MediaNotFoundError,
-    ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
-    TimeoutError,
-    aiohttp.ClientError,
+    *PROVIDER_FETCH_ERRORS,
 )
 
 SORT_KEYS = {

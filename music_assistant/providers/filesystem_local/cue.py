@@ -45,7 +45,7 @@ from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
 from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
-from .helpers import FileSystemItem
+from .helpers import FileSystemItem, get_valid_isrcs
 
 if TYPE_CHECKING:
     from . import LocalFileSystemProvider
@@ -519,7 +519,7 @@ class CueSheetHandler:
             track.artists = track_artists
         if ctx.album:
             track.album = ctx.album
-        for isrc in cue_track.isrcs:
+        for isrc in get_valid_isrcs(cue_track.isrcs, cue_item.relative_path, provider.logger):
             track.external_ids.add((ExternalID.ISRC, isrc))
         if recording_mbid := clean_mbid(cue_track.musicbrainz_recordingid, cue_item.relative_path):
             # the setter keeps external_ids in sync

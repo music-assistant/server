@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from unittest.mock import MagicMock, patch
 
@@ -89,19 +90,27 @@ def _failing_provider_fetch(
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "log_level"),
     [
-        MediaNotFoundError("Failed to get album tracks"),
-        InvalidDataError("Bandcamp returned a response that is not usable JSON"),
-        ProviderPermissionDenied("Not available in your region"),
+        # an album a provider no longer lists stays that way: a note, not a warning on every play
+        (MediaNotFoundError("Failed to get album tracks"), logging.DEBUG),
+        (InvalidDataError("Bandcamp returned a response that is not usable JSON"), logging.WARNING),
+        (ProviderPermissionDenied("Not available in your region"), logging.WARNING),
         # the transport error a provider's HTTP client raises on an HTML error page
-        aiohttp.ContentTypeError(
-            MagicMock(), (), message="Attempt to decode JSON with unexpected mimetype: text/html"
+        (
+            aiohttp.ContentTypeError(
+                MagicMock(),
+                (),
+                message="Attempt to decode JSON with unexpected mimetype: text/html",
+            ),
+            logging.WARNING,
         ),
+        (aiohttp.ClientConnectionError("connection reset"), logging.WARNING),
+        (aiohttp.ClientPayloadError("response payload is not completed"), logging.WARNING),
     ],
 )
 async def test_album_tracks_skip_failing_provider(
-    mass: MusicAssistant, error: Exception, caplog: pytest.LogCaptureFixture
+    mass: MusicAssistant, error: Exception, log_level: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A failing secondary provider is skipped (and logged) so the album still plays."""
     db_album = await _seed_album(mass, with_library_tracks=True)
@@ -114,10 +123,28 @@ async def test_album_tracks_skip_failing_provider(
     ):
         tracks = await mass.music.albums.tracks(db_album.item_id, "library")
     assert [track.name for track in tracks] == ["Track One", "Track Two"]
-    assert "Unable to fetch tracks for album Test Album from provider streaming_inst" in caplog.text
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "Unable to fetch tracks for album Test Album from provider streaming_inst"
+        )
+    ] == [log_level]
 
 
-async def test_album_tracks_do_not_hide_a_provider_account_failure(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        LoginFailed("token expired"),
+        # an HTTP status the provider did not translate: not one of the expected fetch
+        # failures, so not skipped over either, unlike the HTML error page above
+        aiohttp.ClientResponseError(MagicMock(), (), status=401, message="Unauthorized"),
+        aiohttp.ClientResponseError(MagicMock(), (), status=500, message="Internal Server Error"),
+    ],
+)
+async def test_album_tracks_do_not_hide_an_unexpected_provider_error(
+    mass: MusicAssistant, error: Exception
+) -> None:
     """A failure that is not a fetch failure is not skipped over, even with playable tracks left."""
     db_album = await _seed_album(mass, with_library_tracks=True)
     await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
@@ -125,9 +152,9 @@ async def test_album_tracks_do_not_hide_a_provider_account_failure(mass: MusicAs
         patch.object(
             mass.music.albums,
             "_get_provider_album_tracks",
-            side_effect=_failing_provider_fetch(LoginFailed("token expired")),
+            side_effect=_failing_provider_fetch(error),
         ),
-        pytest.raises(LoginFailed),
+        pytest.raises(type(error)),
     ):
         await mass.music.albums.tracks(db_album.item_id, "library")
 

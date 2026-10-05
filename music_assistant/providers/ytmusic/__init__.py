@@ -82,6 +82,7 @@ from .helpers import (
     determine_recommendation_icon,
     get_album,
     get_artist,
+    get_artist_albums,
     get_home,
     get_library_albums,
     get_library_artists,
@@ -545,20 +546,73 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         return artists[:limit]
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, cache_checksum="v1", allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
-        if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            albums = []
-            for album_obj in artist_obj["albums"]["results"]:
-                if "artists" not in album_obj:
+
+        # get_artist() only embeds ~10 item previews, so fetch each section in full.
+        # "singles" covers singles and EPs, "shows" covers radio shows and audio dramas.
+        sections = [
+            (key, section)
+            for key in ("albums", "singles", "shows")
+            if (section := artist_obj.get(key))
+        ]
+        to_hydrate = [
+            (key, section)
+            for key, section in sections
+            if section.get("browseId") and section.get("params")
+        ]
+        hydrated_sections = await asyncio.gather(
+            *(
+                get_artist_albums(
+                    channel_id=section["browseId"],
+                    params=section["params"],
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                )
+                for _key, section in to_hydrate
+            ),
+            return_exceptions=True,
+        )
+        sections_by_key = dict(
+            zip((key for key, _section in to_hydrate), hydrated_sections, strict=True)
+        )
+
+        seen: set[str] = set()
+        albums: list[Album] = []
+        for key, section in sections:
+            result = sections_by_key.get(key)
+            if isinstance(result, BaseException):
+                if isinstance(result, (KeyError, IndexError, TypeError)):
+                    # ytmusicapi fails to parse some empty sections; keep the preview instead.
+                    self.logger.warning(
+                        "Failed to hydrate YouTube Music artist %s section %r, "
+                        "using the inline preview instead",
+                        artist_obj.get("name", prov_artist_id),
+                        key,
+                        exc_info=result,
+                    )
+                    items = section.get("results", [])
+                else:
+                    # Network/auth errors should not be cached as a complete discography.
+                    raise result
+            else:
+                items = result if result is not None else section.get("results", [])
+
+            for album_obj in items:
+                browse_id = album_obj.get("browseId")
+                if not browse_id or browse_id in seen:
+                    continue
+                seen.add(browse_id)
+                if not album_obj.get("artists"):
                     album_obj["artists"] = [
                         {"id": artist_obj["channelId"], "name": artist_obj["name"]}
                     ]
-                albums.append(self._parse_album(album_obj, album_obj["browseId"]))
-            return albums
-        return []
+                albums.append(self._parse_album(album_obj, browse_id))
+
+        return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -835,15 +889,21 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         recommended_item["id"] = recommended_item["playlistId"]
                         del recommended_item["playlistId"]
                         folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist, but it's in that same weird album-like format
+                        # that you see for the get_similar_artists payload
+                        fake_artist = {
+                            "channelId": recommended_item["browseId"],
+                            "name": recommended_item["title"],
+                            "thumbnails": recommended_item["thumbnails"],
+                        }
+                        folder.items.append(self._parse_artist(fake_artist))
                     elif recommended_item.get("browseId"):
                         if podcast := self._parse_browse_podcast(recommended_item):
                             folder.items.append(podcast)
                         else:
                             # Probably an album
                             folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("subscribers"):
-                        # Probably artist
-                        folder.items.append(self._parse_album(recommended_item))
                     elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
                         # Podcast episodes show up here without a videoId/browseId,
                         # so there is no playable item to build from them
