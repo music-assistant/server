@@ -209,7 +209,7 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
         )
     )
     for prov_key in ("spotify", STREAM_INSTANCE):
-        await mass.music.database.insert(
+        await mass.streams.audio_analysis.database.insert(
             AA_TABLE_ANALYSIS,
             {
                 "media_type": "artist",
@@ -222,7 +222,9 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
 
     await artists.remove_provider_mapping(db_artist.item_id, STREAM_INSTANCE, "sp1")
 
-    rows = await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "sp1"})
+    rows = await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "sp1"}
+    )
     assert [row["provider"] for row in rows] == ["spotify"]
 
 

@@ -60,8 +60,7 @@ controllers/streams/
   audio.py             - StreamsAudio: audio processing, stream acquisition, DSP/filters
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
-  audio_analysis_database.py - AudioAnalysisDatabaseMixin: attach, schema, migration and quarantine of audio_analysis.db
-  audio_analysis_migrations.py - Versioned schema migrations for audio_analysis.db
+  audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
   constants.py         - Shared constants (buffer sizes, config keys)
   ogg_handler.py       - Chained OGG stream stitching for radio
   smart_fades/         - Smart crossfade detection and mixing
