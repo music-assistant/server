@@ -1127,13 +1127,17 @@ async def test_stop_run_emits_a_sessions_hint() -> None:
         "Any",
         SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
     )
-    stopped: list[str] = []
+    hinted_before_stop: list[bool] = []
+
+    async def _stop(_queue_id: str) -> None:
+        hinted_before_stop.append(cast("MagicMock", provider.signal_provider_event).called)
+
     provider.mass = cast(
         "Any",
         SimpleNamespace(
             player_queues=SimpleNamespace(
                 get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
-                stop=_recording_stop(stopped),
+                stop=_stop,
             )
         ),
     )
@@ -1145,6 +1149,7 @@ async def test_stop_run_emits_a_sessions_hint() -> None:
     await provider.stop_run(session_id="s1")
 
     assert session.status == "stopped"
+    assert hinted_before_stop == [True]
     cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
         {"event": EVENT_SESSIONS_UPDATED}
     )

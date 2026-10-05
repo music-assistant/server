@@ -11,7 +11,7 @@ instance). Every payload is a refetch hint without state::
     {"event": "queue_dj_updated"}   -> refetch ai_radio/queue_dj/status
     {"event": "sessions_updated"}   -> refetch ai_radio/status
 
-The endpoints apply the caller's player access, which is why the events themselves
+The status endpoints apply the caller's player access, which is why the events themselves
 carry nothing.
 """
 
