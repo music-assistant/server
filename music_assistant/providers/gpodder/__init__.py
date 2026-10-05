@@ -64,7 +64,7 @@ from .client import (
     EpisodeActionPlay,
     GPodderClient,
 )
-from .helpers import apply_action, find_action, index_actions, iter_episodes
+from .helpers import ActionIndex, apply_action, find_action, index_actions, iter_episodes
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -236,22 +236,8 @@ class GPodder(MusicProvider):
                 mass_episode = self._parse_episode(
                     feed_url, parsed_podcast, parsed_episode, position
                 )
-                if mass_episode is None:
-                    continue
-                # the playlog writes must not be reported back to gPodder
-                self.progress_guard_timestamp = time.time()
-                if isinstance(action, EpisodeActionNew):
-                    await self.mass.music.mark_item_unplayed(
-                        mass_episode, provider_instance_id=self.instance_id
-                    )
-                else:
-                    await self.mass.music.mark_item_played(
-                        mass_episode,
-                        fully_played=action.position >= action.total,
-                        seconds_played=action.position,
-                        user_initiated=False,
-                        provider_instance_id=self.instance_id,
-                    )
+                if mass_episode is not None:
+                    await self._write_playlog(mass_episode, action)
             if unmatched := len({id(action) for _, action in actions.values()} - matched):
                 self.logger.debug(
                     "%s episode actions of %s match no episode in its feed", unmatched, feed_url
@@ -284,9 +270,8 @@ class GPodder(MusicProvider):
         )
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
-        """Get Podcast episodes, with the progress gPodder holds for them."""
-        episode_actions, _ = await self._client.get_episode_actions()
-        actions = index_actions(episode_actions).get(prov_podcast_id, {})
+        """Get Podcast episodes, with the progress gPodder got since the last sync."""
+        actions, synced = await self._get_unsynced_actions(prov_podcast_id)
         podcast = await self._cache_get_podcast(prov_podcast_id)
         for position, parsed_episode, stream_url, guid in iter_episodes(podcast):
             mass_episode = self._parse_episode(prov_podcast_id, podcast, parsed_episode, position)
@@ -294,10 +279,12 @@ class GPodder(MusicProvider):
                 continue
             if action := find_action(actions, guid, stream_url):
                 apply_action(mass_episode, action)
+                if synced:
+                    await self._write_playlog(mass_episode, action)
             yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get Podcast Episode, with the progress gPodder holds for it."""
+        """Get Podcast Episode, with the progress gPodder got since the last sync."""
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
         podcast = await self._cache_get_podcast(podcast_id)
         for position, parsed_episode, stream_url, guid in iter_episodes(podcast):
@@ -307,10 +294,11 @@ class GPodder(MusicProvider):
             mass_episode = self._parse_episode(podcast_id, podcast, parsed_episode, position)
             if mass_episode is None:
                 break
-            episode_actions, _ = await self._client.get_episode_actions()
-            actions = index_actions(episode_actions).get(podcast_id, {})
+            actions, synced = await self._get_unsynced_actions(podcast_id)
             if action := find_action(actions, guid, stream_url):
                 apply_action(mass_episode, action)
+                if synced:
+                    await self._write_playlog(mass_episode, action)
             await enrich_episode_chapters(
                 session=self.mass.http_session,
                 chapters_json_url=parsed_episode.get("chapters_json_url"),
@@ -469,6 +457,32 @@ class GPodder(MusicProvider):
             domain=self.domain,
             instance_id=self.instance_id,
         )
+
+    async def _get_unsynced_actions(self, podcast_id: str) -> tuple[ActionIndex, bool]:
+        """Return the podcast's actions the playlog lacks, and whether the sync wrote the rest."""
+        # without a completed sync of this feed the whole history is needed, but it is too
+        # large to write to the playlog outside of the sync
+        synced = bool(self.timestamp_actions) and podcast_id in self.feeds
+        episode_actions, _ = await self._client.get_episode_actions(
+            since=self.timestamp_actions if synced else 0
+        )
+        return index_actions(episode_actions).get(podcast_id, {}), synced
+
+    async def _write_playlog(self, mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
+        # the playlog writes must not be reported back to gPodder
+        self.progress_guard_timestamp = time.time()
+        if isinstance(action, EpisodeActionNew):
+            await self.mass.music.mark_item_unplayed(
+                mass_episode, provider_instance_id=self.instance_id
+            )
+        elif isinstance(action, EpisodeActionPlay):
+            await self.mass.music.mark_item_played(
+                mass_episode,
+                fully_played=action.position >= action.total,
+                seconds_played=action.position,
+                user_initiated=False,
+                provider_instance_id=self.instance_id,
+            )
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         parsed_podcast = await self._cache_get_podcast(podcast_id)
