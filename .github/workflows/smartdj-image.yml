@@ -42,5 +42,5 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:0.0.4
+            ${{ env.IMAGE }}:0.0.5
             ${{ env.IMAGE }}:sha-${{ github.sha }}
