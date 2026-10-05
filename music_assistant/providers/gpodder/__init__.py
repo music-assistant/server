@@ -64,7 +64,14 @@ from .client import (
     EpisodeActionPlay,
     GPodderClient,
 )
-from .helpers import ActionIndex, apply_action, find_action, index_actions, iter_episodes
+from .helpers import (
+    ActionIndex,
+    action_time,
+    apply_action,
+    find_action,
+    index_actions,
+    iter_episodes,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -337,9 +344,7 @@ class GPodder(MusicProvider):
         podcast_id, guid_or_stream_url = item_id.split(" ")
         try:
             # only the library sync moves this timestamp, as it writes the actions to the playlog
-            progresses, timestamp = await self._client.get_episode_actions(
-                since=self.timestamp_actions
-            )
+            progresses, _ = await self._client.get_episode_actions(since=self.timestamp_actions)
         except RuntimeError:
             self.logger.warning("Was unable to obtain progresses.")
             raise NotImplementedError  # fallback to internal position.
@@ -348,9 +353,12 @@ class GPodder(MusicProvider):
             # progress is external, compare guid and stream_url
             stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
             action = find_action(actions, guid_or_stream_url, stream_url)
-        dt_timestamp = from_utc_timestamp(timestamp) if timestamp is not None else None
+        # the action's own time, so core still prefers a newer playlog entry
+        dt_timestamp = (
+            from_utc_timestamp(seconds) if action and (seconds := action_time(action)) else None
+        )
         if isinstance(action, EpisodeActionNew):
-            # actively reset in another client, which wins over the playlog
+            # actively reset in another client, which wins over an older playlog entry
             return False, 0, dt_timestamp
         if isinstance(action, EpisodeActionDelete):
             # a deleted download says nothing about progress, the playlog still decides

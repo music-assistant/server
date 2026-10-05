@@ -189,20 +189,25 @@ async def test_listing_shows_and_writes_what_is_new_since_the_sync(
 
 
 @pytest.mark.parametrize(
-    ("action", "timestamp"),
+    ("action", "action_timestamp", "timestamp"),
     [
-        # a mark as unplayed carries its time, so core prefers it over the playlog
-        (EpisodeActionNew, from_utc_timestamp(999)),
-        # a deleted download does not, so a finished episode stays finished
-        (EpisodeActionDelete, None),
+        # a mark as unplayed carries its own time, so core compares it with the playlog's
+        (EpisodeActionNew, "2024-01-04T10:00:00", from_utc_timestamp(1_704_362_400)),
+        # without a readable time core keeps the higher position
+        (EpisodeActionNew, "", None),
+        # a deleted download says nothing about progress, so a finished episode stays finished
+        (EpisodeActionDelete, "2024-01-04T10:00:00", None),
     ],
 )
-async def test_reset_in_another_client_wins_over_the_playlog(
-    provider: GPodder, action: type[EpisodeActionNew | EpisodeActionDelete], timestamp: Any
+async def test_reset_in_another_client_carries_its_own_time(
+    provider: GPodder,
+    action: type[EpisodeActionNew | EpisodeActionDelete],
+    action_timestamp: str,
+    timestamp: Any,
 ) -> None:
-    """Only an explicit reset since the last sync overrides MA's own resume position."""
+    """A reset is compared with the playlog by when it happened, not when it was fetched."""
     _serve(provider)
-    reset = action(podcast=FEED, episode="https://example.com/ep2.mp3")
+    reset = action(podcast=FEED, episode="https://example.com/ep2.mp3", timestamp=action_timestamp)
     cast("Mock", provider._client).get_episode_actions = AsyncMock(return_value=([reset], 999))
 
     resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
