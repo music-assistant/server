@@ -80,11 +80,11 @@ def test_album_image_prefers_primary_image_tag(provider: Mock) -> None:
         "Id": "album-1",
         "Name": "Album",
         "ImageTags": {},
-        "PrimaryImageItemId": "album-1",
+        "PrimaryImageItemId": "parent-album-1",
         "PrimaryImageTag": "album-tag",
     }
     album = parse_album(INSTANCE_ID, provider, item)
-    assert _image_path(album) == (f"{BASE_URL}Items/album-1/Images/Primary?tag=album-tag")
+    assert _image_path(album) == (f"{BASE_URL}Items/parent-album-1/Images/Primary?tag=album-tag")
 
 
 def test_album_image_falls_back_to_own_tag(provider: Mock) -> None:
