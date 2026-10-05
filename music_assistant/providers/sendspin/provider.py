@@ -477,6 +477,7 @@ class SendspinProvider(PlayerProvider):
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
+            self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
@@ -1826,6 +1827,14 @@ class SendspinProvider(PlayerProvider):
         if hass_available != self._hass_available:
             self._hass_available = hass_available
             await self._refresh_hass_esphome_enrichment()
+
+    def _on_queue_updated(self, event: MassEvent) -> None:
+        """Forward a queue change to the Sendspin players, so repeat and shuffle stay current."""
+        if (queue_id := event.object_id) is None:
+            return
+        for player in self.players:
+            if isinstance(player, SendspinPlayer):
+                player.on_queue_updated(queue_id)
 
     def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

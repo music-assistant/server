@@ -1665,6 +1665,20 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
+    def on_queue_updated(self, queue_id: str) -> None:
+        """Push the repeat and shuffle state of the queue this player is playing."""
+        current_media = self.state.current_media
+        if (
+            self.synced_to is not None
+            or self._content_takeover_pending
+            or current_media is None
+            or current_media.source_id != queue_id
+            or not current_media.queue_item_id
+        ):
+            return
+        repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
+        self._publish_repeat_shuffle(repeat, shuffle=shuffle)
+
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available or self._content_takeover_pending:
@@ -1717,7 +1731,6 @@ class SendspinPlayer(SendspinBasePlayer):
             album_artist,
             is_playing=is_playing,
         )
-        repeat, shuffle = self._queue_repeat_shuffle(queue)
         track_progress = metadata.track_progress
         if track_progress is None:
             return
@@ -1738,6 +1751,8 @@ class SendspinPlayer(SendspinBasePlayer):
 
         if not self._metadata_publish_allowed(generation):
             return
+        # Read only now, so a change published by on_queue_updated meanwhile is not undone.
+        repeat, shuffle = self._queue_repeat_shuffle(queue)
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
         # Send color palette derived from the cover art (already computed by

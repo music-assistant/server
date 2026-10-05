@@ -54,3 +54,25 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     assert metadata.shuffle is None
     player._controller_role.set_repeat.assert_called_once_with(SendspinRepeatMode.ALL)
     player._controller_role.set_shuffle.assert_called_once_with(shuffle=True)
+
+
+def test_queue_update_publishes_repeat_and_shuffle_for_the_playing_queue_only() -> None:
+    """A repeat or shuffle change reaches clients without waiting for the next metadata push."""
+    player = MagicMock()
+    player.synced_to = None
+    player._content_takeover_pending = False
+    player.state.current_media = PlayerMedia(
+        uri="track-1", media_type=MediaType.TRACK, source_id="queue-1", queue_item_id="item-1"
+    )
+    player.mass.player_queues.get.return_value = MagicMock(
+        repeat_mode=RepeatMode.ONE, shuffle_enabled=True
+    )
+    player._queue_repeat_shuffle = SendspinPlayer._queue_repeat_shuffle
+    player._publish_repeat_shuffle = partial(SendspinPlayer._publish_repeat_shuffle, player)
+
+    SendspinPlayer.on_queue_updated(player, "other-queue")
+    player._controller_role.set_repeat.assert_not_called()
+
+    SendspinPlayer.on_queue_updated(player, "queue-1")
+    player._controller_role.set_repeat.assert_called_once_with(SendspinRepeatMode.ONE)
+    player._controller_role.set_shuffle.assert_called_once_with(shuffle=True)
