@@ -2246,7 +2246,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             or (allowed := visible_music_sources(self.mass, user)) is None
         ):
             return provider_instance_id_or_domain
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        provider = self.mass.get_provider(provider_instance_id_or_domain, return_unavailable=True)
         if provider is not None and provider.type != ProviderType.MUSIC:
             # metadata and plugin providers are household-wide
             return provider_instance_id_or_domain

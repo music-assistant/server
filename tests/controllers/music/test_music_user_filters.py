@@ -314,8 +314,13 @@ def _controller_with_sources(
     controller.mass = Mock(
         providers=loaded,
         get_provider=Mock(
-            side_effect=lambda instance_id, **_kwargs: next(
-                (prov for prov in loaded if prov.instance_id == instance_id), None
+            side_effect=lambda instance_id, return_unavailable=False, **_kwargs: next(
+                (
+                    prov
+                    for prov in loaded
+                    if prov.instance_id == instance_id and (return_unavailable or prov.available)
+                ),
+                None,
             )
         ),
         get_provider_instances=Mock(
@@ -906,6 +911,8 @@ async def test_genre_library_count_ignores_music_sources(
         ("spotify--TPf9JZ2K", True, "spotify--TPf9JZ2K"),
         ("library", True, "library"),
         ("plugin_inst", True, "plugin_inst"),
+        # an unavailable plugin is reported unavailable by the read, not refused as hidden
+        ("plugin_off", True, "plugin_off"),
         ("spotify--AAAAAAAA", True, InsufficientPermissions),
         # mass.get_provider would serve the unavailable own account through the hidden one
         ("spotify", False, ProviderUnavailableError),
@@ -927,6 +934,7 @@ def test_resolve_visible_provider(
             _music_source_prov("spotify--AAAAAAAA"),
             _music_source_prov("spotify--TPf9JZ2K", available=own_available),
             _make_prov("plugin_inst", ProviderType.PLUGIN),
+            Mock(instance_id="plugin_off", type=ProviderType.PLUGIN, available=False),
         ],
     )
     if isinstance(expected, str):
