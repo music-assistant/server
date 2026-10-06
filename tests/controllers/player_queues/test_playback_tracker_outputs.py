@@ -30,3 +30,66 @@ def test_output_player_ids_resolve_protocol_parents() -> None:
     )
 
     assert result == {"queue-1", "player-1", "missing-player"}
+
+
+def test_parse_current_item_id_ignores_items_no_longer_in_the_queue() -> None:
+    """Only accept player-reported item IDs that belong to the queue."""
+    get_item = MagicMock(return_value=None)
+    tracker = cast(
+        "Any",
+        SimpleNamespace(
+            mass=SimpleNamespace(players=SimpleNamespace(get_player=MagicMock())),
+            get_item=get_item,
+        ),
+    )
+    player = MagicMock(active_output_protocol="native")
+    player.current_media = SimpleNamespace(
+        source_id="queue-1",
+        queue_item_id="replaced-away-item",
+        uri=None,
+    )
+
+    result = PlaybackTrackerMixin._parse_player_current_item_id(
+        tracker,
+        "queue-1",
+        cast("Player", player),
+    )
+
+    assert result is None
+    get_item.assert_called_once_with("queue-1", "replaced-away-item")
+
+    get_item.reset_mock()
+    get_item.return_value = SimpleNamespace(queue_item_id="replaced-away-item")
+    result = PlaybackTrackerMixin._parse_player_current_item_id(
+        tracker,
+        "queue-1",
+        cast("Player", player),
+    )
+    assert result == "replaced-away-item"
+
+
+def test_parse_current_item_id_ignores_stale_sonos_item_id() -> None:
+    """A Sonos-reported item id is only trusted while the item remains in the queue."""
+    get_item = MagicMock(return_value=None)
+    tracker = cast(
+        "Any",
+        SimpleNamespace(
+            mass=SimpleNamespace(players=SimpleNamespace(get_player=MagicMock())),
+            get_item=get_item,
+        ),
+    )
+    player = MagicMock(active_output_protocol="native")
+    player.current_media = SimpleNamespace(
+        source_id=None,
+        queue_item_id="replaced-away-item",
+        uri="mass:queue-1:replaced-away-item",
+    )
+
+    result = PlaybackTrackerMixin._parse_player_current_item_id(
+        tracker,
+        "queue-1",
+        cast("Player", player),
+    )
+
+    assert result is None
+    get_item.assert_called_once_with("queue-1", "replaced-away-item")
