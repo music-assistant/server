@@ -31,6 +31,7 @@ from music_assistant_models.setup_flow import SetupFlowStep, TranslationRef
 
 from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -434,7 +435,7 @@ class SetupSession:
             raw_value = values.get(entry.key, entry.value)
             try:
                 # encrypted values are only ever created by the server, never submitted
-                if isinstance(raw_value, str) and raw_value.startswith(ENCRYPT_SUFFIX):
+                if contains_encrypted_value(raw_value):
                     raise ValueError("Encrypted values can not be submitted")
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)

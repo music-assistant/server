@@ -21,7 +21,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import CONF_PROVIDERS, ENCRYPT_SUFFIX
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.config.helpers import _reject_encrypted_values
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
@@ -35,7 +35,11 @@ _CORE = "faketestcore"
 _OWN_SOURCE = "filesystem_local--member"
 _ADMIN = User(user_id="admin", username="admin", role=UserRole.ADMIN)
 _MEMBER = User(user_id="member", username="member", role=UserRole.USER)
+_PLAYER = "test_player_id"
 _TEXT_ENTRY = ConfigEntry(key="folder", type=ConfigEntryType.STRING, required=True)
+_LIST_ENTRY = ConfigEntry(
+    key="folders", type=ConfigEntryType.STRING, multi_value=True, required=True
+)
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +68,15 @@ def secret_mass(mass_minimal: MusicAssistant) -> MusicAssistant:
     )
     setattr(mass_minimal, _CORE, controller)
     mass_minimal.config.set_raw_core_config_value(_CORE, "api_key", encrypted)
+    mass_minimal.config.set(
+        f"{CONF_PLAYERS}/{_PLAYER}",
+        {
+            "player_id": _PLAYER,
+            "provider": _PROVIDER,
+            "values": {"password": encrypted},
+            "setup_data": {"token": encrypted, "accounts": [encrypted], "user": "bob"},
+        },
+    )
     return mass_minimal
 
 
@@ -95,6 +108,20 @@ async def test_setup_form_rejects_an_encrypted_value() -> None:
     assert await task == {"folder": "/media/music"}
 
 
+async def test_setup_form_rejects_a_nested_encrypted_value() -> None:
+    """An encrypted value inside a submitted list is an invalid value."""
+    session = _make_session()
+    task = asyncio.create_task(session.form([_LIST_ENTRY]))
+    await _wait_for_step(session, FlowStepType.FORM)
+
+    error_step = session.handle_submit({"folders": ["/media", f"{ENCRYPT_SUFFIX}gAAAAAB"]})
+
+    assert error_step is not None
+    assert error_step.errors == {"folders": "invalid_value"}
+    assert not task.done()
+    task.cancel()
+
+
 async def test_setup_callback_drops_encrypted_params() -> None:
     """An encrypted value in an external-step callback never reaches the flow."""
     session = _make_session()
@@ -111,6 +138,27 @@ async def test_setup_callback_drops_encrypted_params() -> None:
 def test_reject_encrypted_values_accepts_plain_values() -> None:
     """Plain values and the secure string placeholder are accepted."""
     _reject_encrypted_values({"password": "hunter2", "other": SECURE_STRING_SUBSTITUTE, "n": 1})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [[f"{ENCRYPT_SUFFIX}gAAAAAB"], {"token": f"{ENCRYPT_SUFFIX}gAAAAAB"}],
+    ids=["list", "dict"],
+)
+async def test_saves_reject_a_nested_encrypted_value(
+    secret_mass: MusicAssistant, value: Any
+) -> None:
+    """Config saves refuse an encrypted value nested in a list or dict."""
+    with pytest.raises(InvalidDataError):
+        _reject_encrypted_values({"nested": value})
+    with pytest.raises(InvalidDataError):
+        await secret_mass.config.save_core_config(_CORE, {"log_level": value})
+    with (
+        patch.object(secret_mass.config, "get_player_config", AsyncMock()) as get_config,
+        pytest.raises(InvalidDataError),
+    ):
+        await secret_mass.config.save_player_config(_PLAYER, {"name": value})
+    get_config.assert_not_awaited()
 
 
 async def test_provider_save_rejects_an_encrypted_value(secret_mass: MusicAssistant) -> None:
@@ -171,3 +219,18 @@ async def test_get_value_masks_encrypted_values(
     stored = secret_mass.config.get_raw_provider_config_value(_PROVIDER, "password")
     assert isinstance(stored, str)
     assert stored.startswith(ENCRYPT_SUFFIX)
+
+
+async def test_player_get_value_masks_encrypted_values(secret_mass: MusicAssistant) -> None:
+    """Encrypted player config values read as the secure string placeholder, also when nested."""
+    password = await secret_mass.config.get_player_config_value(
+        _PLAYER, "password", return_type=str
+    )
+    setup_data: Any = await secret_mass.config.get_player_config_value(_PLAYER, "setup_data")
+
+    assert password == SECURE_STRING_SUBSTITUTE
+    assert setup_data == {
+        "token": SECURE_STRING_SUBSTITUTE,
+        "accounts": [SECURE_STRING_SUBSTITUTE],
+        "user": "bob",
+    }
