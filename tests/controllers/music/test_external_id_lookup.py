@@ -25,6 +25,9 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     """Return a music controller with a real library database."""
     controller = MusicController(mass_minimal)
     mass_minimal.music = controller
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    mass_minimal.streams = MagicMock()
+    mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     await controller._setup_database()
     yield controller
     if controller._database:

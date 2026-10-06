@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
+
+from music_assistant.constants import ENCRYPT_SUFFIX
 
 
 def is_safe_path(path: str, base_path: str | None = None) -> bool:
@@ -33,3 +36,14 @@ def is_safe_path(path: str, base_path: str | None = None) -> bool:
 def is_safe_name(name: str) -> bool:
     """Check if name is safe for use (no path separators or traversal components)."""
     return not ("/" in name or "\\" in name or ".." in name)
+
+
+def contains_encrypted_value(value: Any) -> bool:
+    """Check if value is, or holds in a nested list or dict, an encrypted config string."""
+    if isinstance(value, str):
+        return value.startswith(ENCRYPT_SUFFIX)
+    if isinstance(value, dict):
+        return any(contains_encrypted_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_encrypted_value(item) for item in value)
+    return False
