@@ -40,7 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
-from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.player_queues.helpers import is_finite_radio, sort_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
@@ -90,13 +90,19 @@ class MediaResolver:
         """
         Return the playable tracks for a media item, honoring the user's selection preferences.
 
-        Resolves an umbrella media item (artist, album, genre, playlist) to the tracks that
-        playing it would enqueue; a track resolves to itself, other types to an empty list.
+        Resolves an umbrella media item (artist, album, genre, playlist, finite radio) to the
+        tracks that playing it would enqueue; a track resolves to itself, other types to an
+        empty list.
 
         :param media_item: The media item to resolve to playable tracks.
         """
         if media_item.media_type == MediaType.TRACK:
             return [cast("Track", media_item)]
+        if media_item.media_type == MediaType.RADIO:
+            if is_finite_radio(media_item):
+                radio_tracks = await self.mass.music.radio.tracks(media_item)
+                return [track for track in radio_tracks if track.available]
+            return []
         if media_item.media_type == MediaType.ALBUM:
             return await self.get_album_tracks(cast("Album", media_item), None)
         if media_item.media_type == MediaType.ARTIST:
@@ -710,7 +716,7 @@ class MediaResolver:
                 )
         return tracks
 
-    async def _resolve_media_items(
+    async def _resolve_media_items(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
@@ -824,7 +830,12 @@ class MediaResolver:
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return await self._get_folder_items(media_item, userid, queue_id, start_from_beginning)
-        # all other: single track or radio item
+        if is_finite_radio(media_item):
+            # resolved up front like a playlist instead of played as a live stream
+            radio_tracks = await self.get_tracks_for_playback(media_item)
+            self._mark_container_played(media_item, radio_tracks, userid, queue_id)
+            return list(radio_tracks)
+        # all other: a single track, or a live/dynamic radio item played as itself
         return [cast("MediaItemType", media_item)]
 
     async def _get_folder_items(
@@ -878,9 +889,9 @@ class MediaResolver:
         Credit a container the user asked to play with an explicit play.
 
         Only credits when the container actually resolved to something, so an empty
-        playlist/artist/genre/podcast never lands in the play history.
+        playlist/artist/genre/podcast/radio never lands in the play history.
 
-        :param container: The playlist, artist, genre or podcast that was asked for.
+        :param container: The playlist, artist, genre, podcast or radio that was asked for.
         :param resolved_items: The items the container resolved to.
         :param userid: Optional user the playback is attributed to.
         :param queue_id: Optional queue the playback is requested for.

@@ -77,6 +77,7 @@ from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
     is_dynamic_source,
+    is_finite_radio,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -1833,7 +1834,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         seen: set[str] = set()
         sources: list[ItemMapping] = []
         for item in items:
-            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES and not is_dynamic_source(item):
+            # a finite radio is a container too, unlike a live stream (dynamic stations
+            # pass is_dynamic_source); its uri is also how the AI Radio DJ finds its show
+            if (
+                item.media_type not in _WIRE_SOURCE_MEDIA_TYPES
+                and not is_dynamic_source(item)
+                and not is_finite_radio(item)
+            ):
                 continue
             mapping = ItemMapping.from_item(item)
             if mapping.uri and mapping.uri in seen:

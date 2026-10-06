@@ -61,6 +61,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
+    is_finite_radio,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -940,21 +941,26 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # a play-next track never becomes a source: the pool would re-dispatch it later
-                    if (
-                        not plays_next_track
+                    # a play-next track never becomes a source: the pool would re-dispatch it
+                    # later. A finite radio station (a tracklist, not a live stream) resolves
+                    # like a playlist below but is still recorded; a dynamic station is
+                    # handled by the is_dynamic_source branch above instead.
+                    finite_parent: MediaItemType | None = (
+                        media_item
+                        if not plays_next_track
                         and not isinstance(media_item, BrowseFolder)
-                        and media_item.media_type
-                        in (
-                            MediaType.TRACK,
-                            MediaType.ALBUM,
-                            MediaType.PLAYLIST,
-                            MediaType.ARTIST,
+                        and (
+                            is_finite_radio(media_item)
+                            or media_item.media_type
+                            in (
+                                MediaType.TRACK,
+                                MediaType.ALBUM,
+                                MediaType.PLAYLIST,
+                                MediaType.ARTIST,
+                            )
                         )
-                    ):
-                        # record the finite parent as a source (kept for a later dynamic
-                        # transition and for similar/autoplay seeds)
-                        source_items.append(media_item)
+                        else None
+                    )
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
                     if isinstance(start_item, str):
@@ -974,6 +980,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         keep_preceding_items=queue.shuffle_enabled,
                     )
                     media_items += resolved_items
+                    if finite_parent is not None and resolved_items:
+                        # record the finite parent as a source (kept for a later dynamic
+                        # transition and for similar/autoplay seeds); one that yielded nothing
+                        # is not a source, or a show's DJ would arm on an empty queue
+                        source_items.append(finite_parent)
                     if plays_next_track:
                         play_next_items += resolved_items
 
