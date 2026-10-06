@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
@@ -232,3 +233,146 @@ async def test_unknown_mute_state_stays_unknown() -> None:
     player = await _updated_player(is_volume_muted=None)
 
     assert player.volume_muted is None
+
+
+@pytest.mark.parametrize("capable", [True, False])
+async def test_spotify_connect_is_exposed_as_controllable_source(capable: bool) -> None:
+    """A Spotify Connect session on the device offers the transport controls the device has."""
+    player = await _updated_player(
+        current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+        has_pause=True,
+        has_next=capable,
+        has_previous=capable,
+        has_seek_rel_time=capable,
+        can_seek_rel_time=capable,
+    )
+
+    assert player.active_source == "spotify"
+    assert len(player.source_list) == 1
+    source = player.source_list[0]
+    assert source.id == "spotify"
+    assert source.passive
+    assert source.can_play_pause
+    assert source.can_next_previous is capable
+    assert source.can_seek is capable
+
+
+async def test_spotify_seek_follows_live_transport_actions() -> None:
+    """Seek isn't offered while the device leaves Seek out of its current transport actions."""
+    player = await _updated_player(
+        current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+        has_seek_rel_time=True,
+        can_seek_rel_time=False,
+    )
+
+    assert player.source_list[0].can_seek is False
+
+
+async def test_spotify_source_is_dropped_when_the_session_ends() -> None:
+    """Once the device plays something else, the Spotify source is no longer listed."""
+    device = _mock_device(current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    device.current_track_uri = "http://192.168.1.2:8097/flow/stream.flac"
+    await player.set_dynamic_attributes()
+
+    assert player.active_source is None
+    assert player.source_list == []
+
+
+async def test_transport_features_follow_device_capabilities() -> None:
+    """Next/previous and seek are advertised only when the device has those actions."""
+    capable = _player(_mock_device(has_next=True, has_previous=True, has_seek_rel_time=True))
+    capable.set_static_attributes()
+    limited = _player(_mock_device(has_next=True, has_previous=False, has_seek_rel_time=False))
+    limited.set_static_attributes()
+
+    assert {PlayerFeature.NEXT_PREVIOUS, PlayerFeature.SEEK} <= capable.supported_features
+    assert PlayerFeature.NEXT_PREVIOUS not in limited.supported_features
+    assert PlayerFeature.SEEK not in limited.supported_features
+
+
+async def test_seek_sends_relative_time() -> None:
+    """Seeking sends the position to the device as a relative time."""
+    device = _mock_device(async_seek_rel_time=AsyncMock())
+    player = _player(device)
+
+    await player.seek(83)
+
+    device.async_seek_rel_time.assert_awaited_once_with(timedelta(seconds=83))
+
+
+@pytest.mark.parametrize(
+    ("command", "action_name"), [("next_track", "Next"), ("previous_track", "Previous")]
+)
+async def test_skip_is_sent_despite_stale_transport_actions(command: str, action_name: str) -> None:
+    """A device whose CurrentTransportActions omits Next/Previous still gets the raw action."""
+    action = MagicMock(async_call=AsyncMock())
+    device = _mock_device(
+        can_next=False, can_previous=False, async_next=AsyncMock(), async_previous=AsyncMock()
+    )
+    device._action = MagicMock(
+        side_effect=lambda _service, name: action if name == action_name else None
+    )
+    player = _player(device)
+
+    await getattr(player, command)()
+
+    device._action.assert_any_call("AVT", action_name)
+    action.async_call.assert_awaited_once_with(InstanceID=0)
+
+
+@pytest.mark.parametrize(
+    ("command", "args"), [("seek", (83,)), ("next_track", ()), ("previous_track", ())]
+)
+async def test_transport_command_reads_the_new_state_back(
+    command: str, args: tuple[int, ...]
+) -> None:
+    """A device that sends no event for a skip or seek still reports its new track and position."""
+    device = _mock_device(
+        can_next=True,
+        can_previous=True,
+        async_seek_rel_time=AsyncMock(),
+        async_next=AsyncMock(),
+        async_previous=AsyncMock(),
+    )
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the state the command left the device in."""
+        device.media_title = "New Title"
+        device.media_position = 83
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    scheduled: list[tuple[float, Any]] = []
+
+    def _call_later(delay: float, target: Any, *_args: Any, **_kwargs: Any) -> None:
+        # the base player also schedules synchronous media callbacks, which are not polls
+        if inspect.iscoroutinefunction(target):
+            scheduled.append((delay, target))
+
+    player.mass.call_later = _call_later  # type: ignore[method-assign,assignment]
+
+    await getattr(player, command)(*args)
+    assert scheduled
+    for delay, target in scheduled:
+        assert delay < player.poll_interval
+        await target()
+
+    assert player.current_media is not None
+    assert player.current_media.title == "New Title"
+    assert player.elapsed_time == 83.0
+
+
+async def test_pending_refresh_does_not_reconnect_an_unloaded_player() -> None:
+    """A refresh timer that fires after the device was disconnected leaves it disconnected."""
+    player = _player(_mock_device())
+    player.device = None
+    player._device_connect = AsyncMock()  # type: ignore[method-assign]
+
+    await player._refresh_state()
+
+    player._device_connect.assert_not_awaited()
+    assert player.device is None
