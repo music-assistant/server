@@ -816,3 +816,71 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
         "user4": serialize_to_json(collage),
         "user5": foreign,
     }
+
+
+async def test_migration_drops_images_without_a_path(
+    database: DatabaseConnection, tmp_path: Path
+) -> None:
+    """
+    Images with an empty path leave the library, so stations stop sharing one proxy id.
+
+    Every other image stays, rows that can not be parsed are left alone and the playlog
+    forgets an empty-path image of a played item.
+    """
+    for table in ("radios", "tracks"):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN image json")
+    empty = _image("thumb", "", "radiobrowser--abc")
+    tunein = _image("thumb", "https://cdn-radiotime-logos.tunein.com/s1.png", "tunein")
+    stored_radios = {
+        1: serialize_to_json({"images": [empty, tunein], "last_refresh": 1}),
+        2: json.dumps({"images": [empty]}),
+        3: serialize_to_json({"images": [tunein, empty]}),
+        4: serialize_to_json({"images": [tunein], "description": ""}),
+        5: 'not json ""',
+        6: None,
+    }
+    for item_id, metadata in stored_radios.items():
+        await database.execute(
+            "INSERT INTO radios (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    await database.execute(
+        "INSERT INTO tracks (item_id, metadata) VALUES (1, :metadata)",
+        {"metadata": serialize_to_json({"images": [empty, tunein]})},
+    )
+    for userid, image in (
+        ("user1", serialize_to_json(empty)),
+        ("user2", serialize_to_json(tunein)),
+    ):
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_PLAYLOG} (userid, image) VALUES (:userid, :image)",
+            {"userid": userid, "image": image},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    mass.cache_path = str(tmp_path)
+
+    await migrate_database(mass, database, MagicMock(), prev_version=62, create_tables=AsyncMock())
+
+    radios = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query(
+            "SELECT item_id, metadata FROM radios", limit=0
+        )
+    }
+    assert json.loads(radios[1]) == {"images": [tunein], "last_refresh": 1}
+    assert json.loads(radios[2]) == {"images": []}
+    assert json.loads(radios[3]) == {"images": [tunein]}
+    for item_id in (4, 5, 6):
+        assert radios[item_id] == stored_radios[item_id]
+    track_rows = await database.get_rows_from_query("SELECT metadata FROM tracks", limit=0)
+    assert json.loads(track_rows[0]["metadata"]) == {"images": [tunein]}
+    playlog_rows = await database.get_rows_from_query(
+        f"SELECT userid, image FROM {DB_TABLE_PLAYLOG}", limit=0
+    )
+    assert {row["userid"]: row["image"] for row in playlog_rows} == {
+        "user1": None,
+        "user2": serialize_to_json(tunein),
+    }

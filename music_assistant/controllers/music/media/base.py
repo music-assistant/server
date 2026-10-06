@@ -63,6 +63,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.controllers.music.helpers import (
+    preferred_thumb,
     provider_mappings_from_urls,
     search_name_match_clause,
     sibling_instance_mappings,
@@ -81,7 +82,11 @@ from music_assistant.helpers.external_ids import (
     normalize_external_ids,
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
-from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
+from music_assistant.helpers.provider_access import (
+    exact_provider,
+    hidden_music_sources,
+    visible_music_sources,
+)
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
@@ -794,6 +799,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if len(db_rows) != 1:
             raise MediaNotFoundError(f"Collection {name} not found.")
 
+        hidden_sources = self._hidden_sources()
         return cast(
             "MediaCollection[ItemCls]",
             MediaCollection(
@@ -803,7 +809,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_mappings=set(),
                 items=UniqueList(
                     [
-                        self.item_cls.from_dict(self._parse_db_row(json_loads(x)))
+                        self.item_cls.from_dict(self._parse_db_row(json_loads(x), hidden_sources))
                         for x in json_loads(db_rows[0]["media_data"])
                     ]
                 ),
@@ -1808,15 +1814,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_rows = await self.mass.music.database.get_rows_from_query(
             sql_query, query_params, limit=limit, offset=offset
         )
+        hidden_sources = self._hidden_sources()
         if collapse_collections:
             items: list[ItemCls | MediaCollection[ItemCls]] = []
 
             def _parse_method(x: str) -> ItemCls:
                 if summary:
-                    return cast("ItemCls", self._parse_summary_row(json_loads(x)))
+                    return cast("ItemCls", self._parse_summary_row(json_loads(x), hidden_sources))
                 return cast(
                     "ItemCls",
-                    self.item_cls.from_dict(self._parse_db_row(json_loads(x))),
+                    self.item_cls.from_dict(self._parse_db_row(json_loads(x), hidden_sources)),
                 )
 
             for db_row in db_rows:
@@ -1838,9 +1845,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     )
             return items
         if summary:
-            return [cast("ItemCls", self._parse_summary_row(db_row)) for db_row in db_rows]
+            return [
+                cast("ItemCls", self._parse_summary_row(db_row, hidden_sources))
+                for db_row in db_rows
+            ]
         return [
-            cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
+            cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row, hidden_sources)))
             for db_row in db_rows
         ]
 
@@ -2373,8 +2383,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @final
     @staticmethod
-    def _parse_db_row(db_row: Mapping[str, Any]) -> dict[str, Any]:
-        """Parse raw db Mapping into a dict."""
+    def _parse_db_row(db_row: Mapping[str, Any], hidden_sources: set[str]) -> dict[str, Any]:
+        """
+        Parse raw db Mapping into a dict.
+
+        :param db_row: The raw db row.
+        :param hidden_sources: Music sources hidden from the viewer.
+        """
         db_row_dict = dict(db_row)
         db_row_dict["provider"] = "library"
         db_row_dict["favorite"] = parse_optional_bool(db_row_dict["favorite"])
@@ -2400,9 +2415,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             db_row_dict["disc_number"] = track_album["disc_number"]
             db_row_dict["track_number"] = track_album["track_number"]
             # always prefer album image over track image
-            if (album_images := track_album.get("images")) and (
-                album_thumb := next((x for x in album_images if x["type"] == "thumb"), None)
-            ):
+            if album_thumb := preferred_thumb(track_album.get("images"), hidden_sources):
                 # copy album image to itemmapping single image (on the track)
                 db_row_dict["image"] = album_thumb
                 # also set image on the album dict for ItemMapping compatibility
@@ -2609,6 +2622,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 item_id, provider_key, self.media_type
             )
 
+    @final
+    def _hidden_sources(self) -> set[str]:
+        """Return the music sources hidden from the current user."""
+        user = get_current_user()
+        return hidden_music_sources(self.mass, user) if user else set()
+
     async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
         """
         Remove images belonging to a provider from a library item's stored metadata.
@@ -2672,12 +2691,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for raw_mapping in json_loads(db_row["provider_mappings"])
         }
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> MediaItemSummaryType:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> MediaItemSummaryType:
         """
         Parse a raw summary db row into a summary item of this controller's media type.
 
         Override in a subclass to fill additional per-type fields (selected by the
         subclass's summary_query).
+
+        :param db_row: The raw summary db row.
+        :param hidden_sources: Music sources hidden from the viewer.
         """
         provider_mappings = self._parse_summary_provider_mappings(db_row)
         return self.summary_item_cls(
@@ -2688,7 +2712,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             favorite=parse_optional_bool(db_row["favorite"]),
             provider_mappings=provider_mappings,
             available=self._summary_available(provider_mappings),
-            metadata=self._parse_summary_metadata(db_row),
+            metadata=self._parse_summary_metadata(db_row, hidden_sources),
         )
 
     @final
@@ -2713,22 +2737,33 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     @final
-    @staticmethod
-    def _parse_summary_metadata(db_row: Mapping[str, Any]) -> MediaItemMetadataSummary:
-        """Build the slim metadata of a summary row, carrying only the (first) thumb image."""
-        thumb: MediaItemImage | None = None
-        if raw_images := db_row["images"]:
-            for image in json_loads(raw_images):
-                if image["type"] != ImageType.THUMB.value:
-                    continue
-                thumb = MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image["path"],
-                    provider=image["provider"],
-                    remotely_accessible=image.get("remotely_accessible", False),
-                )
-                break
+    def _parse_summary_metadata(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> MediaItemMetadataSummary:
+        """Build the slim metadata of a summary row, carrying only the thumb to show."""
+        raw_images = db_row["images"]
+        thumb = self._summary_thumb(json_loads(raw_images) if raw_images else None, hidden_sources)
         return MediaItemMetadataSummary(images=UniqueList([thumb]) if thumb else None)
+
+    @final
+    @staticmethod
+    def _summary_thumb(
+        images: list[dict[str, Any]] | None, hidden_sources: set[str]
+    ) -> MediaItemImage | None:
+        """
+        Return the thumb a summary item shows of the given stored (raw) images.
+
+        :param images: The stored (raw) images.
+        :param hidden_sources: Music sources hidden from the viewer.
+        """
+        if not (image := preferred_thumb(images, hidden_sources)):
+            return None
+        return MediaItemImage(
+            type=ImageType.THUMB,
+            path=image["path"],
+            provider=image["provider"],
+            remotely_accessible=image.get("remotely_accessible", False),
+        )
 
     @final
     def _parse_summary_artist_mappings(

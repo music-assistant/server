@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Callable, Iterable
 from contextlib import suppress
+from copy import deepcopy
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -73,6 +74,7 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address, join_task
 from music_assistant.models.player import AnnouncementFeature, Player, PlayerMedia
@@ -276,6 +278,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.models.setup_flow import SetupSession
@@ -1215,6 +1218,8 @@ class SendspinPlayer(SendspinBasePlayer):
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
     _hass_announce_entity_id: str | None = None
+    # sample rate an automatic Sendspin format follows, set by the last playback session
+    _session_sample_rate: int | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1250,11 +1255,28 @@ class SendspinPlayer(SendspinBasePlayer):
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]] | None:
-        """Return supported (sample_rate, bit_depth) tuples derived from the player role."""
+        """Return the (sample_rate, bit_depth) tuples of the Sendspin formats this player plays."""
         # not cached: the player role / reported formats can change after the
         # client (re)registers, so we always re-resolve from the live role state
+        config_value = cast(
+            "str",
+            self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
+        )
         if (player_role := self._player_role) is not None:
-            formats = player_role.get_supported_formats() or []
+            if config_value != SENDSPIN_FORMAT_AUTOMATIC and (
+                parsed := option_value_to_format(config_value)
+            ):
+                codec, audio_format = parsed
+                # a format the client no longer lists falls back to the client's default
+                if any(
+                    fmt.codec == codec
+                    and fmt.sample_rate == audio_format.sample_rate
+                    and fmt.bit_depth == audio_format.bit_depth
+                    and fmt.channels == audio_format.channels
+                    for fmt in player_role.get_supported_formats() or []
+                ):
+                    return [(audio_format.sample_rate, audio_format.bit_depth)]
+            formats = self._top_codec_formats(player_role)
             rates = sorted({(fmt.sample_rate, fmt.bit_depth) for fmt in formats})
             if rates:
                 return rates
@@ -1498,6 +1520,25 @@ class SendspinPlayer(SendspinBasePlayer):
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
         await self._apply_static_delay()
+
+    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
+        """
+        Match an automatic Sendspin format to the sample rate of a new playback session.
+
+        The rate follows the player's sample rate setting for the first item of the session.
+        Without a first item, the client's own default format is used.
+        An explicitly configured Sendspin format is left as is.
+
+        :param start_streamdetails: Stream details of the first item of the session, if any.
+        """
+        if start_streamdetails is None:
+            self._session_sample_rate = None
+        else:
+            pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+                self, start_streamdetails=start_streamdetails
+            )
+            self._session_sample_rate = pcm_format.sample_rate
+        await self._apply_preferred_format()
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -1756,6 +1797,11 @@ class SendspinPlayer(SendspinBasePlayer):
                         advanced=True,
                     )
                 )
+                # an automatic format follows the session sample rate picked by this setting
+                sample_rate_entry = deepcopy(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
+                sample_rate_entry.depends_on = CONF_PREFERRED_SENDSPIN_FORMAT
+                sample_rate_entry.depends_on_value = SENDSPIN_FORMAT_AUTOMATIC
+                entries.append(sample_rate_entry)
 
         if (
             player_role is not None
@@ -1964,8 +2010,8 @@ class SendspinPlayer(SendspinBasePlayer):
             self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
-            # Automatic mode: clear override and let client decide.
-            player_role.set_preferred_format(None, None)
+            # Automatic mode: follow the session sample rate, else let the client decide.
+            player_role.set_preferred_format(*self._session_format(player_role))
             return
 
         parsed = option_value_to_format(config_value)
@@ -1985,6 +2031,39 @@ class SendspinPlayer(SendspinBasePlayer):
                 audio_format,
                 self.display_name,
             )
+
+    def _session_format(
+        self, player_role: PlayerRoleProtocol
+    ) -> tuple[SendspinAudioFormat | None, AudioCodec | None]:
+        """
+        Return the client's format for the session sample rate, or (None, None) for its default.
+
+        Only formats in the codec of the client's own top choice are considered.
+
+        :param player_role: The player role of this client.
+        """
+        formats = self._top_codec_formats(player_role)
+        if not formats or self._session_sample_rate in (None, formats[0].sample_rate):
+            return None, None
+        default = formats[0]
+        candidates = [fmt for fmt in formats if fmt.sample_rate == self._session_sample_rate]
+        if not candidates:
+            return None, None
+        best = max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
+        audio_format = SendspinAudioFormat(
+            sample_rate=best.sample_rate, bit_depth=best.bit_depth, channels=best.channels
+        )
+        return audio_format, best.codec
+
+    @staticmethod
+    def _top_codec_formats(player_role: PlayerRoleProtocol) -> list[SupportedAudioFormat]:
+        """
+        Return the client's formats in the codec of its own top choice, in client priority order.
+
+        :param player_role: The player role of this client.
+        """
+        formats = player_role.get_supported_formats() or []
+        return [fmt for fmt in formats if fmt.codec == formats[0].codec]
 
     async def _apply_static_delay(self) -> None:
         """Read config and send set_static_delay command if supported."""
