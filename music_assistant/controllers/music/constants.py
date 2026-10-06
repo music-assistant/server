@@ -70,3 +70,8 @@ TRACK_RECONCILIATION_MAX_TITLE_ROWS: Final[int] = 200
 # Audio analysis rows are moved out of library.db in batches of this many rows, one
 # transaction each.
 AUDIO_ANALYSIS_MOVE_BATCH_SIZE: Final[int] = 5000
+# Legacy analysis JSON rows are packed while they move, in cursor batches of this size, one
+# transaction each; a fully analysed row is ~230 KB of JSON, so a batch is held in memory
+# twice (decoded and packed) while it converts. Progress is logged once per this many rows.
+AUDIO_ANALYSIS_PACK_BATCH_SIZE: Final[int] = 100
+AUDIO_ANALYSIS_PACK_PROGRESS_ROWS: Final[int] = 2000

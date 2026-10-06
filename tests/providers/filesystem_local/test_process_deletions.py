@@ -154,7 +154,7 @@ async def test_deleted_file_keeps_other_provider_mappings(
     }
     await mass.streams.audio_analysis.database.insert(
         AA_TABLE_ANALYSIS,
-        {**analysis_row, "aa_provider_domain": "test", "analysis_data": "{}"},
+        {**analysis_row, "aa_provider_domain": "test", "header": "{}", "payload": b""},
     )
 
     await provider._process_deletions({file_path})

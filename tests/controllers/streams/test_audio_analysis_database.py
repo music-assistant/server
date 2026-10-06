@@ -20,7 +20,10 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_analysis import (
+    PROVIDER_LOUDNESS_DOMAIN,
+    AudioAnalysisController,
+)
 from music_assistant.controllers.streams.constants import (
     AA_DB_FILENAME,
     AA_DB_SCHEMA_VERSION,
@@ -31,6 +34,7 @@ from music_assistant.controllers.streams.constants import (
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -259,7 +263,8 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
                 "item_id": "t1",
                 "provider": provider,
                 "aa_provider_domain": domain,
-                "analysis_data": "{}",
+                "header": "{}",
+                "payload": b"",
                 "analysis_version": 1,
             },
         )
@@ -316,7 +321,8 @@ async def test_candidate_queries_read_library_keys_through_temp_table(
                 "item_id": item_id,
                 "provider": "filesystem_local--x",
                 "aa_provider_domain": "sonic_analysis",
-                "analysis_data": "{}",
+                "header": "{}",
+                "payload": b"",
                 "analysis_version": version,
             },
         )
@@ -405,4 +411,74 @@ async def test_newer_schema_preserves_version_and_rows(
         rows = db.execute("SELECT header, payload FROM audio_analysis").fetchall()
     assert int(version) == AA_DB_SCHEMA_VERSION + 1
     assert rows == [(b"header", b"payload")]
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+
+
+@pytest.mark.asyncio
+async def test_newer_schema_version_disables_analysis(
+    ctrl: AudioAnalysisController, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file written by a newer build is refused instead of being used or rewritten."""
+    await ctrl.setup_database()
+    await ctrl.database.insert_or_replace(
+        AA_TABLE_SETTINGS, {"key": "version", "value": "99", "type": "str"}
+    )
+    await ctrl.database.commit()
+    await ctrl.close_database()
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
+    assert any(
+        record.levelno == logging.ERROR
+        and "newer than this build supports" in record.getMessage()
+        and "upgrade Music Assistant" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_round_trip_through_controller(ctrl: AudioAnalysisController) -> None:
+    """A record written through the controller reads back with its scalars and arrays."""
+    await ctrl.setup_database()
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "fs--a"
+    ctrl.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    ctrl.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    analysis = AudioAnalysisData(
+        bpm=123.5,
+        key="F#",
+        loudness_integrated=-9.25,
+        beats=[0.5, 1.0, 1.5],
+        rms_energy=[i / 1800 for i in range(1800)],
+    )
+
+    await ctrl.set_audio_analysis("t1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, analysis)
+    stored = await ctrl.get_audio_analysis("t1", "fs--a")
+
+    assert stored is not None
+    assert stored.bpm == 123.5
+    assert stored.key == "F#"
+    assert stored.loudness_integrated == -9.25
+    assert stored.beats == [0.5, 1.0, 1.5]
+    assert stored.rms_energy is not None
+    assert stored.rms_energy == pytest.approx(analysis.rms_energy, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_setup_database_on_file_without_settings_table(
+    ctrl: AudioAnalysisController, tmp_path: pathlib.Path
+) -> None:
+    """A pre-existing empty analysis file is treated as version 0 and set up from scratch."""
+    empty = DatabaseConnection(str(tmp_path / AA_DB_FILENAME))
+    await empty.setup()
+    await empty.close()
+
+    await ctrl.setup_database()
+
+    tables = await _table_names(ctrl.database)
+    assert {DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES, DB_TABLE_SETTINGS} <= tables
+    version = await ctrl.database.get_row(AA_TABLE_SETTINGS, {"key": "version"})
+    assert version is not None
+    assert int(version["value"]) == AA_DB_SCHEMA_VERSION
     assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()

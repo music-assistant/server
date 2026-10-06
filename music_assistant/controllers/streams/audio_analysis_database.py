@@ -74,9 +74,10 @@ async def create_analysis_tables(database: DatabaseConnection, schema: str = "ma
                 [item_id] TEXT NOT NULL,
                 [provider] TEXT NOT NULL,
                 [aa_provider_domain] TEXT NOT NULL,
-                [analysis_data] json NOT NULL,
                 [analysis_version] INTEGER DEFAULT 1,
                 [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                [header] TEXT NOT NULL,
+                [payload] BLOB NOT NULL,
                 UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
     )
     await database.execute(

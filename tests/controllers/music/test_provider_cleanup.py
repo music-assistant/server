@@ -216,7 +216,8 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
                 "item_id": "sp1",
                 "provider": prov_key,
                 "aa_provider_domain": "test",
-                "analysis_data": "{}",
+                "header": "{}",
+                "payload": b"",
             },
         )
 
