@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -24,7 +25,6 @@ from music_assistant.providers.yandex_ynison.constants import (
 from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
-    YnisonEmptyRedirectError,
     YnisonSendError,
     YnisonState,
     generate_device_id,
@@ -1175,7 +1175,7 @@ class TestGetRedirectTicket:
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        with pytest.raises(YnisonEmptyRedirectError, match="missing host or ticket"):
+        with pytest.raises(LoginFailed, match="missing host or ticket"):
             await client._get_redirect_ticket()
 
     async def test_unexpected_msg_type(self, client: YnisonClient) -> None:
@@ -1409,12 +1409,84 @@ class TestMessageLoop:
         client: YnisonClient,
         mock_state_callback: AsyncMock,
     ) -> None:
-        """A broken state callback stops processing without scheduling a retry."""
+        """A broken state callback propagates while scheduling transport recovery."""
         mock_state_callback.side_effect = ValueError("broken callback")
         msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps({"player_state": {}}))
         with pytest.raises(ValueError, match="broken callback"):
             await self._run_loop_with_messages(client, [msg])
         assert not client.connected
+        assert client._reconnect_task is not None
+        await client._reconnect_task
+
+    @pytest.mark.parametrize("fault", ["callback", "parser"])
+    async def test_programming_error_closes_socket_and_schedules_recovery(
+        self, client: YnisonClient, mock_state_callback: AsyncMock, fault: str
+    ) -> None:
+        """Unexpected failures retain their traceback and cannot leak a live socket."""
+        msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps({"player_state": {}}))
+
+        async def messages(_socket: object) -> AsyncGenerator[MagicMock]:
+            yield msg
+
+        socket = MagicMock(closed=False, close=AsyncMock())
+        socket.__aiter__ = messages
+        client._ws = socket
+        client._connected = True
+        if fault == "callback":
+            mock_state_callback.side_effect = ValueError("broken callback")
+        with (
+            patch.object(client, "_parse_state", wraps=client._parse_state) as parse,
+            patch.object(client, "_schedule_reconnect") as schedule,
+        ):
+            if fault == "parser":
+                parse.side_effect = ValueError("broken parser")
+            with pytest.raises(ValueError, match="broken"):
+                await client._message_loop()
+
+        socket.close.assert_awaited_once()
+        schedule.assert_called_once()
+        assert not client.connected
+
+    @pytest.mark.parametrize("field", ["progress_ms", "duration_ms"])
+    @pytest.mark.parametrize("value", [None, "invalid", {}, True])
+    async def test_incomplete_heartbeat_cannot_match_sent_status(
+        self, client: YnisonClient, field: str, value: object
+    ) -> None:
+        """Missing or malformed wire values cannot break echo classification."""
+        client._ws = AsyncMock(closed=False)
+        client.state.player_state = {
+            "player_queue": {"current_playable_index": 0, "playable_list": [{"playable_id": "t1"}]}
+        }
+        await client.update_playing_status(1000, 2000, False)
+        status: dict[str, Any] = {
+            "progress_ms": "1000",
+            "duration_ms": "2000",
+            "paused": False,
+            "version": {"device_id": "", "version": "0", "timestamp_ms": "0"},
+        }
+        if value is None:
+            status.pop(field)
+        else:
+            status[field] = value
+        assert client._classify_state_as_echo({"status": status}) == (False, False)
+
+    async def test_stale_message_loop_cannot_close_replacement_socket(
+        self, client: YnisonClient, mock_state_callback: AsyncMock
+    ) -> None:
+        """A reconnect completed during a callback owns its own transport cleanup."""
+        replacement = AsyncMock(closed=False)
+
+        async def replace_socket(_state: YnisonState) -> None:
+            client._ws = replacement
+            client._connected = True
+            raise ValueError("old callback failed")
+
+        mock_state_callback.side_effect = replace_socket
+        msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps({"player_state": {}}))
+        with pytest.raises(ValueError, match="old callback failed"):
+            await self._run_loop_with_messages(client, [msg])
+        replacement.close.assert_not_awaited()
+        assert client.connected
         assert client._reconnect_task is None
 
     async def _run_loop_with_messages(
@@ -1431,6 +1503,7 @@ class TestMessageLoop:
         mock_ws = MagicMock()
         mock_ws.__aiter__ = _aiter
         mock_ws.send_str = AsyncMock()
+        mock_ws.close = AsyncMock()
         mock_ws.closed = False
         mock_ws.exception = MagicMock(return_value=None)
         mock_ws.close_code = None
@@ -2260,7 +2333,7 @@ class TestTokenRefreshOnReconnect:
             nonlocal attempts
             attempts += 1
             if attempts < 3:
-                raise YnisonEmptyRedirectError("missing host or ticket")
+                raise LoginFailed("missing host or ticket")
             return "host", "ticket", 1
 
         with (

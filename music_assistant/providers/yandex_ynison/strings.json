@@ -12,14 +12,6 @@
       "label": "Allow manual player switching",
       "description": "When enabled, you can select this plugin as a source on any player to switch playback to that player. When disabled, playback is fixed to the configured default player."
     },
-    "stream_mode": {
-      "label": "Stream mode",
-      "description": "Stable keeps one PCM format for uninterrupted playback. Maximum quality (dynamic) follows each track's native PCM and restarts the source only when the effective player format changes. Dynamic mode requires Yandex Music Superb quality and Auto output format settings.",
-      "options": {
-        "stable": "Stable (continuous)",
-        "max_quality_dynamic": "Maximum quality (dynamic)"
-      }
-    },
     "output_sample_rate": {
       "label": "Output sample rate",
       "description": "Sample rate for PCM output to the player. 'Auto' starts at 44.1 kHz and adapts to the real track format and target player when available.",

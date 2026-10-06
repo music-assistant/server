@@ -100,15 +100,3 @@ def test_rejects_non_yandex_music_owner() -> None:
 
         with pytest.raises(LoginFailed, match="Reconfigure this Ynison instance"):
             YandexMusicCredentialSource(mass, "wrong-owner").read_tokens()
-
-
-def test_rejects_owner_without_setup_data_accessor() -> None:
-    """Falling back to ordinary config must not hide an incompatible owner API."""
-    mass = MagicMock()
-    mass.get_provider.return_value = SimpleNamespace(
-        domain="yandex_music",
-        type=ProviderType.MUSIC,
-    )
-
-    with pytest.raises(LoginFailed, match="Upgrade Music Assistant or the Yandex Music provider"):
-        YandexMusicCredentialSource(mass, "ym-primary").read_tokens()

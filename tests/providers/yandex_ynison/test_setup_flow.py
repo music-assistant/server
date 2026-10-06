@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerType
@@ -51,6 +51,15 @@ class _SetupSession(SetupSession):
         self._mass_mock = MagicMock()
         self.mass = self._mass_mock
         self._mass_mock.config.get.return_value = providers
+        configs = []
+        for instance_id, provider_values in providers.items():
+            if provider_values.get("domain") == "yandex_music":
+                config = MagicMock(
+                    instance_id=instance_id, enabled=provider_values.get("enabled", True)
+                )
+                config.name = provider_values.get("name")
+                configs.append(config)
+        self._mass_mock.config.get_provider_configs = AsyncMock(return_value=configs)
         self._mass_mock.players.all_players.return_value = (
             [_player()] if players is None else players
         )
@@ -183,12 +192,11 @@ async def test_multiple_accounts_require_an_explicit_valid_selection() -> None:
     assert session.finished_values[CONF_YM_INSTANCE] == "ym-b"
 
 
-async def test_reconfigure_clears_legacy_auth_and_drops_legacy_identity() -> None:
-    """Reconfigure must leave exactly one credential owner and player-derived identity."""
+async def test_reconfigure_clears_legacy_auth() -> None:
+    """Reconfigure must leave the linked Yandex Music provider as the only credential owner."""
     setup_data: dict[str, ConfigValueType] = {
         CONF_YM_INSTANCE: "ym-main",
         CONF_MASS_PLAYER_ID: "living-room",
-        "publish_name": "Old free-form name",
         "token": "old-music-token",
         "x_token": "old-x-token",
         "account_login": "alice",
@@ -208,11 +216,9 @@ async def test_reconfigure_clears_legacy_auth_and_drops_legacy_identity() -> Non
         CONF_YM_INSTANCE: "ym-main",
         CONF_MASS_PLAYER_ID: "living-room",
         **dict.fromkeys(LEGACY_AUTH_KEYS),
-        "player": None,
-        "publish_name": None,
     }
     persisted = {**setup_data, **session.finished_values}
-    assert persisted["publish_name"] is None
+    assert all(persisted[key] is None for key in LEGACY_AUTH_KEYS)
 
 
 @pytest.mark.parametrize("player_type", [PlayerType.DISPLAY, PlayerType.SOURCE])

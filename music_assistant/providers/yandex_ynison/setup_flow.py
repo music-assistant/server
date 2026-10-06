@@ -34,7 +34,7 @@ async def run_setup(session: SetupSession) -> None:
     if not player_entry.options:
         raise AbortFlow("no_players")
 
-    ym_instances = list_yandex_music_instances(session.mass)
+    ym_instances = await list_yandex_music_instances(session.mass)
     if not ym_instances:
         raise AbortFlow("missing_dependency")
 
@@ -50,10 +50,9 @@ async def run_setup(session: SetupSession) -> None:
         if len(ym_instances) == 1
         else None
     )
-    selected_player = prefill.get(CONF_MASS_PLAYER_ID) or prefill.get("player")
-    legacy_keys = (*LEGACY_AUTH_KEYS, "player", "publish_name")
+    selected_player = prefill.get(CONF_MASS_PLAYER_ID)
     legacy_present = existing_source == LEGACY_YM_INSTANCE_OWN or any(
-        key in setup_data or key in original_values for key in legacy_keys
+        key in setup_data or key in original_values for key in LEGACY_AUTH_KEYS
     )
 
     errors: dict[str, str | SetupFlowError] | None = None
@@ -74,13 +73,12 @@ async def run_setup(session: SetupSession) -> None:
             CONF_MASS_PLAYER_ID: selected_player,
         }
         if legacy_present:
-            collected.update(dict.fromkeys(legacy_keys))
+            collected.update(dict.fromkeys(LEGACY_AUTH_KEYS))
         try:
             await session.finish(collected)
             return
         except SetupFlowError as err:
             errors = {"base": err}
-            setup_data = collected
 
 
 def _source_entry(

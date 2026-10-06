@@ -46,15 +46,9 @@ class YandexMusicCredentialSource:
                 f"Linked provider '{self._instance_id}' is not a Yandex Music provider. "
                 "Reconfigure this Ynison instance and select a Yandex Music provider."
             )
-        get_setup_value = getattr(owner, "get_setup_value", None)
-        if not callable(get_setup_value):
-            raise LoginFailed(
-                f"Linked Yandex Music provider '{self._instance_id}' cannot expose setup "
-                "credentials. Upgrade Music Assistant or the Yandex Music provider."
-            )
         return (
-            self._to_secret(get_setup_value(YANDEX_MUSIC_CONF_TOKEN)),
-            self._to_secret(get_setup_value(YANDEX_MUSIC_CONF_X_TOKEN)),
+            self._to_secret(owner.get_setup_value(YANDEX_MUSIC_CONF_TOKEN)),
+            self._to_secret(owner.get_setup_value(YANDEX_MUSIC_CONF_X_TOKEN)),
         )
 
     @staticmethod

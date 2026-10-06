@@ -56,10 +56,6 @@ class YnisonSendError(ConnectionError):
     """
 
 
-class YnisonEmptyRedirectError(ConnectionError):
-    """Raised when the redirector accepts a token but returns no connection ticket."""
-
-
 def make_version_block(device_id: str) -> dict[str, Any]:
     """
     Build a version sub-object authored by the given device.
@@ -458,7 +454,7 @@ class YnisonClient:
 
     async def mutate_player_state(
         self,
-        mutation: Callable[[dict[str, Any]], None],
+        mutation: Callable[[dict[str, Any]], bool | None],
         *,
         expected_generation: int | None = None,
     ) -> None:
@@ -466,6 +462,7 @@ class YnisonClient:
         Serialize a queue change against the latest successfully sent queue.
 
         :param mutation: Synchronous edit of a private complete player-state copy.
+            Return ``False`` to leave the queue unchanged without publishing.
         :param expected_generation: Queue generation that an asynchronous result belongs to.
         """
         requested_epoch = self._queue_epoch if expected_generation is None else expected_generation
@@ -474,7 +471,8 @@ class YnisonClient:
                 raise ResourceTemporarilyUnavailable("Ynison queue changed before command was sent")
             player_state = deepcopy(self.state.player_state)
             player_state["player_queue"] = self.queue_snapshot()
-            mutation(player_state)
+            if mutation(player_state) is False:
+                return
             queue = player_state.get("player_queue", {})
             queue["version"] = make_version_block(self.device_id)
             epoch = self._queue_epoch
@@ -543,14 +541,28 @@ class YnisonClient:
             return False, False
 
         status = incoming_ps.get("status") or {}
+        progress = status.get("progress_ms")
+        duration = status.get("duration_ms")
+        if (
+            not isinstance(progress, (str, int))
+            or isinstance(progress, bool)
+            or not isinstance(duration, (str, int))
+            or isinstance(duration, bool)
+        ):
+            return False, False
+        try:
+            progress_ms = int(progress)
+            duration_ms = int(duration)
+        except ValueError:
+            return False, False
         current_track = self.state.current_track_id
         now = time.monotonic()
         for watermark in reversed(self._status_watermarks):
             if (
                 now - watermark.sent_at <= 2.0
                 and current_track == watermark.track_id
-                and abs(int(status.get("progress_ms", -2)) - watermark.progress_ms) <= 1
-                and int(status.get("duration_ms", -1)) == watermark.duration_ms
+                and abs(progress_ms - watermark.progress_ms) <= 1
+                and duration_ms == watermark.duration_ms
                 and status.get("paused") is watermark.paused
             ):
                 return True, True
@@ -660,7 +672,7 @@ class YnisonClient:
         session_id = int(data.get("session_id", 0))
 
         if not host or not ticket:
-            raise YnisonEmptyRedirectError("Redirector response missing host or ticket")
+            raise LoginFailed("Redirector response missing host or ticket")
 
         self._logger.debug("Ynison redirect: host=%s, session_id=%d", host, session_id)
         return host, ticket, session_id
@@ -713,13 +725,15 @@ class YnisonClient:
         """Read messages from state service and dispatch callbacks."""
         if self._ws is None:
             raise RuntimeError("WebSocket not connected — call connect() first")
+        socket = self._ws
+        cancelled = False
         try:
-            async for msg in self._ws:
+            async for msg in socket:
                 if self._stop_event.is_set():
                     break
 
                 if msg.type == aiohttp.WSMsgType.ERROR:
-                    msg_data_preview = str(self._ws.exception())
+                    msg_data_preview = str(socket.exception())
                 elif not msg.data:
                     msg_data_preview = "<empty>"
                 elif isinstance(msg.data, str):
@@ -770,7 +784,7 @@ class YnisonClient:
                         "Ynison binary message (%d bytes)", len(msg.data) if msg.data else 0
                     )
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self._logger.warning("Ynison WebSocket error: %s", self._ws.exception())
+                    self._logger.warning("Ynison WebSocket error: %s", socket.exception())
                     break
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -780,23 +794,24 @@ class YnisonClient:
                     self._logger.debug(
                         "Ynison WS close: type=%s, close_code=%s, extra=%s",
                         msg.type,
-                        self._ws.close_code,
+                        socket.close_code,
                         msg.extra,
                     )
                     break
         except asyncio.CancelledError:
+            cancelled = True
             return
         except aiohttp.ClientError, OSError, TimeoutError:
             self._logger.exception("Unexpected error in Ynison message loop")
         finally:
-            self._connected = False
+            if self._ws is socket:
+                self._connected = False
+            if not socket.closed:
+                with suppress(aiohttp.ClientError, OSError, TimeoutError):
+                    await socket.close()
+            if self._ws is socket and not self._stop_event.is_set() and not cancelled:
+                self._schedule_reconnect()
         self._logger.debug("Ynison message loop exited")
-
-        if not self._stop_event.is_set() and (
-            self._reconnect_task is None or self._reconnect_task.done()
-        ):
-            self._logger.warning("Ynison connection lost, scheduling reconnect")
-            self._schedule_reconnect()
 
     def _reset_pending_queue(self) -> None:
         """Discard outbound queue edits when a peer or a new connection takes over."""
@@ -929,7 +944,7 @@ class YnisonClient:
                 await self._connect_state(host, ticket, session_id)
                 self._logger.info("Ynison reconnected successfully")
                 return
-            except LoginFailed, YnisonEmptyRedirectError:
+            except LoginFailed:
                 self._logger.warning("Ynison reconnect attempt %d failed: auth error", attempt)
                 if self._on_auth_failure and not refresh_attempted:
                     try:

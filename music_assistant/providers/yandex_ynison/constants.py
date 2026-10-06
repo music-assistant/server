@@ -20,18 +20,12 @@ CONF_ALLOW_PLAYER_SWITCH: Final[str] = "allow_player_switch"
 CONF_DEVICE_ID: Final[str] = "device_id"
 CONF_OUTPUT_SAMPLE_RATE: Final[str] = "output_sample_rate"
 CONF_OUTPUT_BIT_DEPTH: Final[str] = "output_bit_depth"
-CONF_STREAM_MODE: Final[str] = "stream_mode"
 
 # Special value for "auto" config options
 OUTPUT_AUTO: Final[str] = "auto"
 
-# AudioSource session policies
-STREAM_MODE_STABLE: Final[str] = "stable"
-STREAM_MODE_MAX_QUALITY: Final[str] = "max_quality_dynamic"
-
 # Legacy sentinel and auth keys retained only to reject/clear old own-mode setup data.
 LEGACY_YM_INSTANCE_OWN: Final[str] = "__own__"
-LEGACY_AUTOMATIC_PLAYER: Final[str] = "__auto__"
 LEGACY_AUTH_KEYS: Final[tuple[str, ...]] = (
     "token",
     "x_token",
