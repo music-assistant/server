@@ -364,3 +364,15 @@ async def test_transport_command_reads_the_new_state_back(
     assert player.current_media is not None
     assert player.current_media.title == "New Title"
     assert player.elapsed_time == 83.0
+
+
+async def test_pending_refresh_does_not_reconnect_an_unloaded_player() -> None:
+    """A refresh timer that fires after the device was disconnected leaves it disconnected."""
+    player = _player(_mock_device())
+    player.device = None
+    player._device_connect = AsyncMock()  # type: ignore[method-assign]
+
+    await player._refresh_state()
+
+    player._device_connect.assert_not_awaited()
+    assert player.device is None

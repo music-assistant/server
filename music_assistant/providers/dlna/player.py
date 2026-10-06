@@ -713,6 +713,11 @@ class DLNAPlayer(Player):
 
     async def _refresh_state(self) -> None:
         """Poll the full device state and update the player."""
+        if not self.device:
+            # unloaded (or dropped) since the command was sent; a forced poll on a
+            # disconnected device would reconnect and resubscribe it
+            return
+        # a subscribed device only re-reads its transport state on a forced poll
         self.force_poll = True
         await self._update_player(poll_first=True)
 
