@@ -361,6 +361,7 @@ class YandexStationPlayer(Player):
 
     async def pause(self) -> None:
         """Pause playback."""
+        self._external_play_generation += 1
         was_external = self._external_playing
         # audio_client sessions pause with the native stop command; legacy
         # bypass sessions only stop when an invalid radio URL replaces them.
@@ -380,6 +381,7 @@ class YandexStationPlayer(Player):
 
     async def stop(self) -> None:
         """Stop playback."""
+        self._external_play_generation += 1
         if self._external_playing and not self._external_audio_client:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
@@ -427,17 +429,19 @@ class YandexStationPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media using the directive supported by the station firmware."""
+        self._external_play_generation += 1
+        generation = self._external_play_generation
         self._needs_replay = False
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        if self._external_play_generation != generation:
+            return
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
 
         audio_client = self._audio_client
         command = _stream_command(stream_url, media, audio_client=audio_client)
         directive = "audio_play" if audio_client else "radio_play"
 
-        self._external_play_generation += 1
-        generation = self._external_play_generation
         self._external_playing = True
         self._external_audio_client = audio_client
         self._external_media = media

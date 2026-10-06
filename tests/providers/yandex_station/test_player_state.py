@@ -325,6 +325,91 @@ async def test_late_play_command_response_preserves_newer_request(first_fails: b
 
 
 @pytest.mark.parametrize("audio_client", [False, True])
+async def test_late_stream_resolution_preserves_newer_request(audio_client: bool) -> None:
+    """A superseded URL resolution cannot send or publish the older track."""
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}] * 2)
+    vars(player)["_audio_client"] = audio_client
+    first_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(uri="old", title="Old Track", artist="", duration=180, image_url=None),
+    )
+    new_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(uri="new", title="New Track", artist="", duration=180, image_url=None),
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def resolve_stream_url(_player_id: str, media: PlayerMedia) -> str:
+        if media is first_media:
+            first_started.set()
+            await release_first.wait()
+        return f"http://192.168.1.2:8097/{media.uri}.wav"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+    first_task = asyncio.create_task(player.play_media(first_media))
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await player.play_media(new_media)
+    finally:
+        release_first.set()
+        await first_task
+
+    assert len(commands) == 1
+    assert published_media == ["new"]
+    assert player._external_media is new_media
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_state"),
+    [("pause", PlaybackState.PAUSED), ("stop", PlaybackState.IDLE)],
+)
+async def test_transport_command_discards_pending_stream_resolution(
+    command: str, expected_state: PlaybackState
+) -> None:
+    """A URL resolved after pause or stop must not restart playback."""
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}] * 2)
+    media = cast(
+        "PlayerMedia",
+        SimpleNamespace(uri="track", title="Track", artist="", duration=180, image_url=None),
+    )
+    resolution_started = asyncio.Event()
+    release_resolution = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
+        resolution_started.set()
+        await release_resolution.wait()
+        return "http://192.168.1.2:8097/track.wav"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+    task = asyncio.create_task(player.play_media(media))
+    try:
+        await asyncio.wait_for(resolution_started.wait(), 1)
+        await getattr(player, command)()
+    finally:
+        release_resolution.set()
+        await task
+
+    assert commands == [{"command": "stop"}]
+    assert published_media == []
+    assert player._attr_playback_state == expected_state
+    assert player._external_media is None
+
+
+@pytest.mark.parametrize("audio_client", [False, True])
 async def test_cancelled_play_command_clears_active_external_media(audio_client: bool) -> None:
     """Cancelling a pending send clears its media and propagates cancellation."""
     player, _ = _make_play_media_player([])
