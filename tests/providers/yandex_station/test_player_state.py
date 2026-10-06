@@ -419,6 +419,26 @@ async def test_cancelled_old_play_command_preserves_newer_request() -> None:
     assert published_media == ["yandex_music://track/new"]
 
 
+async def test_invalid_stream_url_leaves_no_external_session() -> None:
+    """A stream URL the payload builder rejects sends nothing and starts no session."""
+    player, commands = _make_play_media_player([])
+    vars(player)["_audio_client"] = True
+
+    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
+        return "http://[::1/item.flac"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+    media = cast("PlayerMedia", SimpleNamespace(uri="track", title="Track", artist=None))
+
+    with pytest.raises(ValueError, match="IPv6"):
+        await player.play_media(media)
+
+    assert commands == []
+    assert player._external_playing is False
+    assert player._external_media is None
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
 async def test_play_media_falls_back_to_legacy_radio_play() -> None:
     """Old firmware keeps the legacy payload and does not receive a native stop."""
     player, commands = _make_play_media_player([{"status": "ERROR"}])

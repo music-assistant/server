@@ -77,6 +77,9 @@ def _stream_command(url: str, media: PlayerMedia | None, *, audio_client: bool) 
     payload: dict[str, Any] = {
         "stream": {
             "url": url,
+            # Firmware rejects the command before fetching the URL unless format
+            # is "MP3" (or "HLS" for playlists); it then detects WAV, FLAC or AAC
+            # from the stream itself (verified on hardware, AlexxIT/YandexStation#802).
             "format": "HLS" if is_hls else "MP3",
             "type": "FmRadio" if is_hls else "Track",
             "offset_ms": 0,
@@ -310,17 +313,12 @@ class YandexStationPlayer(Player):
 
     def update_connection(self, host: str, port: int) -> None:
         """
-        Update connection info when mDNS reports new IP.
+        Update the station's address after an mDNS change.
 
-        Pure mutation — no side effects.  Callers decide whether to (re)connect
-        via ``async_setup()`` so a single mDNS update can't trigger
-        concurrent/duplicate ``glagol.start()`` calls (the previous version
-        scheduled a background reconnect here, while the provider's mDNS
-        handler also called ``async_setup()`` for the not-connected branch).
+        Does not reconnect; call ``async_setup()`` to (re)connect.
 
-        For an already-connected player, the underlying socket targets the
-        old IP and will reconnect via Glagol's auto-reconnect loop if the
-        old endpoint is no longer reachable.
+        :param host: New IP address of the station.
+        :param port: New Glagol port.
         """
         self._device_info["host"] = host
         self._device_info["port"] = port
@@ -332,10 +330,9 @@ class YandexStationPlayer(Player):
 
     async def power(self, powered: bool) -> None:
         """
-        Power on/off the station.
+        Power the station on (resume playback) or off (return to the home screen).
 
-        Power on: resumes playback via player_continue scenario.
-        Power off: sends station to home screen via go_home scenario.
+        :param powered: True to power on, False to power off.
         """
         if powered:
             result = await self.glagol.send(
@@ -350,12 +347,9 @@ class YandexStationPlayer(Player):
         self.update_state()
 
     async def play(self) -> None:
-        """
-        Send PLAY command.
-
-        After external playback was stopped via Alice, native 'play' has nothing
-        to resume.  Re-trigger queue playback through MA instead.
-        """
+        """Resume playback, including a Music Assistant stream that was paused."""
+        # After external playback was paused, native "play" has nothing to
+        # resume, so the MA queue is resumed instead.
         if self._needs_replay:
             self._needs_replay = False
             queue = self.mass.player_queues.get_active_queue(self.player_id)
@@ -366,13 +360,10 @@ class YandexStationPlayer(Player):
         _raise_if_failed(result, "play")
 
     async def pause(self) -> None:
-        """
-        Send PAUSE command.
-
-        Current audio_client sessions use native stop. Legacy bypass sessions
-        still need an invalid radio URL to replace the active stream.
-        """
+        """Pause playback."""
         was_external = self._external_playing
+        # audio_client sessions pause with the native stop command; legacy
+        # bypass sessions only stop when an invalid radio URL replaces them.
         if was_external and not self._external_audio_client:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
@@ -382,17 +373,13 @@ class YandexStationPlayer(Player):
         _raise_if_failed(result, "pause")
         if was_external:
             self._needs_replay = True
-        self._external_playing = False
-        self._external_audio_client = False
-        self._external_media = None
-        self._external_play_confirmed = False
-        self._external_stop_observed = False
+        self._reset_external_session()
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def stop(self) -> None:
-        """Send STOP command."""
+        """Stop playback."""
         if self._external_playing and not self._external_audio_client:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
@@ -400,11 +387,7 @@ class YandexStationPlayer(Player):
         else:
             result = await self.glagol.send({"command": "stop"})
         _raise_if_failed(result, "stop")
-        self._external_playing = False
-        self._external_audio_client = False
-        self._external_media = None
-        self._external_play_confirmed = False
-        self._external_stop_observed = False
+        self._reset_external_session()
         self._needs_replay = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.IDLE
@@ -449,28 +432,27 @@ class YandexStationPlayer(Player):
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
 
+        audio_client = self._audio_client
+        command = _stream_command(stream_url, media, audio_client=audio_client)
+        directive = "audio_play" if audio_client else "radio_play"
+
         self._external_play_generation += 1
         generation = self._external_play_generation
         self._external_playing = True
-        self._external_audio_client = self._audio_client
+        self._external_audio_client = audio_client
         self._external_media = media
         self._external_play_confirmed = False
         # An already-idle Station has crossed the boundary before this command.
         self._external_stop_observed = self._attr_playback_state != PlaybackState.PLAYING
-        directive = "audio_play" if self._external_audio_client else "radio_play"
         try:
-            result = await self.glagol.send(
-                _stream_command(stream_url, media, audio_client=self._external_audio_client)
-            )
+            result = await self.glagol.send(command)
             _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
             _raise_if_failed(result, directive)
-        except Exception, asyncio.CancelledError:
+        except PlayerCommandFailed, asyncio.CancelledError:
+            # Only clear the session this call started; a newer play_media
+            # may already own the external session.
             if self._external_play_generation == generation:
-                self._external_playing = False
-                self._external_audio_client = False
-                self._external_media = None
-                self._external_play_confirmed = False
-                self._external_stop_observed = False
+                self._reset_external_session()
             raise
 
         if self._external_play_generation != generation or not self._external_playing:
@@ -495,16 +477,13 @@ class YandexStationPlayer(Player):
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """
-        Play announcement by streaming the MA-hosted announcement URL.
+        Play an announcement and return once it has finished.
 
-        Blocks until the announcement finishes so MA core can properly
-        manage ANNOUNCEMENT_IN_PROGRESS state and volume restoration.
-
-        ``announcement.title`` is always the literal string ``"Announcement"``
-        (set by MA core for every announcement, regardless of source), so we
-        can't synthesise it via Alice TTS. The actual audio (with optional
-        pre-announce chime) is at ``announcement.uri``.
+        :param announcement: The announcement media to play.
+        :param volume_level: Temporary volume for the announcement, restored afterwards.
         """
+        # The title is always the literal "Announcement", so Alice TTS cannot
+        # speak it; the audio (with optional chime) is streamed from its URI.
         announcement_timeout = 30
 
         # Adjust volume before announcement if requested
@@ -521,15 +500,6 @@ class YandexStationPlayer(Player):
             _raise_if_failed(result, "Audio announcement")
             # externalCommandBypass playback doesn't update state.playing,
             # so we can't observe completion — wait by known duration instead.
-            if not hasattr(self.mass.streams, "get_announcement_duration"):
-                duration = announcement.duration
-                wait_time = (
-                    min(duration + 1, announcement_timeout)
-                    if duration and duration > 0
-                    else announcement_timeout
-                )
-                await asyncio.sleep(wait_time)
-                return
             duration = await self.mass.streams.get_announcement_duration(announcement)
             wait_time = (
                 min(duration + 1, announcement_timeout)
@@ -607,11 +577,7 @@ class YandexStationPlayer(Player):
             self.player_id,
             alice_state,
         )
-        self._external_playing = False
-        self._external_audio_client = False
-        self._external_media = None
-        self._external_play_confirmed = False
-        self._external_stop_observed = False
+        self._reset_external_session()
         self._needs_replay = True
         self._attr_playback_state = PlaybackState.PAUSED
         self._alice_spoke = False
@@ -642,6 +608,14 @@ class YandexStationPlayer(Player):
             else:
                 _LOGGER.debug("[%s] Silent voice command — staying paused", self.player_id)
                 self._needs_replay = True
+
+    def _reset_external_session(self) -> None:
+        """Forget the current external (MA-streamed) playback session."""
+        self._external_playing = False
+        self._external_audio_client = False
+        self._external_media = None
+        self._external_play_confirmed = False
+        self._external_stop_observed = False
 
     def _cancel_voice_resume(self) -> None:
         """Cancel any pending auto-resume task from a prior voice interaction."""
@@ -1076,22 +1050,14 @@ class YandexStationPlayer(Player):
             "[%s] Physical pause detected during external playback",
             self.player_id,
         )
-        self._external_playing = False
-        self._external_audio_client = False
-        self._external_media = None
-        self._external_play_confirmed = False
-        self._external_stop_observed = False
+        self._reset_external_session()
         self._needs_replay = True
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
 
     def _handle_external_completion(self) -> None:
         """Handle a completed external stream so MA can advance its queue."""
-        self._external_playing = False
-        self._external_audio_client = False
-        self._external_media = None
-        self._external_play_confirmed = False
-        self._external_stop_observed = False
+        self._reset_external_session()
         self._needs_replay = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.IDLE

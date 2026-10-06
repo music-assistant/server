@@ -8,6 +8,8 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Protocol, cast
 
+import pytest
+
 from music_assistant.providers.yandex_station.protobuf import dumps, loads
 
 if TYPE_CHECKING:
@@ -113,6 +115,25 @@ def test_audio_play_hls_uses_url_path_extension() -> None:
         },
         "set_pause": False,
     }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://192.168.1.10:8097/item.wav",
+        "http://192.168.1.10:8097/item.flac",
+        "http://192.168.1.10:8097/item.aac",
+        "http://192.168.1.10:8097/item.mp3",
+        "http://192.168.1.10:8097/item.flac?session=abc&format=wav",
+    ],
+)
+def test_audio_play_declares_mp3_for_every_non_hls_codec(url: str) -> None:
+    """Firmware rejects other format values; it detects the real codec from the stream."""
+    _, payload = _decode_external(_stream_command(url, None, audio_client=True))
+    stream = cast("dict[str, object]", payload["stream"])
+
+    assert stream["format"] == "MP3"
+    assert stream["type"] == "Track"
 
 
 def test_audio_play_keeps_non_https_artwork_unchanged() -> None:

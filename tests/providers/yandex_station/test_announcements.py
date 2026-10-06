@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest import mock
 
+import pytest
+
 from music_assistant.providers.yandex_station.player import YandexStationPlayer
 from music_assistant.providers.yandex_station.protobuf import loads
 
@@ -46,8 +48,8 @@ async def test_announcement_waits_for_resolved_duration() -> None:
     sleep.assert_awaited_once_with(5)
 
 
-async def test_announcement_uses_media_duration_without_resolver() -> None:
-    """Fall back to media metadata on Music Assistant versions without the resolver."""
+async def test_announcement_without_known_duration_waits_for_timeout() -> None:
+    """An unknown announcement duration falls back to the bounded wait."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
     player._player_id = "test_player"
     vars(player)["_audio_client"] = False
@@ -56,9 +58,14 @@ async def test_announcement_uses_media_duration_without_resolver() -> None:
         "YandexGlagol",
         SimpleNamespace(send=mock.AsyncMock(return_value={"status": "SUCCESS"})),
     )
-    player.mass = cast("MusicAssistant", SimpleNamespace(streams=SimpleNamespace()))
+    player.mass = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            streams=SimpleNamespace(get_announcement_duration=mock.AsyncMock(return_value=None))
+        ),
+    )
     announcement = cast(
-        "PlayerMedia", SimpleNamespace(uri="http://ma.local/announcement.mp3", duration=1)
+        "PlayerMedia", SimpleNamespace(uri="http://ma.local/announcement.mp3", duration=0)
     )
 
     with mock.patch(
@@ -67,7 +74,37 @@ async def test_announcement_uses_media_duration_without_resolver() -> None:
     ) as sleep:
         await player.play_announcement(announcement)
 
-    sleep.assert_awaited_once_with(2)
+    sleep.assert_awaited_once_with(30)
+
+
+async def test_announcement_restores_volume_after_failure() -> None:
+    """A failed announcement still restores the volume it changed."""
+    player = YandexStationPlayer.__new__(YandexStationPlayer)
+    player._player_id = "test_player"
+    vars(player)["_audio_client"] = False
+    player._attr_volume_level = 20
+    player.glagol = cast(
+        "YandexGlagol",
+        SimpleNamespace(send=mock.AsyncMock(return_value={"status": "SUCCESS"})),
+    )
+    player.mass = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            streams=SimpleNamespace(
+                get_announcement_duration=mock.AsyncMock(side_effect=RuntimeError("boom"))
+            )
+        ),
+    )
+    volume_set = mock.AsyncMock()
+    object.__setattr__(player, "volume_set", volume_set)
+    announcement = cast(
+        "PlayerMedia", SimpleNamespace(uri="http://ma.local/announcement.mp3", duration=0)
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await player.play_announcement(announcement, volume_level=60)
+
+    assert volume_set.await_args_list == [mock.call(60), mock.call(20)]
 
 
 async def test_announcement_uses_audio_play_on_current_firmware() -> None:
@@ -78,7 +115,12 @@ async def test_announcement_uses_audio_play_on_current_firmware() -> None:
     player._attr_volume_level = 20
     send = mock.AsyncMock(return_value={"status": "SUCCESS"})
     player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player.mass = cast("MusicAssistant", SimpleNamespace(streams=SimpleNamespace()))
+    player.mass = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            streams=SimpleNamespace(get_announcement_duration=mock.AsyncMock(return_value=0))
+        ),
+    )
     announcement = cast(
         "PlayerMedia",
         SimpleNamespace(
