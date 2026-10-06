@@ -107,8 +107,8 @@ websocket-client==1.9.2
 wiim==0.1.9
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-yadisk==3.4.1
 ya-passport-auth[ma]==2.1.0
+yadisk==3.4.1
 yandex-music==3.0.0
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
 yoto-api==4.5.0
