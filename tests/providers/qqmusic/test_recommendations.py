@@ -12,16 +12,43 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.qqmusic import QQMusicProvider
 
-GUESS_PAYLOAD = {
-    "songs": [{"mid": "t1", "title": "Guess Song", "singer": [{"mid": "a1", "name": "Artist One"}]}]
-}
-RADAR_PAYLOAD = {
-    "songs": [{"mid": "t2", "title": "Radar Song", "singer": [{"mid": "a2", "name": "Artist Two"}]}]
-}
-NEWSONG_PAYLOAD = {
-    "songs": [{"mid": "t3", "title": "New Song", "singer": [{"mid": "a3", "name": "Artist Three"}]}]
-}
-SONGLIST_PAYLOAD = {"songlists": [{"id": 123, "title": "Recommended List"}]}
+
+class _TypedItem:
+    """Minimal SDK model stand-in exposing the public model_dump API."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        """Store the model's canonical payload."""
+        self._payload = payload
+
+    def model_dump(self) -> dict[str, object]:
+        """Return the canonical model representation used by the provider parser."""
+        return self._payload
+
+
+GUESS_RESPONSE = SimpleNamespace(
+    songs=[
+        _TypedItem(
+            {"mid": "t1", "title": "Guess Song", "singer": [{"mid": "a1", "name": "Artist One"}]}
+        )
+    ]
+)
+RADAR_RESPONSE = SimpleNamespace(
+    songs=[
+        _TypedItem(
+            {"mid": "t2", "title": "Radar Song", "singer": [{"mid": "a2", "name": "Artist Two"}]}
+        )
+    ]
+)
+NEWSONG_RESPONSE = SimpleNamespace(
+    songs=[
+        _TypedItem(
+            {"mid": "t3", "title": "New Song", "singer": [{"mid": "a3", "name": "Artist Three"}]}
+        )
+    ]
+)
+SONGLIST_RESPONSE = SimpleNamespace(
+    songlists=[_TypedItem({"id": 123, "title": "Recommended List"})]
+)
 
 
 def _make_provider() -> QQMusicProvider:
@@ -33,10 +60,10 @@ def _make_provider() -> QQMusicProvider:
     provider._credential = Mock()
     provider._recommend_payload_cache = {}
     provider._qq_recommend = SimpleNamespace(
-        get_guess_recommend=AsyncMock(return_value=GUESS_PAYLOAD),
-        get_radar_recommend=AsyncMock(return_value=RADAR_PAYLOAD),
-        get_recommend_newsong=AsyncMock(return_value=NEWSONG_PAYLOAD),
-        get_recommend_songlist=AsyncMock(return_value=SONGLIST_PAYLOAD),
+        get_guess_recommend=AsyncMock(return_value=GUESS_RESPONSE),
+        get_radar_recommend=AsyncMock(return_value=RADAR_RESPONSE),
+        get_recommend_newsong=AsyncMock(return_value=NEWSONG_RESPONSE),
+        get_recommend_songlist=AsyncMock(return_value=SONGLIST_RESPONSE),
     )
 
     async def _run_with_session(coro):
@@ -99,7 +126,7 @@ async def test_get_recommendation_items_guess_recommend() -> None:
 async def test_get_recommendation_items_guess_falls_back_to_radar() -> None:
     """An empty guess payload falls back to the radar fetch within the same row."""
     provider = _make_provider()
-    provider._qq_recommend.get_guess_recommend.return_value = {"songs": []}
+    provider._qq_recommend.get_guess_recommend.return_value = SimpleNamespace(songs=[])
 
     items = await provider.get_recommendation_items("guess_recommend")
 

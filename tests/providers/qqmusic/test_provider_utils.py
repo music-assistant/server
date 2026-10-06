@@ -4,19 +4,32 @@
 
 from __future__ import annotations
 
+from logging import INFO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable, UnplayableMediaError
 from music_assistant_models.media_items import Album
+from qqmusic_api.models.lyric import GetLyricResponse
+from qqmusic_api.models.request import Credential
+from qqmusic_api.models.singer import HomepageHeaderResponse, HomepageTabDetailResponse
+from qqmusic_api.models.song import (
+    GetCdnDispatchResponse,
+    GetSongDetailResponse,
+    GetSongUrlsResponse,
+)
+from qqmusic_api.models.songlist import CreateDeleteSonglistResp
 from qqmusic_api.modules.song import SongFileType
 
 from music_assistant.providers.qqmusic import (
     SUPPORTED_FEATURES,
     QQMusicProvider,
+    _store_credential,
 )
 from music_assistant.providers.qqmusic.constants import (
+    CONF_CREDENTIAL_JSON,
     CONF_QUALITY,
     QUALITY_HI_RES,
 )
@@ -53,13 +66,32 @@ def test_supported_features_include_phase1_capabilities() -> None:
     assert ProviderFeature.LYRICS in SUPPORTED_FEATURES
 
 
-def test_extract_song_id_from_track_payload() -> None:
-    """Track parser helper should extract numeric song id from common keys."""
+def test_store_credential_writes_only_current_format() -> None:
+    """New logins persist the complete SDK credential without legacy scalar fields."""
+    values = {}
+
+    _store_credential(
+        values,
+        Credential.model_validate(
+            {"musicid": 123, "musickey": "key", "str_musicid": "123", "loginType": 2}
+        ),
+    )
+
+    assert set(values) == {CONF_CREDENTIAL_JSON}
+
+
+def test_persist_credential_writes_only_current_format() -> None:
+    """Credential refreshes do not recreate retired scalar setup values."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
-    assert provider._extract_song_id({"id": 123}) == 123
-    assert provider._extract_song_id({"songid": "456"}) == 456
-    assert provider._extract_song_id({"songID": "789"}) == 789
-    assert provider._extract_song_id({"song_id": "bad"}) is None
+    provider._credential = Credential.model_validate(
+        {"musicid": 123, "musickey": "key", "str_musicid": "123", "loginType": 2}
+    )
+    provider._update_setup_data = Mock()
+
+    provider._persist_credential()
+
+    provider._update_setup_data.assert_called_once()
+    assert provider._update_setup_data.call_args.args[0] == CONF_CREDENTIAL_JSON
 
 
 def test_get_candidate_file_types_hires_with_fallback_chain() -> None:
@@ -88,23 +120,15 @@ def test_get_stream_audio_format_for_master() -> None:
     assert stream_format.sample_rate == 192000
 
 
-def test_get_artist_mapping_with_string_singer_returns_none() -> None:
-    """String-only singer payload should not create clickable artist mapping."""
-    provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
-    mapping = provider._get_artist_mapping("王力宏")
-    assert mapping is None
-
-
-def test_parse_artist_with_singer_name_and_highlight() -> None:
-    """Artist parser should map singerName and strip search highlight tags."""
+def test_parse_artist_uses_sdk_model_fields() -> None:
+    """Artist parser consumes canonical SDK field names."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
     artist = provider._parse_artist(
         {
-            "singerMid": "003Nz2So3XXYek",
-            "singerName": "<em>王力宏</em>",
+            "mid": "003Nz2So3XXYek",
+            "name": "<em>王力宏</em>",
             "subtitle": "华语流行男歌手",
         }
     )
@@ -113,16 +137,16 @@ def test_parse_artist_with_singer_name_and_highlight() -> None:
     assert artist.metadata.description == "华语流行男歌手"
 
 
-def test_parse_artist_uses_avatar_and_description() -> None:
-    """Artist parser should accept avatar url fields."""
+def test_parse_artist_uses_sdk_avatar_and_description() -> None:
+    """Artist parser accepts canonical SDK avatar fields."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
     artist = provider._parse_artist(
         {
-            "singerMid": "003Nz2So3XXYek",
-            "Name": "王力宏",
-            "Avatar": "//y.qq.com/music/photo_new/T001R500x500M000003Nz2So3XXYek.jpg",
+            "mid": "003Nz2So3XXYek",
+            "name": "王力宏",
+            "avatar_url": "//y.qq.com/music/photo_new/T001R500x500M000003Nz2So3XXYek.jpg",
             "desc": "华语流行歌手",
         }
     )
@@ -132,7 +156,7 @@ def test_parse_artist_uses_avatar_and_description() -> None:
 
 
 def test_parse_playlist_name_strips_highlight_tags() -> None:
-    """Playlist parser should strip highlight tags from search title."""
+    """Playlist parser strips highlighting from canonical title."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
@@ -141,15 +165,15 @@ def test_parse_playlist_name_strips_highlight_tags() -> None:
 
 
 def test_parse_playlist_detail_fields() -> None:
-    """Playlist parser should support dirname, normalized cover and description fields."""
+    """Playlist parser supports canonical SDK fields."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
     playlist = provider._parse_playlist(
         {
-            "dissid": 7843129912,
+            "id": 7843129912,
             "dirid": 10,
-            "dirname": "我的收藏",
+            "title": "我的收藏",
             "desc": "这是歌单简介",
             "picurl": "//y.qq.com/music/photo_new/T003R500x500M0007843129912.jpg",
             "creator": {"nick": "Alice"},
@@ -162,8 +186,8 @@ def test_parse_playlist_detail_fields() -> None:
     assert playlist.metadata.images[0].path.startswith("https://")
 
 
-def test_parse_track_album_mapping_accepts_album_mid_variants() -> None:
-    """Track parser should map album when album dict uses albumMid-style fields."""
+def test_parse_track_album_mapping_uses_sdk_album_fields() -> None:
+    """Track parser maps a canonical SDK album model dump."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
@@ -173,7 +197,7 @@ def test_parse_track_album_mapping_accepts_album_mid_variants() -> None:
             "mid": "003aAYrm3GE0Ac",
             "title": "稻香",
             "singer": [{"mid": "0025NhlN2yWrP4", "name": "周杰伦"}],
-            "album": {"albumMid": "001qu4I30eVFYb", "title": "魔杰座"},
+            "album": {"mid": "001qu4I30eVFYb", "title": "魔杰座"},
         }
     )
     assert track.album is not None
@@ -273,47 +297,23 @@ def test_parse_track_sets_ogg_quality_when_mp3_fields_missing() -> None:
 
 
 def test_parse_album_sets_version_and_description() -> None:
-    """Album parser should map album subtitle/version and description fields."""
+    """Album parser maps canonical SDK subtitle and description fields."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
 
     album = provider._parse_album(
         {
-            "albumMid": "001qu4I30eVFYb",
+            "mid": "001qu4I30eVFYb",
             "title": "唯一",
-            "albumTranName": "纪念版",
-            "description": "经典专辑",
-            "singer": [{"singerMid": "003Nz2So3XXYek", "singerName": "王力宏"}],
+            "subtitle": "纪念版",
+            "desc": "经典专辑",
+            "singers": [{"mid": "003Nz2So3XXYek", "name": "王力宏"}],
         }
     )
     assert album.name == "唯一"
     assert album.version == "纪念版"
     assert album.metadata.description == "经典专辑"
-
-
-def test_parse_track_album_mapping_accepts_album_id_fallback() -> None:
-    """Track parser should map album from track-level albumID/albumTitle fields."""
-    provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
-    provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
-
-    track = provider._parse_track(
-        {
-            "mid": "003aAYrm3GE0Ac",
-            "title": "稻香",
-            "albumID": 123456,
-            "albumTitle": "魔杰座",
-            "singerMid": "0025NhlN2yWrP4",
-            "singerName": "周杰伦",
-        }
-    )
-    assert track.album is not None
-    assert isinstance(track.album, Album)
-    assert track.album.item_id == "123456"
-    assert track.album.name == "魔杰座"
-    assert track.artists
-    assert track.artists[0].name == "周杰伦"
 
 
 @pytest.mark.asyncio
@@ -333,37 +333,350 @@ async def test_get_config_entries_exposes_quality_option_without_actions() -> No
 
 
 @pytest.mark.asyncio
-async def test_get_artist_albums_fallback_uses_album_list_on_tab_error() -> None:
-    """Artist albums should fallback to album_list when AlbumTab endpoint fails."""
+async def test_get_artist_albums_uses_typed_album_tab() -> None:
+    """Artist albums are read from the public Homepage AlbumTab response."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
-
-    class _DummyTabType:
-        ALBUM = "album"
-
-    async def _raise_not_found(*_args, **_kwargs):
-        raise MediaNotFoundError("not found")
-
-    async def _get_album_list(*_args, **_kwargs):
-        return {
-            "albumList": [
-                {"albumMID": "alb_mid_1", "name": "专辑A"},
-                {"mid": "alb_mid_2", "name": "专辑B"},
-            ]
-        }
-
     provider._qq_singer = SimpleNamespace(  # type: ignore[attr-defined]
-        TabType=_DummyTabType,
-        get_tab_detail=_raise_not_found,
-        get_album_list=_get_album_list,
-        get_album_list_all=lambda *_args, **_kwargs: [],
+        get_tab_detail=AsyncMock(
+            return_value=HomepageTabDetailResponse.model_validate(
+                {
+                    "TabID": "album",
+                    "HasMore": 0,
+                    "NeedShowTab": 1,
+                    "Order": 0,
+                    "TabList": [],
+                    "AlbumTab": {
+                        "TypeList": {"DefaultID": 0, "ItemList": []},
+                        "AlbumList": [
+                            {
+                                "albumID": 1,
+                                "albumMid": "album_mid",
+                                "albumName": "Album",
+                            }
+                        ],
+                    },
+                }
+            )
+        )
     )
 
     async def _run_with_session(coro):
         return await coro
 
     provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
-    provider._extract_items = QQMusicProvider._extract_items.__get__(provider, QQMusicProvider)  # type: ignore[attr-defined]
-    provider._parse_album = lambda item: str(item.get("albumMID") or item.get("mid"))  # type: ignore[attr-defined]
+    provider._parse_album = lambda item: item["mid"]  # type: ignore[attr-defined]
 
-    albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "003Nz2So3XXYek")
-    assert albums == ["alb_mid_1", "alb_mid_2"]
+    albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "artist")
+
+    assert albums == ["album_mid"]
+
+
+@pytest.mark.asyncio
+async def test_get_artist_uses_typed_homepage_response() -> None:
+    """The provider reads singer detail from the public typed response field."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
+    provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
+    provider._qq_singer = SimpleNamespace(  # type: ignore[attr-defined]
+        get_info=AsyncMock(
+            return_value=HomepageHeaderResponse.model_validate(
+                {
+                    "Status": 0,
+                    "Info": {
+                        "Singer": {
+                            "SingerID": 1,
+                            "SingerMid": "artist",
+                            "Name": "Artist",
+                            "SingerType": 0,
+                            "SingerPic": "https://image.example/artist.jpg",
+                        },
+                        "BaseInfo": {
+                            "EncryptedUin": "",
+                            "BackgroundImage": "",
+                            "Avatar": "",
+                            "Name": "Artist",
+                            "IsHost": 0,
+                            "IsSinger": 1,
+                            "UserType": 0,
+                        },
+                    },
+                    "TabDetail": {},
+                }
+            )
+        )
+    )
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+
+    artist = await QQMusicProvider.get_artist.__wrapped__(provider, "artist")
+
+    assert artist.item_id == "artist"
+    assert artist.name == "Artist"
+    assert artist.metadata.images[0].path == "https://image.example/artist.jpg"
+
+
+@pytest.mark.asyncio
+async def test_get_track_reads_typed_lyric_response() -> None:
+    """Lyrics are consumed from the SDK model, which performs its own decoding."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
+    provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
+    provider.logger = Mock(level=INFO)
+    provider._qq_song = SimpleNamespace(
+        get_detail=AsyncMock(return_value=_stream_detail_response())
+    )  # type: ignore[attr-defined]
+    provider._qq_lyric = SimpleNamespace(
+        get_lyric=AsyncMock(
+            return_value=GetLyricResponse.model_validate(
+                {
+                    "songID": 1,
+                    "lyric": "[00:01.00]line",
+                    "trans": "[00:01.00]translation",
+                }
+            )
+        )
+    )
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+
+    track = await QQMusicProvider.get_track.__wrapped__(provider, "track")
+
+    assert track.metadata.lrc_lyrics == "[00:01.00]line"
+    assert track.metadata.lyrics == "[00:01.00]line\n\n[00:01.00]translation"
+
+
+def _stream_detail_response() -> GetSongDetailResponse:
+    """Build a minimal public 0.8.2 track-detail response."""
+    return GetSongDetailResponse.model_validate(
+        {
+            "track_info": {
+                "id": 1,
+                "mid": "track",
+                "name": "Track",
+                "type": 0,
+                "singer": [],
+                "album": {},
+                "mv": {},
+                "file": {},
+                "pay": {},
+                "interval": 0,
+                "isonly": 0,
+                "language": 0,
+                "genre": 0,
+                "index_cd": 0,
+                "index_album": 0,
+                "status": 0,
+                "label": "",
+                "bpm": 0,
+                "ov": 0,
+                "sa": 0,
+                "es": "",
+                "vs": [],
+                "vi": [],
+                "vf": [],
+            }
+        }
+    )
+
+
+def _url_response(
+    *, result: int = 0, purl: str = "/M500track.mp3", expiration: int = 47
+) -> GetSongUrlsResponse:
+    """Build a public 0.8.2 song-URL response."""
+    return GetSongUrlsResponse.model_validate(
+        {
+            "expiration": expiration,
+            "midurlinfo": [
+                {
+                    "songmid": "track",
+                    "filename": "M500track.mp3",
+                    "purl": purl,
+                    "vkey": "vkey",
+                    "ekey": "",
+                    "result": result,
+                }
+            ],
+        }
+    )
+
+
+def _dispatch_response(
+    *,
+    sip: tuple[str, ...] = ("https://cdn.example/",),
+    retcode: int = 0,
+    refresh_time: int = 60,
+    expiration: int = 90,
+    cache_time: int = 120,
+) -> GetCdnDispatchResponse:
+    """Build a public 0.8.2 CDN dispatch response."""
+    return GetCdnDispatchResponse.model_validate(
+        {
+            "retcode": retcode,
+            "sip": list(sip),
+            "keepalivefile": "keepalive",
+            "refreshTime": refresh_time,
+            "expiration": expiration,
+            "cacheTime": cache_time,
+        }
+    )
+
+
+def _stream_provider() -> QQMusicProvider:
+    """Create a provider with no-op session handling for stream tests."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.config = SimpleNamespace(  # type: ignore[attr-defined]
+        instance_id="qqmusic_instance", get_value=lambda _key: "mp3_128"
+    )
+    provider._credential = Mock()
+    provider.logger = Mock()
+    provider._cdn_sips = ()
+    provider._cdn_refresh_monotonic = 0.0
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_get_stream_details_uses_dispatch_sip_and_sdk_ttl() -> None:
+    """The typed URL response uses dispatch SIP and its explicit expiration."""
+    provider = _stream_provider()
+    get_song_urls = AsyncMock(return_value=_url_response())
+    get_cdn_dispatch = AsyncMock(return_value=_dispatch_response())
+    provider._qq_song = SimpleNamespace(  # type: ignore[attr-defined]
+        get_detail=AsyncMock(return_value=_stream_detail_response()),
+        get_song_urls=get_song_urls,
+        get_cdn_dispatch=get_cdn_dispatch,
+    )
+
+    details = await provider.get_stream_details("track", MediaType.TRACK)
+
+    assert details.path == "https://cdn.example/M500track.mp3"
+    assert details.expiration == 47
+    get_song_urls.assert_awaited_once()
+    get_cdn_dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_stream_details_rejects_nonzero_url_result() -> None:
+    """An authorization failure must not be turned into a playable URL."""
+    provider = _stream_provider()
+    get_cdn_dispatch = AsyncMock()
+    provider._qq_song = SimpleNamespace(  # type: ignore[attr-defined]
+        get_detail=AsyncMock(return_value=_stream_detail_response()),
+        get_song_urls=AsyncMock(return_value=_url_response(result=104003)),
+        get_cdn_dispatch=get_cdn_dispatch,
+    )
+
+    with pytest.raises(UnplayableMediaError):
+        await provider.get_stream_details("track", MediaType.TRACK)
+
+    get_cdn_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_stream_details_uses_default_expiration_without_sdk_ttl() -> None:
+    """An omitted SDK TTL uses MA's default rather than parsing URL query parameters."""
+    provider = _stream_provider()
+    provider._qq_song = SimpleNamespace(  # type: ignore[attr-defined]
+        get_detail=AsyncMock(return_value=_stream_detail_response()),
+        get_song_urls=AsyncMock(
+            return_value=_url_response(
+                purl="https://cdn.example/M500track.mp3?Expires=1", expiration=0
+            )
+        ),
+    )
+
+    details = await provider.get_stream_details("track", MediaType.TRACK)
+
+    assert details.expiration == 600
+
+
+@pytest.mark.asyncio
+async def test_get_cdn_base_rejects_failed_dispatch() -> None:
+    """A failed public dispatch response must not yield one of its SIP values."""
+    provider = _stream_provider()
+    provider._qq_song = SimpleNamespace(  # type: ignore[attr-defined]
+        get_cdn_dispatch=AsyncMock(return_value=_dispatch_response(retcode=1))
+    )
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await provider._get_cdn_base()
+
+
+@pytest.mark.asyncio
+async def test_get_cdn_base_refreshes_at_shortest_dispatch_ttl(monkeypatch) -> None:
+    """The cached SIP expires at the earliest dispatch validity deadline."""
+    provider = _stream_provider()
+    get_cdn_dispatch = AsyncMock(
+        side_effect=[
+            _dispatch_response(
+                sip=("https://one.example/",), refresh_time=120, expiration=45, cache_time=90
+            ),
+            _dispatch_response(
+                sip=("https://two.example/",), refresh_time=120, expiration=45, cache_time=90
+            ),
+        ]
+    )
+    provider._qq_song = SimpleNamespace(get_cdn_dispatch=get_cdn_dispatch)  # type: ignore[attr-defined]
+    monotonic_values = iter((1000.0, 1044.9, 1045.0))
+    monkeypatch.setattr(
+        "music_assistant.providers.qqmusic.time",
+        SimpleNamespace(monotonic=lambda: next(monotonic_values)),
+    )
+
+    assert await provider._get_cdn_base() == "https://one.example"
+    assert await provider._get_cdn_base() == "https://one.example"
+    assert await provider._get_cdn_base() == "https://two.example"
+    assert get_cdn_dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_create_playlist_uses_typed_id_and_dirid() -> None:
+    """The typed create response preserves distinct playlist and directory IDs."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider._credential = Mock()
+    provider._qq_songlist = SimpleNamespace(
+        create=AsyncMock(
+            return_value=CreateDeleteSonglistResp.model_validate(
+                {"retCode": 0, "result": {"tid": 123, "dirId": 456, "dirName": "New"}}
+            )
+        )
+    )
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+    provider.get_playlist = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+
+    await provider.create_playlist("New", set())
+
+    provider.get_playlist.assert_awaited_once_with("123:456")
+
+
+@pytest.mark.asyncio
+async def test_handle_async_init_legacy_credential_has_string_musicid() -> None:
+    """Legacy credentials retain a valid UIN for the 0.8.2 VKey endpoint."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.logger = Mock(level=INFO)
+    provider.get_setup_value = lambda key: {  # type: ignore[attr-defined]
+        "musicid": "123",
+        "musickey": "key",
+        "login_type": "2",
+    }.get(key)
+    provider._update_setup_data = Mock()
+
+    await provider.handle_async_init()
+
+    assert provider._credential.musicid == 123
+    assert provider._credential.str_musicid == "123"
+    await provider._qq_client.close()
