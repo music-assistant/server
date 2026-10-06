@@ -12,11 +12,8 @@ name: Critical review gate (poll)
 #
 # Why a poller and not a `pull_request_review` trigger: GitHub holds workflow runs triggered by the
 # Copilot bot for manual approval (they sit at `action_required` and never run), so an event-reactive
-# gate never fires automatically.
-#
-# Why the musicassistant-bot token and not the job token: GitHub refuses `convertPullRequestToDraft`
-# to the Actions `GITHUB_TOKEN` whatever `permissions:` grants ("Resource not accessible by
-# integration"), so the conversion has to be made by the App.
+# gate never fires automatically. A scheduled run executes as a trusted actor with a write token,
+# which also sidesteps the fork read-only-token and workflow_run artifact-trust problems.
 
 on:  # yamllint disable-line rule:truthy
   schedule:
@@ -29,11 +26,11 @@ on:  # yamllint disable-line rule:truthy
         type: string
 
 permissions:
-  contents: read
-
-env:
-  EXPECTED_APP_SLUG: musicassistant-bot
-  EXPECTED_APP_INSTALLATION_ID: "146062122"
+  # `convertPullRequestToDraft` needs contents: write as well as pull-requests: write. With
+  # pull-requests alone GitHub answers "Resource not accessible by integration" (to this job token
+  # and to an App token alike), which is why this gate never drafted a PR until this was added.
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: critical-gate-poll
@@ -43,40 +40,17 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔑 Create musicassistant-bot token
-        id: bot_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-pull-requests: write
-
-      - name: 🤖 Verify GitHub App identity
-        env:
-          APP_SLUG: ${{ steps.bot_token.outputs.app-slug }}
-          INSTALLATION_ID: ${{ steps.bot_token.outputs.installation-id }}
-        run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
-             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
-            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
-            exit 1
-          fi
-
       - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ONLY_PR: ${{ inputs.pr }}
         with:
-          github-token: ${{ steps.bot_token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
             const ONLY_PR = (process.env.ONLY_PR || '').trim();
             const BASES = ['dev', 'stable'];
             const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
-            // Authors of this gate's own comments: the App now, the job token in earlier versions.
-            const GATE_BOTS = ['musicassistant-bot[bot]', 'github-actions[bot]'];
+            const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
             const WINDOW_MS = 30 * 60 * 1000;                  // act only on criticals this recent
             const MARKER = '<!-- critical-gate -->';
             const BODY = [
@@ -138,12 +112,12 @@ jobs:
                   drafted++;
                   core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
                 }
-                // Then the explanation, at most once — matched on marker AND one of our own bot
-                // authors, so a quoted or pre-posted marker in someone else's comment can't suppress it.
+                // Then the explanation, at most once — matched on marker AND our own bot author, so a
+                // quoted or pre-posted marker in someone else's comment can't suppress it.
                 const comments = await github.paginate(github.rest.issues.listComments,
                   { owner, repo, issue_number: pr.number, per_page: 100 });
                 const posted = comments.some(c =>
-                  c.user && GATE_BOTS.includes(c.user.login) && (c.body || '').includes(MARKER));
+                  c.user && c.user.login === GATE_BOT && (c.body || '').includes(MARKER));
                 if (!posted) {
                   await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: BODY });
                 }
