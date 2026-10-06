@@ -744,6 +744,7 @@ def _parse_podcast_episode(
             )
         },
         position=position,
+        # no episode_number: ARD's episodeNumber is the part in a "(2/5)" series, not the show's
         fully_played=progress[0],
         resume_position_ms=progress[1],
     )
