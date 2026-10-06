@@ -164,7 +164,7 @@ async def poll_device_token(
         return DevicePollState.PENDING
     if error == DevicePollState.SLOW_DOWN:
         return DevicePollState.SLOW_DOWN
-    if error == "expired_token":
+    if error in ("expired_token", "invalid_grant"):
         raise DeviceCodeExpired("Yandex device code expired")
     if error == "access_denied":
         raise DeviceCodeDenied("Yandex device login was denied")

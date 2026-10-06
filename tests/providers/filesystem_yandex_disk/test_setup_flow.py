@@ -8,7 +8,9 @@ import time
 from typing import Any
 from unittest import mock
 
+import aiohttp
 import pytest
+from aiohttp import web
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import FlowStepType, ProviderStage, ProviderType
 from music_assistant_models.provider import ProviderManifest
@@ -35,10 +37,12 @@ from music_assistant.providers.filesystem_yandex_disk.auth import (
     OAuthProtocolError,
     OAuthTokens,
     OAuthTransportError,
+    request_device_code,
 )
 from music_assistant.providers.filesystem_yandex_disk.provider import YandexDiskFileSystemProvider
 
 provider_module = sys.modules[YandexDiskFileSystemProvider.__module__]
+auth_module = sys.modules[request_device_code.__module__]
 
 
 def _grant(code: str = "CODE-1234", interval: int = 0) -> DeviceCodeGrant:
@@ -128,6 +132,74 @@ async def test_setup_finishes_with_refresh_token_and_device_progress() -> None:
     # the code is text on the step (screen-reader accessible), not only inside an image
     assert external[0].url == "https://yandex.ru/activate"
     assert external[0].translation_params == ["CODE-1234"]
+
+
+@pytest.mark.parametrize("setup_data", [{}, {"content_type": "sound_effects"}])
+async def test_setup_only_offers_supported_cloud_content(setup_data: dict[str, Any]) -> None:
+    """New and existing instances cannot select unsupported sound effects."""
+    session, _mass = _make_session(mock.AsyncMock(), setup_data=setup_data)
+    task = asyncio.create_task(setup_flow.run_setup(session))
+    try:
+        await _wait_for(lambda: session.current_step)
+        assert session.current_step is not None
+        entry = next(e for e in session.current_step.entries if e.key == "content_type")
+        assert entry.options is not None
+        assert {option.value for option in entry.options} == {"music", "audiobooks", "podcasts"}
+        assert entry.value == "music"
+        session.handle_submit(
+            {
+                "content_type": "sound_effects",
+                CONF_CLIENT_ID: "client-id",
+                CONF_CLIENT_SECRET: "secret",
+                CONF_FOLDER_ID: "root",
+            }
+        )
+        assert "content_type" in session.current_step.errors
+        assert not session.finished
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.parametrize("content_type", ["music", "audiobooks", "podcasts"])
+async def test_setup_preserves_selected_content_type(content_type: str) -> None:
+    """Each supported selection is persisted after successful authorization."""
+    collected: dict[str, Any] = {}
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"instance_id": "filesystem_yandex_disk--1"}
+
+    session, _mass = _make_session(finish)
+    with (
+        mock.patch.object(setup_flow, "request_device_code", mock.AsyncMock(return_value=_grant())),
+        mock.patch.object(
+            setup_flow,
+            "poll_device_token",
+            mock.AsyncMock(return_value=OAuthTokens("access", "refresh", 3600)),
+        ),
+    ):
+        task = asyncio.create_task(setup_flow.run_setup(session))
+        try:
+            await _wait_for(lambda: session.current_step)
+            session.handle_submit(
+                {
+                    "content_type": content_type,
+                    CONF_CLIENT_ID: "client-id",
+                    CONF_CLIENT_SECRET: "secret",
+                    CONF_FOLDER_ID: "root",
+                }
+            )
+            await _wait_for(lambda: session.finished)
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    assert collected["content_type"] == content_type
 
 
 async def test_setup_data_initializes_provider_and_registers_stream_route() -> None:
@@ -258,6 +330,69 @@ async def test_expired_device_code_is_replaced() -> None:
         await task
 
     assert request.await_count == 2
+
+
+async def test_invalid_grant_response_renews_device_code(aiohttp_server: Any) -> None:
+    """Yandex invalid_grant renews the displayed code and completes the same setup."""
+    codes: list[str] = []
+    polled: list[str] = []
+    collected: dict[str, Any] = {}
+
+    async def device_code(_request: web.Request) -> web.Response:
+        code = "OLD" if not codes else "NEW"
+        codes.append(code)
+        return web.json_response(
+            {
+                "device_code": code,
+                "user_code": code,
+                "verification_url": "https://yandex.ru/activate",
+                "expires_in": 300,
+                "interval": 1,
+            }
+        )
+
+    async def token(request: web.Request) -> web.Response:
+        data = await request.post()
+        polled.append(str(data["code"]))
+        if data["code"] == "OLD":
+            return web.json_response({"error": "invalid_grant"}, status=400)
+        return web.json_response(
+            {"access_token": "access", "refresh_token": "refresh", "expires_in": 3600}
+        )
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"instance_id": "filesystem_yandex_disk--1"}
+
+    app = web.Application()
+    app.router.add_post("/device/code", device_code)
+    app.router.add_post("/token", token)
+    server = await aiohttp_server(app)
+    session, mass = _make_session(finish)
+    async with aiohttp.ClientSession() as http_session:
+        mass.http_session = http_session
+        with (
+            mock.patch.object(
+                auth_module, "OAUTH_DEVICE_CODE_URL", str(server.make_url("/device/code"))
+            ),
+            mock.patch.object(auth_module, "OAUTH_TOKEN_URL", str(server.make_url("/token"))),
+        ):
+            task = asyncio.create_task(setup_flow.run_setup(session))
+            try:
+                await _submit_user_form(session)
+                await _wait_for(lambda: session.finished)
+                await task
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+
+    assert polled == ["OLD", "NEW"]
+    assert collected[CONF_REFRESH_TOKEN] == "refresh"
+    steps = [call.kwargs["data"] for call in mass.signal_event.call_args_list]
+    external = [step for step in steps if step.type == FlowStepType.EXTERNAL]
+    assert [step.translation_params for step in external] == [["OLD"], ["NEW"]]
 
 
 async def test_device_code_renewal_stops_after_overall_deadline() -> None:

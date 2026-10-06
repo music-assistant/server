@@ -9,8 +9,10 @@ resource paths (``disk:/...``) as the opaque "file id" the base expects.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigValueOption
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.filesystem_cloud.base import (
@@ -36,7 +38,7 @@ from music_assistant.providers.filesystem_local.constants import (
 
 from .api_client import YandexDiskApi
 from .auth import MAYandexDiskAuth
-from .constants import DISK_ROOT
+from .constants import DISK_ROOT, SUPPORTED_CONTENT_TYPES
 
 if TYPE_CHECKING:
     import aiohttp
@@ -91,7 +93,10 @@ class YandexDiskFileSystemProvider(CloudFileSystemProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
-            content_type_config_entry(content_type),
+            replace(
+                content_type_config_entry(content_type),
+                options=[ConfigValueOption(value) for value in SUPPORTED_CONTENT_TYPES],
+            ),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -103,6 +108,10 @@ class YandexDiskFileSystemProvider(CloudFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Validate credentials and the configured root, then register routes."""
+        if self.media_content_type not in SUPPORTED_CONTENT_TYPES:
+            raise SetupFailedError(
+                "Yandex Disk supports music, audiobooks and podcasts; reconfigure the content type."
+            )
         # verify the token works early so setup fails clearly if it is bad
         await self.api.validate()
         # validate the configured root exists (skip for the whole-disk default)

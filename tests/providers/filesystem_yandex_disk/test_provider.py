@@ -7,6 +7,7 @@ from typing import Any, cast
 from unittest import mock
 
 import pytest
+from music_assistant_models.errors import SetupFailedError
 
 import music_assistant.providers.filesystem_yandex_disk as provider_package
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
@@ -172,3 +173,22 @@ async def test_config_entries_only_expose_runtime_sync_options() -> None:
 def test_package_has_no_module_level_config_entries() -> None:
     """Options come from the provider instance; a module-level function is never called."""
     assert not hasattr(provider_package, "get_config_entries")
+
+
+async def test_options_exclude_sound_effects() -> None:
+    """The content-type mirror only lists supported cloud content."""
+    provider, _auth_cls, _config = _construct_provider()
+    entries = await provider.get_config_entries()
+    entry = next(e for e in entries if e.key == "content_type")
+    assert entry.options is not None
+    assert {option.value for option in entry.options} == {"music", "audiobooks", "podcasts"}
+
+
+async def test_existing_sound_effects_instance_requires_reconfiguration() -> None:
+    """Unsupported saved instances fail clearly before accessing Disk or registering routes."""
+    provider, _auth_cls, _config = _construct_provider()
+    provider.media_content_type = "sound_effects"
+    provider.api.validate = mock.AsyncMock()
+    with pytest.raises(SetupFailedError, match="reconfigure"):
+        await provider.handle_async_init()
+    provider.api.validate.assert_not_awaited()
