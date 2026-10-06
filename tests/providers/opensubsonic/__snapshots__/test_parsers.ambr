@@ -1576,6 +1576,7 @@
   dict({
     'date_added': None,
     'duration': 1878,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -1725,6 +1726,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
@@ -1734,6 +1736,7 @@
   dict({
     'date_added': None,
     'duration': 0,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -1883,6 +1886,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
@@ -1892,6 +1896,7 @@
   dict({
     'date_added': None,
     'duration': 0,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -2041,6 +2046,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',

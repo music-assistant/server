@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from music_assistant.helpers.podcast_parsers import get_publisher_number
+
 
 @dataclass(frozen=True, slots=True)
 class StreamRef:
@@ -251,6 +253,8 @@ class OrfPodcastEpisode:
     enclosures: tuple[Enclosure, ...] = ()
     link_url: str | None = None
     image: PodcastImage | None = None
+    episode_number: int | None = None
+    season: int | None = None
 
     @classmethod
     def from_detail_item(cls, obj: dict[str, Any]) -> OrfPodcastEpisode | None:
@@ -302,6 +306,8 @@ class OrfPodcastEpisode:
             enclosures=tuple(encs),
             link_url=link,
             image=img,
+            episode_number=get_publisher_number(obj.get("episode")),
+            season=get_publisher_number(obj.get("season")),
         )
 
 

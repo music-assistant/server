@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
@@ -76,6 +78,28 @@ def test_update_merges_new_fields() -> None:
     base.update(AudioAnalysisData(clap_embedding=[0.2] * 1024))
     assert base.bpm == 100.0
     assert base.clap_embedding == [0.2] * 1024
+
+
+@pytest.mark.parametrize("smart_fades_first", [True, False])
+def test_update_keeps_both_providers_arrays(smart_fades_first: bool) -> None:
+    """A legacy smart_fades row and a typed CLAP row keep each other's arrays in either order."""
+    smart_fades = AudioAnalysisData.from_dict(
+        {
+            "extra_data": {
+                "vocal_activity": [0.5] * 1800,
+                "band_rms": {"low": [0.1] * 1800, "high": [0.4] * 1800},
+            }
+        }
+    )
+    sonic = AudioAnalysisData(clap_embedding=[0.2] * 1024)
+    first, second = (smart_fades, sonic) if smart_fades_first else (sonic, smart_fades)
+
+    first.update(second)
+
+    assert first.clap_embedding == [0.2] * 1024
+    assert first.vocal_activity == [0.5] * 1800
+    assert first.band_rms_low == [0.1] * 1800
+    assert first.band_rms_high == [0.4] * 1800
 
 
 def test_non_dict_extra_data_is_left_alone() -> None:
