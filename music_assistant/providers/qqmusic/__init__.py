@@ -51,7 +51,6 @@ from qqmusic_api import (
 from qqmusic_api import (
     Client as QQClient,
 )
-from qqmusic_api.algorithms import qrc_decrypt
 from qqmusic_api.modules.search import SearchType
 from qqmusic_api.modules.singer import TabType
 from qqmusic_api.modules.song import SongFileInfo, SongFileType, SpecialSongFileType
@@ -73,21 +72,11 @@ from .constants import (
     QUALITY_MP3_320,
 )
 from .helpers import (
-    extract_album_mid,
-    extract_first_text,
-    extract_playlist_ids,
-    extract_track_mid,
     normalize_qq_lyric_text,
     qrc_to_lrc,
 )
 from .parsers import (
     build_playlist_id,
-    extract_guess_recommend_tracks,
-    extract_items,
-    extract_newsong_tracks,
-    extract_radar_recommend_tracks,
-    extract_recommend_songlists,
-    extract_song_id,
     get_artist_mapping,
     parse_album,
     parse_artist,
@@ -99,6 +88,8 @@ from .parsers import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+    from qqmusic_api.models.base import Song as QQMusicSong
+    from qqmusic_api.models.song import GetSongUrlsResponse
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -121,7 +112,6 @@ SUPPORTED_FEATURES = {
 }
 
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
-_HEX_LYRIC_PATTERN = re.compile(r"^[0-9A-Fa-f]{32,}$")
 _RECOMMEND_GUESS_TTL = 60 * 60
 _RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
 _RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
@@ -134,24 +124,10 @@ async def setup(
     return QQMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> None:
+def _store_credential(values: dict[str, ConfigValueType], credential: Credential) -> None:
     if not credential.musicid or not credential.musickey:
         raise LoginFailed("QR login succeeded but credential is incomplete")
-    if callable(getattr(credential, "model_dump_json", None)):
-        credential_json = credential.model_dump_json(by_alias=True)
-    else:
-        fallback_credential = Credential.model_validate(
-            {
-                "musicid": int(credential.musicid),
-                "musickey": str(credential.musickey),
-                "loginType": int(getattr(credential, "login_type", 2) or 2),
-                "refresh_key": str(getattr(credential, "refresh_key", "") or ""),
-                "refresh_token": str(getattr(credential, "refresh_token", "") or ""),
-                "encryptUin": str(getattr(credential, "encrypt_uin", "") or ""),
-                "str_musicid": str(getattr(credential, "str_musicid", "") or ""),
-            }
-        )
-        credential_json = fallback_credential.model_dump_json(by_alias=True)
+    credential_json = credential.model_dump_json(by_alias=True)
     values[CONF_UIN] = str(credential.musicid)
     values[CONF_MUSICID] = str(credential.musicid)
     values[CONF_MUSICKEY] = str(credential.musickey)
@@ -178,6 +154,8 @@ class QQMusicProvider(MusicProvider):
     _musicid: int = 0
     _euin: str = ""
     _recommend_payload_cache: dict[str, tuple[float, Any]]
+    _cdn_sips: tuple[str, ...]
+    _cdn_refresh_monotonic: float
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -225,13 +203,12 @@ class QQMusicProvider(MusicProvider):
                 {
                     "musicid": int(str(config_musicid).strip()),
                     "musickey": str(config_musickey),
+                    "str_musicid": str(config_musicid).strip(),
                     "loginType": login_type,
                 }
             )
-        if not credential.encrypt_uin:
-            raise LoginFailed(
-                "QQ Music credential is missing encryptUin, please re-authenticate by QR code"
-            )
+        if not credential.str_musicid and credential.musicid:
+            credential = credential.model_copy(update={"str_musicid": str(credential.musicid)})
 
         self._qq_client = QQClient(credential=credential)
         self._qq_search = self._qq_client.search
@@ -250,6 +227,8 @@ class QQMusicProvider(MusicProvider):
         self._last_credential_check_monotonic = 0.0
         self._musicid = int(self._credential.musicid)
         self._recommend_payload_cache = {}
+        self._cdn_sips = ()
+        self._cdn_refresh_monotonic = 0.0
         self.logger.info("QQ Music authenticated for uin %s", self._musicid)
         # Persist complete credential once on init so legacy configs gain refresh fields.
         self._persist_credential()
@@ -295,9 +274,9 @@ class QQMusicProvider(MusicProvider):
                 _RECOMMEND_GUESS_TTL,
                 lambda: self._qq_recommend.get_guess_recommend(credential=self._credential),
             )
-            for item in extract_guess_recommend_tracks(self._to_dict(guess_response)):
+            for song in guess_response.songs:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_track(item))
+                    items.append(self._parse_track(song.model_dump()))
             if not items:
                 # Fall back to radar recommendations when the personalised
                 # guess endpoint yields no usable tracks.
@@ -306,27 +285,27 @@ class QQMusicProvider(MusicProvider):
                     _RECOMMEND_GUESS_TTL,
                     self._qq_recommend.get_radar_recommend,
                 )
-                for item in extract_radar_recommend_tracks(self._to_dict(radar_response)):
+                for song in radar_response.songs:
                     with suppress(InvalidDataError, TypeError, ValueError):
-                        items.append(self._parse_track(item))
+                        items.append(self._parse_track(song.model_dump()))
         elif item_id == "new_songs":
             new_song_response = await self._get_recommend_payload_cached(
                 "new_songs",
                 _RECOMMEND_NEWSONG_TTL,
                 self._qq_recommend.get_recommend_newsong,
             )
-            for item in extract_newsong_tracks(self._to_dict(new_song_response)):
+            for song in new_song_response.songs:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_track(item))
+                    items.append(self._parse_track(song.model_dump()))
         elif item_id == "recommended_playlists":
             playlist_response = await self._get_recommend_payload_cached(
                 "recommended_playlists",
                 _RECOMMEND_PLAYLIST_TTL,
                 self._qq_recommend.get_recommend_songlist,
             )
-            for item in extract_recommend_songlists(self._to_dict(playlist_response)):
+            for playlist in playlist_response.songlists:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_playlist(item))
+                    items.append(self._parse_playlist(playlist.model_dump()))
         return items
 
     def _persist_credential(self) -> None:
@@ -411,6 +390,8 @@ class QQMusicProvider(MusicProvider):
             await self._qq_client.close()
         self._qq_client = None
         self._recommend_payload_cache = {}
+        self._cdn_sips = ()
+        self._cdn_refresh_monotonic = 0.0
         await super().unload(is_removed)
 
     async def _get_recommend_payload_cached(
@@ -425,37 +406,6 @@ class QQMusicProvider(MusicProvider):
         payload = await self._run_with_session(fetcher())
         self._recommend_payload_cache[key] = (time.time(), payload)
         return payload
-
-    def _to_dict(self, data: Any) -> dict[str, Any]:
-        """Normalize qqmusic-api response models to dictionaries."""
-        if isinstance(data, dict):
-            return data
-        if callable(dump := getattr(data, "model_dump", None)):
-            dumped = dump(by_alias=True)
-            return dumped if isinstance(dumped, dict) else {}
-        return {}
-
-    def _decode_lyric_response(self, response: Any) -> dict[str, Any]:
-        """Normalize and decrypt QQ Music lyric responses."""
-        if callable(decrypt := getattr(response, "decrypt", None)):
-            response = decrypt()
-        lyric_obj = dict(self._to_dict(response))
-        if str(lyric_obj.get("crypt") or "0") != "1":
-            return lyric_obj
-        for key in ("lyric", "trans", "roma"):
-            value = str(lyric_obj.get(key) or "").strip()
-            if value and _HEX_LYRIC_PATTERN.fullmatch(value):
-                try:
-                    lyric_obj[key] = qrc_decrypt(value)
-                except (TypeError, ValueError) as err:
-                    self.logger.debug("Failed to decrypt QQ Music %s lyric payload: %s", key, err)
-        return lyric_obj
-
-    def _response_items(self, data: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
-        """Extract dict items from list, dict, or qqmusic-api response model."""
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        return extract_items(self._to_dict(data), keys)
 
     def _get_candidate_file_types(self) -> list[Any]:
         """Return ordered quality candidates based on provider config."""
@@ -481,22 +431,22 @@ class QQMusicProvider(MusicProvider):
         return [SongFileType.MP3_128]
 
     async def _resolve_stream_url(
-        self, item_id: str, track_obj: dict[str, Any]
-    ) -> tuple[str, Any | None, bool, int | None]:
+        self, item_id: str, track: QQMusicSong
+    ) -> tuple[str, Any | None, bool, int | None, int | None]:
         """Resolve stream URL with full-stream and preview fallback."""
         stream_url = ""
         selected_file_type = None
         is_preview_stream = False
         preview_duration = None
-        file_obj = track_obj.get("file")
-        if not isinstance(file_obj, dict):
-            file_obj = {}
-        media_mid = str(file_obj.get("media_mid") or file_obj.get("mediaMid") or "")
-        song_mid = str(
-            track_obj.get("mid") or track_obj.get("songMid") or track_obj.get("songmid") or item_id
-        )
-        song_type = self._to_positive_int(track_obj.get("type") or track_obj.get("songtype"))
-        file_info = [SongFileInfo(song_mid, song_type=song_type, media_mid=media_mid or None)]
+        stream_expiration = None
+        song_mid = track.mid
+        file_info = [
+            SongFileInfo(
+                song_mid,
+                song_type=track.type,
+                media_mid=track.file.media_mid or None,
+            )
+        ]
 
         for file_type in self._get_candidate_file_types():
             url_response = await self._run_with_session(
@@ -506,72 +456,96 @@ class QQMusicProvider(MusicProvider):
                     credential=self._credential,
                 )
             )
-            url = self._extract_stream_url(url_response, song_mid)
+            url, stream_expiration = await self._extract_stream_url(url_response, song_mid)
             if url.startswith("http"):
-                return (url, file_type, False, None)
+                return (url, file_type, False, None, stream_expiration)
 
         # Fallback to 30s preview URL when full stream URL is unavailable.
-        vs_list = track_obj.get("vs")
-        if isinstance(vs_list, list):
-            first_vs = next((vs for vs in vs_list if isinstance(vs, str) and vs), None)
-            if first_vs:
-                try_file_info = [
-                    SongFileInfo(
-                        song_mid,
-                        song_type=song_type,
-                        media_mid=first_vs,
-                    )
-                ]
-                try_response = await self._run_with_session(
-                    self._qq_song.get_song_urls(
-                        try_file_info,
-                        file_type=SpecialSongFileType.TRY,
-                        credential=self._credential,
-                    )
+        if first_vs := next((vs for vs in track.vs if vs), None):
+            try_file_info = [
+                SongFileInfo(
+                    song_mid,
+                    song_type=track.type,
+                    media_mid=first_vs,
                 )
-                if try_url := self._extract_stream_url(try_response, song_mid):
-                    stream_url = try_url
-                    selected_file_type = SpecialSongFileType.TRY
-                    is_preview_stream = True
-                    try_begin = track_obj.get("file", {}).get("try_begin")
-                    try_end = track_obj.get("file", {}).get("try_end")
-                    if (
-                        isinstance(try_begin, int)
-                        and isinstance(try_end, int)
-                        and try_end > try_begin
-                    ):
-                        preview_duration = int((try_end - try_begin) / 1000)
-                    self.logger.info(
-                        "QQ Music full stream unavailable for %s, using preview stream fallback",
-                        item_id,
-                    )
+            ]
+            try_response = await self._run_with_session(
+                self._qq_song.get_song_urls(
+                    try_file_info,
+                    file_type=SpecialSongFileType.TRY,
+                    credential=self._credential,
+                )
+            )
+            try_url, stream_expiration = await self._extract_stream_url(try_response, song_mid)
+            if try_url:
+                stream_url = try_url
+                selected_file_type = SpecialSongFileType.TRY
+                is_preview_stream = True
+                if track.file.try_end > track.file.try_begin:
+                    preview_duration = int((track.file.try_end - track.file.try_begin) / 1000)
+                self.logger.info(
+                    "QQ Music full stream unavailable for %s, using preview stream fallback",
+                    item_id,
+                )
 
-        return (stream_url, selected_file_type, is_preview_stream, preview_duration)
+        return (
+            stream_url,
+            selected_file_type,
+            is_preview_stream,
+            preview_duration,
+            stream_expiration,
+        )
 
-    def _extract_stream_url(self, url_response: Any, item_id: str) -> str:
-        """Extract absolute stream URL from qqmusic-api 0.6 or legacy URL payload."""
-        if isinstance(url_response, dict) and isinstance(url_response.get(item_id), str):
-            return str(url_response[item_id])
-        response = self._to_dict(url_response)
-        url_items = response.get("midurlinfo") or response.get("data") or []
-        if not isinstance(url_items, list):
-            return ""
-        cdn_base = getattr(self._qq_song, "_SONG_URL_FALLBACK_DOMAIN", None)
-        if not cdn_base:
-            self.logger.debug("QQ Music API did not expose stream URL fallback domain")
-            cdn_base = "https://isure.stream.qqmusic.qq.com/"
-        cdn_base = str(cdn_base)
-        for item in url_items:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("songmid") or item.get("mid") or "") != item_id:
-                continue
-            purl = str(item.get("purl") or "")
-            if purl.startswith("http"):
-                return purl
-            if purl:
-                return f"{cdn_base.rstrip('/')}/{purl.lstrip('/')}"
-        return ""
+    async def _extract_stream_url(
+        self, url_response: GetSongUrlsResponse, item_id: str
+    ) -> tuple[str, int | None]:
+        """Build a playable URL from the typed URL response and CDN dispatch data."""
+        info = next((item for item in url_response.data if item.mid == item_id), None)
+        expiration = self._positive_or_none(url_response.expiration)
+        if info is None or info.result != 0 or not info.purl:
+            return ("", expiration)
+        if info.purl.startswith(("http://", "https://")):
+            return (info.purl, expiration)
+        cdn_base = await self._get_cdn_base()
+        return (f"{cdn_base.rstrip('/')}/{info.purl.lstrip('/')}", expiration)
+
+    async def _get_cdn_base(self) -> str:
+        """Return a cached CDN root from QQ Music's public dispatch endpoint."""
+        now = time.monotonic()
+        if self._cdn_sips and now < self._cdn_refresh_monotonic:
+            return self._cdn_sips[0]
+        dispatch = await self._run_with_session(self._qq_song.get_cdn_dispatch())
+        if dispatch.retcode != 0:
+            raise ResourceTemporarilyUnavailable(
+                f"QQ Music CDN dispatch failed (code={dispatch.retcode})", backoff_time=30
+            )
+        sips = tuple(
+            sip.rstrip("/")
+            for sip in dispatch.sip
+            if isinstance(sip, str) and sip.startswith(("http://", "https://"))
+        )
+        if not sips:
+            raise ResourceTemporarilyUnavailable(
+                "QQ Music CDN dispatch returned no playable CDN", backoff_time=30
+            )
+        ttl_candidates = [
+            value
+            for value in (dispatch.refresh_time, dispatch.expiration, dispatch.cache_time)
+            if isinstance(value, int) and value > 0
+        ]
+        ttl = max(30, min(ttl_candidates, default=300))
+        self._cdn_sips = sips
+        self._cdn_refresh_monotonic = now + ttl
+        return sips[0]
+
+    @staticmethod
+    def _positive_or_none(value: Any) -> int | None:
+        """Return a positive integer or None."""
+        with suppress(TypeError, ValueError):
+            parsed_value = int(str(value))
+            if parsed_value > 0:
+                return parsed_value
+        return None
 
     def _get_stream_expiration(self, stream_url: str) -> int:
         """Derive expiration from stream URL query string."""
@@ -606,13 +580,6 @@ class QQMusicProvider(MusicProvider):
                 return parsed
         return 0
 
-    def _file_size(self, file_obj: dict[str, Any], *keys: str) -> int:
-        """Read first positive file size from multiple key variants."""
-        for key in keys:
-            if size := self._to_positive_int(file_obj.get(key)):
-                return size
-        return 0
-
     def _get_max_supported_audio_format(
         self, track_obj: dict[str, Any]
     ) -> tuple[AudioFormat, str | None]:
@@ -635,47 +602,47 @@ class QQMusicProvider(MusicProvider):
                 AudioFormat(content_type=ContentType.FLAC, sample_rate=192000, bit_depth=24),
                 "Hi-Res",
             )
-        if self._file_size(file_obj, "size_flac", "sizeFlac") or _size_new_at(5):
+        if self._to_positive_int(file_obj.get("size_flac")) or _size_new_at(5):
             return (
                 AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16),
                 None,
             )
-        if self._file_size(file_obj, "size_320mp3", "size320mp3") or _size_new_at(3):
+        if self._to_positive_int(file_obj.get("size_320mp3")) or _size_new_at(3):
             return (
                 AudioFormat(content_type=ContentType.MPEG, bit_rate=320000),
                 None,
             )
-        if self._file_size(file_obj, "size_192ogg", "size192ogg"):
+        if self._to_positive_int(file_obj.get("size_192ogg")):
             return (
                 AudioFormat(content_type=ContentType.OGG, bit_rate=192000),
                 None,
             )
-        if self._file_size(file_obj, "size_192aac", "size192aac"):
+        if self._to_positive_int(file_obj.get("size_192aac")):
             return (
                 AudioFormat(content_type=ContentType.M4A, bit_rate=192000),
                 None,
             )
-        if self._file_size(file_obj, "size_128mp3", "size128mp3"):
+        if self._to_positive_int(file_obj.get("size_128mp3")):
             return (
                 AudioFormat(content_type=ContentType.MPEG, bit_rate=128000),
                 None,
             )
-        if self._file_size(file_obj, "size_96ogg", "size96ogg"):
+        if self._to_positive_int(file_obj.get("size_96ogg")):
             return (
                 AudioFormat(content_type=ContentType.OGG, bit_rate=96000),
                 None,
             )
-        if self._file_size(file_obj, "size_96aac", "size96aac"):
+        if self._to_positive_int(file_obj.get("size_96aac")):
             return (
                 AudioFormat(content_type=ContentType.M4A, bit_rate=96000),
                 None,
             )
-        if self._file_size(file_obj, "size_48aac", "size48aac"):
+        if self._to_positive_int(file_obj.get("size_48aac")):
             return (
                 AudioFormat(content_type=ContentType.M4A, bit_rate=48000),
                 None,
             )
-        if self._file_size(file_obj, "size_try", "sizeTry"):
+        if self._to_positive_int(file_obj.get("size_try")):
             return (
                 AudioFormat(content_type=ContentType.MPEG),
                 None,
@@ -702,7 +669,7 @@ class QQMusicProvider(MusicProvider):
             return AudioFormat(content_type=ContentType.M4A, bit_rate=48000)
         return AudioFormat(content_type=self._get_content_type(selected_file_type))
 
-    def _get_artist_mapping(self, artist_obj: dict[str, Any] | str) -> ItemMapping | None:
+    def _get_artist_mapping(self, artist_obj: dict[str, Any]) -> ItemMapping | None:
         return get_artist_mapping(artist_obj, self.instance_id)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
@@ -729,23 +696,9 @@ class QQMusicProvider(MusicProvider):
         if prov_track_id.isdigit():
             return (int(prov_track_id), 0)
         response = await self._run_with_session(self._qq_song.get_detail(prov_track_id))
-        response_obj = self._to_dict(response)
-        track_obj = response_obj.get("track_info") or response_obj.get("track") or {}
-        if song_id := extract_song_id(track_obj):
-            song_type = self._to_positive_int(track_obj.get("type") or track_obj.get("songtype"))
-            return (song_id, song_type)
+        if response.track.id > 0:
+            return (response.track.id, response.track.type)
         raise MediaNotFoundError(f"Unable to resolve numeric song info for track {prov_track_id}")
-
-    # Compatibility wrappers for existing tests/extensions.
-    def _extract_song_id(self, track_obj: dict[str, Any]) -> int | None:
-        """Backward-compatible wrapper for song id extraction helper."""
-        return extract_song_id(track_obj)
-
-    def _extract_items(
-        self, data: dict[str, Any], candidate_keys: tuple[str, ...]
-    ) -> list[dict[str, Any]]:
-        """Backward-compatible wrapper for list extraction helper."""
-        return extract_items(data, candidate_keys)
 
     async def _ensure_user_euin(self) -> str:
         """Resolve and cache current user's encrypted uin."""
@@ -768,7 +721,8 @@ class QQMusicProvider(MusicProvider):
 
     def _skipped_playlist_id(self, playlist_obj: dict[str, Any]) -> str | None:
         """Return the provider playlist id of a playlist that could not be parsed."""
-        dissid, dirid = extract_playlist_ids(playlist_obj)
+        dissid = playlist_obj.get("id") or 0
+        dirid = playlist_obj.get("dirid") or 0
         return build_playlist_id(dissid, dirid) if dissid else None
 
     @use_cache(3600 * 3)
@@ -781,7 +735,7 @@ class QQMusicProvider(MusicProvider):
         """Perform search on QQ Music."""
         result = SearchResults()
         if MediaType.TRACK in media_types:
-            raw_tracks = await self._run_with_session(
+            response = await self._run_with_session(
                 self._qq_search.search_by_type(
                     search_query,
                     SearchType.SONG,
@@ -789,12 +743,12 @@ class QQMusicProvider(MusicProvider):
                 )
             )
             result.tracks = []
-            for item in self._response_items(raw_tracks, ("song", "songlist", "list")):
+            for track in response.song:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    result.tracks.append(self._parse_track(item))
+                    result.tracks.append(self._parse_track(track.model_dump()))
 
         if MediaType.ALBUM in media_types:
-            raw_albums = await self._run_with_session(
+            response = await self._run_with_session(
                 self._qq_search.search_by_type(
                     search_query,
                     SearchType.ALBUM,
@@ -802,12 +756,12 @@ class QQMusicProvider(MusicProvider):
                 )
             )
             result.albums = []
-            for item in self._response_items(raw_albums, ("album", "album_list", "list")):
+            for album in response.album:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    result.albums.append(self._parse_album(item))
+                    result.albums.append(self._parse_album(album.model_dump()))
 
         if MediaType.ARTIST in media_types:
-            raw_artists = await self._run_with_session(
+            response = await self._run_with_session(
                 self._qq_search.search_by_type(
                     search_query,
                     SearchType.SINGER,
@@ -815,12 +769,12 @@ class QQMusicProvider(MusicProvider):
                 )
             )
             result.artists = []
-            for item in self._response_items(raw_artists, ("singer", "singer_list", "list")):
+            for artist in response.singer:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    result.artists.append(self._parse_artist(item))
+                    result.artists.append(self._parse_artist(artist.model_dump()))
 
         if MediaType.PLAYLIST in media_types:
-            raw_playlists = await self._run_with_session(
+            response = await self._run_with_session(
                 self._qq_search.search_by_type(
                     search_query,
                     SearchType.SONGLIST,
@@ -828,9 +782,9 @@ class QQMusicProvider(MusicProvider):
                 )
             )
             result.playlists = []
-            for item in self._response_items(raw_playlists, ("songlist", "playlists", "list")):
+            for playlist in response.songlist:
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    result.playlists.append(self._parse_playlist(item))
+                    result.playlists.append(self._parse_playlist(playlist.model_dump()))
         return result
 
     @use_cache(3600 * 24 * 7)
@@ -841,31 +795,12 @@ class QQMusicProvider(MusicProvider):
                 f"Artist id {prov_artist_id} is not a QQ singer mid, cannot fetch artist details"
             )
         response = await self._run_with_session(self._qq_singer.get_info(prov_artist_id))
-        artist_obj: dict[str, Any] | None = None
-        response_obj = self._to_dict(response)
-        info = response_obj.get("Info") or response_obj.get("info") or {}
-        if isinstance(info, dict):
-            singer_obj = info.get("Singer")
-            base_info = info.get("BaseInfo")
-            if isinstance(singer_obj, dict):
-                artist_obj = dict(singer_obj)
-            if isinstance(base_info, dict):
-                if artist_obj is None:
-                    artist_obj = dict(base_info)
-                else:
-                    if not extract_first_text(artist_obj, ("name", "Name", "singerName"), ""):
-                        artist_obj["Name"] = base_info.get("Name") or base_info.get("name")
-                    if not artist_obj.get("Avatar"):
-                        artist_obj["Avatar"] = base_info.get("Avatar") or base_info.get("avatar")
-            if artist_obj is None:
-                artist_obj = info
-        if artist_obj is None:
-            singer_list = response_obj.get("singer_list")
-            if isinstance(singer_list, list) and singer_list:
-                singer_item = singer_list[0]
-                if isinstance(singer_item, dict):
-                    artist_obj = singer_item.get("basic_info") or singer_item
-        if not artist_obj:
+        artist_obj = response.singer.model_dump()
+        if not artist_obj.get("name"):
+            artist_obj["name"] = response.base_info.name
+        if not artist_obj.get("singer_pic"):
+            artist_obj["avatar_url"] = response.base_info.avatar
+        if not artist_obj.get("mid"):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
@@ -876,9 +811,9 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(
                 f"Artist id {prov_artist_id} is not a QQ singer mid, cannot fetch albums"
             )
-        raw_albums: list[dict[str, Any]] = []
+        albums = []
         try:
-            tab_albums = await self._run_with_session(
+            response = await self._run_with_session(
                 self._qq_singer.get_tab_detail(
                     prov_artist_id,
                     TabType.ALBUM,
@@ -886,14 +821,11 @@ class QQMusicProvider(MusicProvider):
                     num=100,
                 )
             )
-            raw_albums = self._response_items(
-                tab_albums,
-                ("album_tab", "albumList", "album_list", "list"),
-            )
+            albums = response.album_tab.albums
         except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
-            raw_albums = []
+            albums = []
 
-        if not raw_albums:
+        if not albums:
             response = await self._run_with_session(
                 self._qq_singer.get_album_list(
                     prov_artist_id,
@@ -901,16 +833,13 @@ class QQMusicProvider(MusicProvider):
                     page=1,
                 )
             )
-            raw_albums = self._response_items(
-                response,
-                ("albumList", "album_list", "list"),
-            )
+            albums = response.album_list
 
-        albums: list[Album] = []
-        for item in raw_albums:
+        result: list[Album] = []
+        for album in albums:
             with suppress(InvalidDataError, TypeError, ValueError):
-                albums.append(self._parse_album(item))
-        return albums
+                result.append(self._parse_album(album.model_dump()))
+        return result
 
     async def _get_artist_song_list(self, prov_artist_id: str) -> list[Track]:
         """Get parsed tracks from QQ Music singer song list."""
@@ -921,14 +850,7 @@ class QQMusicProvider(MusicProvider):
                 page=1,
             )
         )
-        response_obj = self._to_dict(response)
-        songs: list[dict[str, Any]] = []
-        for item in response_obj.get("songList", []):
-            if isinstance(item, dict) and isinstance(song_info := item.get("songInfo"), dict):
-                songs.append(song_info)
-        if not songs:
-            songs = extract_items(response_obj, ("song_list", "songs", "list"))
-        return [self._parse_track(item) for item in songs if item.get("mid")]
+        return [self._parse_track(song.model_dump()) for song in response.song_list if song.mid]
 
     @use_cache(3600 * 6, allow_expired_cache=True)
     async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
@@ -953,22 +875,9 @@ class QQMusicProvider(MusicProvider):
         """Get full album details by id."""
         album_value: str | int = int(prov_album_id) if prov_album_id.isdigit() else prov_album_id
         response = await self._run_with_session(self._qq_album.get_detail(album_value))
-        if not response:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found")
-        album_obj: dict[str, Any] | None = None
-        response_obj = self._to_dict(response)
-        basic_info = response_obj.get("basicInfo") or response_obj.get("album")
-        if isinstance(basic_info, dict):
-            album_obj = dict(basic_info)
-            if "singer" not in album_obj:
-                singer_list = response_obj.get("singer", {}).get("singerList")
-                if not isinstance(singer_list, list):
-                    singer_list = response_obj.get("singers")
-                if isinstance(singer_list, list):
-                    album_obj["singer"] = singer_list
-        else:
-            album_obj = response_obj
-        if not isinstance(album_obj, dict):
+        album_obj = response.album.model_dump()
+        album_obj["singers"] = [singer.model_dump() for singer in response.singers]
+        if not album_obj.get("mid"):
             raise MediaNotFoundError(f"Album {prov_album_id} returned unexpected payload")
         return self._parse_album(album_obj)
 
@@ -979,43 +888,30 @@ class QQMusicProvider(MusicProvider):
         response = await self._run_with_session(
             self._qq_album.get_song(album_value, num=300, page=1)
         )
-        response_obj = self._to_dict(response)
-        songs: list[dict[str, Any]] = []
-        for item in response_obj.get("songList", []):
-            if isinstance(item, dict) and isinstance(song_info := item.get("songInfo"), dict):
-                songs.append(song_info)
-        if not songs:
-            songs = self._response_items(response, ("song_list", "songs", "list"))
-        return [self._parse_track(item) for item in songs if item.get("mid")]
+        return [self._parse_track(song.model_dump()) for song in response.song_list if song.mid]
 
     @use_cache(3600 * 24 * 7, cache_checksum="qqmusic_lyrics_v2")
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track_value: str | int = int(prov_track_id) if prov_track_id.isdigit() else prov_track_id
         response = await self._run_with_session(self._qq_song.get_detail(track_value))
-        response_obj = self._to_dict(response)
-        track_obj = response_obj.get("track_info") or response_obj.get("track")
-        if not track_obj:
+        if not response.track.mid:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
-        track = self._parse_track(track_obj)
+        track = self._parse_track(response.track.model_dump())
         try:
             # Prefer normal lyric first: this is typically LRC and works best for MA synced scroll.
             lyric_response = await self._run_with_session(
                 self._qq_lyric.get_lyric(prov_track_id, qrc=False, trans=True)
             )
-            lyric_text = ""
-            trans_text = ""
-            lyric_obj = self._decode_lyric_response(lyric_response)
-            lyric_text = str(lyric_obj.get("lyric") or "").strip()
-            trans_text = str(lyric_obj.get("trans") or "").strip()
+            lyric_text = lyric_response.lyric.strip()
+            trans_text = lyric_response.trans.strip()
             # Fallback to QRC when standard lyric is empty/unavailable.
             if not lyric_text:
                 lyric_response = await self._run_with_session(
                     self._qq_lyric.get_lyric(prov_track_id, qrc=True, trans=True)
                 )
-                lyric_obj = self._decode_lyric_response(lyric_response)
-            lyric_text = str(lyric_obj.get("lyric") or lyric_text).strip()
-            trans_text = str(lyric_obj.get("trans") or trans_text).strip()
+                lyric_text = lyric_response.lyric.strip()
+                trans_text = lyric_response.trans.strip() or trans_text
             if lyric_text:
                 if _LRC_TIMESTAMP_PATTERN.search(lyric_text):
                     track.metadata.lrc_lyrics = normalize_qq_lyric_text(lyric_text)
@@ -1050,13 +946,10 @@ class QQMusicProvider(MusicProvider):
                     credential=self._credential,
                 )
             )
-            artists = self._response_items(
-                response,
-                ("List", "Users", "list", "v_list", "users", "singer_list", "singers"),
-            )
-            if not artists:
+            if not response.users:
                 break
-            for artist_obj in artists:
+            for artist in response.users:
+                artist_obj = artist.model_dump()
                 try:
                     yield self._parse_artist(artist_obj)
                     total_yielded += 1
@@ -1065,7 +958,7 @@ class QQMusicProvider(MusicProvider):
                     item_id = mapping.item_id if mapping else None
                     self.report_skipped_sync_item(MediaType.ARTIST, item_id, error)
                     continue
-            if len(artists) < num:
+            if len(response.users) < num:
                 break
             page += 1
         self.logger.info("QQ library artists sync yielded %s artist(s)", total_yielded)
@@ -1081,20 +974,16 @@ class QQMusicProvider(MusicProvider):
             response = await self._run_with_session(
                 self._qq_user.get_fav_song(euin, page=page, num=num, credential=self._credential)
             )
-            response_obj = self._to_dict(response)
-            songs = self._response_items(response, ("songlist", "song_list", "songs", "list"))
             if total is None:
-                total = int(response_obj.get("total_song_num") or response_obj.get("total") or 0)
-            if not songs:
+                total = response.total
+            if not response.songs:
                 break
-            for song in songs:
+            for song in response.songs:
                 try:
-                    yield self._parse_track(song)
+                    yield self._parse_track(song.model_dump())
                     yielded += 1
                 except (InvalidDataError, TypeError, ValueError) as error:
-                    self.report_skipped_sync_item(
-                        MediaType.TRACK, extract_track_mid(song) or None, error
-                    )
+                    self.report_skipped_sync_item(MediaType.TRACK, song.mid or None, error)
                     continue
             if total and yielded >= total:
                 break
@@ -1110,30 +999,17 @@ class QQMusicProvider(MusicProvider):
             response = await self._run_with_session(
                 self._qq_user.get_fav_album(euin, page=page, num=num, credential=self._credential)
             )
-            albums = self._response_items(
-                response,
-                (
-                    "albums",
-                    "album_list",
-                    "albumList",
-                    "v_list",
-                    "list",
-                    "v_album",
-                    "favAlbumList",
-                ),
-            )
-            if not albums:
+            if not response.albums:
                 break
-            for album_obj in albums:
+            for album in response.albums:
+                album_obj = album.model_dump()
                 try:
                     yield self._parse_album(album_obj)
                     total_yielded += 1
                 except (InvalidDataError, TypeError, ValueError) as error:
-                    self.report_skipped_sync_item(
-                        MediaType.ALBUM, extract_album_mid(album_obj) or None, error
-                    )
+                    self.report_skipped_sync_item(MediaType.ALBUM, album.mid or None, error)
                     continue
-            if len(albums) < num:
+            if len(response.albums) < num:
                 break
             page += 1
         self.logger.info("QQ library albums sync yielded %s album(s)", total_yielded)
@@ -1144,10 +1020,8 @@ class QQMusicProvider(MusicProvider):
         created = await self._run_with_session(
             self._qq_user.get_created_songlist(self._musicid, credential=self._credential)
         )
-        for playlist_obj in self._response_items(
-            created,
-            ("playlists", "v_playlist", "list", "playlist"),
-        ):
+        for playlist in created.playlists:
+            playlist_obj = playlist.model_dump()
             try:
                 yield self._parse_playlist(playlist_obj)
             except (InvalidDataError, TypeError, ValueError) as error:
@@ -1164,13 +1038,10 @@ class QQMusicProvider(MusicProvider):
                     euin, page=page, num=num, credential=self._credential
                 )
             )
-            fav_playlists = self._response_items(
-                response,
-                ("playlists", "list", "v_list", "playlist", "vec_kept_playlist"),
-            )
-            if not fav_playlists:
+            if not response.playlists:
                 break
-            for playlist_obj in fav_playlists:
+            for playlist in response.playlists:
+                playlist_obj = playlist.model_dump()
                 try:
                     yield self._parse_playlist(playlist_obj)
                 except (InvalidDataError, TypeError, ValueError) as error:
@@ -1178,7 +1049,7 @@ class QQMusicProvider(MusicProvider):
                         MediaType.PLAYLIST, self._skipped_playlist_id(playlist_obj), error
                     )
                     continue
-            if len(fav_playlists) < num:
+            if len(response.playlists) < num:
                 break
             page += 1
 
@@ -1195,12 +1066,11 @@ class QQMusicProvider(MusicProvider):
                 onlysong=False,
             )
         )
-        response_obj = self._to_dict(response)
-        playlist_obj = response_obj.get("dirinfo") or response_obj.get("info")
-        if not isinstance(playlist_obj, dict):
+        if not response.info.id:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         # Ensure parsed playlist keeps composite id including dirid.
-        playlist_obj = {**playlist_obj, "dissid": dissid, "dirid": dirid}
+        playlist_obj = response.info.model_dump()
+        playlist_obj.update(id=dissid, dirid=dirid)
         return self._parse_playlist(playlist_obj)
 
     @use_cache(3600, allow_expired_cache=True)
@@ -1220,11 +1090,10 @@ class QQMusicProvider(MusicProvider):
                 onlysong=True,
             )
         )
-        songs = self._response_items(response, ("songlist", "songs", "song_list", "list"))
         results: list[Track] = []
-        for index, song in enumerate(songs, start=1 + page * 200):
+        for index, song in enumerate(response.songs, start=1 + page * 200):
             try:
-                track = self._parse_track(song)
+                track = self._parse_track(song.model_dump())
                 track.position = index
                 results.append(track)
             except InvalidDataError, TypeError, ValueError:
@@ -1236,15 +1105,9 @@ class QQMusicProvider(MusicProvider):
         created = await self._run_with_session(
             self._qq_songlist.create(dirname=name, credential=self._credential)
         )
-        created_obj = self._to_dict(created)
-        if not created_obj:
-            raise InvalidDataError("QQ Music create playlist returned invalid response")
-        dirid_raw = created_obj.get("dirid") or created_obj.get("dirId") or created_obj.get("id")
-        if dirid_raw is None:
+        if created.id <= 0 or created.dirid <= 0:
             raise InvalidDataError("QQ Music create playlist response missing dirid")
-        dirid = int(dirid_raw)
-        dissid = int(created_obj.get("tid") or created_obj.get("dissid") or dirid)
-        return await self.get_playlist(self._build_playlist_id(dissid, dirid))
+        return await self.get_playlist(self._build_playlist_id(created.id, created.dirid))
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
@@ -1311,13 +1174,11 @@ class QQMusicProvider(MusicProvider):
             self._qq_singer.get_similar(prov_artist_id, number=limit)
         )
         artists: list[Artist] = []
-        for item in self._response_items(
-            response, ("singerlist", "singer_list", "singers", "list")
-        ):
+        for artist in response.singerlist:
             if len(artists) >= limit:
                 break
             with suppress(InvalidDataError, TypeError, ValueError):
-                artists.append(self._parse_artist(item))
+                artists.append(self._parse_artist(artist.model_dump()))
         return artists
 
     @use_cache(3600 * 24, allow_expired_cache=True)
@@ -1325,27 +1186,15 @@ class QQMusicProvider(MusicProvider):
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         song_id = await self._resolve_song_id(prov_track_id)
         response = await self._run_with_session(self._qq_song.get_similar_song(song_id))
-        response_obj = self._to_dict(response)
-        response_items: Any = response if isinstance(response, list) else []
-        if not response_items:
-            response_items = response_obj.get("song") or response_obj.get("songlist") or []
-        if not isinstance(response_items, list):
-            return []
         tracks: list[Track] = []
-        for item in response_items:
+        for group in response.song:
             if len(tracks) >= limit:
                 break
-            if not isinstance(item, dict):
-                continue
-            grouped_songs = item.get("song")
-            candidates = grouped_songs if isinstance(grouped_songs, list) else [item]
-            for candidate in candidates:
+            for song in group.song:
                 if len(tracks) >= limit:
                     break
-                if not isinstance(candidate, dict):
-                    continue
                 with suppress(InvalidDataError, TypeError, ValueError):
-                    tracks.append(self._parse_track(candidate))
+                    tracks.append(self._parse_track(song.model_dump()))
         return tracks
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -1353,27 +1202,24 @@ class QQMusicProvider(MusicProvider):
         if media_type != MediaType.TRACK:
             raise MediaNotFoundError(f"Unsupported media type {media_type}")
         track_response = await self._run_with_session(self._qq_song.get_detail(item_id))
-        track_response_obj = self._to_dict(track_response)
-        track_obj = track_response_obj.get("track_info") or track_response_obj.get("track") or {}
-        if not track_obj:
+        track = track_response.track
+        if not track.mid:
             raise MediaNotFoundError(f"Track {item_id} not found")
         (
             stream_url,
             selected_file_type,
             is_preview_stream,
             preview_duration,
-        ) = await self._resolve_stream_url(item_id, track_obj)
+            stream_expiration,
+        ) = await self._resolve_stream_url(item_id, track)
 
         if not stream_url:
-            pay_info = track_obj.get("pay", {})
-            pay_play = pay_info.get("pay_play", "unknown")
-            pay_status = pay_info.get("pay_status", "unknown")
             raise UnplayableMediaError(
                 f"No playable stream URL returned for track {item_id} "
-                f"(pay_play={pay_play}, pay_status={pay_status})"
+                f"(pay_play={track.pay.pay_play}, pay_status={track.pay.pay_status})"
             )
 
-        expiration = self._get_stream_expiration(stream_url)
+        expiration = stream_expiration or self._get_stream_expiration(stream_url)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
