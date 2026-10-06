@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
-from music_assistant.helpers.podcast_parsers import parse_podcast_persons
+from music_assistant.helpers.podcast_parsers import get_publisher_number, parse_podcast_persons
 
 from .constants import (
     API_BASE_URL,
@@ -206,6 +206,8 @@ def parse_episode_from_data(
         name=episode_data.get("title", "Unknown Episode"),
         duration=duration,
         position=position,
+        episode_number=get_publisher_number(episode_data.get("episode")),
+        season=get_publisher_number(episode_data.get("season")),
         podcast=ItemMapping(
             item_id=podcast_id,
             provider=instance_id,

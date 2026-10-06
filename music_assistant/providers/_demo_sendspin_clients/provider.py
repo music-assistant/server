@@ -41,8 +41,8 @@ class DemoSendspinClientsProvider(PlayerProvider):
     Runs fake Sendspin clients, one per pairing scenario.
 
     Each device connects to this server's own Sendspin endpoint, so the Sendspin provider
-    picks it up as an ordinary client and renders the real approval, pairing and device
-    management screens against it. The players themselves belong to the Sendspin provider,
+    picks it up as an ordinary client and renders the real approval and pairing
+    screens against it. The players themselves belong to the Sendspin provider,
     so this one registers none of its own.
     """
 
