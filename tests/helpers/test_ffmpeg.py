@@ -81,6 +81,66 @@ def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> N
     )
 
 
+_PCM_OUT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+)
+
+
+def _input_fflags(args: list[str]) -> list[str]:
+    """Return the values of every -fflags option given to the main input."""
+    input_args = args[: args.index("-i")]
+    return [input_args[i + 1] for i, arg in enumerate(input_args) if arg == "-fflags"]
+
+
+def test_get_ffmpeg_args_fastseeks_http_mp3_seek() -> None:
+    """A seek into an http mp3 byte-seeks instead of parsing every frame before the target."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["+fastseek"]
+
+
+def test_get_ffmpeg_args_fastseek_keeps_provider_fflags() -> None:
+    """Fastseek joins the provider's -fflags, since ffmpeg only honours the last one per input."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-fflags", "nobuffer", "-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["nobuffer+fastseek"]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "input_path", "extra_input_args"),
+    [
+        (ContentType.MP3, "https://example.invalid/book.mp3", []),
+        (ContentType.FLAC, "https://example.invalid/track.flac", ["-ss", "30"]),
+        (ContentType.MP3, "/media/book.mp3", ["-ss", "30"]),
+    ],
+)
+def test_get_ffmpeg_args_no_fastseek_outside_http_mp3_seek(
+    content_type: ContentType, input_path: str, extra_input_args: list[str]
+) -> None:
+    """Sources other than a seeked http mp3 keep ffmpeg's accurate seek."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=content_type),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    assert _input_fflags(args) == []
+
+
 def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
     """Split generated ffmpeg args into the part describing the input and the output."""
     idx = args.index("-i")
