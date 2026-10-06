@@ -633,7 +633,9 @@ class PocketCastsProvider(MusicProvider):
             episode_number=get_publisher_number(
                 episode_data.get("number") or episode_data.get("episodeNumber")
             ),
-            season=get_publisher_number(episode_data.get("season")),
+            season=get_publisher_number(
+                episode_data.get("season") or episode_data.get("episodeSeason")
+            ),
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,

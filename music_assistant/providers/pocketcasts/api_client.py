@@ -188,8 +188,9 @@ class PocketCastsClient:
         :param episode_uuid: The episode UUID.
         """
         # /user/episode returns camelCase keys: uuid, title, url, fileType, duration (seconds),
-        # published, episodeNumber, playedUpTo (resume seconds), playingStatus (1=unplayed,
-        # 2=in progress, 3=played), starred, podcastUuid. No show notes or episode artwork.
+        # published, episodeNumber, episodeSeason, playedUpTo (resume seconds), playingStatus
+        # (1=unplayed, 2=in progress, 3=played), starred, podcastUuid. No show notes or episode
+        # artwork.
         data = await self._request(
             "POST", f"{API_BASE_URL}/user/episode", json={"uuid": episode_uuid}
         )
