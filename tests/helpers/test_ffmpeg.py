@@ -92,10 +92,11 @@ def _input_fflags(args: list[str]) -> list[str]:
     return [input_args[i + 1] for i, arg in enumerate(input_args) if arg == "-fflags"]
 
 
-def test_get_ffmpeg_args_fastseeks_http_mp3_seek() -> None:
+@pytest.mark.parametrize("content_type", [ContentType.MP3, ContentType.MPEG])
+def test_get_ffmpeg_args_fastseeks_http_mp3_seek(content_type: ContentType) -> None:
     """A seek into an http mp3 byte-seeks instead of parsing every frame before the target."""
     args = get_ffmpeg_args(
-        AudioFormat(content_type=ContentType.MP3),
+        AudioFormat(content_type=content_type),
         _PCM_OUT,
         [],
         input_path="https://example.invalid/book.mp3",
@@ -112,10 +113,10 @@ def test_get_ffmpeg_args_fastseek_keeps_provider_fflags() -> None:
         _PCM_OUT,
         [],
         input_path="https://example.invalid/book.mp3",
-        extra_input_args=["-fflags", "nobuffer", "-ss", "27553"],
+        extra_input_args=["-fflags", "genpts", "-fflags", "nobuffer", "-ss", "27553"],
     )
 
-    assert _input_fflags(args) == ["nobuffer+fastseek"]
+    assert _input_fflags(args) == ["genpts", "nobuffer+fastseek"]
 
 
 @pytest.mark.parametrize(

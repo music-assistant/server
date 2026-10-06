@@ -572,10 +572,10 @@ def get_ffmpeg_args(
                 # that would trigger Range-less restarts from byte 0. MA-initiated seeks
                 # still work via -ss decode-and-discard.
                 input_args += ["-seekable", "0"]
-            if "-ss" in input_args and ContentType.MP3 in (
+            if "-ss" in input_args and {
                 input_format.content_type,
                 input_format.codec_type,
-            ):
+            } & {ContentType.MP3, ContentType.MPEG}:
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
                 _add_input_fflag(input_args, "+fastseek")
@@ -971,7 +971,8 @@ def _is_stream_limit_error(err: BaseException) -> bool:
 def _add_input_fflag(input_args: list[str], flag: str) -> None:
     """Add a format flag to the input, merging into an existing -fflags option."""
     if "-fflags" in input_args:
-        idx = input_args.index("-fflags") + 1
+        # ffmpeg only honours the last -fflags given to an input
+        idx = len(input_args) - input_args[::-1].index("-fflags")
         input_args[idx] += flag
     else:
         input_args += ["-fflags", flag]
