@@ -9,7 +9,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 
-DB_SCHEMA_VERSION: Final[int] = 63
+DB_SCHEMA_VERSION: Final[int] = 64
 
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
@@ -67,3 +67,6 @@ TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
 # walk skips that title. Pairing the rows of a title is quadratic in their count, and a title
 # held by hundreds of rows is a generic one rather than a duplicate
 TRACK_RECONCILIATION_MAX_TITLE_ROWS: Final[int] = 200
+# Audio analysis rows are moved out of library.db in batches of this many rows, one
+# transaction each.
+AUDIO_ANALYSIS_MOVE_BATCH_SIZE: Final[int] = 5000

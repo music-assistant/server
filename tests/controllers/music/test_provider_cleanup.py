@@ -23,12 +23,12 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
 from music_assistant.mass import MusicAssistant
 
 FS_INSTANCE = "filesystem_local--AbCd"
@@ -209,8 +209,8 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
         )
     )
     for prov_key in ("spotify", STREAM_INSTANCE):
-        await mass.music.database.insert(
-            DB_TABLE_AUDIO_ANALYSIS,
+        await mass.streams.audio_analysis.database.insert(
+            AA_TABLE_ANALYSIS,
             {
                 "media_type": "artist",
                 "item_id": "sp1",
@@ -222,7 +222,9 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
 
     await artists.remove_provider_mapping(db_artist.item_id, STREAM_INSTANCE, "sp1")
 
-    rows = await mass.music.database.get_rows(DB_TABLE_AUDIO_ANALYSIS, {"item_id": "sp1"})
+    rows = await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "sp1"}
+    )
     assert [row["provider"] for row in rows] == ["spotify"]
 
 
