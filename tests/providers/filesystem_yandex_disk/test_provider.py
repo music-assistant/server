@@ -76,9 +76,7 @@ async def test_api_download_response_forwards_range() -> None:
     assert resp == ("resp", "disk:/M/a.flac", {"Range": "bytes=10-"})
 
 
-def _construct_provider(
-    folder_id: str | None = "root", *, legacy_root: str | None = None
-) -> tuple[Any, mock.Mock, mock.Mock]:
+def _construct_provider(folder_id: str | None = "root") -> tuple[Any, mock.Mock, mock.Mock]:
     """Construct the provider with setup-data-aware dependencies mocked."""
     mass = mock.Mock()
     config = mock.Mock()
@@ -91,9 +89,7 @@ def _construct_provider(
     if folder_id is not None:
         config.setup_data["folder_id"] = folder_id
     config.values = {}
-    config.get_value.side_effect = lambda key, default=None: (
-        legacy_root if key == "root_path" else default
-    )
+    config.get_value.side_effect = lambda _key, default=None: default
     mass.config.decrypt_string.side_effect = lambda value: value
     mass.config.get.side_effect = lambda key: (
         config.setup_data if key.endswith("/setup_data") else {}
@@ -137,11 +133,11 @@ def test_init_preserves_yandex_folder_path() -> None:
     assert provider.root_folder_id == "disk:/Music"
 
 
-def test_init_reads_legacy_root_path() -> None:
-    """Existing pre-SetupSession instances retain their configured scan root."""
-    provider, _auth_cls, _config = _construct_provider(None, legacy_root="disk:/Legacy")
+def test_init_without_folder_scans_whole_disk() -> None:
+    """Setup data without a folder falls back to the whole Yandex Disk."""
+    provider, _auth_cls, _config = _construct_provider(None)
 
-    assert provider.root_folder_id == "disk:/Legacy"
+    assert provider.root_folder_id == DISK_ROOT
 
 
 def test_rotated_refresh_token_updates_setup_data_immediately() -> None:

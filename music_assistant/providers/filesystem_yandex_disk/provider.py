@@ -46,8 +46,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.providers.filesystem_cloud.base import RawItem
 
-_LEGACY_CONF_ROOT_PATH = "root_path"
-
 
 class YandexDiskFileSystemProvider(CloudFileSystemProvider):
     """Yandex Disk filesystem provider for Music Assistant."""
@@ -65,11 +63,7 @@ class YandexDiskFileSystemProvider(CloudFileSystemProvider):
         :param manifest: The provider manifest.
         :param config: The provider (instance) configuration.
         """
-        legacy_root = config.get_value(_LEGACY_CONF_ROOT_PATH)
-        folder_id = cast(
-            "str",
-            read_setup_value(mass, config, CONF_FOLDER_ID, legacy_root) or "root",
-        )
+        folder_id = cast("str", read_setup_value(mass, config, CONF_FOLDER_ID) or "root")
         root_path = DISK_ROOT if folder_id == "root" else folder_id
         super().__init__(mass, manifest, config, root_path)
         auth = MAYandexDiskAuth(
