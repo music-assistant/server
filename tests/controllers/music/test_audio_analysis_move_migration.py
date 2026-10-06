@@ -150,13 +150,13 @@ async def test_moves_legacy_rows_and_drops_legacy_tables(
 
 
 @pytest.mark.asyncio
-async def test_migrate_database_moves_analysis_from_version_62(
+async def test_migrate_database_moves_analysis_from_version_63(
     library_db: DatabaseConnection, mass: MagicMock, tmp_path: pathlib.Path
 ) -> None:
-    """The library migration from schema 62 runs the move."""
+    """The library migration from schema 63 runs the move."""
     await _seed_legacy(library_db, n_analysis=1, n_failures=0)
 
-    await migrate_database(mass, library_db, LOGGER, prev_version=62, create_tables=AsyncMock())
+    await migrate_database(mass, library_db, LOGGER, prev_version=63, create_tables=AsyncMock())
 
     assert DB_TABLE_AUDIO_ANALYSIS not in await _main_tables(library_db)
     assert [r["item_id"] for r in await _analysis_rows(tmp_path, DB_TABLE_AUDIO_ANALYSIS)] == ["t0"]

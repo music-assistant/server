@@ -5,6 +5,7 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 from xml.etree.ElementTree import ParseError
@@ -16,12 +17,13 @@ from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 
-from .constants import PLAYER_CONFIG_ENTRIES
+from .constants import COMMAND_REFRESH_DELAYS, PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
@@ -196,6 +198,7 @@ class DLNAPlayer(Player):
             duration=int(media_duration) if media_duration is not None else None,
         )
 
+        self._attr_source_list = []
         # Let player controller determine active source, only override for known external sources
         if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
             # MA stream - let controller determine source
@@ -203,6 +206,17 @@ class DLNAPlayer(Player):
         elif "spotify" in _device_uri:
             # Spotify or Spotify Connect
             self._attr_active_source = "spotify"
+            self._attr_source_list = [
+                PlayerSource(
+                    id="spotify",
+                    name="Spotify",
+                    passive=True,
+                    can_play_pause=self.device.has_pause,
+                    # pause/next/previous are force-called, seek follows the live transport actions
+                    can_seek=self.device.can_seek_rel_time,
+                    can_next_previous=self.device.has_next and self.device.has_previous,
+                )
+            ]
         elif _device_uri:
             # External HTTP source
             self._attr_active_source = "http"
@@ -308,13 +322,37 @@ class DLNAPlayer(Player):
 
         # Some devices expose Pause but report stale CurrentTransportActions.
         # Force-call Pause when action exists; otherwise fallback to Stop.
-        pause_action = self.device._action("AVT", "Pause")
-        if pause_action is not None:
-            await pause_action.async_call(InstanceID=0)
-            return
-        stop_action = self.device._action("AVT", "Stop")
-        if stop_action is not None:
-            await stop_action.async_call(InstanceID=0)
+        if not await self._force_avt_action("Pause"):
+            await self._force_avt_action("Stop")
+
+    @catch_request_errors
+    async def next_track(self) -> None:
+        """Send NEXT TRACK command to given player."""
+        assert self.device is not None  # for type checking
+        if self.device.can_next:
+            await self.device.async_next()
+        else:
+            # Some devices expose Next but report stale CurrentTransportActions.
+            await self._force_avt_action("Next")
+        self._schedule_state_refresh()
+
+    @catch_request_errors
+    async def previous_track(self) -> None:
+        """Send PREVIOUS TRACK command to given player."""
+        assert self.device is not None  # for type checking
+        if self.device.can_previous:
+            await self.device.async_previous()
+        else:
+            # Some devices expose Previous but report stale CurrentTransportActions.
+            await self._force_avt_action("Previous")
+        self._schedule_state_refresh()
+
+    @catch_request_errors
+    async def seek(self, position: int) -> None:
+        """Send SEEK command to given player."""
+        assert self.device is not None  # for type checking
+        await self.device.async_seek_rel_time(timedelta(seconds=position))
+        self._schedule_state_refresh()
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
@@ -516,6 +554,10 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.VOLUME_MUTE)
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
+        if self.device.has_next and self.device.has_previous:
+            supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if self.device.has_seek_rel_time:
+            supported_features.add(PlayerFeature.SEEK)
         self._attr_supported_features = supported_features
 
     def _is_raumfeld_zone_renderer(self) -> bool:
@@ -660,6 +702,25 @@ class DLNAPlayer(Player):
         await self.device._async_poll_state_variables("RC", actions, InstanceID=0, Channel="Master")
         await self._update_player()
 
+    def _schedule_state_refresh(self) -> None:
+        """Read the transport state back shortly after a skip or seek."""
+        # many devices send no event for these, which would leave the old track and
+        # position on display until the next regular poll
+        for index, delay in enumerate(COMMAND_REFRESH_DELAYS):
+            self.mass.call_later(
+                delay, self._refresh_state, task_id=f"dlna_refresh_{index}_{self.player_id}"
+            )
+
+    async def _refresh_state(self) -> None:
+        """Poll the full device state and update the player."""
+        if not self.device:
+            # unloaded (or dropped) since the command was sent; a forced poll on a
+            # disconnected device would reconnect and resubscribe it
+            return
+        # a subscribed device only re-reads its transport state on a forced poll
+        self.force_poll = True
+        await self._update_player(poll_first=True)
+
     async def _device_disconnect(self) -> None:
         """Destroy connections to the device."""
         async with self.lock:
@@ -675,3 +736,12 @@ class DLNAPlayer(Player):
             self.set_available(False)
             await old_device.async_unsubscribe_services()
         self.update_state()
+
+    async def _force_avt_action(self, name: str) -> bool:
+        """Call an AVTransport action regardless of CurrentTransportActions; False if absent."""
+        assert self.device is not None  # for type checking
+        action = self.device._action("AVT", name)
+        if action is None:
+            return False
+        await action.async_call(InstanceID=0)
+        return True
