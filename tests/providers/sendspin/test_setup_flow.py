@@ -5,17 +5,28 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
 import pytest
-from aiosendspin.models.core import PairMethodDescriptor
+from aiosendspin.models.core import (
+    DynamicPairMethodDescriptor,
+    PairMethodDescriptor,
+    SupportedPairMethods,
+)
+from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
 from aiosendspin.models.types import PairAbortReason, PairMethod
-from aiosendspin.noise.pairing import RemotePairingAbortError
+from aiosendspin.noise.pairing import (
+    InvalidPairingCodeError,
+    PairingError,
+    RemotePairingAbortError,
+)
 from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.setup_flow import (
     FINISH_STEP_SILENT,
     AbortFlow,
@@ -51,13 +62,35 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
+type _Offered = tuple[PairMethod, PairMethodDescriptor | DynamicPairMethodDescriptor]
+
+
 def _desc(
     method: PairMethod,
     *,
     locations: list[str] | None = None,
     out_channels: list[str] | None = None,
-) -> PairMethodDescriptor:
-    return PairMethodDescriptor(method=method, locations=locations, out_channels=out_channels)
+) -> _Offered:
+    if method is PairMethod.DYNAMIC_PAIRING_CODE:
+        return method, DynamicPairMethodDescriptor(
+            out_channels=out_channels or ["display"], formats=["digits"]
+        )
+    return method, PairMethodDescriptor(locations=locations)
+
+
+# The hello parse drops the static PIN next to a usable dynamic one, so both need management.
+_BOTH_PIN_METHODS = ManagementResultData(
+    static_pairing_code=PairingMethodConfig(enabled=True),
+    dynamic_pairing_code=PairingMethodConfig(enabled=True),
+)
+
+
+def _offer(methods: list[_Offered]) -> SupportedPairMethods:
+    """Return the client/hello offer of ``methods``."""
+    offer = SupportedPairMethods()
+    for method, descriptor in methods:
+        setattr(offer, method.value, descriptor)
+    return offer
 
 
 class _FakePinSession:
@@ -67,8 +100,7 @@ class _FakePinSession:
         self,
         *,
         awaiting_gesture: bool = False,
-        verify: bool = False,
-        method: PairMethod = PairMethod.DYNAMIC_PIN,
+        method: PairMethod = PairMethod.DYNAMIC_PAIRING_CODE,
     ) -> None:
         self.pin_request_event = asyncio.Event()
         self.gesture_event = asyncio.Event()
@@ -81,9 +113,8 @@ class _FakePinSession:
         self.finished = False
         self.error: Exception | None = None
         self.can_retry = False
-        self.verify = verify
         self.method = method
-        self.pin_length: int | None = 6 if method is PairMethod.DYNAMIC_PIN else None
+        self.pin_rejected = False
         # None so the flow's post-submit "confirming" wait is skipped in tests.
         self.task: asyncio.Task[None] | None = None
 
@@ -101,25 +132,30 @@ class _FakePinSession:
     async def wait_pin_request(self) -> None:
         await self.pin_request_event.wait()
 
+    async def wait_pin_outcome(self) -> None:
+        if self.task is not None:
+            await join_task(self.task)
+
 
 class _FakeApi:
     """Fake SendspinClient exposing just what the flow reads (hello + security + roles)."""
 
     def __init__(
         self,
-        methods: list[PairMethodDescriptor],
+        methods: list[_Offered],
         *,
         active_roles: tuple[str, ...] = (),
         psk_category: PskCategory = PskCategory.SENTINEL,
         unpaired_access: bool = False,
     ):
         self.info_or_none = SimpleNamespace(
-            supported_pair_methods=list(methods),
+            supported_pair_methods=_offer(methods),
             unpaired_access=SimpleNamespace(enabled=unpaired_access),
         )
         self.connection_security: Any = SimpleNamespace(psk_category=psk_category)
         self.active_roles = active_roles
         self.negotiated_role_ids: list[str] = []
+        self.is_connected = True
 
     def roles_by_family(self, family: str) -> list[str]:
         return [role for role in self.active_roles if role.startswith(f"{family}@")]
@@ -151,13 +187,14 @@ class _FakeProvider:
         token_errors: list[Exception] | None = None,
         record: Any = None,
         trusted: Any = None,
+        pairing_config: ManagementResultData | None = None,
     ) -> None:
         self.api = api
+        self._pairing_config = pairing_config
         self.server_api = SimpleNamespace(pairing_store=_FakePairingStore(record, trusted))
         self.session: _FakePinSession | None = None
         self.start_calls = 0
         self.static: bool | None = None
-        self.verify: bool | None = None
         self.submitted_pins: list[str] = []
         self.tokens: list[str] = []
         self.cancel_calls = 0
@@ -167,8 +204,8 @@ class _FakeProvider:
         self._submit_outcomes = deque(submit_outcomes or [])
         self._token_errors = deque(token_errors or [])
 
-    def pairing_config_snapshot(self, client_id: str) -> None:
-        return None
+    def pairing_config_snapshot(self, client_id: str) -> ManagementResultData | None:
+        return self._pairing_config
 
     def get_pin_session(self, client_id: str) -> _FakePinSession | None:
         return self.session
@@ -178,12 +215,12 @@ class _FakeProvider:
         if self.session is not None and self.session.finished:
             self.session = None
 
-    async def start_pin_pairing(
-        self, client_id: str, *, verify: bool = False, static: bool = False
-    ) -> _FakePinSession:
+    async def start_pin_pairing(self, client_id: str, *, static: bool = False) -> _FakePinSession:
         self.start_calls += 1
         self.static = static
-        self.verify = verify
+        if self.session is not None and self.session.pin_rejected:
+            # The attempt is still running, asking for the PIN again.
+            return self.session
         if self.session is not None and self.session.can_retry:
             # A retryable session resumes in place, past the gesture, awaiting a PIN again.
             self.session.can_retry = False
@@ -191,13 +228,14 @@ class _FakeProvider:
             self.session.awaiting_pin = True
             self.session.pin_request_event.set()
             return self.session
-        offered = {d.method for d in self.api.info_or_none.supported_pair_methods}
-        dynamic_offered = PairMethod.DYNAMIC_PIN in offered
+        offered = self.api.info_or_none.supported_pair_methods
+        dynamic_offered = offered.dynamic_pairing_code is not None
         self.session = _FakePinSession(
             awaiting_gesture=self._gesture,
-            verify=verify,
             method=(
-                PairMethod.DYNAMIC_PIN if dynamic_offered and not static else PairMethod.STATIC_PIN
+                PairMethod.DYNAMIC_PAIRING_CODE
+                if dynamic_offered and not static
+                else PairMethod.STATIC_PAIRING_CODE
             ),
         )
         return self.session
@@ -206,6 +244,7 @@ class _FakeProvider:
         assert self.session is not None
         self.submitted_pins.append(pin)
         outcome = self._submit_outcomes.popleft() if self._submit_outcomes else "success"
+        self.session.pin_rejected = False
         if outcome == "success":
             self.session.finished = True
             self.session.error = None
@@ -213,7 +252,9 @@ class _FakeProvider:
             self.api.active_roles = ("player",)
         elif outcome == "retry":
             self.session.can_retry = True
-            self.session.error = RemotePairingAbortError(PairAbortReason.PIN_MISMATCH)
+            self.session.error = RemotePairingAbortError(PairAbortReason.PAIRING_CODE_MISMATCH)
+        elif outcome == "rejected":
+            self.session.pin_rejected = True
         elif outcome == "session_lost":
             self.session = None
             raise SecurityActionError("pairing_error_no_pin_session")
@@ -296,8 +337,8 @@ async def test_select_method_pin_gesture_submit_success() -> None:
         collected["values"] = values
         return {"player_id": "client-1"}
 
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
-    provider = _FakeProvider(api, gesture=True)
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, gesture=True, pairing_config=_BOTH_PIN_METHODS)
     session, mass = _make_session(finish)
     player = _make_player(api, provider)
 
@@ -325,7 +366,6 @@ async def test_select_method_pin_gesture_submit_success() -> None:
     assert collected["values"] == {}
     assert provider.submitted_pins == ["123456"]
     assert provider.static is False
-    assert provider.verify is False
     assert provider.cancel_calls == 0
     assert provider.clear_calls == 1
     steps = _published_steps(mass)
@@ -344,7 +384,7 @@ async def test_confirming_wait_failure_after_deadline_logs_no_loop_error(
         raise RuntimeError("refreshing the player failed")
 
     monkeypatch.setattr(player_module, "PAIR_CONFIRM_TIMEOUT", 0.01)
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -370,7 +410,7 @@ async def test_confirming_wait_failure_after_deadline_logs_no_loop_error(
 
 async def test_single_pin_method_skips_select() -> None:
     """A device offering one usable PIN method goes straight to the PIN form, no method select."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -386,7 +426,7 @@ async def test_single_pin_method_skips_select() -> None:
 
 async def test_pin_mismatch_retries_in_place_then_succeeds() -> None:
     """A mismatch re-renders the PIN form with a base error; the retry resumes and succeeds."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api, submit_outcomes=["retry", "success"])
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -408,10 +448,42 @@ async def test_pin_mismatch_retries_in_place_then_succeeds() -> None:
     assert provider.cancel_calls == 0
 
 
+async def test_rejected_pin_round_asks_again_in_the_same_attempt() -> None:
+    """A round the device rejects re-renders the PIN form without restarting the attempt."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, submit_outcomes=["rejected", "success"])
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    first_session = provider.session
+    session.handle_submit({CONF_PAIRING_PIN: "000000"})
+
+    error_step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_pin", with_errors=True
+    )
+    assert error_step.errors == {"base": "pairing_error_pin_mismatch"}
+    assert provider.session is first_session
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["000000", "123456"]
+    assert provider.cancel_calls == 0
+
+
+def test_pin_failures_map_to_form_errors() -> None:
+    """A malformed PIN asks for the complete code, any other failure shows the generic error."""
+    error = InvalidPairingCodeError("dynamic pairing code must be exactly 6 digits")
+    assert player_module._pin_error_slug(error) == "invalid_value"
+    assert player_module._pin_error_slug(PairingError("boom")) == "pairing_error_failed"
+
+
 async def test_trusted_unpaired_pin_mismatch_still_retries() -> None:
     """With unpaired access already trusted, a mismatch must not be misreported as success."""
     api = _FakeApi(
-        [_desc(PairMethod.DYNAMIC_PIN)],
+        [_desc(PairMethod.DYNAMIC_PAIRING_CODE)],
         active_roles=("player",),
         unpaired_access=True,
     )
@@ -437,9 +509,31 @@ async def test_trusted_unpaired_pin_mismatch_still_retries() -> None:
     assert provider.trust_calls == []
 
 
+async def test_mismatch_with_an_unusable_record_still_retries() -> None:
+    """A record the client can no longer use is not mistaken for a successful re-pairing."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, submit_outcomes=["retry", "success"], record=object())
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "000000"})
+
+    error_step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_pin", with_errors=True
+    )
+    assert error_step.errors == {"base": "pairing_error_pin_mismatch"}
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["000000", "123456"]
+
+
 async def test_consent_step_grants_trust() -> None:
     """Submitting the consent step without opting into pairing allows unpaired playback."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)], unpaired_access=True)
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -456,6 +550,23 @@ async def test_consent_step_grants_trust() -> None:
     assert provider.tokens == []
     # a one-click allow closes the dialog without a success screen
     assert session.finish_step_id == FINISH_STEP_SILENT
+
+
+async def test_guest_device_with_a_lost_pairing_pairs_without_the_consent_step() -> None:
+    """Guest access cannot play while this server still holds the pairing the device lost."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
+    provider = _FakeProvider(api, record=object())
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["123456"]
+    assert provider.trust_calls == []
 
 
 async def test_consent_without_pair_methods_still_asks() -> None:
@@ -477,7 +588,7 @@ async def test_consent_without_pair_methods_still_asks() -> None:
 
 async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
     """A plain allow on a combo also declines the pending audio input, one submit total."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)], unpaired_access=True)
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
     api.negotiated_role_ids = ["player@v1", "source@v1"]
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
@@ -500,10 +611,8 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
 
 async def test_consent_opting_into_pairing_pairs_instead() -> None:
     """Ticking the pairing opt-in continues into the pair-method selection, granting nothing."""
-    api = _FakeApi(
-        [_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)], unpaired_access=True
-    )
-    provider = _FakeProvider(api)
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
+    provider = _FakeProvider(api, pairing_config=_BOTH_PIN_METHODS)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
@@ -538,7 +647,7 @@ def _attach_mass(player: SendspinBasePlayer, *, dismissed: bool = False) -> mock
 
 def _combo_api_with_pending_source() -> _FakeApi:
     api = _FakeApi(
-        [_desc(PairMethod.DYNAMIC_PIN)], active_roles=("player@v1",), unpaired_access=True
+        [_desc(PairMethod.DYNAMIC_PAIRING_CODE)], active_roles=("player@v1",), unpaired_access=True
     )
     api.negotiated_role_ids = ["player@v1", "source@v1"]
     return api
@@ -602,11 +711,7 @@ async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None
 async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> None:
     """Ticking the pairing box on the approval step never re-offers unpaired access or ignore."""
     api = _combo_api_with_pending_source()
-    api.info_or_none.supported_pair_methods = [
-        _desc(PairMethod.DYNAMIC_PIN),
-        _desc(PairMethod.STATIC_PIN),
-    ]
-    provider = _FakeProvider(api)
+    provider = _FakeProvider(api, pairing_config=_BOTH_PIN_METHODS)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
     _attach_mass(player)
@@ -630,33 +735,15 @@ async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> N
     assert provider.submitted_pins == ["123456"]
 
 
-async def test_verify_presence_on_paired_device() -> None:
-    """Re-running the flow on a paired device runs the dynamic-PIN presence verification."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)], psk_category=PskCategory.LONG_TERM)
-    record = SimpleNamespace(pair_methods=[PairMethod.STATIC_PIN])
+async def test_paired_device_aborts_as_already_paired() -> None:
+    """A paired device hides its setup flow, which aborts without a pairing attempt."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], psk_category=PskCategory.LONG_TERM)
+    record = SimpleNamespace(pair_methods=[PairMethod.DYNAMIC_PAIRING_CODE])
     provider = _FakeProvider(api, record=record)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="verify_pin")
-    assert provider.verify is True
-    assert provider.static is False
-    session.handle_submit({CONF_PAIRING_PIN: "123456"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.submitted_pins == ["123456"]
-
-
-async def test_paired_device_without_verification_aborts() -> None:
-    """A paired device whose presence verification would add nothing aborts as already paired."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)], psk_category=PskCategory.LONG_TERM)
-    record = SimpleNamespace(pair_methods=[PairMethod.DYNAMIC_PIN])
-    provider = _FakeProvider(api, record=record)
-    session, _mass = _make_session(_ok_finish)
-    player = _make_player(api, provider)
-
+    assert player.setup_flow_available is False
     with pytest.raises(AbortFlow) as excinfo:
         await player.run_setup_flow(session)
     assert excinfo.value.reason == "already_paired"
@@ -665,7 +752,7 @@ async def test_paired_device_without_verification_aborts() -> None:
 
 async def test_submit_pin_session_lost_rerenders() -> None:
     """A session that ends underneath the submit re-renders the PIN form and starts afresh."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api, submit_outcomes=["session_lost", "success"])
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -689,7 +776,7 @@ async def test_submit_pin_session_lost_rerenders() -> None:
 async def test_gesture_timeout_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
     """An expired gesture wait propagates (timed_out abort) and tears the session down."""
     monkeypatch.setattr("music_assistant.providers.sendspin.player.SERVER_GESTURE_TIMEOUT_S", 0.05)
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api, gesture=True)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -702,7 +789,7 @@ async def test_gesture_timeout_propagates(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_pin_form_expiry_retries_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unanswered PIN form re-renders with a timeout error rather than dropping the flow."""
     monkeypatch.setattr("music_assistant.providers.sendspin.player.PAIR_PIN_ENTRY_TIMEOUT", 0.05)
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -720,7 +807,7 @@ async def test_pin_form_expiry_retries_in_place(monkeypatch: pytest.MonkeyPatch)
 
 async def test_pin_form_encodes_the_negotiated_length() -> None:
     """The PIN field renders as a pairing-code box matching the negotiated digit count."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -737,7 +824,7 @@ async def test_pin_form_encodes_the_negotiated_length() -> None:
 
 async def test_pin_form_accepts_a_separator_in_the_submitted_pin() -> None:
     """A PIN submitted with the format's separator still pairs (parse_value strips it)."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -753,7 +840,7 @@ async def test_pin_form_accepts_a_separator_in_the_submitted_pin() -> None:
 
 async def test_pin_form_rejects_a_short_pin() -> None:
     """A PIN shorter than the negotiated length re-serves the form with a field error."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -772,7 +859,7 @@ async def test_pin_form_rejects_a_short_pin() -> None:
 
 async def test_static_pin_form_hints_where_the_pin_lives() -> None:
     """A static-PIN form surfaces the device's own hint about where its PIN is printed."""
-    api = _FakeApi([_desc(PairMethod.STATIC_PIN, locations=["device", "bogus"])])
+    api = _FakeApi([_desc(PairMethod.STATIC_PAIRING_CODE, locations=["device", "bogus"])])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -793,7 +880,7 @@ async def test_static_pin_form_hints_where_the_pin_lives() -> None:
 
 async def test_dynamic_pin_form_hints_how_the_pin_arrives() -> None:
     """A dynamic-PIN form surfaces the device's own hint about the channel carrying the PIN."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN, out_channels=["speaker", "other"])])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE, out_channels=["speaker", "other"])])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -810,7 +897,7 @@ async def test_dynamic_pin_form_hints_how_the_pin_arrives() -> None:
 
 async def test_dynamic_pin_form_names_both_channels_when_the_device_offers_both() -> None:
     """A PIN carried on screen and aloud is labelled with both, since either one works."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN, out_channels=["display", "speaker"])])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE, out_channels=["display", "speaker"])])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -825,7 +912,7 @@ async def test_dynamic_pin_form_names_both_channels_when_the_device_offers_both(
 
 async def test_abort_mid_pairing_runs_cleanup() -> None:
     """Cancelling the flow while a PIN session is in flight tears it down in the finally."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -876,23 +963,33 @@ async def test_token_form_hints_where_the_token_lives() -> None:
     await task
 
 
-async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
-    """Token pairing is machine-to-machine only and stays hidden while PIN pairing works."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api)
-    session, mass = _make_session(_ok_finish)
+async def test_token_offered_next_to_pin() -> None:
+    """A device offering pairing_psk alongside a PIN lets the operator pick the token."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)])
+    provider = _FakeProvider(api, token_errors=[SecurityActionError("pairing_error_token_invalid")])
+    session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    # PIN is the only operator-facing option, so the flow skips straight past the
-    # method picker instead of offering a choice between PIN and token.
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
-    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
-    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
+    assert [option.value for option in step.entries[0].options] == [
+        PAIR_METHOD_PIN,
+        PAIR_METHOD_TOKEN,
+    ]
+    session.handle_submit({CONF_PAIRING_METHOD: PAIR_METHOD_TOKEN})
+
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
+    session.handle_submit({CONF_PAIRING_TOKEN: "SP:0BAD"})
+    step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_token", with_errors=True
+    )
+    assert step.errors == {"base": "pairing_error_token_invalid"}
+    session.handle_submit({CONF_PAIRING_TOKEN: "SP:0TEST"})
 
     await _wait_for(lambda: session.finished)
     await task
-    assert provider.tokens == []
+    assert provider.tokens == ["SP:0BAD", "SP:0TEST"]
+    assert provider.start_calls == 0
 
 
 async def test_no_pair_methods_aborts() -> None:
@@ -910,7 +1007,7 @@ async def test_no_pair_methods_aborts() -> None:
 
 async def test_unencrypted_connection_aborts() -> None:
     """An unencrypted (legacy) connection has nothing to pair and aborts."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     api.connection_security = None
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
@@ -922,9 +1019,9 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Derive PIN choices and expose pairing_psk as an operator-facing token option."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
-    provider = _FakeProvider(api)
+    """Derive PIN choices, followed by the token option whenever pairing_psk is offered."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, pairing_config=_BOTH_PIN_METHODS)
     player = _make_player(api, provider)
     # Opposite the static option the generic "pin" gives way to the dynamic-specific value,
     # so each option can describe itself.
@@ -933,15 +1030,27 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_STATIC_PIN,
     ]
 
-    # Token pairing is machine-to-machine only, so it stays hidden while PIN pairing
-    # is usable, even though the device also advertises pairing_psk.
+    api_all = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)])
+    provider_all = _FakeProvider(
+        api_all,
+        pairing_config=replace(_BOTH_PIN_METHODS, pairing_psk=PairingMethodConfig(enabled=True)),
+    )
+    player_all = _make_player(api_all, provider_all)
+    assert player_all._pairing_method_options(cast("SendspinProvider", provider_all)) == [
+        PAIR_METHOD_DYNAMIC_PIN,
+        PAIR_METHOD_STATIC_PIN,
+        PAIR_METHOD_TOKEN,
+    ]
+
+    # The token follows the PIN option whenever the device also advertises pairing_psk.
     api_single = _FakeApi(
-        [_desc(PairMethod.STATIC_PIN), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
+        [_desc(PairMethod.STATIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
     )
     provider_single = _FakeProvider(api_single)
     player_single = _make_player(api_single, provider_single)
     assert player_single._pairing_method_options(cast("SendspinProvider", provider_single)) == [
         PAIR_METHOD_PIN,
+        PAIR_METHOD_TOKEN,
     ]
 
     # A token-only device goes directly to the token entry form.

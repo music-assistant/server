@@ -18,10 +18,18 @@ name: Critical review gate (poll)
 on:  # yamllint disable-line rule:truthy
   schedule:
     - cron: "*/10 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Only consider this PR number (for testing)"
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  # `convertPullRequestToDraft` needs contents: write as well as pull-requests: write. With
+  # pull-requests alone GitHub answers "Resource not accessible by integration" (to this job token
+  # and to an App token alike), which is why this gate never drafted a PR until this was added.
+  contents: write
   pull-requests: write
 
 concurrency:
@@ -34,9 +42,12 @@ jobs:
     steps:
       - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ONLY_PR: ${{ inputs.pr }}
         with:
           script: |
             const { owner, repo } = context.repo;
+            const ONLY_PR = (process.env.ONLY_PR || '').trim();
             const BASES = ['dev', 'stable'];
             const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
             const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
@@ -88,6 +99,7 @@ jobs:
             let failed = false, drafted = 0;
             for (const pr of prs) {
               try {
+                if (ONLY_PR && String(pr.number) !== ONLY_PR) continue;
                 if (!BASES.includes(pr.base.ref)) continue;
                 if (pr.labels.some(l => l.name === 'override-critical')) continue;
                 if (!(await activeCritical(pr.number))) continue;

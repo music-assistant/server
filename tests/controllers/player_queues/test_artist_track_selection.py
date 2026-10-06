@@ -11,6 +11,7 @@ the multi-source union/dedup directly with mocked sources.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -230,4 +231,6 @@ async def test_provider_artist_tracks_skips_failing_provider() -> None:
 
     assert [t.name for t in result] == ["Dancing Queen"]
     assert fake.mass.music.artists.tracks.await_count == 2
-    fake.logger.warning.assert_called_once()
+    # an artist a provider no longer lists is noted, not warned about on every play
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG

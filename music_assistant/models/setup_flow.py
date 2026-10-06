@@ -29,7 +29,9 @@ from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepTyp
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.setup_flow import SetupFlowStep, TranslationRef
 
+from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -432,6 +434,9 @@ class SetupSession:
                 continue
             raw_value = values.get(entry.key, entry.value)
             try:
+                # encrypted values are only ever created by the server, never submitted
+                if contains_encrypted_value(raw_value):
+                    raise ValueError("Encrypted values can not be submitted")
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
                 # an entry behind an unmet dependency renders disabled, so demanding a
@@ -481,6 +486,8 @@ class SetupSession:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
+        # encrypted config values are never accepted as callback params
+        params = {key: val for key, val in params.items() if not val.startswith(ENCRYPT_SUFFIX)}
         if self._callback_future is not None and not self._callback_future.done():
             # the values carry the authorization code/token, so only log the keys
             LOGGER.debug(

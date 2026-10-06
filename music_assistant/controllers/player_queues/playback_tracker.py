@@ -400,14 +400,20 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             protocol_player.current_media.source_id == queue_id
             and protocol_player.current_media.queue_item_id
         ):
-            return protocol_player.current_media.queue_item_id
+            current_item_id = protocol_player.current_media.queue_item_id
+            # After a queue replace, the player may still report the removed item.
+            # Ignore it to preserve the new queue position.
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
+            return None
         # special case for sonos players
         if protocol_player.current_media.uri and protocol_player.current_media.uri.startswith(
             f"mass:{queue_id}"
         ):
-            if protocol_player.current_media.queue_item_id:
-                return protocol_player.current_media.queue_item_id
-            current_item_id = protocol_player.current_media.uri.split(":")[-1]
+            current_item_id = (
+                protocol_player.current_media.queue_item_id
+                or protocol_player.current_media.uri.split(":")[-1]
+            )
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
             return None
@@ -621,7 +627,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # report on current item
             is_current_item = True
             item_to_report = self.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
-            seconds_played = int(new_state["elapsed_time"])
+            if new_state["state"] == PlaybackState.PLAYING:
+                seconds_played = int(new_state["elapsed_time"])
+            else:
+                # a player may reset its position on pause/stop, never report less than it played
+                seconds_played = max(
+                    int(new_state["elapsed_time"]), int(new_state["last_playing_elapsed_time"])
+                )
 
         if not item_to_report:
             return  # guard against invalid items

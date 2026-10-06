@@ -2183,9 +2183,11 @@ class GenreController(MediaControllerBase[Genre]):
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> GenreSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> GenreSummary:
         """Parse a raw summary db row into a GenreSummary object."""
-        item = cast("GenreSummary", super()._parse_summary_row(db_row))
+        item = cast("GenreSummary", super()._parse_summary_row(db_row, hidden_sources))
         # only overwrite the (name-derived) translation key when explicitly stored
         if translation_key := db_row["translation_key"]:
             item.translation_key = translation_key

@@ -535,3 +535,32 @@ async def test_episode_gets_the_release_date(provider: LocalFileSystemProvider) 
         episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
 
     assert episode.metadata.release_date == datetime(2026, 8, 31, tzinfo=UTC)
+
+
+async def test_episode_gets_the_track_and_disc_numbers(provider: LocalFileSystemProvider) -> None:
+    """The track tag becomes the episode number and the disc tag the season."""
+    tags = _audio_tags(f"{PODCAST_FOLDER}/episode-01.mp3")
+    tags.tags["track"] = "12/40"
+    tags.tags["disc"] = "3"
+    parse_tags = AsyncMock(return_value=tags)
+
+    with patch(PARSE_TAGS_TARGET, new=parse_tags):
+        episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
+
+    assert (episode.episode_number, episode.season) == (12, 3)
+
+
+async def test_episode_number_is_not_guessed_from_the_file_name(
+    provider: LocalFileSystemProvider,
+) -> None:
+    """A file without a track tag gets no episode number, even with a number in its name."""
+    tags = _audio_tags(f"{PODCAST_FOLDER}/episode-01.mp3")
+    del tags.tags["track"]
+    tags.filename = "2024-05-01 news.mp3"
+    parse_tags = AsyncMock(return_value=tags)
+
+    with patch(PARSE_TAGS_TARGET, new=parse_tags):
+        episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
+
+    assert tags.track == 2024
+    assert (episode.episode_number, episode.season) == (None, None)

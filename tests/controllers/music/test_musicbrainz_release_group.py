@@ -523,20 +523,45 @@ async def test_resolve_ranks_an_edition_by_its_music_service_links_only() -> Non
 
 
 async def test_resolve_surfaces_an_unexpected_provider_error() -> None:
-    """An error that is no plain miss, an expired login say, is raised rather than logged away."""
-    for error_type in (LoginFailed, InvalidDataError):
-        with _harness(
-            editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
-            releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL, TIDAL_ALBUM_URL])],
-            loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
-        ) as harness:
-            harness.get_provider_item.side_effect = error_type("the provider refused")
-            with pytest.raises(error_type):
-                await harness.resolve()
+    """An error that is no fetch failure, an expired login say, is raised rather than logged away."""
+    with _harness(
+        editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL, TIDAL_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+    ) as harness:
+        harness.get_provider_item.side_effect = LoginFailed("the provider refused")
+        with pytest.raises(LoginFailed):
+            await harness.resolve()
 
-        harness.get_provider_item.assert_awaited_once_with(
-            SPOTIFY_ALBUM_ID, "spotify_1", **STRICT_FETCH
-        )
+    harness.get_provider_item.assert_awaited_once_with(
+        SPOTIFY_ALBUM_ID, "spotify_1", **STRICT_FETCH
+    )
+
+
+async def test_resolve_passes_over_a_candidate_its_provider_cannot_deliver() -> None:
+    """A candidate whose provider answers with garbage is passed over for the next link."""
+    tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
+    with _harness(
+        editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL, TIDAL_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        albums={("tidal_1", TIDAL_ALBUM_ID): tidal_album},
+    ) as harness:
+        provider_item = harness.get_provider_item.side_effect
+
+        async def _garbage_from_spotify(item_id: str, instance: str, **kwargs: object) -> Album:
+            if instance == "spotify_1":
+                raise InvalidDataError("Spotify returned a response that is not usable JSON")
+            return cast("Album", await provider_item(item_id, instance, **kwargs))
+
+        harness.get_provider_item.side_effect = _garbage_from_spotify
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    assert [call.args[1] for call in harness.get_provider_item.await_args_list] == [
+        "spotify_1",
+        "tidal_1",
+    ]
 
 
 async def test_resolve_keeps_to_the_music_sources_the_user_may_see() -> None:

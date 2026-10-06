@@ -742,5 +742,18 @@
   "provider.plex_connect.config_entries.start_link_new.label": "Заявете нов код за връзка",
   "core.metadata.background_task.link_library_to_musicbrainz": "Свързване на библиотеката с MusicBrainz",
   "core.metadata.background_task.scan_missing_metadata": "Сканиране на липсващи метаданни",
-  "core.music.errors.album_not_available_on_music_services": "Този албум не е наличен в никоя от вашите музикални услуги"
+  "core.music.errors.album_not_available_on_music_services": "Този албум не е наличен в никоя от вашите музикални услуги",
+  "core.storage.errors.folder_already_location": "Тази папка вече е място за съхранение.",
+  "core.storage.errors.folder_is_root": "Главната папка на сървъра не може да бъде добавена.",
+  "core.storage.errors.folder_not_found": "Папката {0} не съществува.",
+  "core.storage.manifest.name": "Хранилище",
+  "core.storage.errors.share_already_added": "Този мрежов споделен ресурс вече е място за съхранение.",
+  "core.storage.errors.share_mounted_already": "Този мрежов ресурс вече е монтиран и е достъпен като място за съхранение {0}.",
+  "core.storage.errors.share_name_invalid": "Въведете името на споделения ресурс без наклонени черти или запетаи.",
+  "core.storage.errors.share_not_mounted": "Споделеният мрежов ресурс не стана достъпен. Проверете дали сървърът му е онлайн и опитайте отново.",
+  "core.storage.errors.share_password_missing": "Въведете паролата на потребителя или оставете полето за потребител празно, за да се свържете като гост.",
+  "core.storage.errors.share_unavailable": "Мрежовият споделен ресурс не е достъпен в момента.",
+  "core.storage.errors.share_username_invalid": "Потребителското име не може да съдържа запетая.",
+  "core.storage.errors.share_version_not_supported": "Версия {0} на протокола не може да се използва тук за този тип мрежов споделен ресурс.",
+  "core.storage.errors.folder_missing": "Тази папка не съществува."
 }
