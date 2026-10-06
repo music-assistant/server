@@ -2261,6 +2261,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if exact_provider(self.mass, allowed_instance) is None:
                 raise ProviderUnavailableError(f"{allowed_instance} is not available")
             return allowed_instance
+        # a disabled or failed source of the user is configured, but not loaded
+        provider_configs: dict[str, Any] = self.mass.config.get(CONF_PROVIDERS, {})
+        if any(
+            provider_configs.get(instance_id, {}).get("domain") == provider_instance_id_or_domain
+            for instance_id in allowed
+        ):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         raise InsufficientPermissions(
             f"{provider_instance_id_or_domain} is not a music source of this user"
         )

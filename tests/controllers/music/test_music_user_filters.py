@@ -919,22 +919,26 @@ async def test_genre_library_count_ignores_music_sources(
         # mass.get_provider would serve the unavailable own account through the hidden one
         ("spotify", False, ProviderUnavailableError),
         ("spotify--TPf9JZ2K", False, ProviderUnavailableError),
+        # None: the own account is disabled, so only the hidden one is loaded
+        ("spotify", None, ProviderUnavailableError),
+        ("spotify--TPf9JZ2K", None, ProviderUnavailableError),
     ],
 )
 @patch("music_assistant.controllers.music.controller.get_current_user")
 def test_resolve_visible_provider(
     mock_get_user: Mock,
     requested: str,
-    own_available: bool,
+    own_available: bool | None,
     expected: str | type[Exception],
 ) -> None:
     """A read is bound to an available music source the user may see, or refused."""
     mock_get_user.return_value = _user(USER_A)
+    own = [] if own_available is None else [_music_source_prov("spotify--TPf9JZ2K", own_available)]
     controller = _controller_with_sources(
         {"spotify--AAAAAAAA": _private(USER_B), "spotify--TPf9JZ2K": _private(USER_A)},
         [
             _music_source_prov("spotify--AAAAAAAA"),
-            _music_source_prov("spotify--TPf9JZ2K", available=own_available),
+            *own,
             _make_prov("plugin_inst", ProviderType.PLUGIN),
             Mock(instance_id="plugin_off", type=ProviderType.PLUGIN, available=False),
         ],
