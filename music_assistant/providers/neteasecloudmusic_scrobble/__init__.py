@@ -166,7 +166,17 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         track_id, source_id = resolved
         await self._ncm.api_client.get(
             "/scrobble",
-            params={"id": track_id, "sourceid": source_id, "time": report.seconds_played},
+            # the login cookie must also travel as a query param: some NCM api
+            # backends only attribute the play to the account when it is sent that
+            # way, and silently drop it (still answering success) when it is only in
+            # the Cookie header. Mirrors the same workaround the NCM music provider
+            # applies to its personalized endpoints.
+            params={
+                "id": track_id,
+                "sourceid": source_id,
+                "time": report.seconds_played,
+                "cookie": self._ncm.cookie,
+            },
             cookie=self._ncm.cookie,
         )
         self.logger.info(

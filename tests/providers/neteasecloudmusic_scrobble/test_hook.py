@@ -167,10 +167,13 @@ async def test_scrobble_resolves_the_album_and_submits() -> None:
 
     calls = {call.args[0]: call for call in ncm.api_client.get.await_args_list}
     assert calls["/song/detail"].kwargs["params"] == {"ids": "123"}
+    # the cookie must ride along in the scrobble params too: some NCM api backends
+    # only attribute the play to the account when it is passed as a query param
     assert calls["/scrobble"].kwargs["params"] == {
         "id": "123",
         "sourceid": "456",
         "time": 42,
+        "cookie": "MUSIC_U=secret",
     }
     assert calls["/scrobble"].kwargs["cookie"] == "MUSIC_U=secret"
 
