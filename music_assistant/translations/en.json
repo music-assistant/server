@@ -1423,7 +1423,7 @@
   "provider.filesystem_yandex_disk.errors.oauth_error": "Yandex rejected the OAuth request. Verify the Client ID, Client secret and application permissions.",
   "provider.filesystem_yandex_disk.manifest.description": "Stream music, audiobooks and podcasts stored on Yandex Disk",
   "provider.filesystem_yandex_disk.setup_flow.abort.login_denied": "The Yandex authorization request was denied.",
-  "provider.filesystem_yandex_disk.setup_flow.device_login.description": "Your code is {0}. Use the button below to open the Yandex verification page, enter the code and allow read-only access to Yandex Disk. You can also open the page on another device. A new code is shown automatically if this one expires, and this screen updates once you confirm.",
+  "provider.filesystem_yandex_disk.setup_flow.device_login.description": "Your code:\n\n**`{0}`**\n\nUse the button below to open the Yandex verification page, enter this code and allow read-only access to Yandex Disk. You can also open the page on another device. A new code is shown automatically if this one expires, and this screen updates once you confirm.",
   "provider.filesystem_yandex_disk.setup_flow.device_login.title": "Authorize Yandex Disk",
   "provider.filesystem_yandex_disk.setup_flow.user.description": "Enter the credentials of your own Yandex OAuth application, choose the content type and optionally limit scanning to a folder.",
   "provider.filesystem_yandex_disk.setup_flow.user.title": "Connect Yandex Disk",

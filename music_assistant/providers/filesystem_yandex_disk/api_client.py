@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
 )
 from yadisk.exceptions import (
     PathNotFoundError,
@@ -74,8 +75,12 @@ class _SharedAIOHTTPSession(AIOHTTPSession):
         :param url: Request URL.
         :param kwargs: Request options as passed by yadisk.
         """
-        async with self.throttler.acquire():
-            response = await super().send_request(method, url, **kwargs)
+        try:
+            async with self.throttler.acquire():
+                response = await super().send_request(method, url, **kwargs)
+        except RateLimited as err:
+            # a cooldown beyond the throttler's wait limit is an outage the callers handle
+            raise ProviderUnavailableError(f"Yandex Disk rate limited: {err}") from err
         if response.status == 429:
             retry_after = None
             if isinstance(response, AIOHTTPResponse):

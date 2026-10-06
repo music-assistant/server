@@ -13,6 +13,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
 )
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
@@ -390,3 +391,28 @@ async def test_list_children_missing_folder_is_media_not_found() -> None:
     """A Disk API 404 is translated to MediaNotFoundError."""
     with pytest.raises(MediaNotFoundError):
         await _api_over(_DiskApiSession()).list_children("disk:/Missing")
+
+
+@pytest.mark.asyncio
+async def test_long_cooldown_surfaces_as_provider_unavailable() -> None:
+    """A cooldown beyond the throttler's wait limit is a typed provider outage."""
+    shared = _RecordingSession(_RawResponse(200))
+    throttler = ThrottlerManager(rate_limit=10, period=1)
+    throttler.set_cooldown(120)
+    session = _SharedAIOHTTPSession(cast("Any", shared), throttler)
+
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        await session.send_request("GET", "https://cloud-api.yandex.net/v1/disk")
+
+    assert isinstance(exc_info.value.__cause__, RateLimited)
+    assert shared.sent_at == []
+
+
+@pytest.mark.asyncio
+async def test_listing_during_long_cooldown_is_provider_unavailable() -> None:
+    """Scans hit the cloud base's outage handling instead of an untyped RateLimited."""
+    api = _api_over(_DiskApiSession())
+    cast("Any", api._client.session).throttler.set_cooldown(120)
+
+    with pytest.raises(ProviderUnavailableError):
+        await api.list_children("disk:/Music")

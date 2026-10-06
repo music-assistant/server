@@ -29,7 +29,7 @@
     },
     "device_login": {
       "title": "Authorize Yandex Disk",
-      "description": "Your code is {0}. Use the button below to open the Yandex verification page, enter the code and allow read-only access to Yandex Disk. You can also open the page on another device. A new code is shown automatically if this one expires, and this screen updates once you confirm."
+      "description": "Your code:\n\n**`{0}`**\n\nUse the button below to open the Yandex verification page, enter this code and allow read-only access to Yandex Disk. You can also open the page on another device. A new code is shown automatically if this one expires, and this screen updates once you confirm."
     },
     "abort": {
       "login_denied": "The Yandex authorization request was denied."
