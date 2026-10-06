@@ -83,6 +83,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -146,6 +147,7 @@ from .helpers import (
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    get_valid_isrcs,
     is_disc_dir,
     is_image_file,
     is_metadata_file,
@@ -1038,7 +1040,8 @@ class LocalFileSystemProvider(MusicProvider):
             or x.ext in IMAGE_EXTENSIONS
             or x.filename.lower() == "metadata.json"
         ]
-        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        # bump the version when parsing adds episode fields, so existing listings are rebuilt
+        cache_key = f"podcast_episodes.v2.{prov_podcast_id}"
         cache_checksum = get_folder_signature(signature_files)
         if (
             cached_episodes := await self.mass.cache.get(
@@ -2579,9 +2582,8 @@ class LocalFileSystemProvider(MusicProvider):
             ),
         )
 
-        if isrc_tags := tags.isrc:
-            for isrsc in isrc_tags:
-                track.external_ids.add((ExternalID.ISRC, isrsc))
+        for isrc in get_valid_isrcs(tags.isrc, file_item.relative_path, self.logger):
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if acoustid := tags.get("acoustid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
@@ -3094,6 +3096,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
             position=tags.track or 0,
+            # tags.track falls back to a number guessed from the file name, so read the tag itself
+            episode_number=get_publisher_number(
+                try_parse_int(tags.tags.get("track", "").split("/")[0], None)
+            ),
+            season=get_publisher_number(tags.disc),
             duration=try_parse_int(tags.duration) or 0,
             podcast=Podcast(
                 item_id=podcast_path,

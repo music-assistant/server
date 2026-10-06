@@ -515,6 +515,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param providers: Optionally restrict the search to the given providers
             (by instance id or domain), where the special value "library" selects
             the library. Omit to search the library and all available providers.
+            Provider items that are in the library are only left out of the results
+            when the library is included.
         """
         if not search_query.strip():
             # several providers reject an empty query with a hard error
@@ -565,12 +567,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if (url_result := await self._search_shareable_url(search_query)) is not None:
             return url_result
         # handle normal global search by querying the library and all providers
-        # the library is always searched first: it is fast and its results are used
-        # to deduplicate provider results and to skip provider searches for media
+        # the library (if included) is searched first: it is fast and its results are
+        # used to deduplicate provider results and to skip provider searches for media
         # types that already have a (near) exact match in the library
-        library_results = await self.search_library(search_query, media_types, limit=limit)
+        library_results = SearchResults()
         results_per_provider: list[SearchResults] = []
         if include_library:
+            library_results = await self.search_library(search_query, media_types, limit=limit)
             results_per_provider.append(library_results)
         all_results_complete = True
         if search_providers:
@@ -583,6 +586,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     library_results.albums,
                     library_results.tracks,
                     library_results.playlists,
+                    library_results.radio,
                     library_results.audiobooks,
                     library_results.podcasts,
                 )
@@ -2509,6 +2513,37 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             details=details,
             audio_format=audio_format,
         )
+
+    async def mark_provider_mapping_unavailable(
+        self, media_item: MediaItemType, mapping: ProviderMapping
+    ) -> None:
+        """
+        Mark a library item's provider mapping unavailable after its provider did not find it.
+
+        It is marked available again once the provider lists the item or the mapping is found again.
+        Items that are not library items are left untouched.
+
+        :param media_item: The library item that holds the mapping.
+        :param mapping: The provider mapping whose item the provider did not find.
+        """
+        if media_item.provider != "library" or not mapping.available:
+            return
+        self.logger.debug(
+            "Marking %s/%s of %s unavailable: not found on the provider",
+            mapping.provider_instance,
+            mapping.item_id,
+            media_item.uri,
+        )
+        mapping.available = False
+        # the item or its mapping may be gone by now, e.g. removed while it was being played
+        with suppress(MediaNotFoundError):
+            await self.update_provider_mapping(
+                media_item.media_type,
+                media_item.item_id,
+                mapping.provider_instance,
+                mapping.item_id,
+                available=False,
+            )
 
     def queue_provider_mapping_correction_task(self) -> BackgroundTask:
         """Queue the provider mapping correction as a managed background task."""

@@ -14,7 +14,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_loads, json_dumps
 
-from .constants import DEFAULT_LLM_INSTRUCTIONS, MERGE_SECTION_PROMPT
+from .constants import DEFAULT_LLM_INSTRUCTIONS, EVENT_HOSTS_UPDATED, MERGE_SECTION_PROMPT
 from .helpers import slugify
 
 if TYPE_CHECKING:
@@ -305,6 +305,7 @@ class AIRadioHostsMixin:
             "hosts": sorted(self._hosts.values(), key=lambda item: item["name"]),
         }
         await self._write_json_file(self._hosts_file, payload)
+        self.signal_provider_event({"event": EVENT_HOSTS_UPDATED})
 
     async def _seed_preset_hosts(self) -> None:
         """Seed the bundled preset hosts, but only on a fresh (never configured) install."""

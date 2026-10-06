@@ -13,7 +13,7 @@ aiohttp-socks==0.12.0
 aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
-aiosendspin[server]==9.1.1
+aiosendspin[server]==10.0.0
 aioslimproto==3.2.3
 aiosonos==0.1.13
 aiosqlite==0.22.1
@@ -52,12 +52,12 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.22
 modern_colorthief==0.3.0
-music-assistant-frontend==2.17.330
-music-assistant-models==1.1.214
+music-assistant-frontend==2.17.332
+music-assistant-models==1.1.216
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
-numkong==7.8.0
+numkong==7.8.3
 numpy==2.3.5
 onedrive-personal-sdk==0.1.7
 orjson==3.11.6
@@ -86,7 +86,7 @@ pywam==0.2.0
 pywidevine==1.9.0
 pywiim==2.3.0
 PyYAML==6.0.3
-qqmusic-api-python==0.7.2
+qqmusic-api-python==0.7.3
 radios==0.3.2
 rokuecp==0.19.5
 segno==1.6.6
@@ -107,10 +107,10 @@ websocket-client==1.9.2
 wiim==0.1.9
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-ya-passport-auth[ma]==2.0.1
+ya-passport-auth[ma]==2.1.0
 yandex-music==3.0.0
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
-yoto-api==4.4.1
+yoto-api==4.5.0
 ytmusicapi==1.12.3
-zeroconf==0.149.16
+zeroconf==0.151.5
 zvuk-music[async]==0.6.1

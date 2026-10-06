@@ -81,8 +81,12 @@ MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 # skipped id's are resolved back to library id's in batches of this size
 SKIPPED_ITEM_QUERY_LIMIT: Final[int] = 500
-# failures of one provider's fetch that leave the other providers' items playable: a
-# multi-provider caller skips that provider rather than abort on its behalf
+# the expected ways one provider's fetch of an item can fail: the item is gone or not
+# usable there, the provider is (temporarily) unreachable, or the transport broke down.
+# A multi-provider caller skips that provider rather than abort on its behalf, and a
+# best-effort matcher treats the item as absent. Deliberately not the whole
+# aiohttp.ClientError family: an HTTP status error the provider did not translate (an
+# expired token, a permanently failing request) must surface rather than be skipped
 PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     InvalidDataError,
     MediaNotFoundError,
@@ -91,7 +95,10 @@ PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
     TimeoutError,
-    aiohttp.ClientError,
+    # an HTML error page where JSON was expected
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 
 LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
@@ -162,6 +169,13 @@ class ProviderStreamLimitError(AudioError):
         )
         self.provider_instance = provider.instance_id
         self.limit = limit
+
+
+def provider_fetch_log_level(err: Exception) -> int:
+    """Return the log level for a provider fetch failure the caller skips over."""
+    # an item a provider no longer lists is expected to stay that way, so it must not
+    # warn on every play; the other failures are worth a look
+    return logging.DEBUG if isinstance(err, MediaNotFoundError) else logging.WARNING
 
 
 def describe_sync_error(err: Exception) -> str:

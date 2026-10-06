@@ -64,6 +64,16 @@ def test_missing_persons_and_link_leave_metadata_unset() -> None:
     assert episode.metadata.links is None
 
 
+def test_episode_and_season_numbers() -> None:
+    """The API episode and season numbers are kept, a null episode and a season of 0 are not."""
+    episode = _parse(_episode_data(episode=19, season=3))
+    assert episode is not None
+    assert (episode.episode_number, episode.season) == (19, 3)
+    episode = _parse(_episode_data(episode=None, season=0))
+    assert episode is not None
+    assert (episode.episode_number, episode.season) == (None, None)
+
+
 # --- chapter enrichment on the single-episode path -------------------------------------------
 
 

@@ -36,6 +36,9 @@ def _ym_owner(token: str | None, x_token: str | None) -> mock.MagicMock:
     owner.domain = "yandex_music"
     owner.type = ProviderType.MUSIC
     owner.config.get_value = lambda key: {"token": token, "x_token": x_token}.get(key)
+    owner.get_setup_value = lambda key, default=None: {"token": token, "x_token": x_token}.get(
+        key, default
+    )
     return owner
 
 
