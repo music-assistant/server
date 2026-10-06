@@ -478,8 +478,11 @@ class NeteaseCloudMusicProvider(MusicProvider):
             return await self._build_radio_items()
 
         if item_id == "daily_songs":
+            # personalized endpoints return different (non-personalized) data on
+            # some NCM api backends unless the login cookie is also passed as a
+            # query param, so it is sent in the params of every call below too
             daily_payload = await self._get_recommend_payload_cached(
-                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
+                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs", {"cookie": self._cookie}
             )
             daily_data = _extract_data(daily_payload)
             daily_songs = daily_data.get("dailySongs")
@@ -1316,7 +1319,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         payload = await self._client.get(
             "/playlist/detail",
-            params={"id": prov_playlist_id},
+            params={"id": prov_playlist_id, "cookie": self._cookie},
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1336,7 +1339,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
         offset = page * limit
         payload = await self._client.get(
             "/playlist/track/all",
-            params={"id": prov_playlist_id, "limit": limit, "offset": offset},
+            params={
+                "id": prov_playlist_id,
+                "limit": limit,
+                "offset": offset,
+                "cookie": self._cookie,
+            },
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1544,7 +1552,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return recommendation payload from MA cache or fetch fresh."""
-        params_key = json.dumps(params or {}, sort_keys=True, separators=(",", ":"))
+        # the login cookie is sent as a query param for some backends, but it is a
+        # credential and must stay out of the cache key that gets persisted to disk
+        cache_params = {k: v for k, v in (params or {}).items() if k != "cookie"}
+        params_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
         cache_key = f"{key}:{params_key}"
         cached = await self.mass.cache.get(
             key=cache_key,
@@ -1575,6 +1586,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_songs = fm_data.get("data")
@@ -1599,7 +1611,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for _ in range(attempts):
             fm_payload = await self._client.get(
                 "/personal_fm",
-                params={"timestamp": int(time.time() * 1000)},
+                params={"timestamp": int(time.time() * 1000), "cookie": self._cookie},
                 cookie=self._cookie,
             )
             fm_data = _extract_data(fm_payload)
@@ -1638,6 +1650,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             "daily_songs",
             _RECOMMEND_DAILY_TTL,
             "/recommend/songs",
+            {"cookie": self._cookie},
         )
         daily_data = _extract_data(daily_payload)
         daily_songs = daily_data.get("dailySongs")
@@ -1961,6 +1974,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_rows = fm_data.get("data")
@@ -1975,6 +1989,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                     "daily_songs",
                     _RECOMMEND_DAILY_TTL,
                     "/recommend/songs",
+                    {"cookie": self._cookie},
                 )
                 daily_data = _extract_data(daily_payload)
                 daily_rows = daily_data.get("dailySongs")
