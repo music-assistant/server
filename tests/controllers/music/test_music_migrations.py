@@ -18,7 +18,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music import MusicController, migrations
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
@@ -302,9 +302,11 @@ async def test_migrate_database_backfills_external_id_lookup(
 
 
 async def test_migration_repairs_null_smart_fades_centroids(
-    database: DatabaseConnection,
+    database: DatabaseConnection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    # keep the repaired rows in library.db; moving them out is tested on its own
+    monkeypatch.setattr(migrations, "_move_audio_analysis_out", AsyncMock())
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,

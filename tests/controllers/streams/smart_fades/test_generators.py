@@ -67,11 +67,9 @@ def _vocal_probabilities(duration: float, active_windows: list[tuple[float, floa
 def _with_vocal_activity(
     analysis: AudioAnalysisData, active_windows: list[tuple[float, float]]
 ) -> AudioAnalysisData:
-    """Attach a valid vocal_activity list, merged into any existing extra_data."""
+    """Attach a valid vocal_activity list."""
     assert analysis.duration is not None
-    extra = dict(analysis.extra_data or {})
-    extra["vocal_activity"] = _vocal_probabilities(analysis.duration, active_windows)
-    analysis.extra_data = extra
+    analysis.vocal_activity = _vocal_probabilities(analysis.duration, active_windows)
     return analysis
 
 
