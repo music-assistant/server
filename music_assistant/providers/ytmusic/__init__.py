@@ -1253,7 +1253,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 if "maxresdefault" in url or image_ratio > 2.0
                 else ImageType.THUMB
             )
-            if "=w" not in url and width < 500:
+            if "=w" not in url and width < 400:
                 continue
             # if the size is in the url, we can actually request a higher thumb
             if "=w" in url and width < 600:
