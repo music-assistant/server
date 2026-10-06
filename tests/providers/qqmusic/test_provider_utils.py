@@ -20,6 +20,7 @@ from music_assistant.providers.qqmusic.constants import (
     CONF_QUALITY,
     QUALITY_HI_RES,
 )
+from music_assistant.providers.qqmusic.parsers import extract_items
 
 
 def test_parse_playlist_id_composite() -> None:
@@ -60,6 +61,15 @@ def test_extract_song_id_from_track_payload() -> None:
     assert provider._extract_song_id({"songid": "456"}) == 456
     assert provider._extract_song_id({"songID": "789"}) == 789
     assert provider._extract_song_id({"song_id": "bad"}) is None
+
+
+def test_extract_items_supports_0_8_album_tab_shape() -> None:
+    """Album tabs returned by qqmusic-api 0.8 expose their list as albums."""
+    albums = extract_items(
+        {"album_tab": {"albums": [{"mid": "album_mid"}]}},
+        ("album_tab",),
+    )
+    assert albums == [{"mid": "album_mid"}]
 
 
 def test_get_candidate_file_types_hires_with_fallback_chain() -> None:

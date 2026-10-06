@@ -56,7 +56,7 @@ def extract_items(data: dict[str, Any], candidate_keys: tuple[str, ...]) -> list
         if isinstance(val, list):
             return [item for item in val if isinstance(item, dict)]
         if isinstance(val, dict):
-            for nested_key in ("list", "v_playlist", "album_list", "songlist", "items"):
+            for nested_key in ("list", "v_playlist", "album_list", "albums", "songlist", "items"):
                 nested_val = val.get(nested_key)
                 if isinstance(nested_val, list):
                     return [item for item in nested_val if isinstance(item, dict)]
