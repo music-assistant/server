@@ -743,8 +743,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_item_id=mapping.item_id,
             ):
                 return item
-        # check by domain too
+        # check by domain too, except for mappings that only exist on their own instance
         for mapping in provider_mappings:
+            if mapping.is_unique:
+                continue
             for item in await self.get_library_items_by_prov_id(
                 provider_domain=mapping.provider_domain,
                 provider_item_id=mapping.item_id,
@@ -795,6 +797,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # (same resolution order as get_library_item_by_prov_mappings)
         for prov_column in ("provider_instance", "provider_domain"):
             for mapping in provider_mappings:
+                if prov_column == "provider_domain" and mapping.is_unique:
+                    continue
                 for db_row in await self.mass.music.database.get_rows_from_query(
                     base_sql.format(prov_column=prov_column),
                     {
