@@ -41,6 +41,8 @@ from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpis
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper
 
 if TYPE_CHECKING:
@@ -242,6 +244,9 @@ def parse_podcast_episode(
         name=episode.title,
         duration=duration,
         position=position,
+        # abs keeps the feed's itunes:episode and itunes:season as strings
+        episode_number=get_publisher_number(try_parse_int(episode.episode, None)),
+        season=get_publisher_number(try_parse_int(episode.season, None)),
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,

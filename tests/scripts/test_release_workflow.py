@@ -711,6 +711,31 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     assert "'.default_branch'" in workflow
 
 
+@pytest.mark.parametrize(
+    ("workflow_name", "guarded_job"),
+    [("release.yml", "resolve"), ("auto-release.yml", "resolve-release")],
+)
+def test_release_workflows_require_dispatch_from_dev(workflow_name: str, guarded_job: str) -> None:
+    """Release workflows fail before any other step or job unless they run from dev."""
+    workflow = cast(
+        "dict[str, Any]",
+        yaml.safe_load(
+            (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+        ),
+    )
+    jobs = workflow["jobs"]
+    guard = jobs[guarded_job]["steps"][0]
+
+    assert guard["name"] == "Require dispatch from dev"
+    assert guard["env"] == {"DISPATCH_REF": "${{ github.ref }}"}
+    assert 'if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then' in guard["run"]
+    assert "exit 1" in guard["run"]
+    for job_name, job in jobs.items():
+        if job_name != guarded_job:
+            needs = job["needs"]
+            assert guarded_job in ([needs] if isinstance(needs, str) else needs), job_name
+
+
 def test_release_workflow_dispatch_source_sha_is_optional_for_recovery() -> None:
     """Direct recovery keeps source_sha optional while workflow_call stays required."""
     workflow = cast(

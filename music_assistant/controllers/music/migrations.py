@@ -1198,6 +1198,52 @@ async def migrate_database(  # noqa: PLR0915
             shutil.rmtree, os.path.join(mass.cache_path, "collage_images"), ignore_errors=True
         )
 
+    if prev_version <= 62:
+        # an image without a path resolves to the same proxy id for every item of that
+        # provider, so all of them show one shared picture; merged images are never dropped
+        for table in MEDIA_ITEM_DB_TABLES:
+            table_columns = {
+                x["name"]
+                for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+            }
+            # guard against (test) databases with stand-in tables
+            if "metadata" not in table_columns:
+                continue
+            for db_row in await database.get_rows_from_query(
+                f"SELECT item_id, metadata FROM {table} "
+                'WHERE metadata LIKE \'%"path":""%\' OR metadata LIKE \'%"path": ""%\'',
+                limit=0,
+            ):
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    continue
+                images = metadata.get("images") if isinstance(metadata, dict) else None
+                if not isinstance(images, list):
+                    continue
+                kept_images = [
+                    x for x in images if not (isinstance(x, dict) and x.get("path") == "")
+                ]
+                if kept_images == images:
+                    continue
+                metadata["images"] = kept_images
+                await database.update(
+                    table,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+        playlog_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+            )
+        }
+        if "image" in playlog_columns:
+            await database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                "WHERE CASE WHEN json_valid(image) THEN json_extract(image, '$.path') END = ''"
+            )
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:

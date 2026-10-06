@@ -28,21 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-# Origin allowlist helpers now live in ``provider/origins.py`` as a small
-# standalone module shared with ``provider/connect/mount.py``. Re-export them
-# here under their historical leading-underscore names so existing tests and
-# external callers (if any) keep working without churn.
-from .origins import (  # noqa: F401
-    _is_origin_allowed,
-    _normalize_origin,
-    _port_from_base_url,
-)
-from .origins import (
-    compute_origin_allowlist as _compute_origin_allowlist,
-)
-from .origins import (
-    is_origin_allowed_for_request as _is_origin_allowed_for_request,
-)
+from .origins import compute_origin_allowlist, is_origin_allowed_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -76,7 +62,7 @@ async def mount_into_mass(
     # strip in the bridge. With strip we'd hand FastMCP a bare ``/`` and its
     # router would 404 every request.
     asgi_app = _build_asgi_app(mcp, mount_path)
-    allowlist = _compute_origin_allowlist(mass, extra_origins_csv)
+    allowlist = compute_origin_allowlist(mass, extra_origins_csv)
 
     # Drive the ASGI lifespan ourselves — without it FastMCP's
     # StreamableHTTPSessionManager never enters its task group and the first
@@ -85,7 +71,7 @@ async def mount_into_mass(
     lifespan_state = await _start_asgi_lifespan(asgi_app)
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        if not _is_origin_allowed_for_request(request, allowlist):
+        if not is_origin_allowed_for_request(request, allowlist):
             LOGGER.warning(
                 "MCP: rejected request with Origin=%r from %s (not in allowlist)",
                 request.headers.get("Origin"),
@@ -297,7 +283,7 @@ def _build_asgi_app(mcp: Any, mount_path: str = "/mcp") -> Any:
     raise RuntimeError(msg)
 
 
-async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, splitting harms readability
+async def _asgi_to_aiohttp(  # noqa: PLR0915 - bridge lifecycle is one atomic flow
     asgi_app: Any,
     request: web.Request,
     strip_prefix: str = "",
@@ -399,7 +385,8 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
     response = response_state["response"]
     if response is None:
         return web.Response(status=204)
-    assert isinstance(response, web.StreamResponse)
+    if not isinstance(response, web.StreamResponse):
+        raise TypeError("MCP bridge produced an invalid response type")
     return response
 
 

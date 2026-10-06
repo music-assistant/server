@@ -30,6 +30,7 @@ from .constants import (
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
     NON_HIRES_HEOS_MODELS,
+    PLAYBACK_TRANSITION_STOP_GRACE,
 )
 
 if TYPE_CHECKING:
@@ -215,6 +216,7 @@ class HeosPlayer(Player):
                     "[%s] Playback error: %s", self._device.name, self._device.playback_error
                 )
                 self._queue_cleanup_pending = False
+                self._cancel_ma_playback_transition()
                 self.set_dynamic_attributes()
 
             case _:
@@ -230,9 +232,13 @@ class HeosPlayer(Player):
 
     def _update_player_state(self) -> None:
         """Update playback state."""
-        self._attr_playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
+        playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
             self._device.state, PlaybackState.UNKNOWN
         )
+        if self._ma_playback_starting and playback_state == PlaybackState.IDLE:
+            # HEOS reports a transient stop while it switches to the new MA stream
+            return
+        self._attr_playback_state = playback_state
 
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
@@ -343,6 +349,7 @@ class HeosPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self._cancel_ma_playback_transition()
         await self._device.stop()
 
     async def pause(self) -> None:
@@ -399,7 +406,7 @@ class HeosPlayer(Player):
         if (
             not self._ma_controls_playback
             or not self._queue_cleanup_pending
-            or self._attr_playback_state != PlaybackState.PLAYING
+            or self._device.state != HeosPlayState.PLAY
         ):
             return
 
@@ -430,11 +437,11 @@ class HeosPlayer(Player):
                 return
             if not self._queue_cleanup_pending:
                 return
-            if self._attr_playback_state != PlaybackState.PLAYING:
+            if self._device.state != HeosPlayState.PLAY:
                 self.logger.debug(
                     "[%s] Queue cleanup postponed (state=%s)",
                     self._device.name,
-                    self._attr_playback_state,
+                    self._device.state,
                 )
                 return
             try:
@@ -512,8 +519,17 @@ class HeosPlayer(Player):
         self.mass.cancel_timer(self._ma_playback_transition_timer_id)
         self._ma_playback_starting = False
 
-    def _finish_ma_playback_transition(self) -> None:
+    def _finish_ma_playback_transition(self, wait_for_play: bool = True) -> None:
         """Apply the latest HEOS state after MA playback starts."""
+        if wait_for_play and self._device.state == HeosPlayState.STOP:
+            self.mass.call_later(
+                PLAYBACK_TRANSITION_STOP_GRACE,
+                self._finish_ma_playback_transition,
+                wait_for_play=False,
+                task_id=self._ma_playback_transition_timer_id,
+            )
+            return
         self._ma_playback_starting = False
+        self._update_player_state()
         self._update_player_current_media()
         self.update_state()

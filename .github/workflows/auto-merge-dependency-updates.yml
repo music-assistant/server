@@ -77,9 +77,13 @@ jobs:
       # Security check 2: Verify PR labels and source branch
       - name: Verify PR labels and source
         run: |
-          LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+          # The label is added just after the PR is opened, so the event payload can miss it
+          if ! LABELS=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name'); then
+            echo "❌ Could not read the PR labels"
+            exit 1
+          fi
 
-          if [[ "$LABELS" != *"dependencies"* ]]; then
+          if ! grep -qx "dependencies" <<< "$LABELS"; then
             echo "❌ PR does not have 'dependencies' label"
             exit 1
           fi
@@ -92,6 +96,9 @@ jobs:
           echo "✅ PR has 'dependencies' label and valid branch name"
 
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
 
       # NOTE: The PR is intentionally never checked out. All validation below

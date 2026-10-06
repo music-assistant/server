@@ -50,13 +50,23 @@ CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
 CONF_MODEL = "model"
 CONF_VOICES = "voices"
+CONF_RESPONSE_FORMAT = "response_format"
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "tts-1"
 # the voices the tts-1 model supports, used when the backend does not advertise its own
 DEFAULT_VOICES = ("alloy", "echo", "fable", "nova", "onyx", "shimmer")
-# the one response format all compatible backends implement
-RESPONSE_FORMAT = "mp3"
+# the response formats we can play back, mapped to their content type. Raw pcm is left
+# out on purpose: it carries no header and its sample rate differs per backend.
+RESPONSE_FORMATS: dict[str, ContentType] = {
+    "mp3": ContentType.MP3,
+    "opus": ContentType.OGG,
+    "aac": ContentType.AAC,
+    "flac": ContentType.FLAC,
+    "wav": ContentType.WAV,
+}
+# the one response format all compatible backends implement, except gemini (wav only)
+DEFAULT_RESPONSE_FORMAT = "mp3"
 # rendered clips older than this are removed from the on-disk cache
 CACHE_MAX_AGE = 24 * 3600
 # the shared http session has no default timeout: discovery runs during provider load so
@@ -157,9 +167,9 @@ class OpenAITTSProvider(PluginProvider):
         """
         Return the (options) config entries for this provider instance.
 
-        The connection details (endpoint, api key and model) are collected by the setup
-        flow (see setup_flow.py); the only option here overrides the list of voices that
-        is exposed as TTS engines.
+        The connection details (endpoint, api key, model and response format) are
+        collected by the setup flow (see setup_flow.py); the only option here overrides
+        the list of voices that is exposed as TTS engines.
         """
         return (
             ConfigEntry(
@@ -201,7 +211,7 @@ class OpenAITTSProvider(PluginProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=file_id,
-            audio_format=AudioFormat(content_type=ContentType.MP3),
+            audio_format=AudioFormat(content_type=RESPONSE_FORMATS[self._response_format]),
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=f"{self.mass.streams.base_url}{self._route_path}?id={file_id}",
@@ -216,6 +226,12 @@ class OpenAITTSProvider(PluginProvider):
     def _base_url(self) -> str:
         """Return the configured API endpoint, without trailing slash."""
         return str(self.get_setup_value(CONF_BASE_URL, DEFAULT_BASE_URL)).rstrip("/")
+
+    @property
+    def _response_format(self) -> str:
+        """Return the configured response format, the default when it is unset or unknown."""
+        value = str(self.get_setup_value(CONF_RESPONSE_FORMAT, DEFAULT_RESPONSE_FORMAT))
+        return value if value in RESPONSE_FORMATS else DEFAULT_RESPONSE_FORMAT
 
     async def _handle_speech_request(self, request: web.Request) -> web.FileResponse | web.Response:
         """Serve a rendered speech clip by its file id."""
@@ -237,10 +253,11 @@ class OpenAITTSProvider(PluginProvider):
         :param voice: The voice to render with.
         """
         model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
+        response_format = self._response_format
         # the endpoint is part of the identity: repointing an instance must not reuse clips
-        digest = f"{self._base_url}\0{model}\0{voice}\0{message}"
+        digest = f"{self._base_url}\0{model}\0{voice}\0{response_format}\0{message}"
         file_id = hashlib.sha256(digest.encode()).hexdigest()
-        file_path = os.path.join(self._cache_dir, f"{file_id}.{RESPONSE_FORMAT}")
+        file_path = os.path.join(self._cache_dir, f"{file_id}.{response_format}")
         async with self._render_lock:
             if await aiopath.isfile(file_path):
                 # a reused clip is played right away, so keep it out of reach of the reaper
@@ -277,7 +294,7 @@ class OpenAITTSProvider(PluginProvider):
             "model": str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL)),
             "voice": voice,
             "input": message,
-            "response_format": RESPONSE_FORMAT,
+            "response_format": self._response_format,
         }
         async with self.mass.http_session.post(
             f"{self._base_url}/audio/speech",
@@ -323,7 +340,7 @@ class OpenAITTSProvider(PluginProvider):
                     Path(entry.name).stem: entry.path
                     for entry in entries
                     if entry.is_file(follow_symlinks=False)
-                    and entry.name.endswith(f".{RESPONSE_FORMAT}")
+                    and Path(entry.name).suffix.removeprefix(".") in RESPONSE_FORMATS
                     and FILE_ID_PATTERN.match(Path(entry.name).stem)
                 }
 

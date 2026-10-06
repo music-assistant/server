@@ -171,8 +171,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.media_capabilities import AudioStreamMixin
     from music_assistant.models.player import Player
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
@@ -3403,7 +3403,7 @@ class StreamsAudio:
                 if blocked:
                     msg = f"{queue_item.name} is not available on any music source of this user"
                     raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
-            streamdetails = await self._request_streamdetails(candidates, media_item.media_type)
+            streamdetails = await self._request_streamdetails(candidates, media_item)
 
             if not streamdetails:
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
@@ -3921,27 +3921,39 @@ class StreamsAudio:
     async def _request_streamdetails(
         self,
         candidates: Iterable[tuple[ProviderMapping, Provider]],
-        media_type: MediaType,
+        media_item: MediaItemType,
     ) -> StreamDetails | None:
         """
         Request stream details from ordered provider mapping candidates.
 
+        A library item's mapping whose own provider no longer finds the item is marked
+        unavailable.
+
         :param candidates: Candidates in mapping and compatible-instance order.
-        :param media_type: Media type requested from each provider.
+        :param media_item: The media item the candidates belong to.
         :return: The first resolved stream details, or None when every candidate failed.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
         for mapping, provider in candidates:
-            # music and plugin providers share this signature, so either type can own the item
+            # any provider that streams its own items can own the mapping
             try:
-                stream_prov = cast("MusicProvider | PluginProvider", provider)
+                stream_prov = cast("AudioStreamMixin", provider)
                 with request_priority(RequestPriority.HIGH):
-                    return await stream_prov.get_stream_details(mapping.item_id, media_type)
+                    return await stream_prov.get_stream_details(
+                        mapping.item_id, media_item.media_type
+                    )
             except AudioError as err:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
+            except MediaNotFoundError as err:
+                self.logger.warning("%s", err)
+                # another account of the same service may simply lack the item
+                if provider.instance_id == mapping.provider_instance:
+                    self.mass.create_task(
+                        self.mass.music.mark_provider_mapping_unavailable(media_item, mapping)
+                    )
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
         if last_audio_error is not None:
@@ -4391,16 +4403,15 @@ class StreamsAudio:
                     seek_position=seek_position if streamdetails.can_seek else 0,
                 )
             else:
-                # MusicProvider and PluginProvider both expose get_audio_stream with the same
-                # shape. Pin the exact instance: a domain fallback would stream from a sibling
+                # Pin the exact instance: a domain fallback would stream from a sibling
                 # account while the source-stream slot is charged to the issuing instance.
                 provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
                 if provider is None or not provider.available:
                     raise ProviderUnavailableError(
                         f"Provider {streamdetails.provider} for stream is no longer available"
                     )
-                provider = cast("MusicProvider | PluginProvider", provider)
-                audio_source = provider.get_audio_stream(
+                stream_prov = cast("AudioStreamMixin", provider)
+                audio_source = stream_prov.get_audio_stream(
                     streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
                 )
             return audio_source, 0 if streamdetails.can_seek else seek_position, extra_input_args
@@ -4487,8 +4498,8 @@ class StreamsAudio:
                 raise ProviderUnavailableError(
                     f"Provider {streamdetails.provider} for stream is no longer available"
                 )
-            provider = cast("MusicProvider | PluginProvider", provider)
-            audio_source = provider.get_audio_stream(
+            stream_prov = cast("AudioStreamMixin", provider)
+            audio_source = stream_prov.get_audio_stream(
                 streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
             )
             return audio_source_silence_keepalive(
@@ -5093,7 +5104,7 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            stream_prov = cast("AudioStreamMixin", provider)
             with request_priority(RequestPriority.HIGH):
                 streamdetails = await stream_prov.get_stream_details(
                     mapping.item_id, MediaType.SOUND_EFFECT

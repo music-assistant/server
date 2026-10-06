@@ -1074,6 +1074,9 @@
       "in_progress_items": {
         "name": "In progress"
       },
+      "latest_episodes": {
+        "name": "Latest podcast episodes"
+      },
       "random_albums": {
         "name": "Random albums"
       },
@@ -1210,6 +1213,8 @@
     "role_can_not_own_music_sources": "This role can not own a music source.",
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
+    "username_taken": "This username is already in use.",
+    "username_too_short": "Username must be at least {0} characters.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
     "role_not_found": "This role does not exist.",
     "role_name_invalid": "A role name must be between 1 and {0} characters long.",
@@ -1225,6 +1230,7 @@
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
     "source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
     "unknown_or_disabled_user": "Unknown or disabled user: {0}",
+    "guest_account_disabled": "Guest access is unavailable because the {0} account is disabled.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",

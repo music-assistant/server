@@ -13,7 +13,6 @@ from aiohttp import ClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     ExternalID,
-    ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -33,7 +32,6 @@ from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
     ItemMappingSummary,
-    MediaItemImage,
     ProviderMapping,
     Track,
     TrackSummary,
@@ -76,8 +74,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +548,7 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
-            cross_prov = cast("MetadataProvider | PluginProvider", prov)
+            cross_prov = cast("MusicDiscoveryMixin", prov)
             result, error = await self._get_similar_tracks_from_provider(
                 cross_prov, ref_item, limit
             )
@@ -1737,9 +1734,11 @@ class TracksController(MediaControllerBase[Track]):
             has_artists=bool(db_row["has_artists"]),
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> TrackSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> TrackSummary:
         """Parse a raw summary db row into a TrackSummary object."""
-        item = cast("TrackSummary", super()._parse_summary_row(db_row))
+        item = cast("TrackSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.duration = db_row["duration"] or 0
         item.metadata.explicit = None if db_row["explicit"] is None else bool(db_row["explicit"])
@@ -1748,18 +1747,7 @@ class TracksController(MediaControllerBase[Track]):
         item.artists = self._parse_summary_artist_mappings(db_row)
         if raw_album := db_row["track_album"]:
             album: dict[str, Any] = json_loads(raw_album)
-            album_thumb: MediaItemImage | None = None
-            if album_images := album.get("images"):
-                for image in album_images:
-                    if image["type"] != ImageType.THUMB.value:
-                        continue
-                    album_thumb = MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image["path"],
-                        provider=image["provider"],
-                        remotely_accessible=image.get("remotely_accessible", False),
-                    )
-                    break
+            album_thumb = self._summary_thumb(album.get("images"), hidden_sources)
             item.album = ItemMappingSummary(
                 media_type=MediaType.ALBUM,
                 item_id=str(album["item_id"]),
@@ -1778,7 +1766,7 @@ class TracksController(MediaControllerBase[Track]):
 
     async def _get_similar_tracks_from_provider(
         self,
-        provider: MusicProvider | MetadataProvider | PluginProvider,
+        provider: MusicProvider | MusicDiscoveryMixin,
         ref_item: Track,
         limit: int,
         provider_track_id: str | None = None,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,7 +54,9 @@ async def test_genre_tracks_skip_failing_artist() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.logger.warning.assert_called_once()
+    # an artist a provider no longer lists is noted, not warned about on every play
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG
 
 
 async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
@@ -66,7 +69,7 @@ async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
 
     assert [track.name for track in result] == ["Song"]
     fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test")
-    fake.logger.warning.assert_not_called()
+    fake.logger.log.assert_not_called()
 
 
 async def test_genre_tracks_skip_failing_album() -> None:
@@ -84,7 +87,8 @@ async def test_genre_tracks_skip_failing_album() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.logger.warning.assert_called_once()
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG
 
 
 async def test_genre_tracks_raise_when_nothing_playable() -> None:
