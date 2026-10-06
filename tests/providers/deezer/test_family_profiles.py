@@ -162,17 +162,19 @@ async def _submit_and_get_errors(session: SetupSession, values: dict[str, Any]) 
     ("error", "expected"),
     [
         (GraphQLClientAuthError("401"), "arl_rejected"),
+        (GraphQLClientGraphQLMultiError(errors=[]), "auth_failed"),
+        (None, "auth_failed"),
         (ClientConnectionError("no route"), "auth_failed"),
         (TimeoutError(), "auth_failed"),
     ],
 )
 async def test_failed_profile_lookup_is_reported_on_the_form(
-    error: Exception, expected: str
+    error: Exception | None, expected: str
 ) -> None:
-    """A rejected ARL or an unreachable Deezer sends the user back to the ARL form."""
+    """A rejected ARL, a Deezer error or no user data sends the user back to the ARL form."""
     session, finished = _session()
     with patch("music_assistant.providers.deezer.setup_flow.DeezerGQLClient") as client:
-        client.return_value.get_family = AsyncMock(side_effect=error)
+        client.return_value.get_family = AsyncMock(side_effect=error, return_value=None)
         step = await _submit_and_get_errors(session, {CONF_ARL_TOKEN: "bad-arl"})
 
     assert step.type == FlowStepType.FORM
@@ -193,26 +195,12 @@ async def test_empty_arl_is_required(arl: str) -> None:
     assert finished == []
 
 
-async def test_reconfigure_keeps_the_profile_when_profiles_cannot_be_listed() -> None:
-    """Without a profile list the stored profile stays, it must not turn into the admin."""
-    session, finished = _session({CONF_ARL_TOKEN: "stored-arl", CONF_FAMILY_PROFILE: PROFILE})
-    with patch("music_assistant.providers.deezer.setup_flow.DeezerGQLClient") as client:
-        client.return_value.get_family = AsyncMock(
-            side_effect=GraphQLClientGraphQLMultiError(errors=[])
-        )
-        task = asyncio.create_task(run_setup(session))
-        await _wait_for_form(session, "user")
-        session.handle_submit({})
-        await task
-
-    assert finished == [{CONF_ARL_TOKEN: "stored-arl", CONF_FAMILY_PROFILE: PROFILE}]
-
-
-async def test_reconfigure_asks_again_when_the_stored_profile_is_gone() -> None:
+@pytest.mark.parametrize("me", [_family(), Mock(id=ADMIN, family=None)])
+async def test_reconfigure_asks_again_when_the_stored_profile_is_gone(me: Mock) -> None:
     """A removed profile is not replaced by the admin without showing the choice."""
     session, finished = _session({CONF_ARL_TOKEN: "stored-arl", CONF_FAMILY_PROFILE: PROFILE})
     with patch("music_assistant.providers.deezer.setup_flow.DeezerGQLClient") as client:
-        client.return_value.get_family = AsyncMock(return_value=_family())
+        client.return_value.get_family = AsyncMock(return_value=me)
         task = asyncio.create_task(run_setup(session))
         await _wait_for_form(session, "user")
         session.handle_submit({})

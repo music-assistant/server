@@ -10,7 +10,6 @@ from deezer_python_gql import (
     DeezerGQLClient,
     GraphQLClientAuthError,
     GraphQLClientError,
-    GraphQLClientGraphQLMultiError,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
@@ -73,7 +72,7 @@ async def _get_profiles(
     Return (id, name) of the account the ARL belongs to and its profiles, plus an error.
 
     The account itself comes first. Family members with their own login are left out,
-    they need their own ARL. An empty list means the profiles could not be listed.
+    they need their own ARL. The list is only empty together with an error.
 
     :param session: The setup session.
     :param arl: The ARL token entered by the user.
@@ -81,10 +80,6 @@ async def _get_profiles(
     client = DeezerGQLClient(arl=arl, session=session.mass.http_session)
     try:
         me = await client.get_family()
-    except GraphQLClientGraphQLMultiError as err:
-        # no Family data for this account, the ARL itself is checked when the provider loads
-        LOGGER.debug("Deezer returned no Family data: %s", err)
-        return [], None
     except GraphQLClientAuthError as err:
         LOGGER.warning("Deezer rejected the ARL: %s", err)
         return [], "arl_rejected"
@@ -92,8 +87,11 @@ async def _get_profiles(
         # handled here, a timeout reaching progress_until would end the flow as expired
         LOGGER.warning("Could not load the Deezer profiles: %r", err)
         return [], "auth_failed"
-    if me is None or me.family is None:
-        return [], None
+    if me is None:
+        LOGGER.warning("Deezer returned no user data for this ARL")
+        return [], "auth_failed"
+    if me.family is None:
+        return [(me.id, "")], None
     profiles = [(me.id, me.family.main.name if me.family.main.id == me.id else "")]
     profiles.extend(
         (member.id, member.name)
@@ -119,9 +117,6 @@ async def _select_profile(
     :param setup_data: The setup data collected so far, for the current selection.
     """
     stored = str(setup_data.get(CONF_FAMILY_PROFILE) or "")
-    if not profiles:
-        # the profiles could not be listed, keep the choice, the provider checks it on load
-        return stored
     if len(profiles) < 2 and not stored:
         return ""
     account_id = profiles[0][0]
