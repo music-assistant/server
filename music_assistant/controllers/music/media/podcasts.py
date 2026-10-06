@@ -475,9 +475,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if probed_duration := await get_probed_duration(self.mass, uri):
             episode.duration = probed_duration
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PodcastSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> PodcastSummary:
         """Parse a raw summary db row into a PodcastSummary object."""
-        item = cast("PodcastSummary", super()._parse_summary_row(db_row))
+        item = cast("PodcastSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.publisher = db_row["publisher"]
         item.total_episodes = db_row["total_episodes"]

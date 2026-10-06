@@ -715,9 +715,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AudiobookSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> AudiobookSummary:
         """Parse a raw summary db row into an AudiobookSummary object."""
-        item = cast("AudiobookSummary", super()._parse_summary_row(db_row))
+        item = cast("AudiobookSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.publisher = db_row["publisher"]
         item.duration = db_row["duration"] or 0

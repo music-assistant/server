@@ -1385,9 +1385,11 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AlbumSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> AlbumSummary:
         """Parse a raw summary db row into an AlbumSummary object."""
-        item = cast("AlbumSummary", super()._parse_summary_row(db_row))
+        item = cast("AlbumSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.year = db_row["year"]
         item.album_type = AlbumType(db_row["album_type"])
