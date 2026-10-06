@@ -95,6 +95,8 @@ _RECOMMEND_DAILY_TTL = 60 * 30
 _RECOMMEND_PERSONAL_FM_TTL = 60 * 5
 _RECOMMEND_HEART_MODE_TTL = 60 * 60
 CACHE_CATEGORY_RECOMMENDATIONS = 1
+# bump to invalidate cached recommendation/playlist data written before the cookie-in-query fix
+_CACHE_VERSION = "v2"
 # NetEase song-detail payload uses this bit in `hr`/`h` mark metadata to indicate
 # that the track has a Hi-Res tier in catalog metadata.
 # Value observed from NeteaseCloudMusicApi-compatible responses.
@@ -1298,7 +1300,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 track.metadata.lyrics = tlyric_text
         return track
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, cache_checksum=_CACHE_VERSION)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
@@ -1328,7 +1330,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, cache_checksum=_CACHE_VERSION)
     async def _get_playlist_tracks_cached(
         self,
         prov_playlist_id: str,
@@ -1556,7 +1558,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         # credential and must stay out of the cache key that gets persisted to disk
         cache_params = {k: v for k, v in (params or {}).items() if k != "cookie"}
         params_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
-        cache_key = f"{key}:{params_key}"
+        cache_key = f"{_CACHE_VERSION}:{key}:{params_key}"
         cached = await self.mass.cache.get(
             key=cache_key,
             provider=self.instance_id,

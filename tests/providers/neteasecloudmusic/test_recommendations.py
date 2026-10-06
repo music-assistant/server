@@ -181,7 +181,7 @@ async def test_recommendation_cache_key_excludes_login_cookie(
 
     assert cache_set.await_count == 1
     cache_key = cache_set.call_args.kwargs["key"]
-    assert cache_key == "daily_songs:{}"
+    assert cache_key.endswith("daily_songs:{}")
     assert "MUSIC_U=test" not in cache_key
 
 
