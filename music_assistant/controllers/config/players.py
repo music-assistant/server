@@ -71,7 +71,10 @@ from music_assistant.constants import (
     PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
@@ -507,6 +510,7 @@ class PlayerConfigMixin:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
+        _reject_encrypted_values(values)
         values = await self._update_output_protocol_config(values)
         values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
