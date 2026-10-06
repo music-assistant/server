@@ -100,6 +100,11 @@ async def test_get_recommendation_items_radios(
     fm_call = next(call for call in client_mock.call_args_list if call.args[0] == "/personal_fm")
     assert fm_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
     assert fm_call.kwargs["cookie"] == "MUSIC_U=test"
+    user_playlist_call = next(
+        call for call in client_mock.call_args_list if call.args[0] == "/user/playlist"
+    )
+    assert user_playlist_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert user_playlist_call.kwargs["cookie"] == "MUSIC_U=test"
     assert [item.item_id for item in result] == [
         "personal_fm_dynamic",
         "heart_mode_dynamic:1001:2002",

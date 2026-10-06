@@ -1673,7 +1673,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             "heart_mode_playlist",
             _RECOMMEND_HEART_MODE_TTL,
             "/user/playlist",
-            {"uid": self._uid, "limit": 1, "offset": 0},
+            {"uid": self._uid, "limit": 1, "offset": 0, "cookie": self._cookie},
         )
         playlist_data = _extract_data(playlist_payload)
         playlist_rows = playlist_data.get("playlist")
