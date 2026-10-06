@@ -262,6 +262,30 @@ async def test_auth_refresh_rejected_application_is_login_failed(error: str) -> 
         await helper.async_get_access_token()
 
 
+class _MalformedResponse(_FakeResponse):
+    """Response whose body is not valid JSON (e.g. an HTML error page)."""
+
+    async def json(self, *, content_type: None = None) -> object:
+        raise ValueError("not JSON")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [_MalformedResponse(400, None), _FakeResponse(200, ["not", "an", "object"])],
+    ids=["non-json", "non-object"],
+)
+async def test_auth_refresh_malformed_response_is_provider_unavailable(
+    response: _FakeResponse,
+) -> None:
+    """A malformed refresh response is a retryable provider error, never a raw exception."""
+    session = _FakeSession(response)
+    helper = MAYandexDiskAuth(_mass(session), "client-id", "secret", "refresh")
+
+    with pytest.raises(ProviderUnavailableError):
+        await helper.async_get_access_token()
+
+
 @pytest.mark.asyncio
 async def test_auth_refresh_non_string_error_is_provider_unavailable() -> None:
     """A malformed error field is a provider error, never a TypeError."""

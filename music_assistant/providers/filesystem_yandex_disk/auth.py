@@ -199,6 +199,8 @@ async def refresh_oauth_tokens(
         )
     except OAuthTransportError as err:
         raise ProviderUnavailableError("Yandex OAuth is temporarily unavailable") from err
+    except OAuthProtocolError as err:
+        raise ProviderUnavailableError("Yandex OAuth returned an invalid response") from err
 
     error = payload.get("error")
     if error is not None and not isinstance(error, str):

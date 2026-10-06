@@ -14,7 +14,7 @@ as the opaque "file id" the base class passes around.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import yadisk
@@ -29,9 +29,14 @@ from yadisk.exceptions import (
     UnauthorizedError,
     YaDiskError,
 )
-from yadisk.sessions.aiohttp_session import AIOHTTPSession
+from yadisk.sessions.aiohttp_session import AIOHTTPResponse, AIOHTTPSession
+
+from music_assistant.helpers.throttle_retry import ThrottlerManager, parse_retry_after
 
 if TYPE_CHECKING:
+    from yadisk import AsyncResponse
+    from yadisk.types import HTTPMethod
+
     from music_assistant import MusicAssistant
     from music_assistant.providers.filesystem_cloud.base import RawItem
 
@@ -41,19 +46,42 @@ if TYPE_CHECKING:
 _FIELDS = ("name", "path", "type", "size", "md5", "modified")
 # streams last as long as playback, so only connect and idle-read are bounded
 _STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=60)
+# Yandex publishes no fixed Disk API quota, so stay conservative and back off on 429
+_API_RATE_LIMIT = 5
+_API_RATE_PERIOD = 1.0
+_DEFAULT_COOLDOWN = 5
 
 
 class _SharedAIOHTTPSession(AIOHTTPSession):
     """AIOHTTPSession that reuses MA's shared ClientSession and never closes it."""
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(self, session: aiohttp.ClientSession, throttler: ThrottlerManager) -> None:
         """
         Wrap an existing session without taking ownership of it.
 
         :param session: Music Assistant's shared aiohttp ClientSession.
+        :param throttler: Rate limiter shared by every Disk API request.
         """
         # deliberately skip AIOHTTPSession.__init__ (it creates its own session)
         self._session = session
+        self.throttler = throttler
+
+    async def send_request(self, method: HTTPMethod, url: str, **kwargs: Any) -> AsyncResponse:
+        """
+        Send a Disk API request through the shared rate limiter.
+
+        :param method: HTTP method.
+        :param url: Request URL.
+        :param kwargs: Request options as passed by yadisk.
+        """
+        async with self.throttler.acquire():
+            response = await super().send_request(method, url, **kwargs)
+        if response.status == 429:
+            retry_after = None
+            if isinstance(response, AIOHTTPResponse):
+                retry_after = response._response.headers.get("Retry-After")
+            self.throttler.set_cooldown(parse_retry_after(retry_after) or _DEFAULT_COOLDOWN)
+        return response
 
     async def close(self) -> None:
         """No-op: Music Assistant owns the shared session's lifecycle."""
@@ -97,7 +125,9 @@ class YandexDiskApi:
         self._auth = auth
         self._client = yadisk.AsyncClient(
             token="",
-            session=_SharedAIOHTTPSession(mass.http_session),
+            session=_SharedAIOHTTPSession(
+                mass.http_session, ThrottlerManager(_API_RATE_LIMIT, _API_RATE_PERIOD)
+            ),
         )
 
     async def validate(self) -> None:

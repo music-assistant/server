@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, cast
 
 import aiohttp
 import pytest
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.providers.filesystem_yandex_disk.api_client import YandexDiskApi, _to_raw_item
+from music_assistant.helpers.throttle_retry import ThrottlerManager
+from music_assistant.providers.filesystem_yandex_disk.api_client import (
+    YandexDiskApi,
+    _SharedAIOHTTPSession,
+    _to_raw_item,
+)
 
 
 class _Resource:
@@ -135,3 +141,59 @@ async def test_download_response_disables_total_timeout() -> None:
     assert isinstance(timeout, aiohttp.ClientTimeout)
     assert timeout == aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=60)
     assert calls[0]["headers"] == {"Range": "bytes=0-"}
+
+
+class _RawResponse:
+    def __init__(self, status: int, headers: dict[str, str] | None = None) -> None:
+        self.status = status
+        self.headers = headers or {}
+
+
+class _RecordingSession:
+    """Stand-in for MA's shared aiohttp session that records request times."""
+
+    def __init__(self, *responses: _RawResponse) -> None:
+        self.responses = list(responses)
+        self.sent_at: list[float] = []
+
+    async def request(self, _method: str, _url: str, **_kwargs: Any) -> _RawResponse:
+        self.sent_at.append(time.monotonic())
+        return self.responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_disk_api_requests_are_rate_limited() -> None:
+    """Disk API requests share one throttler, so bursts are paced."""
+    shared = _RecordingSession(*(_RawResponse(200) for _ in range(3)))
+    session = _SharedAIOHTTPSession(cast("Any", shared), ThrottlerManager(rate_limit=1, period=0.2))
+
+    for _ in range(3):
+        await session.send_request("GET", "https://cloud-api.yandex.net/v1/disk")
+
+    assert shared.sent_at[-1] - shared.sent_at[0] >= 0.35
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_response_holds_back_later_requests() -> None:
+    """A 429 with Retry-After arms a cooldown that later requests wait out."""
+    shared = _RecordingSession(_RawResponse(429, {"Retry-After": "7"}))
+    throttler = ThrottlerManager(rate_limit=10, period=1)
+    session = _SharedAIOHTTPSession(cast("Any", shared), throttler)
+
+    response = await session.send_request("GET", "https://cloud-api.yandex.net/v1/disk")
+
+    assert response.status == 429
+    assert 6 < throttler.cooldown_remaining <= 7
+
+
+def test_api_client_throttles_its_disk_session() -> None:
+    """The yadisk client is wired to a throttled session."""
+
+    class _Mass:
+        http_session = object()
+
+    api = YandexDiskApi(cast("Any", _Mass()), cast("Any", object()))
+
+    session = api._client.session
+    assert isinstance(session, _SharedAIOHTTPSession)
+    assert isinstance(session.throttler, ThrottlerManager)
