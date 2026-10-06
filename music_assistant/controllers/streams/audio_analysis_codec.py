@@ -68,6 +68,18 @@ def encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
     return json_dumps(doc), b"".join(parts)
 
 
+def decode_extra_data(header: str | bytes) -> dict[str, Any] | None:
+    """
+    Return the extra_data of a stored record without reading its payload.
+
+    :param header: JSON header as written by :func:`encode`.
+    :raises ValueError: When the header is not valid JSON.
+    """
+    doc = json_loads(header)
+    extra = doc.get("extra_data") if isinstance(doc, dict) else None
+    return extra if isinstance(extra, dict) else None
+
+
 def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
     """
     Unpack a stored record.
@@ -75,7 +87,8 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
     :param header: JSON header as written by :func:`encode`.
     :param payload: Binary payload as written by :func:`encode`.
     :raises TypeError: When the decoded header is not an object.
-    :raises ValueError: When an array slice in the header is truncated in the payload.
+    :raises ValueError: When the array index does not fit the payload, or an array holds
+        non-finite values.
     """
     # numpy is imported here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
@@ -88,9 +101,17 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
         if name not in _ARRAY_FIELD_SET:
             LOGGER.warning("Ignoring unknown packed analysis array %s", name)
             continue
-        chunk = view[offset : offset + nbytes]
-        if len(chunk) != nbytes:
-            raise ValueError(f"packed analysis array {name} is truncated")
-        arr = np.frombuffer(chunk, dtype=_DTYPES[tag])
+        # a corrupt index must not slice from the end or past the payload
+        if (
+            not isinstance(offset, int)
+            or not isinstance(nbytes, int)
+            or offset < 0
+            or nbytes < 0
+            or offset + nbytes > len(view)
+        ):
+            raise ValueError(f"packed analysis array {name} does not fit the payload")
+        arr = np.frombuffer(view[offset : offset + nbytes], dtype=_DTYPES[tag])
+        if not np.isfinite(arr).all():
+            raise ValueError(f"packed analysis array {name} contains non-finite values")
         doc[name] = (arr.astype(np.float32) if tag == "f16" else arr).tolist()
     return AudioAnalysisData.from_dict(doc)

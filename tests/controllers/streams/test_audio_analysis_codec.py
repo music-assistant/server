@@ -11,6 +11,7 @@ from music_assistant.controllers.streams.audio_analysis_codec import (
     ARRAY_FIELDS,
     F16_FIELDS,
     decode,
+    decode_extra_data,
     encode,
 )
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -166,3 +167,40 @@ def test_decode_rejects_truncated_payload() -> None:
     header, payload = encode(AudioAnalysisData(beats=[1.0, 2.0, 3.0]))
     with pytest.raises(ValueError):  # noqa: PT011
         decode(header, payload[:4])
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        ["beats", "f32", -8, 4],
+        ["beats", "f32", 0, -4],
+        ["beats", "f32", 0, 1024],
+        ["beats", "f32", "0", 4],
+    ],
+)
+def test_decode_rejects_an_index_that_does_not_fit_the_payload(entry: list[object]) -> None:
+    """A corrupt array index is rejected instead of reading another part of the payload."""
+    header, payload = encode(AudioAnalysisData(beats=[0.5, 1.0], bpm=120.0))
+    doc = json_loads(header)
+    doc["arrays"] = [entry]
+
+    with pytest.raises(ValueError, match="does not fit"):
+        decode(json_dumps(doc), payload)
+
+
+@pytest.mark.parametrize("tag", ["f16", "f32"])
+def test_decode_rejects_non_finite_values(tag: str) -> None:
+    """A corrupt payload holding NaN or Inf is rejected like any other unreadable record."""
+    payload = np.array([0.5, np.nan], dtype="<f2" if tag == "f16" else "<f4").tobytes()
+    header = json_dumps({"arrays": [["rms_energy", tag, 0, len(payload)]]})
+
+    with pytest.raises(ValueError, match="non-finite"):
+        decode(header, payload)
+
+
+def test_decode_extra_data_reads_only_the_header() -> None:
+    """extra_data comes back from the header alone; a header without it gives None."""
+    header, _ = encode(AudioAnalysisData(bpm=120.0, extra_data={"key": "value"}))
+    assert decode_extra_data(header) == {"key": "value"}
+    assert decode_extra_data(encode(AudioAnalysisData(bpm=120.0))[0]) is None
+    assert decode_extra_data(b"[1, 2]") is None

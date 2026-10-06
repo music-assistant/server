@@ -34,7 +34,11 @@ from music_assistant.constants import (
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
 )
-from music_assistant.controllers.streams.audio_analysis_codec import decode, encode
+from music_assistant.controllers.streams.audio_analysis_codec import (
+    decode,
+    decode_extra_data,
+    encode,
+)
 from music_assistant.controllers.streams.audio_analysis_database import AudioAnalysisDatabaseMixin
 from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 from music_assistant.controllers.streams.constants import (
@@ -43,7 +47,6 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
-from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
@@ -758,7 +761,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         query = (
             # fetch the header as blob: the sqlite driver raises on corrupt non-UTF-8
-            # TEXT, and json_loads takes bytes just as well
+            # TEXT, and the codec reads bytes just as well
             f"SELECT CAST(header AS BLOB) AS header FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :domain "
             f"AND media_type = :media_type "
@@ -770,13 +773,10 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         results: list[dict[str, Any]] = []
         for row in rows:
             try:
-                data = json_loads(row["header"])
+                extra = decode_extra_data(row["header"])
             except ValueError, TypeError:
                 continue
-            if not isinstance(data, dict):
-                continue
-            extra = data.get("extra_data")
-            if isinstance(extra, dict):
+            if extra is not None:
                 results.append(extra)
         return results
 
