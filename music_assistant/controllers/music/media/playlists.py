@@ -1851,9 +1851,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 list(track_id_batch),
             )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> PlaylistSummary:
         """Parse a raw summary db row into a PlaylistSummary object."""
-        item = cast("PlaylistSummary", super()._parse_summary_row(db_row))
+        item = cast("PlaylistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.owner = db_row["owner"]
         item.is_editable = bool(db_row["is_editable"])
         item.is_dynamic = bool(db_row["is_dynamic"])

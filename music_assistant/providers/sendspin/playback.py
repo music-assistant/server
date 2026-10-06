@@ -31,6 +31,10 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from music_assistant_models.streamdetails import StreamDetails
+
     from music_assistant.helpers.dsp import ComplexFilter
 
     from .player import SendspinPlayer
@@ -359,6 +363,8 @@ class SendspinPlaybackSession:
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
         self._queue_id: str | None = None
         self._queue_session_id: str | None = None
+        # stream details of the session's first item, which the session sample rate follows
+        self._start_streamdetails: StreamDetails | None = None
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -470,6 +476,7 @@ class SendspinPlaybackSession:
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
         try:
+            await self._follow_session_sample_rate([player_id])
             await self._start_join_catchup(player_id)
         except Exception:
             async with self._state_lock:
@@ -751,9 +758,14 @@ class SendspinPlaybackSession:
         await import_module_in_thread("av")
         push_stream: PushStream | None = None
         try:
+            # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
+            self._start_streamdetails = self._get_start_streamdetails(media)
+            await self._follow_session_sample_rate(
+                [client.client_id for client in self.player.api.group.clients]
+            )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
@@ -971,7 +983,9 @@ class SendspinPlaybackSession:
                     producer_stopped_cleanly = False
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
-                # paths where a group STOP - and therefore a freeze - is already emitted.
+                # paths where a group STOP is already emitted. That stop resets the reported
+                # position to 0 (spec: stop rewinds), so the snapshot only carries the
+                # position if the stop below raises.
                 self._stop_push_stream(
                     snapshot_progress=producer_stopped_cleanly and not self._cancel_requested,
                 )
@@ -1292,6 +1306,22 @@ class SendspinPlaybackSession:
             filter_params=filter_params,
         )
 
+    def _get_start_streamdetails(self, media: PlayerMedia) -> StreamDetails | None:
+        """Return the resolved stream details of the queue item a session starts with."""
+        if not media.source_id or not media.queue_item_id:
+            return None
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return queue_item.streamdetails if queue_item else None
+
+    async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
+        """Let the given players' Sendspin formats follow the sample rate of this session."""
+        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
+
+        for player_id in player_ids:
+            player = self.player.mass.players.get_player(player_id)
+            if isinstance(player, SendspinPlayer):
+                await player.follow_session_sample_rate(self._start_streamdetails)
+
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
         """
         Pick the session PCM format (MA-side + wire) from the leader's preferred format.
@@ -1483,6 +1513,7 @@ class SendspinPlaybackSession:
             self._first_commit_monotonic_us = None
             self._produced_audio_us = 0
             self._history.clear()
+            self._start_streamdetails = None
             # Drop cached DSP decisions so next playback reflects latest config.
             self._pipeline_config_cache.clear()
 

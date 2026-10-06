@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -1011,11 +1012,13 @@ class SyncGroupPlayer(Player):
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
         group_members = self.static_group_members or self.group_members or new_members or []
+        # display, visualizer and lighting members can follow the group but never host it
         candidates = [
             member_player
             for member_id in group_members
             if (member_player := self.mass.players.get_player(member_id))
             and member_player.state.available
+            and member_player.state.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
         # preference tiers, most specific first: a member that is already fed by the

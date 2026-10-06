@@ -10,8 +10,6 @@ CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
-CONF_MIN_PIN_LENGTH = "min_pin_length"
-DEFAULT_MIN_PIN_LENGTH = 4
 
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"

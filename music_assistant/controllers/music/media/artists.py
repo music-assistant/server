@@ -61,7 +61,11 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 
 from .base import MediaControllerBase
 
@@ -536,7 +540,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # one failing provider must not take the whole listing down: the audiobooks
                 # from the library and the other providers are still playable
                 provider_error = err
-                self.logger.warning(
+                self.logger.log(
+                    provider_fetch_log_level(err),
                     "Unable to fetch audiobooks for %s from provider %s: %s",
                     library_artist.name,
                     provider_mapping.provider_instance,
@@ -824,7 +829,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing album must not drop the artist's other tracks on this provider
                 provider_error = err
-                self.logger.warning(
+                self.logger.log(
+                    provider_fetch_log_level(err),
                     "Unable to fetch tracks for album %s from provider %s: %s",
                     album.name,
                     provider_instance_id_or_domain,
@@ -1398,9 +1404,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         return []
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> ArtistSummary:
         """Parse a raw summary db row into an ArtistSummary object."""
-        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
 

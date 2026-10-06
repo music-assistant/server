@@ -26,6 +26,7 @@ from .helpers import (
     LIBRARY_TYPE_MUSIC,
     LIBRARY_TYPE_PODCASTS,
     PlexServerAccessError,
+    configure_plex_identity,
     discover_local_servers,
     get_section_info,
 )
@@ -190,7 +191,8 @@ async def _authenticate(session: SetupSession) -> str:
     )["auth_method"]
     if method == AUTH_METHOD_LOCAL:
         return AUTH_TOKEN_UNAUTH
-    plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
+    configure_plex_identity(session.mass.server_id)
+    plex_auth = MyPlexPinLogin(oauth=True)
     await asyncio.to_thread(plex_auth._getCode)
     auth_url = plex_auth.oauthUrl(session.callback_url)
     # the callback is only a "user came back" signal; the token is fetched by polling
