@@ -38,7 +38,7 @@ async def test_dynamic_tracks_dispatches_to_plugin_provider() -> None:
     provider.get_dynamic_radio_tracks = AsyncMock(return_value=[track])
     ctrl = RadioController.__new__(RadioController)
     ctrl.mass = MagicMock()
-    ctrl.mass.get_provider = MagicMock(return_value=provider)
+    ctrl.mass.music.get_visible_provider = MagicMock(return_value=provider)
     result = await ctrl.dynamic_tracks(_radio())
     assert [t.item_id for t in result] == ["t1"]
     provider.get_dynamic_radio_tracks.assert_awaited_once_with("morning_show")

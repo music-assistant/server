@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -30,6 +31,7 @@ from music_assistant_models.media_items import (
     Genre,
     Playlist,
     ProviderMapping,
+    Radio,
     SearchResults,
     Track,
     UniqueList,
@@ -1087,6 +1089,67 @@ async def test_similar_tracks_skip_a_source_the_user_may_not_see(
                     track.item_id, "library"
                 )
             assert similar_tracks == expected
+
+
+async def _read_radio(mass: MusicAssistant) -> list[Track]:
+    return await mass.music.radio.radio_tracks("1", PROV_A)
+
+
+async def _read_playlist(mass: MusicAssistant) -> list[Any]:
+    return [track async for track in mass.music.playlists.tracks("1", PROV_A)]
+
+
+@pytest.mark.parametrize("read", [_read_radio, _read_playlist], ids=["radio", "playlist"])
+async def test_reads_stay_on_the_users_account_when_it_drops_mid_request(
+    counted_mass: MusicAssistant, read: Callable[[MusicAssistant], Awaitable[list[Any]]]
+) -> None:
+    """An own account going unavailable during a read is never replaced by a hidden one."""
+    own_track = Track(item_id="own", provider=PROV_A, name="Own", provider_mappings=set())
+    hidden_track = Track(item_id="hidden", provider=PROV_B, name="Hidden", provider_mappings=set())
+    providers = {}
+    for instance_id, track in ((PROV_A, own_track), (PROV_B, hidden_track)):
+        provider = Mock(spec=MusicProvider)
+        provider.instance_id = instance_id
+        provider.type = ProviderType.MUSIC
+        provider.domain = "service"
+        provider.is_streaming_provider = True
+        provider.available = True
+        provider.get_dynamic_radio_tracks = AsyncMock(return_value=[track])
+        provider.get_playlist_tracks = AsyncMock(side_effect=[[track], []])
+        providers[instance_id] = provider
+
+    def drop_own_account(*_args: Any, **_kwargs: Any) -> Any:
+        providers[PROV_A].available = False
+        return [own_track]
+
+    providers[PROV_A].get_playlist_tracks.side_effect = drop_own_account
+    radio = Radio(
+        item_id="1", provider=PROV_A, name="Radio", is_dynamic=True, provider_mappings=set()
+    )
+    with (
+        patch.dict(counted_mass._providers, providers),
+        # run the guarded playlist fetch on the test loop
+        patch.object(
+            counted_mass,
+            "create_task",
+            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro),
+        ),
+        patch.object(
+            counted_mass.music.radio,
+            "get_provider_item",
+            AsyncMock(side_effect=lambda *_args, **_kwargs: drop_own_account() and radio),
+        ),
+        patch(GET_CURRENT_USER, return_value=_user(USER_A)),
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=_user(USER_A),
+        ),
+    ):
+        if read is _read_radio:
+            with pytest.raises(ProviderUnavailableError):
+                await read(counted_mass)
+        else:
+            assert await read(counted_mass) == [own_track]
 
 
 async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:

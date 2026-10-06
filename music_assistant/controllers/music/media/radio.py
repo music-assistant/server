@@ -129,7 +129,7 @@ class RadioController(MediaControllerBase[Radio]):
             if radio.provider == "library"
             else (radio.provider, radio.item_id)
         )
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (provider := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         return await cast("MediaCatalogMixin", provider).get_dynamic_radio_tracks(item_id)
 

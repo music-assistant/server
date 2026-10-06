@@ -1545,9 +1545,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> Sequence[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
+        provider = (
+            self.mass.get_provider(provider_instance_id_or_domain, return_unavailable=True)
+            if strict_provider_instance
+            else self.mass.music.get_visible_provider(provider_instance_id_or_domain)
         )
         if strict_provider_instance and (
             provider is None
