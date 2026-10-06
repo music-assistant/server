@@ -409,6 +409,62 @@ async def test_transport_command_discards_pending_stream_resolution(
     assert player._external_media is None
 
 
+class _VoiceControlConfig:
+    def get_value(self, key: str, default: object = None) -> object:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("voice_control", "alice_state"),
+    [(False, "IDLE"), (True, "LISTENING")],
+    ids=["physical_pause", "voice_interrupt"],
+)
+async def test_station_interruption_discards_pending_stream_resolution(
+    voice_control: bool, alice_state: str
+) -> None:
+    """A URL resolved after a physical pause or Alice interruption must not start playback."""
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    if voice_control:
+        player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    else:
+        _disable_voice_control(player)
+    player._external_playing = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    media = cast(
+        "PlayerMedia",
+        SimpleNamespace(uri="next", title="Next Track", artist="", duration=180, image_url=None),
+    )
+    resolution_started = asyncio.Event()
+    release_resolution = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
+        resolution_started.set()
+        await release_resolution.wait()
+        return "http://192.168.1.2:8097/next.wav"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+    task = asyncio.create_task(player.play_media(media))
+    try:
+        await asyncio.wait_for(resolution_started.wait(), 1)
+        player._update_playback_state(playing=False, alice_state=alice_state)
+    finally:
+        release_resolution.set()
+        await task
+
+    assert commands == []
+    assert published_media == []
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._external_media is None
+    assert player._needs_replay is True
+
+
 @pytest.mark.parametrize("audio_client", [False, True])
 async def test_cancelled_play_command_clears_active_external_media(audio_client: bool) -> None:
     """Cancelling a pending send clears its media and propagates cancellation."""

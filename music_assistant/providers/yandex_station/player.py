@@ -581,6 +581,7 @@ class YandexStationPlayer(Player):
             self.player_id,
             alice_state,
         )
+        self._external_play_generation += 1
         self._reset_external_session()
         self._needs_replay = True
         self._attr_playback_state = PlaybackState.PAUSED
@@ -1054,6 +1055,7 @@ class YandexStationPlayer(Player):
             "[%s] Physical pause detected during external playback",
             self.player_id,
         )
+        self._external_play_generation += 1
         self._reset_external_session()
         self._needs_replay = True
         self._cancel_voice_resume()
