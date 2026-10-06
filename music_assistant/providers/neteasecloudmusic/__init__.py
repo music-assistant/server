@@ -433,6 +433,16 @@ class NeteaseCloudMusicProvider(MusicProvider):
             self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
 
+    @property
+    def api_client(self) -> NcmApiClient:
+        """Return the underlying NetEase API client (read-only, for companion plugins)."""
+        return self._client
+
+    @property
+    def cookie(self) -> str:
+        """Return the login cookie used for the NetEase API (read-only, for companion plugins)."""
+        return self._cookie
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
         return [

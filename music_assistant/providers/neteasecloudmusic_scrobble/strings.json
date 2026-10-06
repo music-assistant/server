@@ -1,0 +1,8 @@
+{
+  "config_entries": {
+    "ncm_provider": {
+      "label": "NetEase Cloud Music source",
+      "description": "The NetEase Cloud Music provider instance whose plays should be reported to NetEase."
+    }
+  }
+}
