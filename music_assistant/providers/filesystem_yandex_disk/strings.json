@@ -1,0 +1,46 @@
+{
+  "config_entries": {
+    "client_id": {
+      "label": "Yandex OAuth Client ID",
+      "description": "Create your own application at https://oauth.yandex.ru/ with the cloud_api:disk.read permission, then enter its Client ID."
+    },
+    "client_secret": {
+      "label": "Yandex OAuth Client Secret",
+      "description": "Enter the Client secret of the same Yandex OAuth application. Leave blank during reconfiguration to keep the stored secret."
+    },
+    "folder_id": {
+      "label": "Root folder to scan",
+      "description": "Yandex Disk path to scan, for example disk:/Music. Leave as 'root' to scan the whole disk."
+    },
+    "content_type": {
+      "label": "[%key:common::config_entries::content_type::label%]",
+      "description": "[%key:common::config_entries::content_type::description%]",
+      "options": {
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect Yandex Disk",
+      "description": "Enter the credentials of your own Yandex OAuth application, choose the content type and optionally limit scanning to a folder."
+    },
+    "device_login": {
+      "title": "Authorize Yandex Disk",
+      "description": "Open the verification URL shown below, enter the code and allow read-only access to Yandex Disk. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to confirm access on Yandex..."
+    },
+    "abort": {
+      "login_denied": "The Yandex authorization request was denied."
+    }
+  },
+  "errors": {
+    "connection_error": "Could not contact Yandex OAuth. Check the connection and try again.",
+    "oauth_error": "Yandex rejected the OAuth request. Verify the Client ID, Client secret and application permissions."
+  },
+  "manifest": {
+    "description": "Stream music, audiobooks and podcasts stored on Yandex Disk"
+  }
+}
