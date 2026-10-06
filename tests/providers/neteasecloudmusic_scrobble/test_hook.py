@@ -115,40 +115,32 @@ async def test_unavailable_instance_is_not_used() -> None:
     assert provider._ncm_provider is None
 
 
-def test_should_scrobble_waits_for_the_play_threshold() -> None:
-    """A play is only checked in once it is finished or past the minimum duration."""
+def test_should_scrobble_only_after_fully_played() -> None:
+    """Nothing is checked in until the track has been listened to the end."""
     handler = NeteaseScrobbleHandler(_handler_provider())
 
     assert handler.should_scrobble(_report(seconds_played=5)) is False
-    assert handler.should_scrobble(_report(seconds_played=29)) is False
-    assert handler.should_scrobble(_report(seconds_played=30)) is True
+    assert handler.should_scrobble(_report(seconds_played=100)) is False
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
 
 
-def test_should_scrobble_fully_played_short_track() -> None:
-    """A fully played track counts even under the minimum duration."""
+def test_should_scrobble_dedups_a_single_play() -> None:
+    """A single play is only checked in once."""
     handler = NeteaseScrobbleHandler(_handler_provider())
 
-    assert handler.should_scrobble(_report(seconds_played=8, fully_played=True)) is True
-
-
-def test_should_scrobble_dedups_a_single_continuous_play() -> None:
-    """Periodic reports of one continuous play are only checked in once."""
-    handler = NeteaseScrobbleHandler(_handler_provider())
-
-    assert handler.should_scrobble(_report(seconds_played=30)) is True
-    assert handler.should_scrobble(_report(seconds_played=60)) is False
-    assert handler.should_scrobble(_report(seconds_played=90)) is False
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is False
 
 
 def test_should_scrobble_allows_a_replay() -> None:
     """Progress going backwards marks a new play, which may be checked in again."""
     handler = NeteaseScrobbleHandler(_handler_provider())
 
-    assert handler.should_scrobble(_report(seconds_played=30)) is True
-    assert handler.should_scrobble(_report(seconds_played=90)) is False
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is False
     # the track restarted (loop/replay)
     assert handler.should_scrobble(_report(seconds_played=5)) is False
-    assert handler.should_scrobble(_report(seconds_played=30)) is True
+    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
 
 
 async def test_scrobble_resolves_the_album_and_submits() -> None:

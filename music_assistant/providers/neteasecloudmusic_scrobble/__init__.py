@@ -26,9 +26,6 @@ SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaTy
 CONF_NCM_PROVIDER: Final[str] = "ncm_provider"
 
 NETEASE_DOMAIN: Final[str] = "neteasecloudmusic"
-# NetEase credits a play once roughly half a minute of a track has been heard,
-# matching what the official clients report for skipped tracks
-_MIN_PLAY_SECONDS: Final[int] = 30
 # a track's album (the scrobble source id) is stable catalog data
 _SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 _CACHE_CATEGORY_SCROBBLE: Final[int] = 1
@@ -137,7 +134,12 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         self._last_progress: dict[str, int] = {}
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
-        """Determine if a track should be checked in on NetEase."""
+        """
+        Determine if a track should be checked in on NetEase.
+
+        A track is only checked in once it has been listened to the end, so the
+        reported listen time is the real elapsed time rather than a bare minimum.
+        """
         last_progress = self._last_progress.get(report.uri)
         if last_progress is not None and report.seconds_played < last_progress:
             # progress went backwards: the track started over (loop/replay),
@@ -148,7 +150,8 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             # already checked in for this play
             self.logger.debug("skipped check-in: track %s already checked in", report.uri)
             return False
-        if not (report.fully_played or report.seconds_played >= _MIN_PLAY_SECONDS):
+        if not report.fully_played:
+            # not listened to the end yet: report nothing until it is
             return False
         self._scrobbled_plays[report.uri] = report.seconds_played
         if len(self._last_progress) > 128:
