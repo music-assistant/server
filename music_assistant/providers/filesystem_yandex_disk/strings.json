@@ -2,11 +2,11 @@
   "config_entries": {
     "client_id": {
       "label": "Yandex OAuth Client ID",
-      "description": "Create your own application at https://oauth.yandex.ru/ with the cloud_api:disk.read permission, then enter its Client ID."
+      "description": "Create your own app at https://oauth.yandex.ru/: select \"Create app\", choose \"For API access or debugging\", and under \"Data access\" add the cloud_api:disk.read permission. Then copy the app's Client ID here."
     },
     "client_secret": {
       "label": "Yandex OAuth Client Secret",
-      "description": "Enter the Client secret of the same Yandex OAuth application. Leave blank during reconfiguration to keep the stored secret."
+      "description": "The Client secret shown on the same Yandex OAuth app page as the Client ID. Leave blank when reconfiguring to keep the stored secret."
     },
     "folder_id": {
       "label": "Root folder to scan",
@@ -29,8 +29,7 @@
     },
     "device_login": {
       "title": "Authorize Yandex Disk",
-      "description": "Open the verification URL shown below, enter the code and allow read-only access to Yandex Disk. A fresh code is shown automatically if it expires.",
-      "progress_text": "Waiting for you to confirm access on Yandex..."
+      "description": "Your code is {0}. Use the button below to open the Yandex verification page, enter the code and allow read-only access to Yandex Disk. You can also open the page on another device. A new code is shown automatically if this one expires, and this screen updates once you confirm."
     },
     "abort": {
       "login_denied": "The Yandex authorization request was denied."

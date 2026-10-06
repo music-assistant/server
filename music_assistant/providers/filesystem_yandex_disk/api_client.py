@@ -111,6 +111,20 @@ def _to_raw_item(resource: object) -> RawItem:
     )
 
 
+def _download_error(action: str, err: BaseException) -> ProviderUnavailableError:
+    """
+    Build a provider error for a failed download without the pre-signed URL.
+
+    :param action: What failed, e.g. "download" or "stream".
+    :param err: The aiohttp or timeout error raised for the request.
+    """
+    # aiohttp errors render the request URL, which carries the download signature
+    reason = (
+        f"HTTP {err.status}" if isinstance(err, aiohttp.ClientResponseError) else type(err).__name__
+    )
+    return ProviderUnavailableError(f"Yandex Disk {action} failed: {reason}")
+
+
 class YandexDiskApi:
     """Thin async facade over yadisk for the filesystem provider."""
 
@@ -180,8 +194,8 @@ class YandexDiskApi:
             async with self.mass.http_session.get(link) as resp:
                 resp.raise_for_status()
                 return await resp.read()
-        except aiohttp.ClientError as err:
-            raise ProviderUnavailableError(f"Yandex Disk download failed: {err}") from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise _download_error("download", err) from None
 
     async def download_response(
         self, file_path: str, headers: dict[str, str]
@@ -197,8 +211,8 @@ class YandexDiskApi:
         try:
             # pre-signed downloader href: no Authorization header needed
             return await self.mass.http_session.get(link, headers=headers, timeout=_STREAM_TIMEOUT)
-        except aiohttp.ClientError as err:
-            raise ProviderUnavailableError(f"Yandex Disk stream failed: {err}") from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise _download_error("stream", err) from None
 
     async def exists_dir(self, path: str) -> bool:
         """

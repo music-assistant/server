@@ -123,9 +123,11 @@ async def test_setup_finishes_with_refresh_token_and_device_progress() -> None:
         CONF_REFRESH_TOKEN: "refresh-token",
     }
     steps = [call.kwargs["data"] for call in mass.signal_event.call_args_list]
-    progress = [step for step in steps if step.type == FlowStepType.PROGRESS]
-    assert progress[0].step_id == "device_login"
-    assert progress[0].image.startswith("data:image/svg+xml;base64,")
+    external = [step for step in steps if step.type == FlowStepType.EXTERNAL]
+    assert external[0].step_id == "device_login"
+    # the code is text on the step (screen-reader accessible), not only inside an image
+    assert external[0].url == "https://yandex.ru/activate"
+    assert external[0].translation_params == ["CODE-1234"]
 
 
 async def test_setup_data_initializes_provider_and_registers_stream_route() -> None:

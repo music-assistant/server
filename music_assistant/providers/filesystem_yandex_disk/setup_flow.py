@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import time
-from html import escape
 from typing import TYPE_CHECKING
 
 from music_assistant.models.setup_flow import (
@@ -48,12 +46,13 @@ async def _authorize(session: SetupSession, client_id: str, client_secret: str) 
                 grant = await request_device_code(session.mass.http_session, client_id)
             # the step countdown never outlives the overall budget
             remaining = deadline - time.monotonic()
-            tokens = await session.progress_until(
+            # the code is step text (not only an image) so screen readers can announce it
+            tokens = await session.external_until(
                 _poll_until_confirmed(session, grant, client_id, client_secret),
+                url=grant.verification_url,
                 step_id="device_login",
-                text="device_login",
-                image=_device_image(grant.user_code, grant.verification_url),
                 expires_in=max(0.0, min(float(grant.expires_in), remaining)),
+                translation_params=[grant.user_code],
             )
             return tokens.refresh_token
         except StepExpiredError, DeviceCodeExpired, TimeoutError:
@@ -93,19 +92,3 @@ async def _poll_until_confirmed(
             return result
         if result is DevicePollState.SLOW_DOWN:
             interval += 5
-
-
-def _device_image(user_code: str, verification_url: str) -> str:
-    """Render the activation code and URL as an inline SVG data URI."""
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="460" height="180" '
-        'viewBox="0 0 460 180" role="img">'
-        '<rect width="460" height="180" rx="16" fill="#ffdb4d"/>'
-        '<text x="230" y="82" font-family="monospace" font-size="46" font-weight="700" '
-        f'text-anchor="middle" fill="#1a1a1a">{escape(user_code)}</text>'
-        '<text x="230" y="130" font-family="sans-serif" font-size="16" '
-        f'text-anchor="middle" fill="#5a4a00">{escape(verification_url)}</text>'
-        "</svg>"
-    )
-    encoded = base64.b64encode(svg.encode()).decode()
-    return f"data:image/svg+xml;base64,{encoded}"

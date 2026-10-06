@@ -7,7 +7,13 @@ from typing import Any, cast
 
 import aiohttp
 import pytest
-from music_assistant_models.errors import LoginFailed
+import yarl
+from multidict import CIMultiDict, CIMultiDictProxy
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.filesystem_yandex_disk.api_client import (
@@ -197,3 +203,190 @@ def test_api_client_throttles_its_disk_session() -> None:
     session = api._client.session
     assert isinstance(session, _SharedAIOHTTPSession)
     assert isinstance(session.throttler, ThrottlerManager)
+
+
+_SIGNED = "https://downloader.disk.yandex.ru/disk/abc?sign=SECRET-SIGNATURE"
+
+
+class _FailingGet:
+    """``http_session.get`` stand-in that raises the given error."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def __call__(self, _url: str, **_kwargs: Any) -> _FailingGet:
+        return self
+
+    def __await__(self) -> Any:
+        return self._raise().__await__()
+
+    async def _raise(self) -> None:
+        raise self.error
+
+    async def __aenter__(self) -> None:
+        raise self.error
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+def _api_with_get(error: BaseException) -> YandexDiskApi:
+    class _Session:
+        get = _FailingGet(error)
+
+    class _Mass:
+        http_session = _Session()
+
+    api = YandexDiskApi.__new__(YandexDiskApi)
+    api.mass = cast("Any", _Mass())
+
+    async def _link(_path: str) -> str:
+        return _SIGNED
+
+    cast("Any", api)._download_link = _link
+    return api
+
+
+def _signed_url_errors() -> list[BaseException]:
+    request_info = aiohttp.RequestInfo(
+        url=yarl.URL(_SIGNED),
+        method="GET",
+        headers=CIMultiDictProxy(CIMultiDict()),
+        real_url=yarl.URL(_SIGNED),
+    )
+    return [
+        aiohttp.ClientResponseError(request_info, (), status=403, message="Forbidden"),
+        aiohttp.TooManyRedirects(request_info, ()),
+    ]
+
+
+async def _download(api: YandexDiskApi, method: str) -> object:
+    if method == "bytes":
+        return await api.download_bytes("disk:/a.nfo")
+    return await api.download_response("disk:/a.flac", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["bytes", "stream"])
+async def test_download_timeout_is_provider_unavailable(method: str) -> None:
+    """A total timeout surfaces as the typed provider error the cloud base expects."""
+    api = _api_with_get(TimeoutError())
+    with pytest.raises(ProviderUnavailableError):
+        await _download(api, method)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["bytes", "stream"])
+@pytest.mark.parametrize("error", _signed_url_errors(), ids=["http-error", "redirects"])
+async def test_download_errors_never_carry_the_signed_link(
+    method: str, error: BaseException
+) -> None:
+    """Neither the message nor the exception chain exposes the pre-signed URL."""
+    api = _api_with_get(error)
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        await _download(api, method)
+
+    err = exc_info.value
+    assert "SECRET-SIGNATURE" not in str(err)
+    assert "downloader.disk.yandex.ru" not in str(err)
+    assert err.__cause__ is None
+    assert err.__suppress_context__ is True
+
+
+class _JsonResponse:
+    """aiohttp response stand-in carrying a Yandex Disk API JSON body."""
+
+    def __init__(self, status: int, body: dict[str, Any]) -> None:
+        self.status = status
+        self.headers: dict[str, str] = {"Content-Type": "application/json"}
+        self._body = body
+
+    async def json(self, **_kwargs: Any) -> dict[str, Any]:
+        return self._body
+
+    async def release(self) -> None:
+        return None
+
+
+def _item(name: str, kind: str = "file", **extra: Any) -> dict[str, Any]:
+    return {"name": name, "path": f"disk:/Music/{name}", "type": kind, **extra}
+
+
+class _DiskApiSession:
+    """Serves paginated Yandex Disk listings (limit 2) for ``disk:/Music``."""
+
+    ITEMS = (
+        _item("Album", "dir", modified="2026-10-01T10:00:00+00:00"),
+        _item("a.flac", md5="md5a", size=10, modified="2026-10-02T10:00:00+00:00"),
+        _item("b.mp3", size=5, modified="2026-10-03T10:00:00+00:00"),
+    )
+
+    def __init__(self) -> None:
+        self.offsets: list[int] = []
+
+    async def request(self, _method: str, _url: str, **kwargs: Any) -> _JsonResponse:
+        params = kwargs.get("params") or {}
+        if params.get("path") != "disk:/Music":
+            return _JsonResponse(
+                404,
+                {
+                    "error": "DiskNotFoundError",
+                    "message": "Resource not found.",
+                    "description": "Resource not found.",
+                },
+            )
+        offset = int(params.get("offset", 0))
+        self.offsets.append(offset)
+        page = list(self.ITEMS[offset : offset + 2])
+        return _JsonResponse(
+            200,
+            {
+                "type": "dir",
+                "name": "Music",
+                "path": "disk:/Music",
+                "_embedded": {
+                    "items": page,
+                    "limit": 2,
+                    "offset": offset,
+                    "total": len(self.ITEMS),
+                    "path": "disk:/Music",
+                    "sort": "",
+                },
+            },
+        )
+
+
+def _api_over(session: _DiskApiSession) -> YandexDiskApi:
+    class _Mass:
+        http_session = session
+
+    return YandexDiskApi(cast("Any", _Mass()), cast("Any", _AuthStub()))
+
+
+@pytest.mark.asyncio
+async def test_list_children_follows_pagination_through_yadisk() -> None:
+    """Real yadisk listing over Disk API JSON pages maps every child."""
+    session = _DiskApiSession()
+    items = await _api_over(session).list_children("disk:/Music")
+
+    assert session.offsets == [0, 2]
+    # yadisk parses ``modified`` into a datetime, so the token is its str() form
+    assert items == [
+        ("disk:/Music/Album", "Album", True, "", None, "2026-10-01 10:00:00+00:00"),
+        ("disk:/Music/a.flac", "a.flac", False, "md5a", 10, "2026-10-02 10:00:00+00:00"),
+        (
+            "disk:/Music/b.mp3",
+            "b.mp3",
+            False,
+            "2026-10-03 10:00:00+00:00",
+            5,
+            "2026-10-03 10:00:00+00:00",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_children_missing_folder_is_media_not_found() -> None:
+    """A Disk API 404 is translated to MediaNotFoundError."""
+    with pytest.raises(MediaNotFoundError):
+        await _api_over(_DiskApiSession()).list_children("disk:/Missing")
