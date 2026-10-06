@@ -525,7 +525,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "recommended_playlists",
                 _RECOMMEND_PLAYLIST_TTL,
                 "/personalized",
-                {"limit": 25},
+                {"limit": 25, "cookie": self._cookie},
             )
             playlist_data = _extract_data(playlist_payload)
             raw_playlists = playlist_data.get("result")

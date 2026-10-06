@@ -156,6 +156,9 @@ async def test_get_recommendation_items_playlists(
 
     called_paths = [call.args[0] for call in client_mock.call_args_list]
     assert called_paths == ["/personalized"]
+    call = client_mock.call_args_list[0]
+    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert call.kwargs["cookie"] == "MUSIC_U=test"
     assert [item.item_id for item in result] == ["3003"]
 
 
