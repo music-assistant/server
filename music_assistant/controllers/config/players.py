@@ -71,7 +71,11 @@ from music_assistant.constants import (
     PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
@@ -443,7 +447,7 @@ class PlayerConfigMixin:
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
             if not unpack_splitted_values:
-                return raw_value
+                return _mask_encrypted(raw_value)
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
             if default is not None:
@@ -451,8 +455,8 @@ class PlayerConfigMixin:
             msg = f"Config key {key} not found for player {player_id}"
             raise KeyError(msg)
         if unpack_splitted_values:
-            return conf.values[key].get_splitted_values()
-        return (
+            return _mask_encrypted(conf.values[key].get_splitted_values())
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -507,6 +511,7 @@ class PlayerConfigMixin:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
+        _reject_encrypted_values(values)
         values = await self._update_output_protocol_config(values)
         values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
