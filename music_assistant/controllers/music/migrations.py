@@ -1409,7 +1409,7 @@ async def _pack_audio_analysis_table(database: DatabaseConnection, logger: loggi
     total = await database.get_count_from_query(f"SELECT id FROM {source}")
     logger.info("Moving %s audio analysis rows to %s in the packed format", total, AA_DB_FILENAME)
     converted = 0
-    unreadable = 0
+    unreadable_ids: set[int] = set()
     last_id = 0
     while True:
         rows = await database.get_rows_from_query(
@@ -1421,8 +1421,8 @@ async def _pack_audio_analysis_table(database: DatabaseConnection, logger: loggi
         )
         if not rows:
             break
-        packed, bad = await asyncio.to_thread(_pack_audio_analysis_rows, rows, logger)
-        unreadable += bad
+        packed, bad_ids = await asyncio.to_thread(_pack_audio_analysis_rows, rows, logger)
+        unreadable_ids.update(bad_ids)
         for values in packed:
             await database.execute(
                 f"INSERT INTO {destination} (media_type, item_id, "
@@ -1441,24 +1441,32 @@ async def _pack_audio_analysis_table(database: DatabaseConnection, logger: loggi
         await database.commit()
         converted += len(packed)
         last_id = int(rows[-1]["id"])
-        if (converted + unreadable) % AUDIO_ANALYSIS_PACK_PROGRESS_ROWS < len(rows):
-            logger.info("Moved %s/%s audio analysis rows", converted + unreadable, total)
+        handled = converted + len(unreadable_ids)
+        if handled % AUDIO_ANALYSIS_PACK_PROGRESS_ROWS < len(rows):
+            logger.info("Moved %s/%s audio analysis rows", handled, total)
     # verify by natural key, not row count: the analysis file can already hold rows
-    # of its own, so its count alone can't prove every row landed
-    missing = await database.get_count_from_query(
-        f"SELECT s.id FROM {source} s WHERE NOT EXISTS ("
-        f"SELECT 1 FROM {destination} a WHERE a.item_id = s.item_id "
-        "AND a.provider = s.provider AND a.aa_provider_domain = s.aa_provider_domain "
-        "AND a.media_type = s.media_type)"
-    )
-    if missing > unreadable:
+    # of its own, so its count alone can't prove every row landed; only the rows that
+    # could not be read may be missing
+    missing_ids = {
+        int(row["id"])
+        for row in await database.get_rows_from_query(
+            f"SELECT s.id FROM {source} s WHERE NOT EXISTS ("
+            f"SELECT 1 FROM {destination} a WHERE a.item_id = s.item_id "
+            "AND a.provider = s.provider AND a.aa_provider_domain = s.aa_provider_domain "
+            "AND a.media_type = s.media_type)",
+            limit=0,
+        )
+    }
+    if lost := missing_ids - unreadable_ids:
         raise ProviderUnavailableError(
-            f"Moving {source} incomplete ({missing} rows missing, {unreadable} unreadable)"
+            f"Moving {source} incomplete ({len(lost)} readable rows missing)"
         )
     await database.execute(f"DROP TABLE {source}")
     await database.commit()
-    if unreadable:
-        logger.warning("%s unreadable audio analysis rows in library.db were dropped", unreadable)
+    if unreadable_ids:
+        logger.warning(
+            "%s unreadable audio analysis rows in library.db were dropped", len(unreadable_ids)
+        )
     logger.info("Moved %s audio analysis rows to %s", converted, AA_DB_FILENAME)
 
 
@@ -1529,16 +1537,16 @@ async def _move_audio_analysis_table(
 
 def _pack_audio_analysis_rows(
     rows: list[Mapping[str, Any]], logger: logging.Logger
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], list[int]]:
     """
     Decode legacy JSON analysis rows through the model and pack them.
 
     :param rows: Legacy rows carrying an ``analysis_data`` JSON column.
     :param logger: Logger to report skipped rows on.
-    :returns: The packed rows and the number of rows that could not be read or packed.
+    :returns: The packed rows and the ids of the rows that could not be read or packed.
     """
     packed: list[dict[str, Any]] = []
-    unreadable = 0
+    unreadable_ids: list[int] = []
     for row in rows:
         try:
             analysis = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
@@ -1555,7 +1563,7 @@ def _pack_audio_analysis_rows(
                 row["aa_provider_domain"],
                 error_detail,
             )
-            unreadable += 1
+            unreadable_ids.append(int(row["id"]))
             continue
         packed.append(
             {
@@ -1569,4 +1577,4 @@ def _pack_audio_analysis_rows(
                 "payload": payload,
             }
         )
-    return packed, unreadable
+    return packed, unreadable_ids

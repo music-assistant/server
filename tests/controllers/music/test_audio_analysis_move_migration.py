@@ -561,3 +561,45 @@ async def test_progress_is_logged_at_a_fixed_row_interval(
         if record.levelno == logging.INFO and "/5 audio analysis rows" in record.getMessage()
     ]
     assert progress == ["Moved 2/5 audio analysis rows", "Moved 4/5 audio analysis rows"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_row_with_existing_key_does_not_mask_a_lost_row(
+    library_db: DatabaseConnection,
+    mass: MagicMock,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A readable row that fails to land keeps the source, even when the counts would balance."""
+    await _seed_legacy_json(library_db, [("bad", "not json"), ("t1", '{"bpm": 110.0}')])
+    # the unreadable row's key is already in the file, so it is not missing there
+    header, payload = encode(AudioAnalysisData(bpm=90.0))
+    await _seed_analysis_file(
+        tmp_path,
+        DB_TABLE_AUDIO_ANALYSIS,
+        {
+            "media_type": "track",
+            "item_id": "bad",
+            "provider": "fs--a",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_version": 3,
+            "timestamp_created": 2000,
+            "header": header,
+            "payload": payload,
+        },
+    )
+    real_execute = library_db.execute
+
+    async def dropping_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if (
+            query.startswith(f"INSERT INTO aa.{DB_TABLE_AUDIO_ANALYSIS} ")
+            and values is not None
+            and values["item_id"] == "t1"
+        ):
+            return MagicMock()  # the write is silently dropped, no error raised
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", dropping_execute)
+    await migrations._move_audio_analysis_out(mass, library_db, LOGGER)
+
+    assert DB_TABLE_AUDIO_ANALYSIS in await _main_tables(library_db)
