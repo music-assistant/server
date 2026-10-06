@@ -65,6 +65,10 @@ async def test_favorite_tracks_of_two_accounts_stay_separate(
     fav_b = parse_favorite_tracks_playlist(_tidal_account("tidal--b", "Bob"))
 
     await _sync(music_mass_module, "tidal--a", fav_a)
+
+    assert await playlists.get_library_item_sync_details(fav_a.provider_mappings) is not None
+    assert await playlists.get_library_item_sync_details(fav_b.provider_mappings) is None
+
     await _sync(music_mass_module, "tidal--b", fav_b)
 
     lib_a = await playlists.get_library_item_by_prov_id(fav_a.item_id, "tidal--a")
