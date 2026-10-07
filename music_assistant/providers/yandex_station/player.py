@@ -187,6 +187,7 @@ class YandexStationPlayer(Player):
         self._external_media: PlayerMedia | None = None
         self._external_play_generation = 0
         self._pending_play_generation: int | None = None
+        self._voice_pending_track_id: str | None = None
         # Becomes True once Glagol reports playing=True during external playback.
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
@@ -433,6 +434,7 @@ class YandexStationPlayer(Player):
         self._external_play_generation += 1
         generation = self._external_play_generation
         self._needs_replay = False
+        self._voice_pending_track_id = None
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
         self._pending_play_generation = generation
         try:
@@ -629,8 +631,39 @@ class YandexStationPlayer(Player):
         self._external_play_confirmed = False
         self._external_stop_observed = False
 
+    def _hold_pending_voice_replay(
+        self, playing: bool, alice_state: str, native_track_id: str
+    ) -> bool:
+        """
+        Keep a voice-interrupted pending request queued for replay.
+
+        Returns True while the update must not be treated as native playback.
+        """
+        if self._external_playing or not self._needs_replay:
+            self._voice_pending_track_id = None
+            return False
+        if alice_state not in ("IDLE", ""):
+            # The source that was playing before Alice keeps reporting
+            # playing=True while ducked; it is not a replacement.
+            if alice_state == "SPEAKING":
+                self._alice_spoke = True
+            self._attr_playback_state = PlaybackState.PAUSED
+            return True
+        if playing and native_track_id != self._voice_pending_track_id:
+            # A different native track means Alice was asked to play it.
+            self._cancel_voice_resume()
+            return False
+        self._handle_voice_end(alice_state)
+        if self._voice_resume_task is None:
+            # Silent interaction: no replay was scheduled, normal handling applies.
+            self._voice_pending_track_id = None
+            return False
+        self._attr_playback_state = PlaybackState.PAUSED
+        return True
+
     def _cancel_voice_resume(self) -> None:
         """Cancel any pending auto-resume task from a prior voice interaction."""
+        self._voice_pending_track_id = None
         if self._voice_resume_task:
             self._voice_resume_task.cancel()
             self._voice_resume_task = None
@@ -1082,6 +1115,7 @@ class YandexStationPlayer(Player):
         external_media_matches: bool | None = None,
         progress: float = 0,
         duration: float = 0,
+        native_track_id: str = "",
     ) -> None:
         """Update playback state from Glagol data."""
         if (
@@ -1091,6 +1125,11 @@ class YandexStationPlayer(Player):
             and self._pending_play_generation == self._external_play_generation
         ):
             self._handle_voice_interrupt(alice_state)
+            self._voice_pending_track_id = native_track_id
+            return
+        if self._voice_pending_track_id is not None and self._hold_pending_voice_replay(
+            playing, alice_state, native_track_id
+        ):
             return
         if self._external_playing:
             if self._voice_control_enabled and alice_state not in ("IDLE", ""):
@@ -1211,6 +1250,7 @@ class YandexStationPlayer(Player):
             external_media_matches,
             player_state.get("progress", 0),
             player_state.get("duration", 0),
+            (player_state.get("id") or "").strip(),
         )
 
         self._prev_alice_state = alice_state
