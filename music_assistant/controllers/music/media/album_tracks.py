@@ -213,22 +213,21 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
     )
     title_of = {id(track): _title(track) for track in library + providers}
     usable_ids = _listed_once({id(track): _ids(track) for track in providers}, source_of)
-    library_isrcs_by_title: dict[tuple[int, str, str], set[str]] = defaultdict(set)
-    for track in library:
-        library_isrcs_by_title[title_of[id(track)]].update(usable_isrcs[id(track)])
     # a provider's own copy of a library row (by id) says which recording the row is: its
-    # ISRCs count as the row's, so another provider's copy of that recording knows it too
+    # ISRCs count as the row's, so another provider's copy of that recording knows it too.
+    # The library is one listing, so an ISRC two of its rows end up with identifies nothing
     library_row_by_id = Counter(key for track in library for key in _ids(track))
-    library_title_by_id = {
-        key: title_of[id(track)]
-        for track in library
-        for key in _ids(track)
-        if library_row_by_id[key] == 1
+    row_of_id = {
+        key: id(track) for track in library for key in _ids(track) if library_row_by_id[key] == 1
     }
+    row_isrcs = {id(track): _isrcs(track) for track in library}
     for track in providers:
         for key in usable_ids[id(track)]:
-            if (row_title := library_title_by_id.get(key)) is not None:
-                library_isrcs_by_title[row_title].update(usable_isrcs[id(track)])
+            if (row := row_of_id.get(key)) is not None:
+                row_isrcs[row].update(usable_isrcs[id(track)])
+    library_isrcs_by_title: dict[tuple[int, str, str], set[str]] = defaultdict(set)
+    for row, isrcs in _listed_once(row_isrcs, dict.fromkeys(row_isrcs, -1)).items():
+        library_isrcs_by_title[title_of[row]].update(isrcs)
     return _Entries(
         providers=providers,
         source_of=source_of,

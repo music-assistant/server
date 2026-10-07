@@ -267,6 +267,19 @@ def test_a_library_rows_provider_copy_lends_it_its_isrc() -> None:
     assert [t.item_id for t in select([row], [own_copy, stranger])] == ["three"]
 
 
+def test_a_lent_isrc_two_library_rows_share_identifies_nothing() -> None:
+    """An ISRC lent to a row that another row carries too is as unusable as a repeated one."""
+    first = entry("library", "42", 1, "GBAYC2100001")
+    first.provider_mappings = entry("a", "x").provider_mappings
+    second = entry("library", "43", 2, "GBAYC2100001")
+    second.provider_mappings = entry("fs", "z").provider_mappings
+    second.name = "Andante"
+    own_copy = entry("a", "x", 1, "GBAYC2100001")
+    other = entry("b", "y", 3, "GBAYC2100001")
+    other.name = "Rondo"
+    assert [t.item_id for t in select([first, second], [own_copy, other])] == ["y"]
+
+
 def test_repeated_provider_id_within_a_listing_identifies_nothing() -> None:
     """A listing carrying one provider id at two positions still joins the slots by position."""
     tracks = [entry("a", "a1", 1), entry("a", "a2", 2), entry("b", "b1", 1), entry("b", "b1", 2)]
