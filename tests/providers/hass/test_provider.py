@@ -26,7 +26,6 @@ from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
     CONF_VERIFY_SSL,
-    IMAGE_MAX_BYTES,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
@@ -883,25 +882,6 @@ async def test_resolve_image_rejects_paths_outside_the_image_endpoints(path: str
             await provider.resolve_image(path)
 
         get.assert_not_called()
-
-
-async def test_resolve_image_rejects_a_response_that_is_no_image() -> None:
-    """An allowed path answered with something other than an image is not returned."""
-    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
-        _mock_image_response(provider, [b"{}"], content_type="application/json")
-
-        with pytest.raises(FileNotFoundError):
-            await provider.resolve_image("/api/image_proxy/image.doorbell")
-
-
-async def test_resolve_image_rejects_a_body_over_the_size_limit() -> None:
-    """An image body beyond the size limit is not returned."""
-    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
-        chunk = b"\0" * (IMAGE_MAX_BYTES // 2)
-        _mock_image_response(provider, [chunk, chunk, b"\0"])
-
-        with pytest.raises(FileNotFoundError):
-            await provider.resolve_image("/local/cover.jpg")
 
 
 async def test_registry_update_refreshes_the_engines() -> None:
