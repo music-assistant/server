@@ -94,6 +94,7 @@ def _stub_client_get(provider: NeteaseCloudMusicProvider) -> AsyncMock:
 
 def _install_cache_mocks(provider: NeteaseCloudMusicProvider) -> None:
     """Make the recommendation payload cache treat every call as a miss."""
+    use_real_create_task(provider.mass)
     provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
 
@@ -110,43 +111,10 @@ async def test_get_recommendations_static_rows_without_backend_calls(
     assert client_mock.call_args_list == []
     assert [folder.item_id for folder in result] == [
         "personal_recommend",
-        "recommended_radios",
-        "daily_songs",
         "recommended_new_songs",
         "recommended_playlists",
     ]
     assert all(not folder.items for folder in result)
-
-
-@pytest.mark.asyncio
-async def test_get_recommendation_items_radios(
-    provider: NeteaseCloudMusicProvider,
-) -> None:
-    """recommended_radios builds both dynamic playlists from its dedicated fetches only."""
-    _install_cache_mocks(provider)
-    client_mock = _stub_client_get(provider)
-
-    result = await provider.get_recommendation_items("recommended_radios")
-
-    called_paths = {call.args[0] for call in client_mock.call_args_list}
-    assert called_paths == {
-        "/personal_fm",
-        "/recommend/songs",
-        "/user/playlist",
-        "/playmode/intelligence/list",
-    }
-    fm_call = next(call for call in client_mock.call_args_list if call.args[0] == "/personal_fm")
-    assert fm_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
-    assert fm_call.kwargs["cookie"] == "MUSIC_U=test"
-    user_playlist_call = next(
-        call for call in client_mock.call_args_list if call.args[0] == "/user/playlist"
-    )
-    assert user_playlist_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
-    assert user_playlist_call.kwargs["cookie"] == "MUSIC_U=test"
-    assert [item.item_id for item in result] == [
-        "personal_fm_dynamic",
-        "heart_mode_dynamic:1001:2002",
-    ]
 
 
 @pytest.mark.asyncio
@@ -181,8 +149,10 @@ async def test_get_recommendation_items_personal_recommend(
     heart_images = result[4].metadata.images
     assert heart_images
     assert next(iter(heart_images)).path == "https://p1.music.126.net/heart.jpg"
-    called_paths = {call.args[0] for call in client_mock.call_args_list}
-    assert called_paths == {
+    called_paths = [call.args[0] for call in client_mock.call_args_list]
+    # the concurrent builders share one coalesced fetch of the daily payload
+    assert called_paths.count("/recommend/songs") == 1
+    assert set(called_paths) == {
         "/personal_fm",
         "/recommend/songs",
         "/playlist/detail",
@@ -288,24 +258,6 @@ async def test_get_playlist_tracks_personal_radar(
 
 
 @pytest.mark.asyncio
-async def test_get_recommendation_items_daily_songs(
-    provider: NeteaseCloudMusicProvider,
-) -> None:
-    """daily_songs fetches only /recommend/songs and returns the parsed tracks."""
-    _install_cache_mocks(provider)
-    client_mock = _stub_client_get(provider)
-
-    result = await provider.get_recommendation_items("daily_songs")
-
-    called_paths = [call.args[0] for call in client_mock.call_args_list]
-    assert called_paths == ["/recommend/songs"]
-    assert [item.item_id for item in result] == ["1001"]
-    call = client_mock.call_args_list[0]
-    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
-    assert call.kwargs["cookie"] == "MUSIC_U=test"
-
-
-@pytest.mark.asyncio
 async def test_get_recommendation_items_new_songs(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
@@ -356,12 +308,13 @@ async def test_recommendation_cache_key_excludes_login_cookie(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
     """The login cookie sent as a query param never reaches the persisted cache key."""
+    use_real_create_task(provider.mass)
     provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     cache_set = AsyncMock()
     provider.mass.cache.set = cache_set  # type: ignore[method-assign]
     _stub_client_get(provider)
 
-    await provider.get_recommendation_items("daily_songs")
+    await provider.get_playlist_tracks("daily_recommend_dynamic")
 
     assert cache_set.await_count == 1
     cache_key = cache_set.call_args.kwargs["key"]

@@ -35,8 +35,6 @@
     },
     "recommendations": {
       "personal_recommend": { "name": "Personal Recommend" },
-      "personal_radio": { "name": "Personal Radio" },
-      "recommended_tracks": { "name": "Recommended tracks" },
       "recommended_new_tracks": { "name": "Recommended new tracks" },
       "recommended_playlists": { "name": "Recommended playlists" }
     }

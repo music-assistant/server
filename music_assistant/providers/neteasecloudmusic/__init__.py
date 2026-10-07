@@ -48,6 +48,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
+from music_assistant.helpers.util import join_task
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -409,6 +410,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
     _client: NcmApiClient
     _cookie: str
     _uid: str
+    _inflight_recommend_fetches: dict[str, asyncio.Task[dict[str, Any]]]
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -444,6 +446,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         api_base_url = str(self.get_setup_value(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
         self._client = NcmApiClient(self.mass.http_session, api_base_url)
+        # per-instance single-flight map for concurrent recommendation cache misses
+        self._inflight_recommend_fetches = {}
         if not self._uid:
             self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
@@ -457,20 +461,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 name="Personal Recommend",
                 translation_key="personal_recommend",
                 icon="mdi:compass",
-            ),
-            RecommendationFolder(
-                item_id="recommended_radios",
-                provider=self.instance_id,
-                name="Personal Radio",
-                translation_key="personal_radio",
-                icon="mdi:radio",
-            ),
-            RecommendationFolder(
-                item_id="daily_songs",
-                provider=self.instance_id,
-                name="Recommended tracks",
-                translation_key="recommended_tracks",
-                icon="mdi:star",
             ),
             RecommendationFolder(
                 item_id="recommended_new_songs",
@@ -500,16 +490,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         if item_id == "personal_recommend":
             return await self._build_personal_recommend_items()
-
-        if item_id == "recommended_radios":
-            return await self._build_radio_items()
-
-        if item_id == "daily_songs":
-            # personalized endpoints return different (non-personalized) data on
-            # some NCM api backends unless the login cookie is also passed as a
-            # query param, so it is sent in the params of every call below too
-            items.extend(await self._get_daily_recommend_tracks())
-            return items
 
         if item_id == "recommended_new_songs":
             new_song_payload = await self._get_recommend_payload_cached(
@@ -1593,11 +1573,35 @@ class NeteaseCloudMusicProvider(MusicProvider):
             category=CACHE_CATEGORY_RECOMMENDATIONS,
             default=None,
         )
-        if cached is not None:
-            if isinstance(cached, dict):
-                self.logger.debug("NCM recommendations %s payload cache hit", key)
-                return cached
-        payload = await self._client.get(path, params=params, cookie=self._cookie)
+        if isinstance(cached, dict):
+            self.logger.debug("NCM recommendations %s payload cache hit", key)
+            return cached
+        # coalesce concurrent misses on the same cache key into a single backend
+        # fetch, so concurrently built rows cannot duplicate the same request
+        inflight_map = getattr(self, "_inflight_recommend_fetches", None)
+        if inflight_map is None:
+            # tests may construct the provider without the init lifecycle
+            inflight_map = self._inflight_recommend_fetches = {}
+        if inflight := inflight_map.get(cache_key):
+            return await join_task(inflight)
+        fetch_task = self.mass.create_task(
+            self._fetch_recommend_payload(path, params, cache_key, ttl)
+        )
+        inflight_map[cache_key] = fetch_task
+        return await join_task(fetch_task)
+
+    async def _fetch_recommend_payload(
+        self,
+        path: str,
+        params: dict[str, Any] | None,
+        cache_key: str,
+        ttl: int,
+    ) -> dict[str, Any]:
+        """Fetch a recommendation payload from the backend and persist it to the MA cache."""
+        try:
+            payload = await self._client.get(path, params=params, cookie=self._cookie)
+        finally:
+            self.__dict__.get("_inflight_recommend_fetches", {}).pop(cache_key, None)
         await self.mass.cache.set(
             key=cache_key,
             provider=self.instance_id,
@@ -2154,24 +2158,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
         items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
         for result in results:
             if isinstance(result, BaseException):
+                if not isinstance(result, (InvalidDataError, ResourceTemporarilyUnavailable)):
+                    # unexpected failures are programming errors: let the
+                    # centralized recommendation error handling report them
+                    raise result
                 self.logger.warning("Failed to build a personal recommend item: %s", result)
                 continue
             if result is not None:
                 items.append(result)
-        return items
-
-    async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """Build the dynamic radio playlist items for the recommended_radios row."""
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-        personal_fm_image_url = await self._get_personal_fm_image_url()
-        items.append(
-            self._build_dynamic_playlist(
-                _PLAYLIST_PERSONAL_FM_ID,
-                "Personal FM",
-                translation_key="personal_fm",
-                image_url=personal_fm_image_url,
-            )
-        )
-        if heart_playlist := await self._build_heart_mode_dynamic_playlist():
-            items.append(heart_playlist)
         return items
