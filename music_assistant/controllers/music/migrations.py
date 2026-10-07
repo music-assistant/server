@@ -1407,7 +1407,7 @@ async def _move_classical_genre_aliases(
     def _load_aliases(row: Mapping[str, Any]) -> list[str] | None:
         try:
             aliases = json_loads(row["genre_aliases"]) if row["genre_aliases"] else []
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
             return None
@@ -1435,16 +1435,19 @@ async def _move_classical_genre_aliases(
             "WHERE translation_key = 'classical' AND content_type IS NULL",
             limit=0,
         ):
-            if (aliases := _load_aliases(row)) is None:
-                continue
-            removed = [x for x in aliases if create_safe_string(x, True, True) in removed_norms]
-            if not removed:
-                continue
-            await database.update(
-                DB_TABLE_GENRES,
-                {"item_id": row["item_id"]},
-                {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
-            )
+            aliases = _load_aliases(row)
+            removed = [
+                x for x in aliases or [] if create_safe_string(x, True, True) in removed_norms
+            ]
+            if aliases and removed:
+                await database.update(
+                    DB_TABLE_GENRES,
+                    {"item_id": row["item_id"]},
+                    {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
+                )
+                logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
+            # mappings are cleaned up even when the alias list was already clean, as an
+            # earlier alias edit can have left them behind
             if has_mapping_table:
                 # mappings store the raw tag of the item, which the scanner matched to the
                 # alias in normalized form; manual mappings were picked by the user, so they stay
@@ -1461,7 +1464,6 @@ async def _move_classical_genre_aliases(
                         "WHERE genre_id = :genre_id AND is_manual = 0 AND alias = :alias",
                         {"genre_id": row["item_id"], "alias": mapping_row["alias"]},
                     )
-            logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
 
         for translation_key, new_aliases in moved_aliases.items():
             for row in await database.get_rows_from_query(

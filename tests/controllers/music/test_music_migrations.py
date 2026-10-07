@@ -1008,3 +1008,40 @@ async def test_migration_survives_unparsable_classical_genre_aliases(
 
     rows = await database.get_rows_from_query(f"SELECT genre_aliases FROM {DB_TABLE_GENRES}")
     assert rows[0]["genre_aliases"] == "not json"
+
+
+async def test_migration_drops_stale_mappings_of_a_clean_classical_genre(
+    database: DatabaseConnection,
+) -> None:
+    """Mappings made through a removed alias go, even when the alias list is already clean."""
+    await _create_genre_tables(database)
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', :aliases, NULL)",
+        {"aliases": serialize_to_json(["classical", "Opera"])},
+    )
+    # a second classical genre whose alias data can not be read
+    await database.execute(f"INSERT INTO {DB_TABLE_GENRES} VALUES (2, 'classical', '42', NULL)")
+    for genre_id, media_id, alias in ((1, 10, "Opera"), (1, 11, "K-Pop"), (2, 12, "Gamelan")):
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias) "
+            "VALUES (:genre_id, :media_id, 'track', :alias)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock())
+
+    genre_rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
+        1: serialize_to_json(["classical", "Opera"]),
+        2: 42,
+    }
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert [row["media_id"] for row in mapping_rows] == [10]
