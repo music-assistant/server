@@ -923,7 +923,11 @@ async def test_migration_moves_misplaced_classical_genre_aliases(
     await _create_genre_tables(database)
     genres = {
         # music classical genre
-        1: ("classical", None, ["classical", "Opera", "gamelan", "K-Pop", "Electronic"]),
+        1: (
+            "classical",
+            None,
+            ["classical", "Opera", "gamelan", "K-Pop", "Electronic", "Christian/Gospel"],
+        ),
         2: ("asian_music", None, ["asian music", "K-Pop"]),
         3: ("marching_band", None, ["marching band", "Brass Band"]),
         # a classical genre in another taxonomy is left alone
@@ -946,6 +950,9 @@ async def test_migration_moves_misplaced_classical_genre_aliases(
         (1, 11, "Gamelan", 0),
         (1, 12, "K-Pop", 0),
         (1, 13, "electronic", 1),
+        # raw tag variants the scanner matched to a removed alias in normalized form
+        (1, 14, "Christian/Gospel", 0),
+        (1, 15, " k-pop ", 0),
         (5, 12, "K-Pop", 0),
     ]
     for genre_id, media_id, alias, is_manual in mappings:

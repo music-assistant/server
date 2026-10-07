@@ -1446,13 +1446,20 @@ async def _move_classical_genre_aliases(
                 {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
             )
             if has_mapping_table:
-                # manual mappings were picked by the user, so they stay
-                for alias in removed:
+                # mappings store the raw tag of the item, which the scanner matched to the
+                # alias in normalized form; manual mappings were picked by the user, so they stay
+                for mapping_row in await database.get_rows_from_query(
+                    f"SELECT DISTINCT alias FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                    "WHERE genre_id = :genre_id AND is_manual = 0 AND alias IS NOT NULL",
+                    {"genre_id": row["item_id"]},
+                    limit=0,
+                ):
+                    if create_safe_string(mapping_row["alias"], True, True) not in removed_norms:
+                        continue
                     await database.execute(
                         f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-                        "WHERE genre_id = :genre_id AND is_manual = 0 "
-                        "AND LOWER(alias) = LOWER(:alias)",
-                        {"genre_id": row["item_id"], "alias": alias},
+                        "WHERE genre_id = :genre_id AND is_manual = 0 AND alias = :alias",
+                        {"genre_id": row["item_id"], "alias": mapping_row["alias"]},
                     )
             logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
 
