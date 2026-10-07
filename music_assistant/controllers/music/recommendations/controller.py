@@ -78,9 +78,9 @@ class RecommendationsController:
             instance ids (OR semantics). Only honored on rows that advertise
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
+        # bound to the user's music sources like the rows listing, never a hidden account
+        prov = self.mass.get_provider(self.mass.music.resolve_visible_provider(provider))
         try:
-            # bound to the user's music sources like the rows listing, never a hidden account
-            prov = self.mass.get_provider(self.mass.music.resolve_visible_provider(provider))
             if prov is None:
                 return UniqueList()
             if ProviderFeature.RECOMMENDATIONS not in prov.supported_features:

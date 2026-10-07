@@ -355,6 +355,7 @@ async def test_library_item_reads_allow_impersonation(mass: MusicAssistant) -> N
         "music/playlists/export_playlist",
         "music/podcasts/podcast_episodes",
         "music/podcasts/podcast_episode",
+        "music/podcasts/podcast_episode_transcript",
         "music/podcasts/podcast_versions",
         "music/audiobooks/audiobook_versions",
         "music/radios/radio_versions",

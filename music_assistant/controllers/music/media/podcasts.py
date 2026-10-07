@@ -71,6 +71,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             f"music/{api_base}/podcast_episode_transcript",
             self.episode_transcript,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_versions",
@@ -216,7 +217,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param item_id: The provider episode id.
         :param provider_instance_id_or_domain: Provider the episode belongs to.
         """
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        prov = self.mass.get_provider(
+            self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        )
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
         return await prov.get_podcast_episode_transcript(item_id)

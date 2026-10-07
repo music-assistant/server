@@ -1002,9 +1002,11 @@ def test_get_visible_provider(
         lambda mass: anext(mass.music.playlists.tracks("1", PROV_B)),
         lambda mass: anext(mass.music.podcasts.episodes("1", PROV_B)),
         lambda mass: mass.music.podcasts.episode("1", PROV_B),
+        lambda mass: mass.music.podcasts.episode_transcript("1", PROV_B),
         lambda mass: mass.music.podcasts.versions("1", PROV_B),
         lambda mass: mass.music.audiobooks.versions("1", PROV_B),
         lambda mass: mass.music.radio.radio_tracks("1", PROV_B),
+        lambda mass: mass.music.recommendations.get_recommendation_items(PROV_B, "row"),
     ],
     ids=[
         "item",
@@ -1020,9 +1022,11 @@ def test_get_visible_provider(
         "playlist_tracks",
         "podcast_episodes",
         "podcast_episode",
+        "podcast_episode_transcript",
         "podcast_versions",
         "audiobook_versions",
         "radio_tracks",
+        "recommendation_items",
     ],
 )
 async def test_provider_reads_refuse_a_source_the_user_may_not_see(
@@ -1185,9 +1189,8 @@ async def test_browse_and_recommendations_stay_on_the_users_account(
         providers[PROV_A].available = False
         with pytest.raises(ProviderUnavailableError):
             await counted_mass.music.browse(f"{PROV_A}://")
-        assert (
-            await counted_mass.music.recommendations.get_recommendation_items(PROV_A, "row") == []
-        )
+        with pytest.raises(ProviderUnavailableError):
+            await counted_mass.music.recommendations.get_recommendation_items(PROV_A, "row")
     providers[PROV_B].browse.assert_not_awaited()
     providers[PROV_B].get_recommendation_items.assert_not_awaited()
 

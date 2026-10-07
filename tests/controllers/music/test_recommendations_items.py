@@ -194,20 +194,6 @@ async def test_items_unknown_provider_returns_empty(mass: MusicAssistant) -> Non
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
-async def test_items_restricted_provider_returns_empty(
-    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Fetching items from a music source the user may not use returns nothing."""
-    mock_get_user.return_value = _restricted_user(mass)
-    provider = _build(_RowsProvider, instance_id="restricted_instance")
-    provider.get_recommendation_items = AsyncMock()  # type: ignore[method-assign]
-    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
-    items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
-    assert items == []
-    provider.get_recommendation_items.assert_not_awaited()
-
-
-@patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_rows_restricted_provider_returns_no_rows(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
