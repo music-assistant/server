@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
@@ -112,13 +113,12 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/capabilities", self.capabilities),
         )
         for command, handler in handlers:
-            # this server's API layer has no scope system (register_api_command takes
-            # required_role, not required_scope). rank_queue mutates the queue, so it
-            # requires the "user" role, which excludes guest accounts; the read-only
-            # commands stay available to any authenticated user.
-            role = "user" if command == "smart_dj/rank_queue" else None
+            # rank_queue mutates the player queue, so it requires QUEUES_CONTROL
+            # (excludes guest accounts); the read-only commands stay available to
+            # any authenticated user (required_scope=None).
+            scope = Scope.QUEUES_CONTROL if command == "smart_dj/rank_queue" else None
             self._handles.append(
-                self.mass.register_api_command(command, handler, required_role=role)
+                self.mass.register_api_command(command, handler, required_scope=scope)
             )
 
     async def unload(self, is_removed: bool = False) -> None:
