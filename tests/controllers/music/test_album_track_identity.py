@@ -76,6 +76,22 @@ def test_a_title_does_not_join_entries_whose_isrcs_disagree() -> None:
     assert select([row], [entry("b", "two", 0)]) == []
 
 
+def test_entries_without_positions_keep_their_listings_order() -> None:
+    """Matching takes the entries in its own order; the album keeps the listing's."""
+    unplaced = [entry("a", "z", 0), entry("a", "m", 0), entry("a", "a", 0)]
+    unplaced[1].name, unplaced[2].name = "Andante", "Rondo"
+    assert [track.item_id for track in select([], unplaced)] == ["z", "m", "a"]
+
+
+def test_backfill_rejects_a_position_a_contradicting_candidate_claims() -> None:
+    """A candidate without identifiers does not outvote one whose ISRC names another recording."""
+    row = entry("library", "42", 0, "GBAYC2100001")
+    row.provider_mappings = entry("fs", "path").provider_mappings
+    candidates = [entry("a", "one", 3), entry("b", "two", 3, "GBAYC2100002")]
+    assert backfills([row], candidates) == []
+    assert [s.track_number for _, s in backfills([row], candidates[:1])] == [3]
+
+
 def test_backfill_takes_a_position_two_listings_agree_on() -> None:
     """An ISRC two listings carry at one position repairs the library row; at two, it does not."""
     row = entry("library", "42", 0, "GBAYC2100001")

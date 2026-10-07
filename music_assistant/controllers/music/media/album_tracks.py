@@ -66,8 +66,9 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
         if slot is not None and source in slots.sources[slot]:
             # a listing is authoritative about itself: two of its entries stay two
             slot = None
+        order = entries.order_of[id(track)]
         if slot is None:
-            slot = slots.add(track)
+            slot = slots.add(track, order)
         elif _preference(track) < _preference(slots.tracks[slot]):
             if position is None:
                 # the playable copy takes the slot's position along with the slot
@@ -75,9 +76,15 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
                 track.track_number = slots.tracks[slot].track_number
             slots.tracks[slot] = track
         slots.index(
-            slot, source, ids, isrcs, position, title if title in entries.unique_titles else None
+            slot,
+            source,
+            order,
+            ids,
+            isrcs,
+            position,
+            title if title in entries.unique_titles else None,
         )
-    return slots.tracks
+    return slots.listed()
 
 
 def album_track_backfills(
@@ -132,15 +139,12 @@ def album_track_backfills(
         source = min(sources, key=_preference)
         if not source.track_number or _position(source) in occupied:
             continue
-        source_ids = _ids(source)
-        shared_scopes = {scope for scope, _ in ids} & {scope for scope, _ in source_ids}
+        # every candidate must agree with the row, not only the one chosen: a position
+        # another recording claims as well is no repair
         if any(
-            not {key for key in ids if key[0] == scope}.intersection(source_ids)
-            for scope in shared_scopes
+            _contradict_ids(ids, _ids(candidate)) or _contradict(isrcs, _isrcs(candidate))
+            for candidate in sources
         ):
-            continue
-        source_isrcs = _isrcs(source)
-        if isrcs and source_isrcs and not isrcs.intersection(source_isrcs):
             continue
         proposals.append((track, source))
     claims = Counter(_position(source) for _, source in proposals)
@@ -184,6 +188,7 @@ class _Entries:
 
     providers: list[Track]
     source_of: dict[int, int]
+    order_of: dict[int, tuple[int, int]]
     usable_isrcs: dict[int, set[str]]
     title_of: dict[int, tuple[int, str, str]]
     unique_titles: set[tuple[int, str, str]]
@@ -212,6 +217,11 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
     return _Entries(
         providers=providers,
         source_of=source_of,
+        order_of={
+            id(track): (source, index)
+            for source, listing in enumerate(listings)
+            for index, track in enumerate(listing)
+        },
         usable_isrcs=usable_isrcs,
         title_of=title_of,
         unique_titles=_unique_titles(library + providers, title_of, source_of),
@@ -229,22 +239,39 @@ class _Slots:
     tracks: list[Track] = field(default_factory=list)
     sources: list[set[int]] = field(default_factory=list)
     isrcs: list[set[str]] = field(default_factory=list)
+    order: list[tuple[int, int]] = field(default_factory=list)
     by_id: dict[tuple[str, str], int] = field(default_factory=dict)
     by_isrc: dict[str, int] = field(default_factory=dict)
     by_position: dict[tuple[int, int], int] = field(default_factory=dict)
     by_title: dict[tuple[int, str, str], int] = field(default_factory=dict)
 
-    def add(self, track: Track) -> int:
-        """Open a slot for an entry and return its index."""
+    def add(self, track: Track, order: tuple[int, int]) -> int:
+        """
+        Open a slot for an entry and return its index.
+
+        :param track: The entry.
+        :param order: The entry's place in the listings, which the slot is listed by.
+        """
         self.tracks.append(track)
         self.sources.append(set())
         self.isrcs.append(set())
+        self.order.append(order)
         return len(self.tracks) - 1
+
+    def listed(self) -> list[Track]:
+        """Return the slots' entries in the order the listings had them."""
+        # the matching takes the entries in an order of its own; without positions to
+        # sort by, the listing's order is the album's
+        return [
+            self.tracks[slot]
+            for slot in sorted(range(len(self.tracks)), key=self.order.__getitem__)
+        ]
 
     def index(
         self,
         slot: int,
         source: int,
+        order: tuple[int, int],
         ids: set[tuple[str, str]],
         isrcs: set[str],
         position: tuple[int, int] | None,
@@ -255,6 +282,7 @@ class _Slots:
 
         :param slot: The slot the entry joined.
         :param source: The listing the entry belongs to.
+        :param order: The entry's place in the listings.
         :param ids: The provider ids the entry carries.
         :param isrcs: The usable ISRCs the entry carries.
         :param position: The entry's disc and track position, if it has one.
@@ -263,6 +291,7 @@ class _Slots:
         # the slot an identifier names is the one of the first entry carrying it
         self.sources[slot].add(source)
         self.isrcs[slot].update(isrcs)
+        self.order[slot] = min(self.order[slot], order)
         for key in ids:
             self.by_id.setdefault(key, slot)
         for isrc in isrcs:
@@ -276,6 +305,14 @@ class _Slots:
 def _contradict(isrcs: set[str], other: set[str]) -> bool:
     """Return whether two entries' usable ISRCs name different recordings."""
     return bool(isrcs) and bool(other) and isrcs.isdisjoint(other)
+
+
+def _contradict_ids(ids: set[tuple[str, str]], other: set[tuple[str, str]]) -> bool:
+    """Return whether two entries carry different ids on one and the same provider."""
+    shared_scopes = {scope for scope, _ in ids} & {scope for scope, _ in other}
+    return any(
+        not {key for key in ids if key[0] == scope}.intersection(other) for scope in shared_scopes
+    )
 
 
 def _note(
