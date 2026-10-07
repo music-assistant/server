@@ -96,7 +96,6 @@ class ZvukMusicClient:
         self._token = token
         self._client: ClientAsync | None = None
         self._user_id: str | None = None
-        self.collection_playlist_ids: set[str] = set()
         self._throttler = Throttler(rate_limit=5, period=1.0)
 
     @property
@@ -338,9 +337,7 @@ class ZvukMusicClient:
         :return: List of CollectionItem objects with playlist IDs.
         """
         client = await self._get_client()
-        items = await client.get_user_playlists()
-        self.collection_playlist_ids = {str(item.id) for item in items if item.id}
-        return items
+        return await client.get_user_playlists()
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_short_playlists(

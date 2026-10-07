@@ -110,13 +110,12 @@ class TestStreamsViaGraphql:
 class TestPlaylistEditableWithoutUserId:
     """Playlist ownership when the user id is unknown."""
 
-    def _provider(self, collection_ids: set[str]) -> Mock:
+    def _provider(self) -> Mock:
         provider = Mock()
         provider.instance_id = "zvuk_music_test"
         provider.domain = "zvuk_music"
         provider.client = Mock()
         provider.client.user_id = None
-        provider.client.collection_playlist_ids = collection_ids
         return provider
 
     def _playlist(self, playlist_id: int) -> Mock:
@@ -129,34 +128,12 @@ class TestPlaylistEditableWithoutUserId:
         playlist.duration = None
         return playlist
 
-    def test_collection_playlist_is_editable(self) -> None:
-        """A playlist from the user's collection is editable."""
-        result = parse_playlist(self._provider({"10"}), self._playlist(10))
-
-        assert result.is_editable is True
-        assert result.owner == "Me"
-
-    def test_foreign_playlist_is_not_editable(self) -> None:
-        """A playlist outside the user's collection stays read-only."""
-        result = parse_playlist(self._provider({"10"}), self._playlist(20))
+    def test_playlist_is_read_only_without_user_id(self) -> None:
+        """Without a known user ID no playlist is treated as owned, even a followed one."""
+        result = parse_playlist(self._provider(), self._playlist(10))
 
         assert result.is_editable is False
-
-
-class TestUserPlaylistsRecordCollection:
-    """get_user_playlists remembers which playlists are in the collection."""
-
-    @pytest.mark.asyncio
-    async def test_records_collection_playlist_ids(self) -> None:
-        """Collection playlist ids are stored for ownership checks."""
-        client = ZvukMusicClient(token="valid")
-        inner = MagicMock()
-        inner.get_user_playlists = AsyncMock(return_value=[Mock(id="10"), Mock(id=11)])
-        client._client = inner
-
-        await client.get_user_playlists()
-
-        assert client.collection_playlist_ids == {"10", "11"}
+        assert result.owner == "Zvuk Music"
 
 
 class TestEditorialBlocked:

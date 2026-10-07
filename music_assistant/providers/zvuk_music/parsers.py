@@ -321,9 +321,6 @@ def parse_playlist(
     user_id = getattr(playlist_obj, "user_id", None)
     if user_id and provider.client.user_id:
         is_editable = str(user_id) == str(provider.client.user_id)
-    elif user_id and provider.client.user_id is None:
-        # Without a user ID, treat playlists in the user's collection as owned
-        is_editable = playlist_id in provider.client.collection_playlist_ids
     if is_editable:
         owner_name = "Me"
 
