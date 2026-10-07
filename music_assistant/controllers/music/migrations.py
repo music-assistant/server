@@ -1478,7 +1478,7 @@ async def _move_classical_genre_aliases(
                     {"item_id": row["item_id"]},
                     {"genre_aliases": serialize_to_json([*aliases, *missing])},
                 )
-    except Exception as err:
+    except sqlite3.Error as err:
         # a misplaced alias is not worth discarding the whole library over
         logger.warning("Could not move the misplaced classical genre aliases: %s", err)
 
