@@ -26,6 +26,7 @@ from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
     CONF_VERIFY_SSL,
+    IMAGE_MAX_BYTES,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
@@ -828,6 +829,73 @@ async def test_tts_bare_500_without_language_raises_generic_error() -> None:
         assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
         assert "tts_get_url" in str(excinfo.value)
         assert "500" in str(excinfo.value)
+
+
+def _mock_image_response(
+    provider: HomeAssistantProvider, chunks: list[bytes], content_type: str = "image/jpeg"
+) -> MagicMock:
+    """Let Home Assistant answer an image request with the given body and return the get mock."""
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.content_type = content_type
+    response.content_length = None
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    get = cast("MagicMock", provider.mass.http_session.get)
+    get.return_value.__aenter__.return_value = response
+    return get
+
+
+async def test_resolve_image_fetches_an_entity_picture_with_the_token() -> None:
+    """An entity picture path is fetched from Home Assistant with the access token."""
+    path = "/api/media_player_proxy/media_player.kitchen?token=abc&cache=123"
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"\xff\xd8", b"jpeg"])
+
+        assert await provider.resolve_image(path) == b"\xff\xd8jpeg"
+
+        get.assert_called_once_with(
+            f"http://homeassistant.local:8123{path}",
+            headers={"Authorization": "Bearer token"},
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/states",
+        "/api/media_player_proxy/../states",
+        "/api/media_player_proxy/%2e%2e/states",
+        "api/media_player_proxy/media_player.kitchen",
+    ],
+)
+async def test_resolve_image_rejects_paths_outside_the_image_endpoints(path: str) -> None:
+    """A path that is not an HA image endpoint is refused before anything is requested."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"{}"])
+
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image(path)
+
+        get.assert_not_called()
+
+
+async def test_resolve_image_rejects_a_response_that_is_no_image() -> None:
+    """An allowed path answered with something other than an image is not returned."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        _mock_image_response(provider, [b"{}"], content_type="application/json")
+
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image("/api/image_proxy/image.doorbell")
+
+
+async def test_resolve_image_rejects_a_body_over_the_size_limit() -> None:
+    """An image body beyond the size limit is not returned."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        chunk = b"\0" * (IMAGE_MAX_BYTES // 2)
+        _mock_image_response(provider, [chunk, chunk, b"\0"])
+
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image("/local/cover.jpg")
 
 
 async def test_registry_update_refreshes_the_engines() -> None:

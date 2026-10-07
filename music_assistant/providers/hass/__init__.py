@@ -16,7 +16,8 @@ from functools import partial
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
+from urllib.parse import unquote
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -101,6 +102,16 @@ DEVICE_REGISTRY_CACHE_TTL = 60
 AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
+# HA paths a media player's entity_picture points at, the only images this provider resolves
+IMAGE_PATH_PREFIXES: Final = (
+    "/api/media_player_proxy/",
+    "/api/image_proxy/",
+    "/api/image/serve/",
+    "/local/",
+)
+IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
+IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -603,11 +614,30 @@ class HomeAssistantProvider(PluginProvider):
         return states
 
     async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path."""
+        """
+        Fetch an entity picture from Home Assistant.
+
+        :param path: The HA-relative image path, as found in a media player's entity_picture.
+        :raises FileNotFoundError: When the path is not an HA image path, or HA does not
+            answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form too
+        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in unquote(path):
+            raise FileNotFoundError("Image not found")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
-            return await response.read()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""

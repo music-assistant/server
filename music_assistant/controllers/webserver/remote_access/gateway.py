@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -66,6 +66,23 @@ HTTP_PROXY_SEND_TIMEOUT = 10
 # Both budgets sit inside the 30 seconds a client waits before it abandons a proxied request,
 # so neither works on (or answers) a request nobody is listening for any more.
 HTTP_PROXY_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# Lowercased request headers a remote peer may not set on the local request: hop-by-hop
+# headers, the target host, and the body length aiohttp derives itself.
+HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",  # codespell:ignore te
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+)
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
@@ -574,13 +591,18 @@ class WebRTCGateway:
 
         async with self._http_proxy_semaphore:
             try:
+                forwarded_headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in HTTP_PROXY_DROPPED_HEADERS
+                }
                 # Use shared HTTP session for this request
                 # this dial never leaves the host: TLS verification would fail on the bind
                 # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
                     method,
                     local_http_url,
-                    headers=headers,
+                    headers=forwarded_headers,
                     ssl=False,
                     allow_redirects=False,
                     timeout=HTTP_PROXY_FETCH_TIMEOUT,
@@ -604,14 +626,14 @@ class WebRTCGateway:
                     b"Gateway Timeout",
                     send_lock,
                 )
-            except Exception as err:
+            except Exception:
                 self.logger.exception("Error handling HTTP proxy request")
                 await self._send_http_proxy_response(
                     channel,
                     request_id,
                     500,
                     {"Content-Type": "text/plain"},
-                    str(err).encode(),
+                    b"Internal server error",
                     send_lock,
                 )
 
