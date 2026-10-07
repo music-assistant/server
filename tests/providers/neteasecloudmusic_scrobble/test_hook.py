@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import InvalidDataError, LoginFailed
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
@@ -31,12 +32,22 @@ def _ncm_provider(instance_id: str = INSTANCE_A) -> Mock:
 
 
 def _mass(*providers: Mock) -> Mock:
-    """Build a mocked server exposing the given providers and empty cache."""
+    """Build a mocked server exposing the given providers and a working in-memory cache."""
     mass = Mock()
     mass.config.get.return_value = {}
     mass.providers = list(providers)
-    mass.cache.get = AsyncMock(return_value=None)
-    mass.cache.set = AsyncMock()
+    stored: dict[str, str] = {}
+
+    async def cache_get(key: str, default: str | None = None, **_kwargs: object) -> str | None:
+        """Return the previously cached value for the key, if any."""
+        return stored.get(key, default)
+
+    async def cache_set(key: str, data: str, **_kwargs: object) -> None:
+        """Store the value for the key."""
+        stored[key] = data
+
+    mass.cache.get = AsyncMock(side_effect=cache_get)
+    mass.cache.set = AsyncMock(side_effect=cache_set)
     mass.player_queues.items.return_value = []
     return mass
 
@@ -252,6 +263,64 @@ async def test_queue_lookup_scans_beyond_the_first_page() -> None:
     assert scrobble_call.kwargs["params"]["id"] == "123"
 
 
+async def test_provider_instance_uri_scheme_is_accepted() -> None:
+    """A direct provider-track uri may use the instance id as its scheme."""
+    ncm = _ncm_provider()
+    ncm.api_client = _album_detail_client()
+    handler = NeteaseScrobbleHandler(_handler_provider(ncm))
+
+    await handler._scrobble(_report(uri=f"{INSTANCE_A}://track/123", seconds_played=42))
+
+    assert "/scrobble" in {call.args[0] for call in ncm.api_client.get.await_args_list}
+
+
+async def test_album_source_id_is_cached() -> None:
+    """The album id lookup for a track hits the api only once."""
+    ncm = _ncm_provider()
+    ncm.api_client = _album_detail_client()
+    handler = NeteaseScrobbleHandler(_handler_provider(ncm))
+
+    await handler._scrobble(_report(seconds_played=42))
+    await handler._scrobble(_report(seconds_played=42))
+
+    detail_calls = [c for c in ncm.api_client.get.await_args_list if c.args[0] == "/song/detail"]
+    assert len(detail_calls) == 1
+
+
+async def test_expired_session_unloads_the_plugin() -> None:
+    """A NetEase api 'not logged in' answer unloads the plugin for re-authentication."""
+    ncm = _ncm_provider()
+    ncm.api_client = Mock(
+        get=AsyncMock(side_effect=InvalidDataError("Netease API error code 301 for /scrobble"))
+    )
+    mass = _mass(ncm)
+    provider = _provider(mass)
+    await provider.handle_async_init()
+
+    await provider.on_media_item_played(_report(seconds_played=200, fully_played=True))
+
+    assert provider._handler is None
+    mass.call_later.assert_called_once()
+    unload_error = mass.call_later.call_args.args[3]
+    assert isinstance(unload_error, LoginFailed)
+
+
+async def test_other_api_errors_do_not_unload_the_plugin() -> None:
+    """A transient NetEase api failure is only logged, the plugin stays loaded."""
+    ncm = _ncm_provider()
+    ncm.api_client = Mock(
+        get=AsyncMock(side_effect=InvalidDataError("Netease API error code 400 for /scrobble"))
+    )
+    mass = _mass(ncm)
+    provider = _provider(mass)
+    await provider.handle_async_init()
+
+    await provider.on_media_item_played(_report(seconds_played=200, fully_played=True))
+
+    assert provider._handler is not None
+    mass.call_later.assert_not_called()
+
+
 def _album_detail_client() -> Mock:
     """Build an NCM api client mock that resolves track 123 to album 456."""
     return Mock(
@@ -269,6 +338,7 @@ def _handler_provider(ncm: Mock | None = None, *, mass: Mock | None = None) -> M
     plugin = Mock()
     plugin.mass = mass or _mass(ncm)
     plugin.instance_id = "neteasecloudmusic_scrobble--x"
+    plugin.domain = "neteasecloudmusic_scrobble"
     plugin.config = Mock()
     plugin.config.get_value.side_effect = lambda _key, default=None: default
     plugin.logger = Mock()

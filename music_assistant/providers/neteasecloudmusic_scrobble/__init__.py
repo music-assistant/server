@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    ResourceTemporarilyUnavailable,
+)
 
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
@@ -32,6 +36,9 @@ _SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 _CACHE_CATEGORY_SCROBBLE: Final[int] = 1
 # queue items are scanned page by page so oversized (synced) queues are covered too
 QUEUE_PAGE_SIZE: Final[int] = 500
+# the NCM api backend reports this code (surfaced inside the InvalidDataError message)
+# when the login cookie is no longer accepted
+_SESSION_EXPIRED_CODE: Final[str] = "error code 301 for"
 
 
 async def setup(
@@ -89,7 +96,13 @@ class NeteaseScrobbleProvider(PluginProvider):
             # the current instance and cookie instead of a stale one
             self._ncm_provider = ncm
             self._handler = NeteaseScrobbleHandler(self)
-        await self._handler.on_media_item_played(report)
+        try:
+            await self._handler.on_media_item_played(report)
+        except LoginFailed as err:
+            # stop submitting right away: the unload below only runs after a short delay
+            self._handler = None
+            self.logger.warning("%s, re-authenticate this plugin to resume scrobbling", err)
+            self.unload_with_error(err)
 
     def _resolve_ncm_provider(self) -> NeteaseCloudMusicProvider | None:
         """Return the configured NetEase Cloud Music provider instance, if loaded."""
@@ -125,11 +138,11 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         ncm = plugin._ncm_provider
         assert ncm is not None
         self._ncm: NeteaseCloudMusicProvider = ncm
-        # one check-in per play of a track: uri -> seconds_played at check-in time.
+        # one check-in per play of a track.
         # ScrobblerHelper's own last_scrobbled dedup cannot be used here because it
         # treats any same-uri progress report as a loop restart, which would re-check
         # in on every periodic progress report of a single continuous play.
-        self._scrobbled_plays: dict[str, int] = {}
+        self._scrobbled_plays: set[str] = set()
         # uri -> last seen seconds_played, to detect a track starting over (loop)
         self._last_progress: dict[str, int] = {}
 
@@ -140,11 +153,16 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         A track is only checked in once it has been listened to the end, so the
         reported listen time is the real elapsed time rather than a bare minimum.
         """
+        if len(self._last_progress) > 128:
+            # opportunistic cleanup of long radio sessions
+            for uri in list(self._last_progress)[:64]:
+                del self._last_progress[uri]
+                self._scrobbled_plays.discard(uri)
         last_progress = self._last_progress.get(report.uri)
         if last_progress is not None and report.seconds_played < last_progress:
             # progress went backwards: the track started over (loop/replay),
             # so its previous play is done and may be checked in again
-            self._scrobbled_plays.pop(report.uri, None)
+            self._scrobbled_plays.discard(report.uri)
         self._last_progress[report.uri] = report.seconds_played
         if report.uri in self._scrobbled_plays:
             # already checked in for this play
@@ -153,40 +171,48 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         if not report.fully_played:
             # not listened to the end yet: report nothing until it is
             return False
-        self._scrobbled_plays[report.uri] = report.seconds_played
-        if len(self._last_progress) > 128:
-            # opportunistic cleanup of long radio sessions
-            for uri in list(self._last_progress)[:64]:
-                del self._last_progress[uri]
-                self._scrobbled_plays.pop(uri, None)
+        self._scrobbled_plays.add(report.uri)
         return True
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         """Scrobble a track to NetEase."""
-        resolved = await self._resolve_ncm_track(report)
-        if resolved is None:
-            return
-        track_id, source_id = resolved
-        await self._ncm.api_client.get(
-            "/scrobble",
-            # the login cookie must also travel as a query param: some NCM api
-            # backends only attribute the play to the account when it is sent that
-            # way, and silently drop it (still answering success) when it is only in
-            # the Cookie header. Mirrors the same workaround the NCM music provider
-            # applies to its personalized endpoints.
-            params={
-                "id": track_id,
-                "sourceid": source_id,
-                "time": report.seconds_played,
-                "cookie": self._ncm.cookie,
-            },
-            cookie=self._ncm.cookie,
-        )
+        try:
+            resolved = await self._resolve_ncm_track(report)
+            if resolved is None:
+                return
+            track_id, source_id = resolved
+            await self._ncm.api_client.get(
+                "/scrobble",
+                # the login cookie must also travel as a query param: some NCM api
+                # backends only attribute the play to the account when it is sent that
+                # way, and silently drop it (still answering success) when it is only in
+                # the Cookie header. Mirrors the same workaround the NCM music provider
+                # applies to its personalized endpoints.
+                params={
+                    "id": track_id,
+                    "sourceid": source_id,
+                    "time": report.seconds_played,
+                    "cookie": self._ncm.cookie,
+                },
+                cookie=self._ncm.cookie,
+            )
+        except InvalidDataError as err:
+            if _SESSION_EXPIRED_CODE in str(err):
+                raise self._session_expired_error() from err
+            raise
         self.logger.info(
             "Checked in track %s to NetEase (source %s, played %ss)",
             track_id,
             source_id,
             report.seconds_played,
+        )
+
+    def _session_expired_error(self) -> LoginFailed:
+        """Build the error that unloads this plugin until the user logs in again."""
+        return LoginFailed(
+            "NetEase Cloud Music session is no longer valid",
+            translation_key="session_invalid",
+            translation_owner=f"provider.{self._plugin.domain}",
         )
 
     async def _resolve_ncm_track(

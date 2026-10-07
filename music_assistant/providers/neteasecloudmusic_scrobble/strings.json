@@ -4,5 +4,11 @@
       "label": "NetEase Cloud Music source",
       "description": "The NetEase Cloud Music provider instance whose plays should be reported to NetEase."
     }
+  },
+  "errors": {
+    "session_invalid": "Your NetEase Cloud Music session is no longer valid. Please sign in again to resume scrobbling."
+  },
+  "manifest": {
+    "description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping play counts, listening stats and daily recommendations in sync."
   }
 }

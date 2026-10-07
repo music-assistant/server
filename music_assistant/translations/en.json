@@ -1790,6 +1790,8 @@
   "provider.neteasecloudmusic.setup_flow.user.title": "Connect NetEase Cloud Music",
   "provider.neteasecloudmusic_scrobble.config_entries.ncm_provider.description": "The NetEase Cloud Music provider instance whose plays should be reported to NetEase.",
   "provider.neteasecloudmusic_scrobble.config_entries.ncm_provider.label": "NetEase Cloud Music source",
+  "provider.neteasecloudmusic_scrobble.errors.session_invalid": "Your NetEase Cloud Music session is no longer valid. Please sign in again to resume scrobbling.",
+  "provider.neteasecloudmusic_scrobble.manifest.description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping play counts, listening stats and daily recommendations in sync.",
   "provider.nicovideo.errors.create_playlist_failed": "Failed to create playlist '{0}' on NicoVideo.",
   "provider.nicovideo.errors.retrieve_created_playlist_failed": "Failed to retrieve the created playlist '{0}' from NicoVideo.",
   "provider.nicovideo.manifest.description": "Support for niconico video(nicovideo) in Music Assistant",
