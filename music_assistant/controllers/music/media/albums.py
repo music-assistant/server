@@ -429,7 +429,7 @@ class AlbumsController(MediaControllerBase[Album]):
         listings: list[list[Track]] = []
         if in_library_only:
             # return in-library items only
-            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
+            return sorted(db_items, key=lambda x: (x.disc_number or 1, x.track_number))
 
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
@@ -496,8 +496,9 @@ class AlbumsController(MediaControllerBase[Album]):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error
         # NOTE: we need to return the results sorted on disc/track here
-        # to ensure the correct order at playback
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        # to ensure the correct order at playback; a digital release stores its single
+        # disc as disc 0 or 1
+        return sorted(result, key=lambda x: (x.disc_number or 1, x.track_number))
 
     async def versions(
         self,

@@ -409,6 +409,20 @@ async def test_album_tracks_fetch_a_listing_once_per_answering_provider(
     assert [track.item_id for track in tracks] == ["t1", "t2"]
 
 
+async def test_album_tracks_sort_an_unknown_disc_as_the_first(mass: MusicAssistant) -> None:
+    """A track whose provider reports no disc sorts with disc one, not ahead of it."""
+    album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    first = create_track("qobuz_1", "t1", name="One")
+    second = create_track("qobuz_1", "t2", name="Two")
+    first.disc_number, first.track_number = 1, 1
+    second.disc_number, second.track_number = 0, 2
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=[first, second])
+    ):
+        tracks = await mass.music.albums.tracks(album.item_id, "library")
+    assert [track.item_id for track in tracks] == ["t1", "t2"]
+
+
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
     """Distinct IDs and ISRCs preserve repeated movement names across two discs."""
     # this listing is one source: it is kept as-is whatever its identifiers say

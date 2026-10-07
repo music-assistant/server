@@ -76,6 +76,27 @@ def test_a_title_does_not_join_entries_whose_isrcs_disagree() -> None:
     assert select([row], [entry("b", "two", 0)]) == []
 
 
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_one_provider_id_at_two_positions_is_told_apart_in_any_order(
+    order: tuple[int, ...],
+) -> None:
+    """Two listings carrying one provider id at two positions select the same entries whatever their order."""
+    first = [entry("a", "y", 1, "GBAYC2100001")]
+    second = [entry("b", "y", 3)]
+    third = [entry("b", "z", 1), entry("b", "y", 2, "GBAYC2100001")]
+    for track in third:
+        track.name = "Allegro" if track.item_id == "z" else "Andante"
+    second[0].name = "Andante"
+    listed = [first, second, third]
+    # the same entries as the listings' own order selects: that order is a set's
+    selected = album_tracks.select_album_tracks([], [listed[index] for index in order])
+    expected = album_tracks.select_album_tracks([], listed)
+    assert sorted((t.provider, t.item_id) for t in selected) == sorted(
+        (t.provider, t.item_id) for t in expected
+    )
+    assert sorted((t.provider, t.item_id) for t in expected) == [("a", "y"), ("b", "z")]
+
+
 def test_entries_without_positions_keep_their_listings_order() -> None:
     """Matching takes the entries in its own order; the album keeps the listing's."""
     unplaced = [entry("a", "z", 0), entry("a", "m", 0), entry("a", "a", 0)]

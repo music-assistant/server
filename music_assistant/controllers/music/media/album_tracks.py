@@ -34,9 +34,7 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
     # the slot an identifier names is the one of the first entry carrying it, so the
     # entries are taken in a fixed order rather than the order the providers answered in:
     # the placed ones first, so the slots exist by the time the others look for theirs
-    for track in sorted(
-        entries.providers, key=lambda track: (not track.track_number, _preference(track))
-    ):
+    for track in sorted(entries.providers, key=lambda track: _matching_order(track, entries)):
         isrcs = entries.usable_isrcs[id(track)]
         if isrcs.intersection(entries.library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
@@ -300,6 +298,26 @@ class _Slots:
             self.by_position.setdefault(position, slot)
         if title is not None:
             self.by_title.setdefault(title, slot)
+
+
+def _matching_order(
+    track: Track, entries: _Entries
+) -> tuple[bool, tuple[bool, str, str], tuple[int, int], tuple[int, str, str], tuple[str, ...]]:
+    """
+    Return the order an entry is matched in: placed first, preferred next, then by what it carries.
+
+    :param track: The entry.
+    :param entries: The album's entries, with their identifiers judged.
+    """
+    # entries alike down to their provider id must still be told apart by what they
+    # carry, never by the order the listings came in
+    return (
+        not track.track_number,
+        _preference(track),
+        _position(track),
+        entries.title_of[id(track)],
+        tuple(sorted(entries.usable_isrcs[id(track)])),
+    )
 
 
 def _contradict(isrcs: set[str], other: set[str]) -> bool:
