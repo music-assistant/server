@@ -92,11 +92,21 @@ def is_svg_data(data: bytes) -> bool:
     """Return True when the given bytes appear to be an SVG image."""
     if not data:
         return False
-    # the root <svg> may be preceded by an xml declaration, doctype or comment
-    sample = data[:1024].lstrip()
-    if not sample[:64].lower().startswith((b"<?xml", b"<svg", b"<!--", b"<!doctype")):
-        return False
-    return b"<svg" in sample.lower()
+    # the root <svg> may be preceded by an xml declaration, doctype or comments
+    sample = data[:1024].lower().lstrip()
+    while True:
+        if sample.startswith(b"<?"):
+            end = sample.find(b"?>")
+        elif sample.startswith(b"<!--"):
+            end = sample.find(b"-->")
+        elif sample.startswith(b"<!doctype"):
+            end = sample.find(b"]>") if b"[" in sample[: sample.find(b">")] else sample.find(b">")
+        else:
+            break
+        if end == -1:
+            return False
+        sample = sample[sample.find(b">", end) + 1 :].lstrip()
+    return sample.startswith(b"<svg") and sample[4:5] in (b" ", b">", b"/", b"\t", b"\n", b"\r")
 
 
 def detect_image_content_format(data: bytes) -> str | None:
@@ -449,8 +459,13 @@ async def _fetch_source_image(
     :param depth: Recursion depth of the originating get_image_data call.
     """
     prov = mass.get_provider(provider)
-    # builtin images and those of an unknown provider are client-supplied URLs
-    trusted_origin = prov is not None and prov.domain != "builtin"
+    # only the provider named by the image vouches for its URL; builtin images, those of
+    # an unknown provider and those served by a sibling instance are client-supplied URLs
+    trusted_origin = (
+        prov is not None
+        and prov.domain != "builtin"
+        and provider in (prov.instance_id, prov.domain)
+    )
     if prov:
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:

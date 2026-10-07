@@ -503,6 +503,17 @@ async def test_handle_imageproxy_rejects_unsupported_size(
     assert bad.text
 
 
+def test_is_svg_data_requires_an_svg_root_element() -> None:
+    """A document that merely contains an <svg> element somewhere is not SVG."""
+    assert not is_svg_data(b'<?xml version="1.0"?><secret>token<svg/></secret>')
+    assert not is_svg_data(b"<!-- <svg> --><html></html>")
+    assert not is_svg_data(b"<svgfoo></svgfoo>")
+    assert not is_svg_data(b'<?xml version="1.0"')
+    # a doctype with an internal subset is still a prolog
+    assert is_svg_data(b'<!DOCTYPE svg [ <!ENTITY e "x"> ]>\n<svg/>')
+    assert is_svg_data(b"<svg\n  xmlns='http://www.w3.org/2000/svg'/>")
+
+
 def test_is_svg_data() -> None:
     """SVG bytes are detected by content, regardless of file extension."""
     # plain root element

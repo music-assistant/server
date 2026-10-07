@@ -511,7 +511,7 @@ async def test_remote_http_404_yields_file_not_found(
 ) -> None:
     """A real HTTP 404 response converts into FileNotFoundError with one origin hit."""
     # a loaded provider is a trusted origin, so its URL on the loopback test server is fetched
-    fake_provider = MagicMock(spec=MusicProvider, domain="sonos")
+    fake_provider = MagicMock(spec=MusicProvider, domain="sonos", instance_id="sonos--1")
     fake_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
     monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: fake_provider)
     hits = 0
@@ -607,7 +607,7 @@ async def test_loaded_provider_image_is_not_guarded(
     """An image URL handed out by a loaded (non-builtin) provider is fetched as is."""
     mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
     mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
-    fake_provider = MagicMock(spec=MusicProvider, domain="sonos")
+    fake_provider = MagicMock(spec=MusicProvider, domain="sonos", instance_id="sonos--1")
     fake_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
     monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: fake_provider)
     _fake_http_session(mass_minimal, {"http://localhost/art.jpg": (200, None, b"provider-art")})
@@ -618,6 +618,26 @@ async def test_loaded_provider_image_is_not_guarded(
         )
     assert data == b"provider-art"
     resolver.assert_not_called()
+
+
+async def test_sibling_provider_image_is_guarded(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image of an unavailable instance served by a sibling instance stays client-supplied."""
+    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
+    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
+    sibling = MagicMock(spec=MusicProvider, domain="spotify", instance_id="spotify--b")
+    sibling.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: sibling)
+    requested = _fake_http_session(
+        mass_minimal, {"http://localhost/art.jpg": (200, None, b"internal")}
+    )
+    with (
+        patch(RESOLVER, AsyncMock(return_value=["127.0.0.1"])),
+        pytest.raises(FileNotFoundError, match="blocked address"),
+    ):
+        await images._fetch_source_image(mass_minimal, "http://localhost/art.jpg", "spotify--a", 0)
+    assert requested == []
 
 
 async def test_own_imageproxy_url_cached_under_resolved_key_only(
