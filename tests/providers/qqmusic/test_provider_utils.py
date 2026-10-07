@@ -11,11 +11,19 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, UnplayableMediaError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import Album
 from qqmusic_api.models.lyric import GetLyricResponse
 from qqmusic_api.models.request import Credential
-from qqmusic_api.models.singer import HomepageHeaderResponse, HomepageTabDetailResponse
+from qqmusic_api.models.singer import (
+    HomepageHeaderResponse,
+    HomepageTabDetailResponse,
+    SingerAlbumListResponse,
+)
 from qqmusic_api.models.song import (
     GetCdnDispatchResponse,
     GetSongDetailResponse,
@@ -372,6 +380,76 @@ async def test_get_artist_albums_uses_typed_album_tab() -> None:
     albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "artist")
 
     assert albums == ["album_mid"]
+
+
+@pytest.mark.asyncio
+async def test_get_artist_albums_falls_back_to_typed_album_list() -> None:
+    """An empty AlbumTab falls back to QQ Music's typed album-list endpoint."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    get_album_list = AsyncMock(
+        return_value=SingerAlbumListResponse.model_validate(
+            {
+                "singerMid": "artist",
+                "total": 1,
+                "albumList": [{"albumID": 1, "albumMid": "fallback_mid", "albumName": "Album"}],
+            }
+        )
+    )
+    provider._qq_singer = SimpleNamespace(  # type: ignore[attr-defined]
+        get_tab_detail=AsyncMock(
+            return_value=HomepageTabDetailResponse.model_validate(
+                {
+                    "TabID": "album",
+                    "HasMore": 0,
+                    "NeedShowTab": 0,
+                    "Order": 0,
+                    "TabList": [],
+                }
+            )
+        ),
+        get_album_list=get_album_list,
+    )
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+    provider._parse_album = lambda item: item["mid"]  # type: ignore[attr-defined]
+
+    albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "artist")
+
+    assert albums == ["fallback_mid"]
+    get_album_list.assert_awaited_once_with("artist", num=100, page=1)
+
+
+@pytest.mark.asyncio
+async def test_get_artist_albums_falls_back_when_album_tab_is_unavailable() -> None:
+    """An unsupported AlbumTab uses QQ Music's typed album-list endpoint."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    get_album_list = AsyncMock(
+        return_value=SingerAlbumListResponse.model_validate(
+            {
+                "singerMid": "artist",
+                "total": 1,
+                "albumList": [{"albumID": 1, "albumMid": "fallback_mid", "albumName": "Album"}],
+            }
+        )
+    )
+    provider._qq_singer = SimpleNamespace(  # type: ignore[attr-defined]
+        get_tab_detail=AsyncMock(side_effect=MediaNotFoundError("AlbumTab is unavailable")),
+        get_album_list=get_album_list,
+    )
+
+    async def _run_with_session(coro):
+        return await coro
+
+    provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
+    provider._parse_album = lambda item: item["mid"]  # type: ignore[attr-defined]
+
+    albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "artist")
+
+    assert albums == ["fallback_mid"]
+    get_album_list.assert_awaited_once_with("artist", num=100, page=1)
 
 
 @pytest.mark.asyncio

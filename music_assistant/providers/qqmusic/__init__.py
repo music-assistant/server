@@ -790,16 +790,29 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(
                 f"Artist id {prov_artist_id} is not a QQ singer mid, cannot fetch albums"
             )
-        response = await self._run_with_session(
-            self._qq_singer.get_tab_detail(
-                prov_artist_id,
-                TabType.ALBUM,
-                page=1,
-                num=100,
+        try:
+            tab_response = await self._run_with_session(
+                self._qq_singer.get_tab_detail(
+                    prov_artist_id,
+                    TabType.ALBUM,
+                    page=1,
+                    num=100,
+                )
             )
-        )
+            source_albums = tab_response.album_tab.albums
+        except MediaNotFoundError:
+            source_albums = []
+        if not source_albums:
+            fallback_response = await self._run_with_session(
+                self._qq_singer.get_album_list(
+                    prov_artist_id,
+                    num=100,
+                    page=1,
+                )
+            )
+            source_albums = fallback_response.album_list
         albums: list[Album] = []
-        for album in response.album_tab.albums:
+        for album in source_albums:
             with suppress(InvalidDataError, TypeError, ValueError):
                 albums.append(self._parse_album(album.model_dump()))
         return albums
