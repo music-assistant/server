@@ -6,7 +6,7 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
@@ -258,7 +258,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 5
+    assert report["schema_version"] == 6
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
@@ -396,6 +396,27 @@ async def test_register_section(mass: MusicAssistant) -> None:
     unregister()
     report = await mass.diagnostics.get_report()
     assert report["sections"]["profiler"] == {"value": 2}
+
+
+async def test_provider_section_names_domain(mass: MusicAssistant) -> None:
+    """
+    Test that a provider section is named by the provider's domain and instance id.
+
+    :param mass: Full Music Assistant test instance.
+    """
+
+    class ConvertedSource:
+        domain = "filesystem_local"
+        instance_id = "filesystem_smb--fyQZakP3"
+
+        async def get_diagnostics(self) -> dict[str, Any]:
+            return {"value": 1}
+
+    with patch.object(
+        type(mass), "providers", new_callable=PropertyMock, return_value=[ConvertedSource()]
+    ):
+        report = await mass.diagnostics.get_report()
+    assert report["sections"]["provider.filesystem_local.filesystem_smb--fyQZakP3"] == {"value": 1}
 
 
 async def test_section_failure_isolation(mass: MusicAssistant) -> None:
