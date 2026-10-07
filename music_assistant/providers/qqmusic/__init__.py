@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from qqmusic_api.models.base import Song as QQMusicSong
-    from qqmusic_api.models.song import GetSongUrlsResponse
+    from qqmusic_api.models.song import GetCdnDispatchResponse, GetSongUrlsResponse
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -117,6 +117,7 @@ _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
 _RECOMMEND_GUESS_TTL = 60 * 60
 _RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
 _RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
+_CDN_DISPATCH_CACHE_KEY = "cdn_dispatch_sips_v1"
 
 
 async def setup(
@@ -151,8 +152,7 @@ class QQMusicProvider(MusicProvider):
     _musicid: int = 0
     _euin: str = ""
     _recommend_payload_cache: dict[str, tuple[float, Any]]
-    _cdn_sips: tuple[str, ...]
-    _cdn_refresh_monotonic: float
+    _cdn_dispatch_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -224,8 +224,7 @@ class QQMusicProvider(MusicProvider):
         self._last_credential_check_monotonic = 0.0
         self._musicid = int(self._credential.musicid)
         self._recommend_payload_cache = {}
-        self._cdn_sips = ()
-        self._cdn_refresh_monotonic = 0.0
+        self._cdn_dispatch_lock = asyncio.Lock()
         self.logger.info("QQ Music authenticated for uin %s", self._musicid)
         # Persist complete credential once on init so legacy configs gain refresh fields.
         self._persist_credential()
@@ -390,8 +389,6 @@ class QQMusicProvider(MusicProvider):
             await self._qq_client.close()
         self._qq_client = None
         self._recommend_payload_cache = {}
-        self._cdn_sips = ()
-        self._cdn_refresh_monotonic = 0.0
         await super().unload(is_removed)
 
     async def _get_recommend_payload_cached(
@@ -509,32 +506,58 @@ class QQMusicProvider(MusicProvider):
 
     async def _get_cdn_base(self) -> str:
         """Return a cached CDN root from QQ Music's public dispatch endpoint."""
-        now = time.monotonic()
-        if self._cdn_sips and now < self._cdn_refresh_monotonic:
-            return self._cdn_sips[0]
-        dispatch = await self._run_with_session(self._qq_song.get_cdn_dispatch())
-        if dispatch.retcode != 0:
-            raise ResourceTemporarilyUnavailable(
-                f"QQ Music CDN dispatch failed (code={dispatch.retcode})", backoff_time=30
+        if cdn_base := await self._get_cached_cdn_base():
+            return cdn_base
+        async with self._cdn_dispatch_lock:
+            if cdn_base := await self._get_cached_cdn_base():
+                return cdn_base
+            dispatch: GetCdnDispatchResponse = await self._run_with_session(
+                self._qq_song.get_cdn_dispatch()
             )
-        sips = tuple(
-            sip.rstrip("/")
-            for sip in dispatch.sip
-            if isinstance(sip, str) and sip.startswith(("http://", "https://"))
+            if dispatch.retcode != 0:
+                raise ResourceTemporarilyUnavailable(
+                    f"QQ Music CDN dispatch failed (code={dispatch.retcode})", backoff_time=30
+                )
+            sips: list[str] = [
+                sip.rstrip("/") for sip in dispatch.sip if sip.startswith(("http://", "https://"))
+            ]
+            if not sips:
+                raise ResourceTemporarilyUnavailable(
+                    "QQ Music CDN dispatch returned no playable CDN", backoff_time=30
+                )
+            ttl = min(
+                (
+                    value
+                    for value in (dispatch.refresh_time, dispatch.expiration, dispatch.cache_time)
+                    if value > 0
+                ),
+                default=300,
+            )
+            await self.mass.cache.set(
+                _CDN_DISPATCH_CACHE_KEY,
+                sips,
+                expiration=ttl,
+                provider=self.instance_id,
+            )
+            return sips[0]
+
+    async def _get_cached_cdn_base(self) -> str | None:
+        """Return a valid cached CDN root, honoring a forced cache refresh."""
+        cached_sips = await self.mass.cache.get(
+            _CDN_DISPATCH_CACHE_KEY,
+            provider=self.instance_id,
+            allow_bypass=True,
         )
-        if not sips:
-            raise ResourceTemporarilyUnavailable(
-                "QQ Music CDN dispatch returned no playable CDN", backoff_time=30
-            )
-        ttl_candidates = [
-            value
-            for value in (dispatch.refresh_time, dispatch.expiration, dispatch.cache_time)
-            if isinstance(value, int) and value > 0
-        ]
-        ttl = max(30, min(ttl_candidates, default=300))
-        self._cdn_sips = sips
-        self._cdn_refresh_monotonic = now + ttl
-        return sips[0]
+        if not isinstance(cached_sips, list):
+            return None
+        return next(
+            (
+                sip.rstrip("/")
+                for sip in cached_sips
+                if isinstance(sip, str) and sip.startswith(("http://", "https://"))
+            ),
+            None,
+        )
 
     @staticmethod
     def _to_positive_int(value: Any) -> int:

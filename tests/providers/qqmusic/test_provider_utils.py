@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from logging import INFO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -23,7 +24,9 @@ from qqmusic_api.models.song import (
 from qqmusic_api.models.songlist import CreateDeleteSonglistResp
 from qqmusic_api.modules.song import SongFileType
 
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.providers.qqmusic import (
+    _CDN_DISPATCH_CACHE_KEY,
     SUPPORTED_FEATURES,
     QQMusicProvider,
     _store_credential,
@@ -527,6 +530,30 @@ def _dispatch_response(
     )
 
 
+class _FakeCache:
+    """Minimal shared cache implementation for CDN dispatch tests."""
+
+    def __init__(self) -> None:
+        """Initialize the in-memory data and observable cache calls."""
+        self.data: dict[tuple[str, str], object] = {}
+        self.get = AsyncMock(side_effect=self._get)
+        self.set = AsyncMock(side_effect=self._set)
+
+    async def _get(
+        self, key: str, *, provider: str = "default", allow_bypass: bool = False, **_kwargs: object
+    ) -> object | None:
+        """Return cached data, respecting the central refresh context."""
+        if allow_bypass and BYPASS_CACHE.get():
+            return None
+        return self.data.get((provider, key))
+
+    async def _set(
+        self, key: str, data: object, *, provider: str = "default", **_kwargs: object
+    ) -> None:
+        """Store serializable test data."""
+        self.data[(provider, key)] = data
+
+
 def _stream_provider() -> QQMusicProvider:
     """Create a provider with no-op session handling for stream tests."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
@@ -535,8 +562,8 @@ def _stream_provider() -> QQMusicProvider:
     )
     provider._credential = Mock()
     provider.logger = Mock()
-    provider._cdn_sips = ()
-    provider._cdn_refresh_monotonic = 0.0
+    provider.mass = SimpleNamespace(cache=_FakeCache())
+    provider._cdn_dispatch_lock = asyncio.Lock()
 
     async def _run_with_session(coro):
         return await coro
@@ -613,30 +640,74 @@ async def test_get_cdn_base_rejects_failed_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_cdn_base_refreshes_at_shortest_dispatch_ttl(monkeypatch) -> None:
-    """The cached SIP expires at the earliest dispatch validity deadline."""
+async def test_get_cdn_base_uses_shared_cache_with_dispatch_ttl() -> None:
+    """The typed dispatch SIP uses MA's shared cache and the shortest upstream TTL."""
     provider = _stream_provider()
     get_cdn_dispatch = AsyncMock(
-        side_effect=[
-            _dispatch_response(
-                sip=("https://one.example/",), refresh_time=120, expiration=45, cache_time=90
-            ),
-            _dispatch_response(
-                sip=("https://two.example/",), refresh_time=120, expiration=45, cache_time=90
-            ),
-        ]
+        return_value=_dispatch_response(
+            sip=("https://one.example/",), refresh_time=10, expiration=45, cache_time=90
+        )
     )
     provider._qq_song = SimpleNamespace(get_cdn_dispatch=get_cdn_dispatch)  # type: ignore[attr-defined]
-    monotonic_values = iter((1000.0, 1044.9, 1045.0))
-    monkeypatch.setattr(
-        "music_assistant.providers.qqmusic.time",
-        SimpleNamespace(monotonic=lambda: next(monotonic_values)),
-    )
 
     assert await provider._get_cdn_base() == "https://one.example"
     assert await provider._get_cdn_base() == "https://one.example"
-    assert await provider._get_cdn_base() == "https://two.example"
+    get_cdn_dispatch.assert_awaited_once()
+    provider.mass.cache.set.assert_awaited_once_with(
+        _CDN_DISPATCH_CACHE_KEY,
+        ["https://one.example"],
+        expiration=10,
+        provider="qqmusic_instance",
+    )
+    assert all(
+        call.kwargs["allow_bypass"] is True for call in provider.mass.cache.get.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_cdn_base_refresh_bypasses_shared_cache() -> None:
+    """A forced refresh bypasses a cached dispatch SIP."""
+    provider = _stream_provider()
+    get_cdn_dispatch = AsyncMock(
+        side_effect=[
+            _dispatch_response(sip=("https://one.example/",)),
+            _dispatch_response(sip=("https://two.example/",)),
+        ]
+    )
+    provider._qq_song = SimpleNamespace(get_cdn_dispatch=get_cdn_dispatch)  # type: ignore[attr-defined]
+
+    assert await provider._get_cdn_base() == "https://one.example"
+    token = BYPASS_CACHE.set(True)
+    try:
+        assert await provider._get_cdn_base() == "https://two.example"
+    finally:
+        BYPASS_CACHE.reset(token)
     assert get_cdn_dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_cdn_base_coalesces_concurrent_cache_misses() -> None:
+    """Concurrent CDN cache misses share one dispatch request."""
+    provider = _stream_provider()
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def _dispatch() -> GetCdnDispatchResponse:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return _dispatch_response(sip=("https://one.example/",))
+
+    get_cdn_dispatch = AsyncMock(side_effect=_dispatch)
+    provider._qq_song = SimpleNamespace(get_cdn_dispatch=get_cdn_dispatch)  # type: ignore[attr-defined]
+
+    first = asyncio.create_task(provider._get_cdn_base())
+    await dispatch_started.wait()
+    second = asyncio.create_task(provider._get_cdn_base())
+    await asyncio.sleep(0)
+    release_dispatch.set()
+
+    assert await asyncio.gather(first, second) == ["https://one.example", "https://one.example"]
+    get_cdn_dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
