@@ -845,9 +845,15 @@ def _mock_image_response(
     return get
 
 
-async def test_resolve_image_fetches_an_entity_picture_with_the_token() -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/media_player_proxy/media_player.kitchen?token=abc&cache=123",
+        "/local/cover..jpg?v=1..2",
+    ],
+)
+async def test_resolve_image_fetches_an_entity_picture_with_the_token(path: str) -> None:
     """An entity picture path is fetched from Home Assistant with the access token."""
-    path = "/api/media_player_proxy/media_player.kitchen?token=abc&cache=123"
     async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
         get = _mock_image_response(provider, [b"\xff\xd8", b"jpeg"])
 

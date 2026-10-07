@@ -621,8 +621,9 @@ class HomeAssistantProvider(PluginProvider):
         :raises FileNotFoundError: When the path is not an HA image path, or HA does not
             answer with an image within the size limit.
         """
-        # the HTTP client resolves percent-encoded dot segments, so check the decoded form too
-        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in unquote(path):
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        path_segments = unquote(path.split("?", 1)[0]).split("/")
+        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
             raise FileNotFoundError("Image not found")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:

@@ -785,7 +785,8 @@ async def test_http_proxy_request_drops_hop_by_hop_headers(cert_pems: tuple[str,
 
     headers = {
         "host": "evil.com",
-        "Connection": "Upgrade",
+        "Connection": "Upgrade, X-Nominated",
+        "X-Nominated": "also hop-by-hop",
         "Transfer-Encoding": "chunked",
         "Authorization": "Bearer abc",
     }

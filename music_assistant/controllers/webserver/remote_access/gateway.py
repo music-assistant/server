@@ -591,10 +591,15 @@ class WebRTCGateway:
 
         async with self._http_proxy_semaphore:
             try:
-                forwarded_headers = {
-                    name: value
+                # a Connection header may nominate more hop-by-hop headers to drop
+                dropped = HTTP_PROXY_DROPPED_HEADERS | {
+                    token.strip().lower()
                     for name, value in headers.items()
-                    if name.lower() not in HTTP_PROXY_DROPPED_HEADERS
+                    if name.lower() == "connection"
+                    for token in str(value).split(",")
+                }
+                forwarded_headers = {
+                    name: value for name, value in headers.items() if name.lower() not in dropped
                 }
                 # Use shared HTTP session for this request
                 # this dial never leaves the host: TLS verification would fail on the bind
