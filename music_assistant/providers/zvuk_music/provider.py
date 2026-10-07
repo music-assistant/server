@@ -739,14 +739,15 @@ class ZvukMusicProvider(MusicProvider):
             ((c_url, c_format) for c_url, c_format in candidates if c_url),
             (None, AudioFormat()),
         )
-        self.logger.debug(
-            "Stream for track %s (quality_pref=%s): %s",
-            item_id,
-            quality_str,
-            f"{audio_format.content_type}/{audio_format.codec_type}" if url else "none",
-        )
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
+        self.logger.debug(
+            "Stream for track %s (quality_pref=%s): %s/%s",
+            item_id,
+            quality_str,
+            audio_format.content_type,
+            audio_format.codec_type,
+        )
 
         return StreamDetails(
             item_id=item_id,

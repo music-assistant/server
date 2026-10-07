@@ -80,6 +80,7 @@ class TestGetStreamDetailsFlac:
         assert result.audio_format.content_type == ContentType.MP4
         assert result.audio_format.codec_type == ContentType.FLAC
         assert result.path == "https://cdn.zvuk.com/t.mp4"
+        provider.client.get_stream_urls.assert_awaited_once_with("12345")
 
     @pytest.mark.asyncio
     async def test_flac_missing_falls_back_to_high(self) -> None:

@@ -1,4 +1,4 @@
-"""Tests for GraphQL FLAC streaming, playlist track positions and profile reuse."""
+"""Tests for playlist track positions and profile reuse."""
 
 from __future__ import annotations
 
@@ -6,74 +6,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType
 
 from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
-
-FLAC_URL = "https://cdn-progressive.zvuk.com/track-abc-flac-v4.mp4?expires=1&md5=x"
-HIGH_URL = "https://cdn68.zvuk.com/track/1/streamhq?sig=a"
-MID_URL = "https://cdn67.zvuk.com/track/1/stream?sig=b"
-
-
-def _stream_provider(quality_pref: str, flac: str | None, high: str | None = HIGH_URL) -> Any:
-    """
-    Create a provider whose GraphQL stream lookup returns the given URLs.
-
-    :param quality_pref: Quality preference ("lossless" or "high").
-    :param flac: URL in the GraphQL ``flac`` field.
-    :param high: URL in the GraphQL ``high`` field.
-    """
-    provider = MagicMock(spec=ZvukMusicProvider)
-    provider.config = MagicMock()
-    provider.config.get_value = MagicMock(return_value=quality_pref)
-    provider.instance_id = "zvuk_music--test"
-    provider.logger = MagicMock()
-    client = MagicMock(spec=ZvukMusicClient)
-    track = MagicMock()
-    track.duration = 306
-    track.has_flac = flac is not None
-    client.get_track = AsyncMock(return_value=track)
-    client.get_stream_urls = AsyncMock(return_value=[MagicMock(flac=flac, high=high, mid=MID_URL)])
-    provider.client = client
-    return provider
-
-
-class TestFlacViaGraphql:
-    """Lossless playback uses the GraphQL FLAC URL."""
-
-    @pytest.mark.asyncio
-    async def test_lossless_uses_graphql_flac_in_mp4(self) -> None:
-        """FLAC comes from GraphQL and is declared as FLAC inside an MP4 container."""
-        provider = _stream_provider("lossless", FLAC_URL)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == FLAC_URL
-        assert result.audio_format.content_type == ContentType.MP4
-        assert result.audio_format.codec_type == ContentType.FLAC
-        provider.client.get_stream_urls.assert_awaited_once_with("1")
-
-    @pytest.mark.asyncio
-    async def test_lossless_without_flac_uses_mp3_320(self) -> None:
-        """Tracks without FLAC fall back to MP3 320."""
-        provider = _stream_provider("lossless", None)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == HIGH_URL
-        assert result.audio_format.content_type == ContentType.MP3
-        assert result.audio_format.bit_rate == 320
-
-    @pytest.mark.asyncio
-    async def test_high_preference_ignores_flac(self) -> None:
-        """The high preference streams MP3 320 even when FLAC is offered."""
-        provider = _stream_provider("high", FLAC_URL)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == HIGH_URL
-        assert result.audio_format.content_type == ContentType.MP3
 
 
 def _playlist_provider(track_ids: list[str]) -> Any:
@@ -181,20 +116,3 @@ class TestConnectReusesProfile:
 
         assert client.user_id == "777"
         inner.get_profile.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_connect_without_profile_leaves_user_id_unknown(self) -> None:
-        """A blocked profile leaves the user ID unknown."""
-        client = ZvukMusicClient(token="valid")
-        inner = MagicMock()
-        inner.init = AsyncMock(return_value=inner)
-        inner.is_authorized = AsyncMock(return_value=True)
-        inner.profile = None
-
-        with patch(
-            "music_assistant.providers.zvuk_music.api_client.ClientAsync",
-            return_value=inner,
-        ):
-            await client.connect()
-
-        assert client.user_id is None

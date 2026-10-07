@@ -5,38 +5,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient
 from music_assistant.providers.zvuk_music.parsers import parse_playlist
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
-
-CDN_HIGH = "https://cdn68.zvuk.com/track/1/streamhq?sig=a"
-CDN_MID = "https://cdn67.zvuk.com/track/1/stream?sig=b"
-
-
-def _make_stream_provider(quality_pref: str, high: str | None, mid: str | None) -> MagicMock:
-    """
-    Create a provider whose GraphQL stream lookup returns the given URLs.
-
-    :param quality_pref: Quality preference ("lossless" or "high").
-    :param high: URL returned in the GraphQL ``high`` field.
-    :param mid: URL returned in the GraphQL ``mid`` field.
-    """
-    provider = MagicMock(spec=ZvukMusicProvider)
-    provider.config = MagicMock()
-    provider.config.get_value = MagicMock(return_value=quality_pref)
-    provider.instance_id = "zvuk_music--test"
-    provider.logger = MagicMock()
-    client = MagicMock(spec=ZvukMusicClient)
-    track = MagicMock()
-    track.duration = 200
-    track.has_flac = True
-    client.get_track = AsyncMock(return_value=track)
-    client.get_stream_urls = AsyncMock(return_value=[MagicMock(flac=None, high=high, mid=mid)])
-    provider.client = client
-    return provider
 
 
 class TestConnectWithBlockedProfile:
@@ -62,49 +35,6 @@ class TestConnectWithBlockedProfile:
     def test_user_id_is_none_before_connect(self) -> None:
         """user_id reports an unknown user instead of raising."""
         assert ZvukMusicClient(token="valid").user_id is None
-
-
-class TestStreamsViaGraphql:
-    """get_stream_details uses GraphQL stream URLs for MP3."""
-
-    @pytest.mark.asyncio
-    async def test_high_preference_uses_graphql_high(self) -> None:
-        """MP3 320 comes from GraphQL without touching the tiny stream endpoint."""
-        provider = _make_stream_provider("high", CDN_HIGH, CDN_MID)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == CDN_HIGH
-        assert result.audio_format.content_type == ContentType.MP3
-        assert result.audio_format.bit_rate == 320
-
-    @pytest.mark.asyncio
-    async def test_graphql_mid_when_high_missing(self) -> None:
-        """MP3 128 from GraphQL is used when no high-quality URL is offered."""
-        provider = _make_stream_provider("high", None, CDN_MID)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == CDN_MID
-        assert result.audio_format.bit_rate == 128
-
-    @pytest.mark.asyncio
-    async def test_lossless_without_flac_falls_back_to_graphql_high(self) -> None:
-        """Lossless falls back to GraphQL MP3 320 when no FLAC URL is offered."""
-        provider = _make_stream_provider("lossless", CDN_HIGH, CDN_MID)
-
-        result = await ZvukMusicProvider.get_stream_details(provider, "1")
-
-        assert result.path == CDN_HIGH
-        assert result.audio_format.content_type == ContentType.MP3
-
-    @pytest.mark.asyncio
-    async def test_raises_when_no_stream_anywhere(self) -> None:
-        """MediaNotFoundError when neither FLAC nor GraphQL MP3 is available."""
-        provider = _make_stream_provider("lossless", None, None)
-
-        with pytest.raises(MediaNotFoundError):
-            await ZvukMusicProvider.get_stream_details(provider, "1")
 
 
 class TestPlaylistEditableWithoutUserId:
