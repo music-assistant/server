@@ -34,7 +34,11 @@ def register_library_resources(mcp: Any, mass: MusicAssistant) -> None:
     @mcp.resource("library://playlist/{playlist_id}", tags={Capability.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def playlist_resource(playlist_id: str) -> str | None:
         """Full playlist record by library id."""
-        return visible_text(await mass.music.playlists.get_library_item(playlist_id))
+        playlist = await mass.music.playlists.get_library_item(playlist_id)
+        # get_library_item skips the playlist access record; hide it like MA's own getters
+        if playlist is not None and not mass.music.playlists.visible_to_caller(playlist):
+            return visible_text(None)
+        return visible_text(playlist)
 
     @mcp.resource("library://radio/{radio_id}", tags={Capability.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def radio_resource(radio_id: str) -> str | None:
