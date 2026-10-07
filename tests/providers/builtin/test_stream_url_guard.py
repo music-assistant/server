@@ -318,6 +318,25 @@ async def test_add_rejects_loopback_image_without_storing(method: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("image_url", ["rtsp://127.0.0.1/cam", "rtmp://[::1]:1935/live"])
+async def test_add_rejects_loopback_stream_scheme_image(image_url: str) -> None:
+    """add_track refuses an rtsp or rtmp image URL on a loopback host before storing it."""
+    provider = _make_provider()
+    with pytest.raises(InvalidDataError, match="blocked address"):
+        await provider.add_track("http://ok/song.mp3", "x", image_url=image_url)
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_manual_item_accepts_public_stream_scheme_image() -> None:
+    """An rtsp image URL on a public host passes validation."""
+    provider = _make_provider()
+    await provider.validate_manual_item(
+        _track_with_image("http://ok/song.mp3", "rtsp://cam.example.com/stream")
+    )
+
+
+@pytest.mark.asyncio
 async def test_library_add_rejects_loopback_image_without_storing() -> None:
     """library_add refuses a track whose image points at a loopback host."""
     provider = _make_provider()

@@ -30,14 +30,21 @@ from PIL import Image, UnidentifiedImageError
 from yarl import URL
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
-from music_assistant.helpers.security import ensure_safe_outbound_url, is_safe_path
+from music_assistant.helpers.security import (
+    ensure_safe_outbound_url,
+    is_safe_path,
+    provider_configured_endpoints,
+    url_endpoint,
+)
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.uri import BUILTIN_SCHEME_NAMES
 from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageClass
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.provider import Provider
 
 
 LOGGER = logging.getLogger(__name__)
@@ -459,13 +466,6 @@ async def _fetch_source_image(
     :param depth: Recursion depth of the originating get_image_data call.
     """
     prov = mass.get_provider(provider)
-    # only the provider named by the image vouches for its URL; builtin images, those of
-    # an unknown provider and those served by a sibling instance are client-supplied URLs
-    trusted_origin = (
-        prov is not None
-        and prov.domain != "builtin"
-        and provider in (prov.instance_id, prov.domain)
-    )
     if prov:
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:
@@ -493,6 +493,9 @@ async def _fetch_source_image(
         # unknown provider does fall through - it is gone for good, so missing is honest.
         msg = f"{provider} is not available to resolve image {path_or_url}"
         raise ProviderUnavailableError(msg)
+    # trusted: the provider named by the image is configured with the URL's host and port;
+    # any other URL may be client-supplied (library edits, queue items) and is guarded
+    trusted_origin = _is_provider_endpoint(prov, provider, path_or_url)
     # handle HTTP location
     if path_or_url.startswith("http"):
         # handle imageproxy URLs pointing to our own server
@@ -519,6 +522,13 @@ async def _fetch_source_image(
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read()), True
+    if not trusted_origin and _has_url_scheme(path_or_url):
+        # ffmpeg would open a stream URL (rtsp, rtmp) on the client's behalf
+        try:
+            await ensure_safe_outbound_url(mass, path_or_url, BUILTIN_SCHEME_NAMES)
+        except InvalidDataError as err:
+            msg = f"Failed to fetch image from {path_or_url}: {err}"
+            raise FileNotFoundError(msg) from err
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
@@ -972,3 +982,23 @@ def _doctype_end(sample: bytes) -> int:
         else:
             pos += 1
     return -1
+
+
+def _is_provider_endpoint(prov: Provider | None, provider: str, url: str) -> bool:
+    """Return True if prov is the non-builtin provider named by the image and serves url."""
+    return (
+        prov is not None
+        and prov.domain != "builtin"
+        and provider in (prov.instance_id, prov.domain)
+        and (endpoint := url_endpoint(url)) is not None
+        and endpoint in provider_configured_endpoints(prov)
+    )
+
+
+def _has_url_scheme(path_or_url: str) -> bool:
+    """Return True if path_or_url is a scheme://host URL rather than a local path."""
+    try:
+        parsed = urllib.parse.urlsplit(path_or_url)
+    except ValueError:
+        return False
+    return bool(parsed.scheme and parsed.netloc)

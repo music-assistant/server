@@ -95,7 +95,7 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.security import ensure_safe_outbound_url, is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
-from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, parse_uri
+from music_assistant.helpers.uri import BUILTIN_SCHEME_NAMES, BUILTIN_URL_SCHEMES, parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -560,8 +560,8 @@ class BuiltinProvider(MusicProvider):
         :raises InvalidDataError: If image_url points at an address the server may not fetch.
         """
         self._ensure_remote_image_url(image_url)
-        if image_url.startswith(("http://", "https://")):
-            await ensure_safe_outbound_url(self.mass, image_url)
+        if not image_url.startswith("data:image"):
+            await ensure_safe_outbound_url(self.mass, image_url, BUILTIN_SCHEME_NAMES)
 
     async def validate_manual_item(self, item: MediaItemType) -> None:
         """

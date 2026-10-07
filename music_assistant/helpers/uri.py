@@ -14,6 +14,9 @@ base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
 # plain stream URLs that resolve to the builtin provider, which takes the URL as its item_id
 BUILTIN_URL_SCHEMES: Final[tuple[str, ...]] = ("http://", "https://", "rtsp://", "rtmp://")
+BUILTIN_SCHEME_NAMES: Final[tuple[str, ...]] = tuple(
+    scheme.removesuffix("://") for scheme in BUILTIN_URL_SCHEMES
+)
 
 # the media types a provider publishes a canonical share URL for
 _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
