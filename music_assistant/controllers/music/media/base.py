@@ -285,7 +285,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
         self.mass.register_api_command(
-            f"music/{api_base}/count", self.library_count, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/count",
+            self.library_count,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/library_items",

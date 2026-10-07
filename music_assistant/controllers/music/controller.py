@@ -831,7 +831,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 setattr(result, result_fields[media_type], items)
         return result
 
-    @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/browse", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def browse(
         self, path: str | None = None, *, player_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -926,7 +926,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
-    @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "music/recently_played_items", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def recently_played(
         self,
         limit: int = 10,
@@ -1085,14 +1087,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for db_row in db_rows
         ]
 
-    @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "music/recently_added_tracks", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(
             limit=limit, order_by="timestamp_added_desc", summary=False
         )
 
-    @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "music/in_progress_items", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def in_progress_items(
         self, limit: int = 10, all_users: bool = False, providers: list[str] | None = None
     ) -> list[ItemMapping]:
@@ -1245,7 +1251,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/sound_effects", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/sound_effects", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def sound_effects(self) -> list[SoundEffect]:
         """Return all sound effect items from providers supporting them."""
         providers = self._apply_user_provider_filter(

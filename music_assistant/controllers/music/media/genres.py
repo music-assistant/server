@@ -204,11 +204,13 @@ class GenreController(MediaControllerBase[Genre]):
             "music/genres/genres_for_media_item",
             self.get_genres_for_media_item,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/genres/genre_exclusions_for_media_item",
             self.get_genre_exclusions_for_media_item,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/genres/exclude_genre_from_media_item",

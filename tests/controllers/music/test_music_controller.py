@@ -317,7 +317,7 @@ async def test_get_item_builtin_playlist_instance_uses_playlist_controller() -> 
 
 
 async def test_library_item_reads_allow_impersonation(mass: MusicAssistant) -> None:
-    """Every read of a single library item, or of its items, may run on behalf of a user."""
+    """Every library read that depends on the user may run on behalf of a user."""
     media_types = (
         "artists",
         "albums",
@@ -331,7 +331,7 @@ async def test_library_item_reads_allow_impersonation(mass: MusicAssistant) -> N
     commands = [
         f"music/{plural}/{name}"
         for plural in media_types
-        for name in ("get", "get_by_external_id", f"get_{plural.removesuffix('s')}")
+        for name in ("get", "get_by_external_id", f"get_{plural.removesuffix('s')}", "count")
     ]
     commands += [
         "music/item",
@@ -361,5 +361,14 @@ async def test_library_item_reads_allow_impersonation(mass: MusicAssistant) -> N
         "music/genres/overview",
         "music/genres/tracks",
         "music/genres/albums",
+        "music/genres/genres_for_media_item",
+        "music/genres/genre_exclusions_for_media_item",
+        "music/browse",
+        "music/recently_played_items",
+        "music/recently_added_tracks",
+        "music/in_progress_items",
+        "music/sound_effects",
+        "music/recommendations",
+        "music/recommendations/items",
     ]
     assert [cmd for cmd in commands if not mass.command_handlers[cmd].allow_impersonation] == []
