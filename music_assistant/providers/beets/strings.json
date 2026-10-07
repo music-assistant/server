@@ -11,6 +11,14 @@
     "beets_directory": {
       "label": "beets music directory on its own host",
       "description": "Optional. The directory value from your beets config, for example /home/you/Music. Files beets stored with this full path are looked up in the music directory instead."
+    },
+    "replaygain_target_level": {
+      "label": "ReplayGain target level (dB)",
+      "description": "The replaygain targetlevel from your beets config. beets stores ReplayGain gains relative to it; the beets default is 89."
+    },
+    "r128_target_level": {
+      "label": "R128 target level (dB)",
+      "description": "The replaygain r128_targetlevel from your beets config. beets stores R128 gains relative to it; the beets default is 84."
     }
   },
   "manifest": {

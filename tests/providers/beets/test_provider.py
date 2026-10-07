@@ -394,3 +394,12 @@ def test_setup_error_strings_have_no_placeholders() -> None:
     strings = json.loads(strings_path.read_text())
     for message in strings["errors"].values():
         assert "{" not in message
+
+
+async def test_options_hold_the_beets_target_levels(make_provider: MakeProvider) -> None:
+    """The ReplayGain and R128 target levels are options that default to beets' own defaults."""
+    provider = await make_provider()
+    entries = {entry.key: entry for entry in await provider.get_config_entries()}
+    assert entries["replaygain_target_level"].default_value == 89
+    assert entries["r128_target_level"].default_value == 84
+    assert all(entry.requires_reload for entry in entries.values())

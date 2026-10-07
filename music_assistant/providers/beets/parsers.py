@@ -36,6 +36,7 @@ from .constants import (
     ALBUM_TYPE_PRIORITY,
     ARTIST_MBID_ID_PREFIX,
     ARTIST_NAME_ID_PREFIX,
+    BEETS_DB_TO_LUFS_OFFSET,
     IMAGE_PATH_PREFIX,
     PARSER_VERSION,
     TRACK_ID_PREFIX,
@@ -52,6 +53,8 @@ class ParseContext:
     domain: str
     music_directory: str
     beets_directory: str | None
+    replaygain_target_level: int = 89
+    r128_target_level: int = 84
 
 
 def track_id_prefix(instance_id: str) -> str:
@@ -161,18 +164,19 @@ def parse_album_type(albumtypes: object, albumtype: object) -> AlbumType:
 
 
 def loudness_from_gains(
-    fields: Mapping[str, Any], level: Literal["track", "album"]
+    fields: Mapping[str, Any], level: Literal["track", "album"], ctx: ParseContext
 ) -> float | None:
     """
     Return integrated loudness in LUFS from beets' R128 or ReplayGain gain fields.
 
     :param fields: The beets item fields.
     :param level: Whether to read the track or the album gains.
+    :param ctx: The provider parse context, holding the target levels beets analyzed with.
     """
     if (r128_gain := _float(fields.get(f"r128_{level}_gain"))) is not None:
-        return -23 - r128_gain
+        return ctx.r128_target_level - BEETS_DB_TO_LUFS_OFFSET - r128_gain
     if (replaygain := _float(fields.get(f"rg_{level}_gain"))) is not None:
-        return -18 - replaygain
+        return ctx.replaygain_target_level - BEETS_DB_TO_LUFS_OFFSET - replaygain
     return None
 
 
@@ -215,16 +219,19 @@ def album_checksum(album: BeetsRow) -> str:
     return _digest([album.fields, album.flex])
 
 
-def item_checksum(item: BeetsRow, album: BeetsRow | None) -> str:
+def item_checksum(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext) -> str:
     """
-    Return a checksum that changes whenever the item, its album or the parsers change.
+    Return a checksum that changes with the item, its album, the parsers or the target levels.
 
     :param item: The beets item row.
     :param album: The item's album row, or None for singletons.
+    :param ctx: The provider parse context.
     """
     return _digest(
         [
             PARSER_VERSION,
+            ctx.replaygain_target_level,
+            ctx.r128_target_level,
             item.fields,
             item.flex,
             album.fields if album else None,

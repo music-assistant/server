@@ -10,6 +10,8 @@ from music_assistant_models.enums import AlbumType, ConfigEntryType
 CONF_LIBRARY_DB: Final = "library_db"
 CONF_MUSIC_DIRECTORY: Final = "music_directory"
 CONF_BEETS_DIRECTORY: Final = "beets_directory"
+CONF_REPLAYGAIN_TARGET_LEVEL: Final = "replaygain_target_level"
+CONF_R128_TARGET_LEVEL: Final = "r128_target_level"
 
 CONF_ENTRY_LIBRARY_DB = ConfigEntry(
     key=CONF_LIBRARY_DB,
@@ -27,6 +29,27 @@ CONF_ENTRY_BEETS_DIRECTORY = ConfigEntry(
     default_value="",
     required=False,
 )
+
+# beets' replaygain targetlevel and r128_targetlevel, in its dB scale; the stored gains are
+# relative to these, so they must match the beets config the library was analyzed with
+CONF_ENTRY_REPLAYGAIN_TARGET_LEVEL = ConfigEntry(
+    key=CONF_REPLAYGAIN_TARGET_LEVEL,
+    type=ConfigEntryType.INTEGER,
+    default_value=89,
+    range=(60, 110),
+    advanced=True,
+    requires_reload=True,
+)
+CONF_ENTRY_R128_TARGET_LEVEL = ConfigEntry(
+    key=CONF_R128_TARGET_LEVEL,
+    type=ConfigEntryType.INTEGER,
+    default_value=84,
+    range=(60, 110),
+    advanced=True,
+    requires_reload=True,
+)
+# beets converts its dB target levels to LUFS by subtracting this
+BEETS_DB_TO_LUFS_OFFSET: Final = 107
 
 # beets joins multi-valued fields (artists, genres, ...) with this in the database
 BEETS_MULTI_VALUE_DELIMITER: Final = "\\␀"

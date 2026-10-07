@@ -126,12 +126,28 @@ def test_parse_album_type(albumtypes: object, albumtype: object, expected: Album
 
 
 def test_loudness_prefers_r128_then_replaygain() -> None:
-    """R128 gains are relative to -23 LUFS, ReplayGain to -18."""
-    assert loudness_from_gains({"r128_track_gain": 2.0, "rg_track_gain": -5.0}, "track") == -25.0
-    assert loudness_from_gains({"rg_track_gain": -5.0}, "track") == -13.0
-    assert loudness_from_gains({"rg_album_gain": 1.5}, "album") == -19.5
-    assert loudness_from_gains({"rg_track_gain": "bogus"}, "track") is None
-    assert loudness_from_gains({}, "track") is None
+    """With beets' default targets, R128 gains are relative to -23 LUFS, ReplayGain to -18."""
+    both = {"r128_track_gain": 2.0, "rg_track_gain": -5.0}
+    assert loudness_from_gains(both, "track", CTX) == -25.0
+    assert loudness_from_gains({"rg_track_gain": -5.0}, "track", CTX) == -13.0
+    assert loudness_from_gains({"rg_album_gain": 1.5}, "album", CTX) == -19.5
+    assert loudness_from_gains({"rg_track_gain": "bogus"}, "track", CTX) is None
+    assert loudness_from_gains({}, "track", CTX) is None
+
+
+def test_loudness_follows_the_configured_target_levels() -> None:
+    """Gains beets computed against other target levels give the same loudness."""
+    ctx = replace(CTX, replaygain_target_level=92, r128_target_level=80)
+    assert loudness_from_gains({"rg_track_gain": -2.0}, "track", ctx) == -13.0
+    assert loudness_from_gains({"r128_album_gain": -2.0}, "album", ctx) == -25.0
+
+
+def test_item_checksum_follows_the_target_levels() -> None:
+    """Changing a target level changes every checksum, so the next sync re-imports loudness."""
+    item = _row(1, item_fields())
+    before = item_checksum(item, None, CTX)
+    assert item_checksum(item, None, replace(CTX, replaygain_target_level=92)) != before
+    assert item_checksum(item, None, replace(CTX, r128_target_level=80)) != before
 
 
 @pytest.mark.parametrize(
@@ -176,25 +192,25 @@ def test_item_checksum_follows_item_album_and_flex_changes() -> None:
     """Any change to the item, its album or either's flexible attributes changes the checksum."""
     album = _row(7, album_fields())
     item = _row(1, item_fields(album_id=7))
-    base = item_checksum(item, album)
+    base = item_checksum(item, album, CTX)
 
-    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields())) == base
-    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album) != base
-    assert item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album) != base
-    assert item_checksum(item, _row(7, album_fields(label="Other"))) != base
-    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"})) != base
-    assert item_checksum(item, None) != base
+    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields()), CTX) == base
+    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album, CTX) != base
+    assert item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album, CTX) != base
+    assert item_checksum(item, _row(7, album_fields(label="Other")), CTX) != base
+    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"}), CTX) != base
+    assert item_checksum(item, None, CTX) != base
     assert album_checksum(album) != album_checksum(_row(7, album_fields(), flex={"a": "b"}))
 
 
 def test_item_checksum_follows_parser_version(monkeypatch: pytest.MonkeyPatch) -> None:
     """Raising the parser version changes every checksum, so the next sync re-imports."""
     item = _row(1, item_fields())
-    before = item_checksum(item, None)
+    before = item_checksum(item, None, CTX)
     monkeypatch.setattr(
         "music_assistant.providers.beets.parsers.PARSER_VERSION", PARSER_VERSION + 1
     )
-    assert item_checksum(item, None) != before
+    assert item_checksum(item, None, CTX) != before
 
 
 def test_parse_artist_is_keyed_by_musicbrainz_id() -> None:

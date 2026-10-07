@@ -32,7 +32,7 @@ async def _stored_checksums(provider: BeetsProvider) -> list[dict[str, str]]:
             rows.append(
                 {
                     "provider_item_id": track_prov_id(item.id),
-                    "details": item_checksum(item, album),
+                    "details": item_checksum(item, album, provider._ctx),
                 }
             )
     return rows

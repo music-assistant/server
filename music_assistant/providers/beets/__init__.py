@@ -35,8 +35,12 @@ from .constants import (
     ARTIST_MBID_ID_PREFIX,
     ARTIST_NAME_ID_PREFIX,
     CONF_BEETS_DIRECTORY,
+    CONF_ENTRY_R128_TARGET_LEVEL,
+    CONF_ENTRY_REPLAYGAIN_TARGET_LEVEL,
     CONF_LIBRARY_DB,
     CONF_MUSIC_DIRECTORY,
+    CONF_R128_TARGET_LEVEL,
+    CONF_REPLAYGAIN_TARGET_LEVEL,
     IMAGE_PATH_PREFIX,
     ITEM_BATCH_SIZE,
     SYNC_CONCURRENCY,
@@ -57,7 +61,7 @@ from .parsers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
     from music_assistant_models.provider import ProviderManifest
 
@@ -99,6 +103,10 @@ class BeetsProvider(MusicProvider):
             domain=self.domain,
             music_directory=self.music_directory,
             beets_directory=self.beets_directory,
+            replaygain_target_level=self.get_config_value(
+                CONF_REPLAYGAIN_TARGET_LEVEL, return_type=int
+            ),
+            r128_target_level=self.get_config_value(CONF_R128_TARGET_LEVEL, return_type=int),
         )
 
     @property
@@ -110,6 +118,10 @@ class BeetsProvider(MusicProvider):
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
         return PurePosixPath(self.music_directory).name or None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the (options) config entries to configure this provider instance."""
+        return (CONF_ENTRY_REPLAYGAIN_TARGET_LEVEL, CONF_ENTRY_R128_TARGET_LEVEL)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -162,7 +174,7 @@ class BeetsProvider(MusicProvider):
             item,
             album,
             self._ctx,
-            item_checksum(item, album),
+            item_checksum(item, album, self._ctx),
         )
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -177,7 +189,7 @@ class BeetsProvider(MusicProvider):
                 item,
                 album,
                 self._ctx,
-                item_checksum(item, album),
+                item_checksum(item, album, self._ctx),
             )
             for item in await self.library.get_album_items(album.id)
         ]
@@ -267,7 +279,7 @@ class BeetsProvider(MusicProvider):
                         album = await self._album_for(item, albums)
                         item_id = track_item_id(self._ctx, item.id)
                         current_ids.add(item_id)
-                        checksum = item_checksum(item, album)
+                        checksum = item_checksum(item, album, self._ctx)
                         if previous.get(item_id) == checksum:
                             continue
                         await task_manager.create_task_with_limit(
@@ -326,12 +338,12 @@ class BeetsProvider(MusicProvider):
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=False
                     )
-            if (loudness := loudness_from_gains(item.fields, "track")) is not None:
+            if (loudness := loudness_from_gains(item.fields, "track", self._ctx)) is not None:
                 await self.mass.streams.audio_analysis.set_track_loudness(
                     track.item_id,
                     self.instance_id,
                     loudness,
-                    loudness_from_gains(item.fields, "album"),
+                    loudness_from_gains(item.fields, "album", self._ctx),
                 )
         except Exception as err:
             # one broken item must not abort the sync; it keeps its previous checksum, so the
