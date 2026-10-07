@@ -1315,9 +1315,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 track.metadata.lyrics = tlyric_text
         return track
 
-    @use_cache(3600 * 24, cache_checksum=_CACHE_VERSION)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
+        # dynamic playlists are built from their own short-TTL payload caches;
+        # they must not be pinned by the long-lived static playlist cache below
         if prov_playlist_id in _DYNAMIC_PLAYLIST_META:
             return await self._build_dynamic_playlist_for_id(prov_playlist_id)
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
@@ -1332,7 +1333,11 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if playlist := await self._build_heart_mode_dynamic_playlist():
                 return playlist
             raise MediaNotFoundError("Heart mode is currently unavailable, please try again later")
+        return await self._get_static_playlist_details_cached(prov_playlist_id)
 
+    @use_cache(3600 * 24, cache_checksum=_CACHE_VERSION)
+    async def _get_static_playlist_details_cached(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details for a static (NCM) playlist, cached."""
         payload = await self._client.get(
             "/playlist/detail",
             params={"id": prov_playlist_id, "cookie": self._cookie},
@@ -2133,27 +2138,26 @@ class NeteaseCloudMusicProvider(MusicProvider):
         self,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """Build the personalized items for the personal_recommend row."""
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-        # warm the independent payloads concurrently first: on a cold cache a
-        # sequential build would stack backend calls against the 30s row timeout
-        await asyncio.gather(
-            self._get_personal_fm_image_url(),
-            self._get_daily_recommend_image_url(),
-            self._get_radar_playlist_detail(
-                _RADAR_SOURCE_PLAYLIST_IDS[_PLAYLIST_PERSONAL_RADAR_ID]
+        # build the five playlists concurrently: each builder resolves its own
+        # short-TTL payloads exactly once, so no sequential chain of backend
+        # calls can stack up against the 30s row timeout
+        results = await asyncio.gather(
+            self._build_dynamic_playlist_for_id(_PLAYLIST_PERSONAL_FM_ID),
+            self._build_dynamic_playlist_for_id(_PLAYLIST_DAILY_RECOMMEND_ID),
+            *(
+                self._build_dynamic_playlist_for_id(radar_id)
+                for radar_id in _RADAR_SOURCE_PLAYLIST_IDS
             ),
-            self._get_radar_playlist_detail(_RADAR_SOURCE_PLAYLIST_IDS[_PLAYLIST_TIME_RADAR_ID]),
-            self._get_heart_mode_source_playlist(),
+            self._build_heart_mode_dynamic_playlist(),
             return_exceptions=True,
         )
-        for dynamic_id in (
-            _PLAYLIST_PERSONAL_FM_ID,
-            _PLAYLIST_DAILY_RECOMMEND_ID,
-            *_RADAR_SOURCE_PLAYLIST_IDS,
-        ):
-            items.append(await self._build_dynamic_playlist_for_id(dynamic_id))
-        if heart_playlist := await self._build_heart_mode_dynamic_playlist():
-            items.append(heart_playlist)
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        for result in results:
+            if isinstance(result, BaseException):
+                self.logger.warning("Failed to build a personal recommend item: %s", result)
+                continue
+            if result is not None:
+                items.append(result)
         return items
 
     async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:

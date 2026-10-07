@@ -213,6 +213,8 @@ async def test_get_playlist_dynamic_recommend_playlists(
 
     called_paths = {call.args[0] for call in client_mock.call_args_list}
     assert called_paths == {"/recommend/songs", "/playlist/detail"}
+    # dynamic playlists are served outside the long-lived static playlist cache
+    assert provider.mass.cache.get_with_freshness.await_count == 0
     assert daily.item_id == "daily_recommend_dynamic"
     assert daily.name == "Daily Recommendations"
     assert daily.is_dynamic
