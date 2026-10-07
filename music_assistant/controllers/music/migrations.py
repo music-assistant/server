@@ -1407,11 +1407,11 @@ async def _move_classical_genre_aliases(
     def _load_aliases(row: Mapping[str, Any]) -> list[str] | None:
         try:
             aliases = json_loads(row["genre_aliases"]) if row["genre_aliases"] else []
-        except ValueError:
+        except (TypeError, ValueError):
             return None
-        if not isinstance(aliases, list):
+        if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
             return None
-        return [x for x in aliases if isinstance(x, str)]
+        return aliases
 
     try:
         genre_columns = {
