@@ -29,7 +29,7 @@ RUN pip wheel --no-deps -w /wheels /fe
 # ---- stage 3: overlay fork server + fork frontend onto the nightly base -----
 FROM ghcr.io/music-assistant/server:nightly
 # PortAudio for sounddevice (local_audio provider + Sendspin); the base image lacks it
-RUN apt-get update && apt-get install -y --no-install-recommends libportaudio2 \
+RUN apt-get update && apt-get install -y --no-install-recommends libportaudio2 git \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY --from=fewheel /wheels /wheels
