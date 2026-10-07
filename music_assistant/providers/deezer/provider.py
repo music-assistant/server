@@ -84,6 +84,7 @@ SUPPORTED_FEATURES = {
 }
 
 CONF_ARL_TOKEN = "arl_token"
+CONF_FAMILY_PROFILE = "family_profile"
 
 
 class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
@@ -107,16 +108,20 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
+        # a Family profile has no ARL of its own, it is reached through the admin's ARL
+        family_profile = str(self.get_setup_value(CONF_FAMILY_PROFILE) or "")
 
         try:
-            self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            self.gql_client = DeezerGQLClient(
+                arl=arl_token, session=self.mass.http_session, account_id=family_profile
+            )
             logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)
             self.user_id = me.id
-            self.gw_client = GWClient(self.mass.http_session, arl_token)
+            self.gw_client = GWClient(self.mass.http_session, arl_token, family_profile)
             await self.gw_client.setup()
         except DeezerGWNoSubscriptionError as err:
             self.logger.error("Deezer account has no streamable subscription: %s", err)
