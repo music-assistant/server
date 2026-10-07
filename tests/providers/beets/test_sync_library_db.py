@@ -17,10 +17,10 @@ from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPP
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.beets import BeetsProvider
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID, track_prov_id
+from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Track
+    from music_assistant_models.media_items import Album, Artist, Track
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 LIBRARY_A = "beets--libA"
@@ -182,7 +182,7 @@ def _other_mapping(item_id: str) -> ProviderMapping:
     )
 
 
-def _mappings(item: Track | Album) -> set[tuple[str, str]]:
+def _mappings(item: Track | Album | Artist) -> set[tuple[str, str]]:
     """Return the (provider instance, provider item id) pairs of a library item."""
     return {(mapping.provider_instance, mapping.item_id) for mapping in item.provider_mappings}
 
@@ -663,3 +663,62 @@ class TestTwoBeetsLibraries:
         assert set(remaining) == {"A Two", "B One", "B Two"}
         assert remaining["B One"].item_id == tracks["B One"].item_id
         assert _mappings(remaining["B One"]) == _mappings(tracks["B One"])
+
+
+class TestMergedAlbumsOnTrackEdit:
+    """A track edit keeps the other beets albums merged into its library album."""
+
+    async def test_edit_keeps_the_other_albums_mapping(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """Both beets albums of the same release still map the library album afterwards."""
+        release = {"mb_albumid": str(uuid4()), "mb_releasegroupid": str(uuid4())}
+        first_album = _add_album(beets_db, "Album", **release)
+        second_album = _add_album(beets_db, "Album", **release)
+        edited = _add_item(beets_db, first_album, "One", track=1)
+        _add_item(beets_db, second_album, "Two", track=2)
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        albums = library_mass.music.albums
+        library_album = await albums.get_library_item_by_prov_id(
+            album_prov_id(first_album), INSTANCE_ID
+        )
+        assert library_album is not None
+        both = {
+            (INSTANCE_ID, album_prov_id(first_album)),
+            (INSTANCE_ID, album_prov_id(second_album)),
+        }
+        assert _mappings(library_album) == both
+
+        beets_db.update_item(edited, comments="Edited")
+        await _sync(provider)
+
+        library_album = await albums.get_library_item(library_album.item_id)
+        assert _mappings(library_album) == both
+
+
+class TestMergedArtistsOnTrackEdit:
+    """A track edit keeps the other beets artist ids merged into its library artist."""
+
+    async def test_edit_keeps_the_artist_id_without_mbid(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """An artist credited with and without its MusicBrainz id keeps both mappings."""
+        mbid = str(uuid4())
+        edited = _add_item(beets_db, None, "Tagged", **_artist_fields("Twin", mbid))
+        _add_item(beets_db, None, "Untagged", **_artist_fields("Twin", ""))
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        artists = library_mass.music.artists
+        library_artist = await artists.get_library_item_by_prov_id(
+            f"artist-mbid-{mbid}", INSTANCE_ID
+        )
+        assert library_artist is not None
+        both = {(INSTANCE_ID, f"artist-mbid-{mbid}"), (INSTANCE_ID, "artist-name-Twin")}
+        assert _mappings(library_artist) == both
+
+        beets_db.update_item(edited, comments="Edited")
+        await _sync(provider)
+
+        library_artist = await artists.get_library_item(library_artist.item_id)
+        assert _mappings(library_artist) == both

@@ -33,6 +33,7 @@
   "errors": {
     "library_db_not_found": "The beets library database file does not exist.",
     "library_db_invalid": "This file is not a readable beets library database.",
-    "music_directory_not_found": "The music directory does not exist."
+    "music_directory_not_found": "The music directory does not exist.",
+    "path_not_allowed": "This path is not in a storage location you can use."
   }
 }

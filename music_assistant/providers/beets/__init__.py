@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from aiofiles.os import wrap
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.media_items import Album, Artist
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
@@ -27,6 +28,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
 )
 from music_assistant.helpers.compare import compare_track
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
@@ -62,9 +64,11 @@ from .parsers import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+    from music_assistant_models.media_items import MediaItemType, ProviderMapping, Track
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.music.media.albums import AlbumsController
+    from music_assistant.controllers.music.media.artists import ArtistsController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -209,8 +213,8 @@ class BeetsProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         item = await self._get_item(item_id)
-        path = expand_path(item.fields.get("path"), self.music_directory, self.beets_directory)
-        if path is None or not await isfile(path):
+        path = await self._library_file(item.fields.get("path"))
+        if path is None:
             msg = f"Media file not found: {item_id}"
             raise MediaNotFoundError(msg)
         return StreamDetails(
@@ -237,13 +241,30 @@ class BeetsProvider(MusicProvider):
         if album is None:
             msg = f"Image not found: {path}"
             raise MediaNotFoundError(msg)
-        art_path = expand_path(
-            album.fields.get("artpath"), self.music_directory, self.beets_directory
-        )
-        if art_path is None or not await isfile(art_path):
+        art_path = await self._library_file(album.fields.get("artpath"))
+        if art_path is None:
             msg = f"Image not found: {path}"
             raise MediaNotFoundError(msg)
         return art_path
+
+    async def _library_file(self, value: object) -> str | None:
+        """
+        Return the path of an existing file a beets path column points at in the music directory.
+
+        Returns None when the file is missing or lies outside the music directory, also when
+        a symlink leads it out.
+
+        :param value: The raw path value from beets.
+        """
+        path = expand_path(value, self.music_directory, self.beets_directory)
+        if path is None or not await isfile(path):
+            return None
+        real_path, real_root = await asyncio.to_thread(
+            lambda: (os.path.realpath(path), os.path.realpath(self.music_directory))
+        )
+        if not is_safe_path(real_path, real_root):
+            return None
+        return path
 
     async def _get_item(self, prov_item_id: str) -> BeetsRow:
         """Return the beets item for a provider item id, or raise when beets has none."""
@@ -360,6 +381,7 @@ class BeetsProvider(MusicProvider):
     async def _overwrite_library_track(self, track: Track) -> None:
         """Replace a library track with a changed beets item, keeping other items merged into it."""
         tracks = self.mass.music.tracks
+        await self._keep_merged_album_and_artists(track)
         current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
         other_mappings = _other_item_mappings(current, track) if current else set()
         if current is None or not other_mappings:
@@ -374,6 +396,28 @@ class BeetsProvider(MusicProvider):
             # its favorite and its history, and the changed item is added on its own
             await tracks.remove_provider_mapping(current.item_id, self.instance_id, track.item_id)
             await tracks.add_item_to_library(track, overwrite_existing=False)
+
+    async def _keep_merged_album_and_artists(self, track: Track) -> None:
+        """Pass along the other beets albums and artists merged into a track's album and artists."""
+        # overwriting the track overwrites its album and artists too, which replaces every
+        # mapping of this instance on them; a library album or artist can also hold another
+        # beets album or artist id (a merged release, or an artist with and without an mbid)
+        music = self.mass.music
+        artists = [*track.artists]
+        if isinstance(track.album, Album):
+            await self._add_merged_mappings(music.albums, track.album)
+            artists.extend(track.album.artists)
+        for artist in artists:
+            if isinstance(artist, Artist):
+                await self._add_merged_mappings(music.artists, artist)
+
+    async def _add_merged_mappings(
+        self, controller: AlbumsController | ArtistsController, item: Album | Artist
+    ) -> None:
+        """Add the mappings of other beets items of this instance merged into item's library item."""
+        current = await controller.get_library_item_by_prov_id(item.item_id, self.instance_id)
+        if current is not None:
+            item.provider_mappings.update(_other_item_mappings(current, item))
 
     async def _get_previous_checksums(self) -> dict[str, str]:
         """Return the checksum stored for every beets item this instance imported before."""
@@ -458,17 +502,17 @@ def _mapped_ids(media_type: str) -> str:
     )
 
 
-def _other_item_mappings(library_track: Track, track: Track) -> set[ProviderMapping]:
+def _other_item_mappings(library_item: MediaItemType, item: MediaItemType) -> set[ProviderMapping]:
     """
-    Return the mappings of this instance's other beets items merged into a library track.
+    Return the mappings of this instance's other beets items merged into a library item.
 
-    :param library_track: The library track the changed beets item is mapped to.
-    :param track: The provider track of the changed beets item.
+    :param library_item: The library item the provider item is mapped to.
+    :param item: The provider item of this instance.
     """
     return {
         mapping
-        for mapping in library_track.provider_mappings
-        if mapping.provider_instance == track.provider and mapping.item_id != track.item_id
+        for mapping in library_item.provider_mappings
+        if mapping.provider_instance == item.provider and mapping.item_id != item.item_id
     }
 
 

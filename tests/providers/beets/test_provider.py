@@ -353,12 +353,104 @@ async def test_files_outside_the_music_directory_are_never_served(
         await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
 
 
+async def test_symlinks_leading_out_of_the_music_directory_are_never_served(
+    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path
+) -> None:
+    """A file inside the music directory that is a symlink to a file outside it is not found."""
+    secret = music_dir.parent / "secret.flac"
+    secret.write_bytes(b"secret")
+    (music_dir / "cover.jpg").symlink_to(secret)
+    (music_dir / "song.flac").symlink_to(secret)
+    album_id = beets_db.add_album(**album_fields(artpath=b"cover.jpg"))
+    item_id = beets_db.add_item(**item_fields(path=b"song.flac"))
+    provider = await make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.resolve_image(f"album/{album_id}")
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
+
+
+async def test_symlinks_within_the_music_directory_are_served(
+    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path
+) -> None:
+    """A symlink to another file inside the music directory still streams."""
+    target = music_dir / "real.flac"
+    target.write_bytes(b"fLaC" + bytes(16))
+    (music_dir / "song.flac").symlink_to(target)
+    item_id = beets_db.add_item(**item_fields(path=b"song.flac"))
+    provider = await make_provider()
+    details = await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
+    assert details.path == str(music_dir / "song.flac")
+
+
 @pytest.mark.parametrize("path", ["album/9999", "album/nope", "/etc/passwd", "Artist/cover.jpg"])
 async def test_resolve_image_rejects_other_paths(make_provider: MakeProvider, path: str) -> None:
     """Only album ids resolve; file paths are never served directly."""
     provider = await make_provider()
     with pytest.raises(MediaNotFoundError):
         await provider.resolve_image(path)
+
+
+def _setup_session(allowed: Callable[[str], bool], setup_data: dict[str, Any]) -> MagicMock:
+    """
+    Return a setup session whose storage only lets music sources use the allowed paths.
+
+    :param allowed: Whether a music source of the caller may read a path.
+    :param setup_data: The setup data the provider already has.
+    """
+    session = MagicMock()
+    session.context.setup_data = setup_data
+    session.context.manages_all_sources = False
+    session.mass.storage.can_hold_music_source = MagicMock(
+        side_effect=lambda path, _manages_all: allowed(path)
+    )
+    return session
+
+
+async def test_setup_flow_rejects_paths_outside_storage_locations(tmp_path: Path) -> None:
+    """The database and music directory must lie in a storage location, also behind symlinks."""
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "escape").symlink_to(tmp_path)
+    good = {
+        "library_db": str(media / "library.db"),
+        "music_directory": str(media / "music"),
+        "beets_directory": "",
+    }
+    session = _setup_session(lambda path: path.startswith(str(media)), {})
+    session.form = AsyncMock(
+        side_effect=[
+            {**good, "library_db": "/var/lib/library.db", "music_directory": "relative"},
+            {**good, "music_directory": str(media / "escape")},
+            good,
+        ]
+    )
+    session.finish = AsyncMock(return_value={"instance_id": INSTANCE_ID})
+
+    await run_setup(session)
+
+    first_errors = session.form.await_args_list[1].kwargs["errors"]
+    assert set(first_errors) == {"library_db", "music_directory"}
+    assert all(err.translation_key == "path_not_allowed" for err in first_errors.values())
+    assert set(session.form.await_args_list[2].kwargs["errors"]) == {"music_directory"}
+    session.finish.assert_awaited_once_with(good)
+
+
+async def test_setup_flow_keeps_unchanged_paths_on_reconfigure() -> None:
+    """A reconfigured source keeps the paths it already reads from without the storage check."""
+    current = {
+        "library_db": "/old/library.db",
+        "music_directory": "/old/music",
+        "beets_directory": "",
+    }
+    session = _setup_session(lambda _path: False, current)
+    session.form = AsyncMock(return_value=current)
+    session.finish = AsyncMock(return_value={"instance_id": INSTANCE_ID})
+
+    await run_setup(session)
+
+    session.mass.storage.can_hold_music_source.assert_not_called()
+    session.finish.assert_awaited_once_with(current)
 
 
 async def test_setup_flow_reprompts_with_error_then_finishes() -> None:

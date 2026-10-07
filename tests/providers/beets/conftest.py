@@ -114,6 +114,8 @@ def _mock_mass() -> MagicMock:
     mass.music.tracks.set_favorite = AsyncMock()
     mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     mass.music.tracks.get_library_items_by_prov_id = AsyncMock(return_value=[])
+    mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
     mass.music.tracks.remove_item_from_library = AsyncMock()
     mass.music.tracks.remove_provider_mapping = AsyncMock()
     mass.streams.audio_analysis.set_track_loudness = AsyncMock()

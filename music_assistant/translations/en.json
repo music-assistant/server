@@ -1207,6 +1207,7 @@
   "provider.beets.errors.library_db_invalid": "This file is not a readable beets library database.",
   "provider.beets.errors.library_db_not_found": "The beets library database file does not exist.",
   "provider.beets.errors.music_directory_not_found": "The music directory does not exist.",
+  "provider.beets.errors.path_not_allowed": "This path is not in a storage location you can use.",
   "provider.beets.manifest.description": "Play the music library you manage with beets.",
   "provider.beets.setup_flow.user.description": "Point Music Assistant at your beets library database and music directory. Music Assistant never changes your beets library.",
   "provider.beets.setup_flow.user.title": "Set up beets",
