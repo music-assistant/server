@@ -251,7 +251,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         :param subfolder: Optional subfolder path within the share.
         :param env_vars: Environment variables dict to modify with PASSWD if needed.
         :returns: Tuple of (mount command args, modified env vars).
+        :raises SetupFailedError: When the username or share would alter the mount options.
         """
+        # the username becomes part of the comma separated option string of mount.cifs
+        if username and username.lower() != "guest" and any(c in username for c in ",="):
+            raise SetupFailedError("The username must not contain ',' or '='")
+        if "," in share:
+            raise SetupFailedError("The share name must not contain ','")
+
         options = ["rw"]  # read-write access
 
         # We pass the password via the PASSWD environment variable to avoid
