@@ -141,6 +141,7 @@ def test_get_sort_options_for_genre_includes_supported_fields() -> None:
     fields = {option.field for option in options}
     assert SortField.TIMESTAMP_ADDED.value in fields
     assert SortField.TIMESTAMP_MODIFIED.value in fields
+    assert SortField.LAST_PLAYED.value in fields
     assert SortField.PLAY_COUNT.value in fields
     assert SortField.RANDOM_PLAY_COUNT.value in fields
 
@@ -174,6 +175,7 @@ async def test_resolve_sort_parameters_accepts_supported_field_for_media_type(
     )
     await mass.music.genres.library_items(sort_field=SortField.TIMESTAMP_ADDED)
     await mass.music.genres.library_items(sort_field=SortField.TIMESTAMP_MODIFIED)
+    await mass.music.genres.library_items(sort_field=SortField.LAST_PLAYED)
     await mass.music.genres.library_items(sort_field=SortField.PLAY_COUNT)
     await mass.music.genres.library_items(sort_field=SortField.RANDOM_PLAY_COUNT)
 
