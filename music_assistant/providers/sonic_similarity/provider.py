@@ -11,7 +11,6 @@ the package init.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -41,9 +40,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_analysis import (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    _parse_row,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
@@ -63,7 +64,6 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_SIMILAR_DIVERSITY,
     CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
-    EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
     PERIODIC_REFRESH_TASK_ID,
@@ -707,11 +707,7 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""
-        return await self.mass.music.database.get_count_from_query(
-            f"SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            "WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": AA_PROVIDER_DOMAIN, "media_type": MediaType.TRACK.value},
-        )
+        return await self.mass.streams.audio_analysis.get_audio_analysis_count(AA_PROVIDER_DOMAIN)
 
     async def _periodic_refresh(self) -> None:
         """Scheduled-task handler: rebuild indexes when the analysis row count changed."""
@@ -1632,13 +1628,10 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen.add(key)
                 if self._clap_index.contains(row["provider"], row["item_id"]):
                     continue
-                try:
-                    raw = json.loads(row["analysis_data"])
-                except ValueError, TypeError:
+                analysis = _parse_row(row)
+                if analysis is None:
                     continue
-                emb = _parse_clap_embedding(
-                    (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)
-                )
+                emb = _parse_clap_embedding(analysis.clap_embedding)
                 if emb is None:
                     continue
                 try:
