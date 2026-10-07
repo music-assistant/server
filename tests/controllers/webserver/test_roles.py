@@ -367,7 +367,7 @@ async def test_a_user_can_be_created_with_a_custom_role(
     role = await auth_manager.create_role("Kids", [])
 
     kid = await auth_manager.create_user_with_api(
-        username="kid", password="password123", role=role.role_id
+        username="kid", password="password1234", role=role.role_id
     )
 
     assert kid.role == role.role_id
@@ -376,7 +376,7 @@ async def test_a_user_can_be_created_with_a_custom_role(
     assert stored_kid.role == role.role_id
     with pytest.raises(InvalidDataError) as excinfo:
         await auth_manager.create_user_with_api(
-            username="nobody", password="password123", role="unknown"
+            username="nobody", password="password1234", role="unknown"
         )
     assert excinfo.value.translation_key == "role_not_found"
     assert await auth_manager.get_user_by_username("nobody") is None

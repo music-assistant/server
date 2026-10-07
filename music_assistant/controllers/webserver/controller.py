@@ -88,7 +88,7 @@ from .helpers.auth_middleware import (
     set_current_user,
     set_impersonated_user,
 )
-from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
+from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role, validate_password
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -1298,10 +1298,10 @@ class WebserverController(CoreController):
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if len(password) < 8:
-            return web.json_response(
-                {"success": False, "error": "Password must be at least 8 characters"}, status=400
-            )
+        try:
+            validate_password(password)
+        except InvalidDataError as err:
+            return web.json_response({"success": False, "error": str(err)}, status=400)
 
         try:
             builtin_provider = self.auth.login_providers.get("builtin")

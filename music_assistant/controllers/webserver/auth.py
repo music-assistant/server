@@ -53,6 +53,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginProvider,
     LoginRateLimiter,
     normalize_username,
+    validate_password,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
@@ -1199,7 +1200,7 @@ class AuthenticationManager:
         Create a new user with built-in authentication (admin only).
 
         :param username: The username (minimum 2 characters, must not be in use).
-        :param password: The password (minimum 8 characters).
+        :param password: The password (minimum 12 characters).
         :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
@@ -1209,8 +1210,7 @@ class AuthenticationManager:
         # Validation
         await self._ensure_valid_username(username)
 
-        if not password or len(password) < 8:
-            raise InvalidDataError("Password must be at least 8 characters")
+        validate_password(password)
 
         self._ensure_role_exists(role)
 
@@ -1539,7 +1539,7 @@ class AuthenticationManager:
         :param username: New username (optional, minimum 2 characters, must not be in use).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
-        :param password: New password (optional, minimum 8 characters).
+        :param password: New password (optional, minimum 12 characters).
         :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
@@ -2412,8 +2412,7 @@ class AuthenticationManager:
         current_user: User,
     ) -> None:
         """Update user password (helper method)."""
-        if len(password) < 8:
-            raise InvalidDataError("Password must be at least 8 characters")
+        validate_password(password)
 
         builtin_provider = self.login_providers.get("builtin")
         if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):

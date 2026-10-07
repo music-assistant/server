@@ -1472,7 +1472,7 @@ async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None
     # Create user via API
     user = await auth_manager.create_user_with_api(
         username="apiuser",
-        password="password123",
+        password="password1234",
         role="user",
         display_name="API User",
     )
@@ -1496,19 +1496,19 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
     with pytest.raises(InvalidDataError, match="Username must be at least 2 characters") as excinfo:
         await auth_manager.create_user_with_api(
             username="a",
-            password="password123",
+            password="password1234",
         )
     assert excinfo.value.translation_key == "username_too_short"
 
     # Test 2-character username is accepted (minimum allowed)
     user_2char = await auth_manager.create_user_with_api(
         username="ab",
-        password="password123",
+        password="password1234",
     )
     assert user_2char.username == "ab"
 
     # Test password too short
-    with pytest.raises(InvalidDataError, match="Password must be at least 8 characters"):
+    with pytest.raises(InvalidDataError, match="Password must be at least 12 characters"):
         await auth_manager.create_user_with_api(
             username="validuser",
             password="short",
@@ -1521,13 +1521,13 @@ async def test_create_user_api_refuses_taken_username(
     """Test that creating a user refuses a username another account has, also a disabled one."""
     admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
     set_current_user(admin)
-    await auth_manager.create_user_with_api(username="taken", password="password123")
-    disabled = await auth_manager.create_user_with_api(username="gone", password="password123")
+    await auth_manager.create_user_with_api(username="taken", password="password1234")
+    disabled = await auth_manager.create_user_with_api(username="gone", password="password1234")
     await auth_manager.disable_user(disabled.user_id)
 
     for username in (" Taken ", "gone"):
         with pytest.raises(InvalidDataError) as excinfo:
-            await auth_manager.create_user_with_api(username=username, password="password123")
+            await auth_manager.create_user_with_api(username=username, password="password1234")
         assert excinfo.value.translation_key == "username_taken"
 
 
@@ -1537,8 +1537,8 @@ async def test_update_user_profile_refuses_taken_username(
     """Test that renaming a user refuses a username another account has."""
     admin = await auth_manager.create_user(username="renameadmin", role=UserRole.ADMIN)
     set_current_user(admin)
-    await auth_manager.create_user_with_api(username="taken", password="password123")
-    user = await auth_manager.create_user_with_api(username="renamer", password="password123")
+    await auth_manager.create_user_with_api(username="taken", password="password1234")
+    user = await auth_manager.create_user_with_api(username="renamer", password="password1234")
 
     with pytest.raises(InvalidDataError) as excinfo:
         await auth_manager.update_user_profile(
