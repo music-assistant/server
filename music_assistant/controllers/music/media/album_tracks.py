@@ -39,9 +39,9 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
         if isrcs.intersection(entries.library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
             continue
-        if entries.library_ids.intersection(_ids(track)):
-            continue
         ids = entries.usable_ids[id(track)]
+        if entries.library_ids.intersection(ids):
+            continue
         source = entries.source_of[id(track)]
         title = entries.title_of[id(track)]
         position = _position(track) if track.track_number else None
@@ -212,9 +212,23 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
         {id(track): _isrcs(track) for track in library + providers}, source_of
     )
     title_of = {id(track): _title(track) for track in library + providers}
+    usable_ids = _listed_once({id(track): _ids(track) for track in providers}, source_of)
     library_isrcs_by_title: dict[tuple[int, str, str], set[str]] = defaultdict(set)
     for track in library:
         library_isrcs_by_title[title_of[id(track)]].update(usable_isrcs[id(track)])
+    # a provider's own copy of a library row (by id) says which recording the row is: its
+    # ISRCs count as the row's, so another provider's copy of that recording knows it too
+    library_row_by_id = Counter(key for track in library for key in _ids(track))
+    library_title_by_id = {
+        key: title_of[id(track)]
+        for track in library
+        for key in _ids(track)
+        if library_row_by_id[key] == 1
+    }
+    for track in providers:
+        for key in usable_ids[id(track)]:
+            if (row_title := library_title_by_id.get(key)) is not None:
+                library_isrcs_by_title[row_title].update(usable_isrcs[id(track)])
     return _Entries(
         providers=providers,
         source_of=source_of,
@@ -223,12 +237,12 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
             for source, listing in enumerate(listings)
             for index, track in enumerate(listing)
         },
-        usable_ids=_listed_once({id(track): _ids(track) for track in providers}, source_of),
+        usable_ids=usable_ids,
         usable_isrcs=usable_isrcs,
         title_of=title_of,
         unique_titles=_unique_titles(library + providers, title_of, source_of),
-        library_ids={key for track in library for key in _ids(track)},
-        library_isrcs={isrc for track in library for isrc in usable_isrcs[id(track)]},
+        library_ids=set(library_row_by_id),
+        library_isrcs={isrc for isrcs in library_isrcs_by_title.values() for isrc in isrcs},
         library_isrcs_by_title=dict(library_isrcs_by_title),
         occupied={_position(track) for track in library if track.track_number},
     )

@@ -247,6 +247,26 @@ def test_sources_at_one_position_collapse_in_any_order(order: tuple[int, ...]) -
     assert [track.item_id for track in selected] == ["one"]
 
 
+def test_repeated_provider_id_does_not_hide_a_second_entry_behind_a_library_row() -> None:
+    """A listing repeating the library row's provider id still lists its other position."""
+    row = entry("library", "42", 1)
+    row.provider_mappings = entry("b", "b1").provider_mappings
+    tracks = [entry("b", "b1", 1), entry("b", "b1", 2)]
+    assert [track.track_number for track in select([row], tracks)] == [2]
+
+
+def test_a_library_rows_provider_copy_lends_it_its_isrc() -> None:
+    """Another provider's copy sharing the ISRC of the row's own copy is the row's recording."""
+    row = entry("library", "42", 1)
+    row.provider_mappings = entry("a", "one").provider_mappings
+    own_copy = entry("a", "one", 1, "GBAYC2100001")
+    other = entry("b", "two", 2, "GBAYC2100001")
+    assert select([row], [own_copy, other]) == []
+    # the lent ISRC also speaks against a title join by an entry naming another recording
+    stranger = entry("b", "three", 0, "GBAYC2100002")
+    assert [t.item_id for t in select([row], [own_copy, stranger])] == ["three"]
+
+
 def test_repeated_provider_id_within_a_listing_identifies_nothing() -> None:
     """A listing carrying one provider id at two positions still joins the slots by position."""
     tracks = [entry("a", "a1", 1), entry("a", "a2", 2), entry("b", "b1", 1), entry("b", "b1", 2)]
