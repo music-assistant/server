@@ -1012,7 +1012,8 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if PairMethod.PAIRING_PSK in pair_methods:
+        # The token is meant for automated pairing, so offer it only when no PIN method is usable.
+        if not options and PairMethod.PAIRING_PSK in pair_methods:
             options.append(PAIR_METHOD_TOKEN)
         return options
 
