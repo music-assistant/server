@@ -32,7 +32,7 @@ certifi==2025.11.12
 chardet==7.6.0
 colorlog==6.12.0
 cryptography==50.0.0
-deezer-python-gql==0.19.0
+deezer-python-gql==0.20.0
 defusedxml==0.7.1
 deno==2.9.6
 duration-parser==1.0.1
@@ -107,7 +107,7 @@ websocket-client==1.9.2
 wiim==0.1.9
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-ya-passport-auth[ma]==2.1.0
+ya-passport-auth[ma]==2.2.0
 yadisk==3.4.1
 yandex-music==3.0.0
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
