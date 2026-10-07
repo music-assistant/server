@@ -8,6 +8,7 @@ import hmac
 from unittest import mock
 
 import pytest
+from yandex_music import ClientAsync
 from yandex_music.exceptions import NetworkError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
@@ -210,6 +211,35 @@ async def test_rotor_feedback_unknown_type_falls_back(
     mock_client.rotor_station_feedback_skip.assert_not_called()
 
 
+@pytest.mark.parametrize("event", ["radioStarted", "trackStarted", "trackFinished", "skip"])
+async def test_rotor_feedback_sends_json_through_real_client(
+    client: KionMusicClient, event: str
+) -> None:
+    """Radio events use the library's JSON transport, including the batch identifier."""
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "post", return_value="ok") as request_post:
+        assert await client.send_rotor_station_feedback(
+            "user:onyourwave",
+            event,
+            track_id="42",
+            batch_id="batch-1",
+            total_played_seconds=10,
+        )
+
+    request_post.assert_awaited_once()
+    args, kwargs = request_post.call_args
+    assert args[0] == f"{DEFAULT_BASE_URL}/rotor/station/user:onyourwave/feedback"
+    assert kwargs["params"] == {"batch-id": "batch-1"}
+    assert "data" not in kwargs
+    assert kwargs["json"]["type"] == event
+    assert kwargs["json"]["timestamp"].endswith("Z")
+    if event != "radioStarted":
+        assert kwargs["json"]["trackId"] == "42"
+    if event in ("trackFinished", "skip"):
+        assert kwargs["json"]["totalPlayedSeconds"] == 10.0
+
+
 # ─── get_track_file_info: params + sign construction ─────────────────────────
 
 
@@ -217,22 +247,20 @@ async def test_get_track_file_info_normalizes_codec_whitespace(
     client: KionMusicClient,
 ) -> None:
     """Whitespace around codec tokens is stripped from both params and sign string."""
-    mock_client = mock.AsyncMock()
-    mock_client.base_url = DEFAULT_BASE_URL
-    mock_request = mock.AsyncMock()
-    mock_request.get = mock.AsyncMock(return_value={"downloadInfo": None})
-    mock_client._request = mock_request
-    client._client = mock_client
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(
+        real_client.request, "get", return_value={"downloadInfo": None}
+    ) as request_get:
+        await client.get_track_file_info(
+            "42",
+            quality="lossless",
+            codecs=" flac-mp4 , flac , aac-mp4 ",
+            transport="raw",
+        )
 
-    await client.get_track_file_info(
-        "42",
-        quality="lossless",
-        codecs=" flac-mp4 , flac , aac-mp4 ",
-        transport="raw",
-    )
-
-    mock_request.get.assert_awaited_once()
-    _, kwargs = mock_request.get.call_args
+    request_get.assert_awaited_once()
+    _, kwargs = request_get.call_args
     params = kwargs["params"]
     assert params["codecs"] == "flac-mp4,flac,aac-mp4"
 
@@ -241,22 +269,20 @@ async def test_get_track_file_info_builds_signed_params(
     client: KionMusicClient,
 ) -> None:
     """Sign string is ts+trackId+quality+codecs_no_commas+transport, b64(HMAC-SHA256)[:-1]."""
-    mock_client = mock.AsyncMock()
-    mock_client.base_url = DEFAULT_BASE_URL
-    mock_request = mock.AsyncMock()
-    mock_request.get = mock.AsyncMock(return_value={"downloadInfo": None})
-    mock_client._request = mock_request
-    client._client = mock_client
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(
+        real_client.request, "get", return_value={"downloadInfo": None}
+    ) as request_get:
+        await client.get_track_file_info(
+            "42",
+            quality="lossless",
+            codecs="flac-mp4,flac",
+            transport="encraw",
+        )
 
-    await client.get_track_file_info(
-        "42",
-        quality="lossless",
-        codecs="flac-mp4,flac",
-        transport="encraw",
-    )
-
-    mock_request.get.assert_awaited_once()
-    args, kwargs = mock_request.get.call_args
+    request_get.assert_awaited_once()
+    args, kwargs = request_get.call_args
     assert args[0] == f"{DEFAULT_BASE_URL}/get-file-info"
     params = kwargs["params"]
     assert params["trackId"] == "42"
