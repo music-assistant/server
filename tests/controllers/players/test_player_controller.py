@@ -5404,6 +5404,48 @@ class TestPlayAnnouncementCleanup:
         render.wait_ready.assert_awaited_once()
         render.wait_finished.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        ("url", "pre_announce_url"),
+        [
+            ("http://127.0.0.1:8123/api/states", None),
+            ("http://test/announcement.mp3", "http://[::1]/chime.mp3"),
+        ],
+    )
+    async def test_loopback_announcement_url_is_refused(
+        self, mock_mass: MagicMock, url: str, pre_announce_url: str | None
+    ) -> None:
+        """An announcement or chime URL on a loopback address never reaches the player."""
+        announcements: dict[str, object] = {}
+        controller, player, _render = self._make_player(mock_mass, announcements)
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerCommandFailed, match="not allowed"):
+            await controller.play_announcement(
+                "player_1",
+                url,
+                pre_announce=pre_announce_url is not None,
+                pre_announce_url=pre_announce_url,
+            )
+
+        player.play_announcement.assert_not_awaited()
+        mock_mass.streams.announcement_renderer.register.assert_not_called()
+
+    async def test_lan_announcement_url_is_played(self, mock_mass: MagicMock) -> None:
+        """An announcement URL in the local network (e.g. Home Assistant TTS) is played."""
+        announcements: dict[str, object] = {}
+        controller, player, _render = self._make_player(mock_mass, announcements)
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "music_assistant.helpers.security.resolve_hostname",
+            AsyncMock(return_value=["192.168.1.5"]),
+        ):
+            await controller.play_announcement(
+                "player_1", "http://homeassistant.local:8123/api/tts_proxy/x.mp3"
+            )
+
+        player.play_announcement.assert_awaited_once()
+
     async def test_feature_still_offered_after_the_render_keeps_the_native_path(
         self, mock_mass: MagicMock
     ) -> None:

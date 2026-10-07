@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -1531,6 +1532,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # to preserve custom modifications (name, images, etc.) that are not stored yet.
         # Anything else is fetched fresh to ensure data validity
         elif item.provider == "builtin" and item.media_type in (MediaType.TRACK, MediaType.RADIO):
+            if not (builtin_prov := self.mass.get_provider("builtin")):
+                raise ProviderUnavailableError("The builtin provider is not available")
+            await cast("BuiltinProvider", builtin_prov).validate_manual_item(item)
             full_item = item
         else:
             full_item = await self.get_item(

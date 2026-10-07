@@ -9,17 +9,25 @@ source, so a shared account is readable and still never written to.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.enums import ImageType, MediaType, ProviderSharing, ProviderType
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import (
+    MediaItemImage,
+    MediaItemMetadata,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -359,6 +367,7 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
     """The provider-side add goes to the own account, and only that mapping reads in_library."""
     _as_user(monkeypatch, _user())
     controller = _controller(THREE_ACCOUNTS)
+    _with_builtin(controller, Mock(validate_manual_item=AsyncMock()))
     mappings = [_mapping(MINE, "mine-42"), _mapping(THEIRS, "theirs-42")]
     item = Mock(provider="builtin", media_type=MediaType.TRACK, provider_mappings=mappings)
     ctrl = Mock(add_item_to_library=AsyncMock(return_value=item))
@@ -373,6 +382,41 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
     assert seen[MINE].library_add.call_count == 1
     assert THEIRS not in seen
     assert [m.in_library for m in mappings] == [True, False]
+
+
+async def test_add_item_to_library_refuses_a_manual_item_with_a_loopback_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A builtin track whose image points at a loopback host is refused before any write."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    builtin = BuiltinProvider.__new__(BuiltinProvider)
+    builtin.mass = controller.mass
+    builtin.manifest = Mock(domain="builtin")
+    _with_builtin(controller, builtin)
+    ctrl = Mock(add_item_to_library=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    track = Track(
+        item_id="http://radio.example.com/stream.mp3",
+        provider="builtin",
+        name="Stream",
+        provider_mappings={_mapping(MINE, "http://radio.example.com/stream.mp3")},
+        metadata=MediaItemMetadata(
+            images=UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB, path="http://127.0.0.1:8095/api", provider="builtin"
+                    )
+                ]
+            )
+        ),
+    )
+
+    with pytest.raises(InvalidDataError):
+        await controller.add_item_to_library(track)
+
+    ctrl.add_item_to_library.assert_not_awaited()
+    cast("Mock", controller.mass).create_task.assert_not_called()
 
 
 async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
@@ -513,3 +557,12 @@ async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
     assert all(not prov.set_favorite.called for prov in seen.values())
     # the library row is still the user's own, so the star is not lost
     ctrl.set_favorite.assert_awaited_once_with("42", True, [ME])
+
+
+def _with_builtin(controller: MusicController, builtin: object) -> None:
+    """Make the stub registry also return the given builtin provider."""
+    mass = cast("Mock", controller.mass)
+    get_provider = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda instance_id, *args, **kwargs: (
+        builtin if instance_id == "builtin" else get_provider(instance_id, *args, **kwargs)
+    )

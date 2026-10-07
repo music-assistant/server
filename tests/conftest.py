@@ -83,6 +83,16 @@ def isolate_models_global_cache() -> Generator[None]:
     models_helpers._global_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def stub_outbound_url_resolution() -> Generator[None]:
+    """Resolve hostnames checked by the outbound URL guard to a public address, without DNS."""
+    with patch(
+        "music_assistant.helpers.security.resolve_hostname",
+        AsyncMock(return_value=["93.184.215.14"]),
+    ):
+        yield
+
+
 @pytest.fixture(name="caplog")
 def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
     """Set log level to debug for tests using the caplog fixture."""

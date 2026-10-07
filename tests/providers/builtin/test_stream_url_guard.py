@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -20,6 +21,8 @@ from music_assistant_models.media_items import (
 import music_assistant
 from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.providers.builtin import BuiltinProvider
+
+RESOLVER = "music_assistant.helpers.security.resolve_hostname"
 
 LOCAL_PATHS = [
     "/etc/passwd",
@@ -269,6 +272,62 @@ async def test_library_add_keeps_embedded_art_stream_scheme() -> None:
     track = _track_with_image("rtsp://host/stream", "rtsp://host/stream")
     assert await provider.library_add(track) is True
     cast("Any", provider.mass).config.set.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_validate_manual_item_rejects_foreign_image_provider() -> None:
+    """A manual item can not carry an image that claims to belong to another provider."""
+    provider = _make_provider()
+    track = _track_with_image("http://ok/song.mp3", "http://93.184.215.14/a.jpg")
+    track.metadata.images = UniqueList(
+        [replace(image, provider="spotify") for image in track.metadata.images or ()]
+    )
+    with pytest.raises(InvalidDataError):
+        await provider.validate_manual_item(track)
+
+
+@pytest.mark.asyncio
+async def test_validate_manual_item_rejects_loopback_image() -> None:
+    """A manual item image pointing at a loopback address is refused."""
+    provider = _make_provider()
+    with pytest.raises(InvalidDataError):
+        await provider.validate_manual_item(
+            _track_with_image("http://ok/song.mp3", "http://127.0.0.1:8095/api")
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "image_url", ["https://cdn.example.com/cover.jpg", "data:image/png;base64,AAAA"]
+)
+async def test_validate_manual_item_accepts_public_and_data_images(image_url: str) -> None:
+    """A public image URL or an inline data URI passes validation."""
+    provider = _make_provider()
+    with patch(RESOLVER, AsyncMock(return_value=["93.184.215.14"])):
+        await provider.validate_manual_item(_track_with_image("http://ok/song.mp3", image_url))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["add_track", "add_radio"])
+async def test_add_rejects_loopback_image_without_storing(method: str) -> None:
+    """add_track and add_radio refuse a loopback image URL before writing to config."""
+    provider = _make_provider()
+    with pytest.raises(InvalidDataError):
+        await getattr(provider, method)("http://ok/song.mp3", "x", image_url="http://[::1]/a.jpg")
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_library_add_rejects_loopback_image_without_storing() -> None:
+    """library_add refuses a track whose image points at a loopback host."""
+    provider = _make_provider()
+    track = _track_with_image("http://ok/song.mp3", "http://localhost/a.jpg")
+    with (
+        patch(RESOLVER, AsyncMock(return_value=["127.0.0.1"])),
+        pytest.raises(InvalidDataError),
+    ):
+        await provider.library_add(track)
+    cast("Any", provider.mass).config.set.assert_not_called()
 
 
 @pytest.mark.asyncio

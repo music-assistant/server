@@ -26,7 +26,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import InvalidDataError, PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -48,6 +48,7 @@ from music_assistant.helpers.plugin_engines import (
     resolve_tts_engine,
     select_core_tts_engine,
 )
+from music_assistant.helpers.security import ensure_safe_outbound_url
 from music_assistant.helpers.tts import (
     query_tts_engine_with_language_fallback,
     resolve_tts_stream_path,
@@ -213,12 +214,20 @@ class AnnouncementsMixin:
             raise PlayerCommandFailed("A language can only be used to speak a message.")
         if url and not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
+        if url:
+            await self._ensure_safe_announcement_url(url)
         if (
             pre_announce
             and pre_announce_url
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
+        if (
+            pre_announce
+            and pre_announce_url
+            and pre_announce_url.startswith(("http://", "https://"))
+        ):
+            await self._ensure_safe_announcement_url(pre_announce_url)
         # A member's announcement detaches it from its (sync)group and joins it back
         # afterwards, which takes the group's lock - so that one is taken before the
         # member's own (see get_group_and_player_lock). A spoken message is rendered under
@@ -1082,3 +1091,10 @@ class AnnouncementsMixin:
                 return False
             provider_ids.add(announce_player.provider.instance_id)
         return len(provider_ids) <= 1
+
+    async def _ensure_safe_announcement_url(self, url: str) -> None:
+        """Raise PlayerCommandFailed if the server may not fetch the given announcement URL."""
+        try:
+            await ensure_safe_outbound_url(self.mass, url)
+        except InvalidDataError as err:
+            raise PlayerCommandFailed("Announcement URL is not allowed") from err

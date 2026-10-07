@@ -21,11 +21,16 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
+from yarl import URL
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import ensure_safe_outbound_url, is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
 
@@ -75,6 +80,8 @@ _SOURCE_MEMORY_MAX_BYTES = 32 * 1024 * 1024
 _SOURCE_MEMORY_ENTRY_MAX_BYTES = 8 * 1024 * 1024
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
+_MAX_GUARDED_REDIRECTS = 3
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 # Leading magic bytes used to sniff raster image formats from their content.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -441,7 +448,10 @@ async def _fetch_source_image(
     :param provider: The provider ID that can resolve the image.
     :param depth: Recursion depth of the originating get_image_data call.
     """
-    if prov := mass.get_provider(provider):
+    prov = mass.get_provider(provider)
+    # builtin images and those of an unknown provider are client-supplied URLs
+    trusted_origin = prov is not None and prov.domain != "builtin"
+    if prov:
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:
             # the provider looked and has nothing at this path: a miss, not a failed fetch
@@ -480,8 +490,8 @@ async def _fetch_source_image(
                 False,
             )
         try:
-            return await _fetch_remote_image(mass, path_or_url), True
-        except ClientError as err:
+            return await _fetch_remote_image(mass, path_or_url, guard=not trusted_origin), True
+        except (ClientError, InvalidDataError) as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
@@ -501,22 +511,39 @@ async def _fetch_source_image(
     raise FileNotFoundError(msg)
 
 
-async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
+async def _fetch_remote_image(mass: MusicAssistant, url: str, *, guard: bool = False) -> bytes:
     """
     Fetch raw image bytes over HTTP.
 
     :param mass: The MusicAssistant instance.
     :param url: The (http/https) image URL to fetch.
+    :param guard: Refuse the URL, and every redirect target, that points at a blocked address.
+    :raises InvalidDataError: If guard is set and a URL points at a blocked address.
     """
     # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
     # and even regular browser User-Agents, while still serving well-known fetch tools.
     # We keep identifying as Music Assistant but carry a Wget compatibility token, which
     # such CDNs allowlist, so artwork is served on the first (and only) request.
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
-    async with mass.http_session_no_ssl.get(
-        url, raise_for_status=True, headers={"User-Agent": user_agent}
-    ) as resp:
-        return await resp.read()
+    if not guard:
+        async with mass.http_session_no_ssl.get(
+            url, raise_for_status=True, headers={"User-Agent": user_agent}
+        ) as resp:
+            return await resp.read()
+    await ensure_safe_outbound_url(mass, url)
+    for _ in range(_MAX_GUARDED_REDIRECTS + 1):
+        async with mass.http_session_no_ssl.get(
+            url, allow_redirects=False, headers={"User-Agent": user_agent}
+        ) as resp:
+            location = resp.headers.get("Location")
+            if resp.status in _REDIRECT_STATUSES and location:
+                url = str(resp.url.join(URL(location)))
+                await ensure_safe_outbound_url(mass, url)
+                continue
+            resp.raise_for_status()
+            return await resp.read()
+    msg = f"Too many redirects fetching image: {url}"
+    raise FileNotFoundError(msg)
 
 
 async def get_image_thumb(

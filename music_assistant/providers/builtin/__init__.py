@@ -92,7 +92,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import ensure_safe_outbound_url, is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, parse_uri
@@ -418,7 +418,7 @@ class BuiltinProvider(MusicProvider):
             return False
         self._ensure_stream_url(item.item_id)
         if item.image:
-            self._ensure_remote_image_url(item.image.path)
+            await self.ensure_safe_image_url(item.image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -505,7 +505,7 @@ class BuiltinProvider(MusicProvider):
         """
         self._ensure_stream_url(url)
         if image_url:
-            self._ensure_remote_image_url(image_url)
+            await self.ensure_safe_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -533,7 +533,7 @@ class BuiltinProvider(MusicProvider):
         """
         self._ensure_stream_url(url)
         if image_url:
-            self._ensure_remote_image_url(image_url)
+            await self.ensure_safe_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -550,6 +550,35 @@ class BuiltinProvider(MusicProvider):
             [self.instance_id],
         )
         return await self.get_track(url)
+
+    async def ensure_safe_image_url(self, image_url: str) -> None:
+        """
+        Validate a client-supplied image reference for a manual track or radio.
+
+        :param image_url: The image URL or data URI.
+        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
+        :raises InvalidDataError: If image_url points at an address the server may not fetch.
+        """
+        self._ensure_remote_image_url(image_url)
+        if image_url.startswith(("http://", "https://")):
+            await ensure_safe_outbound_url(self.mass, image_url)
+
+    async def validate_manual_item(self, item: MediaItemType) -> None:
+        """
+        Validate a client-supplied manual track or radio without storing it.
+
+        :param item: The track or radio, identified by its stream URL.
+        :raises MediaNotFoundError: If the stream URL or an image is not a remote URL.
+        :raises InvalidDataError: If an image belongs to another provider or points at an
+            address the server may not fetch.
+        """
+        self._ensure_stream_url(item.item_id)
+        # a track's image may come from its album, which is not part of its own metadata
+        images = {*(item.metadata.images or ()), *((item.image,) if item.image else ())}
+        for image in images:
+            if image.provider != self.domain:
+                raise InvalidDataError("Images of a manual item must belong to this provider")
+            await self.ensure_safe_image_url(image.path)
 
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0

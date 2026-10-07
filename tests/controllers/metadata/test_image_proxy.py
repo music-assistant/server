@@ -599,6 +599,39 @@ async def test_serve_thumbnail_sets_csp_for_svg(
     assert "X-Content-Type-Options" not in jpg_resp.headers
 
 
+@pytest.mark.parametrize(
+    ("body", "status", "content_type"),
+    [
+        (b'{"secret": "internal api"}', 404, None),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, 200, "image/png"),
+        (b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', 200, "image/svg+xml"),
+    ],
+)
+async def test_svg_format_only_serves_image_bodies(
+    metadata_controller: MetaDataController,
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+    status: int,
+    content_type: str | None,
+) -> None:
+    """`fmt=svg` passes through SVG and raster images, but never an arbitrary body."""
+    monkeypatch.setattr(
+        "music_assistant.controllers.metadata.images.get_image_data", AsyncMock(return_value=body)
+    )
+    resp = await metadata_controller._serve_thumbnail(
+        "http://cdn.example.com/x", "builtin", 0, "svg"
+    )
+    assert resp.status == status
+    if content_type is None:
+        return
+    assert resp.content_type == content_type
+    assert resp.body == body
+    if content_type == "image/svg+xml":
+        assert resp.headers["Content-Security-Policy"] == (
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        )
+
+
 async def test_invalidate_image_cache_end_to_end(
     metadata_controller: MetaDataController, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
