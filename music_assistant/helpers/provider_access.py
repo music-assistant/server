@@ -66,6 +66,20 @@ def visible_music_sources(mass: MusicAssistant, user: User | None) -> list[str] 
     return _visible_sources(_music_sources(mass), user)
 
 
+def hidden_music_sources(mass: MusicAssistant, user: User | None) -> set[str]:
+    """
+    Return the instance ids of the music sources the given user may not see.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user to resolve the music sources for; None for anonymous playback.
+    """
+    return {
+        source.instance_id
+        for source in _music_sources(mass)
+        if not access_allows(source.access, user)
+    }
+
+
 def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
     """
     Return the instance ids of the music sources the given playback user may use.

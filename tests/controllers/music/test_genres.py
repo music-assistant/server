@@ -921,6 +921,41 @@ class TestSyncMediaItemGenres:
         )
         assert {int(r["genre_id"]) for r in rows} == {int(new_genre.item_id)}
 
+    async def test_sync_keeps_manual_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manually linked genre survives a sync that doesn't report it."""
+        track = await _add_test_track(mass, "Sync Track Manual")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncManual"))
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+    async def test_sync_keeps_manual_flag_when_provider_reports_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manual mapping the provider also reports stays manual and survives its removal."""
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncBoth"))
+        track = await _add_test_track(mass, "Sync Track Both")
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncBoth"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
 
 # ===================================================================
 # Group F: promote_alias_to_genre (4 tests)

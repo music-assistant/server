@@ -29,8 +29,10 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemType,
+    PodcastEpisode,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -398,14 +400,20 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             protocol_player.current_media.source_id == queue_id
             and protocol_player.current_media.queue_item_id
         ):
-            return protocol_player.current_media.queue_item_id
+            current_item_id = protocol_player.current_media.queue_item_id
+            # After a queue replace, the player may still report the removed item.
+            # Ignore it to preserve the new queue position.
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
+            return None
         # special case for sonos players
         if protocol_player.current_media.uri and protocol_player.current_media.uri.startswith(
             f"mass:{queue_id}"
         ):
-            if protocol_player.current_media.queue_item_id:
-                return protocol_player.current_media.queue_item_id
-            current_item_id = protocol_player.current_media.uri.split(":")[-1]
+            current_item_id = (
+                protocol_player.current_media.queue_item_id
+                or protocol_player.current_media.uri.split(":")[-1]
+            )
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
             return None
@@ -550,7 +558,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     queue.queue_id, queue.current_index
                 ):
                     return
-                self.mass.create_task(_settle_or_resume_delayed())
+                self.mass.create_task(
+                    _settle_or_resume_delayed(),
+                    task_name=f"settle_or_resume_{queue.queue_id}",
+                )
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -560,7 +571,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -569,7 +583,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_settle_or_resume_delayed())
+            self.mass.create_task(
+                _settle_or_resume_delayed(),
+                task_name=f"settle_or_resume_{queue.queue_id}",
+            )
 
     def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
         """
@@ -610,7 +627,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # report on current item
             is_current_item = True
             item_to_report = self.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
-            seconds_played = int(new_state["elapsed_time"])
+            if new_state["state"] == PlaybackState.PLAYING:
+                seconds_played = int(new_state["elapsed_time"])
+            else:
+                # a player may reset its position on pause/stop, never report less than it played
+                seconds_played = max(
+                    int(new_state["elapsed_time"]), int(new_state["last_playing_elapsed_time"])
+                )
 
         if not item_to_report:
             return  # guard against invalid items
@@ -699,6 +722,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     else None,
                 )
             )
+            if not is_playing and isinstance(media_item, Audiobook | PodcastEpisode):
+                # a later pass over the queue resumes from this, not from the enqueue-time bookmark
+                media_item.resume_position_ms = 0 if fully_played else seconds_played * 1000
             if fully_played and not is_playing:
                 if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(

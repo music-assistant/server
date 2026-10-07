@@ -59,8 +59,9 @@ and the targets for playback, and coordinates with several sibling controllers:
   reconciles itself against real player state. The `queue_id` is the `player_id`.
 - **Streams Controller (`mass.streams`)** — resolves a `QueueItem`'s stream details when loading
   and pre-loading items, and provides the audio-buffer primitive. It also drives next-track buffer
-  warming: from inside the active-track streaming pipeline, near the end of the current track, it
-  calls back into the queue controller to prepare the next item's audio buffer.
+  warming: near the end of the item being streamed, or once a realtime source has delivered all
+  of its audio, it calls back into the queue controller to prepare the audio buffer of the item
+  that follows the streamed one.
 - **Config Controller (`mass.config`)** — supplies this controller's own core config values
   (default enqueue options and selection modes), read back at enqueue time.
 - **Cache Controller (`mass.cache`)** — persists and restores each queue's `PlayerQueueData` (its
@@ -185,17 +186,25 @@ signalled events + cache write.
 To make playback gapless and to support crossfades, the controller anticipates the upcoming item:
 it computes the next index, pre-resolves that item's stream details via the Streams Controller, and
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
-of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
-via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
-leaves alone only what the session playing *now* claimed, so playback that restarted before the
-stop got that far keeps its audio. Everything else goes, including what sessions that ended
-earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
-audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
-audio goes with them.
+of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
+via a callback into the queue controller, and always targets the item after the streamed one.
+Stale buffers and crossfade data are cleaned up when the queue stops, is cleared, or advances. Every
+buffer records the session that claimed it, and a stop leaves alone only what the session playing
+*now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
+else goes, including what sessions that ended earlier left behind: sessions rotate without a stop,
+so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
+drops the items themselves, so all of their audio goes with them.
+
+A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+When playback on another queue finds no free provider stream slot and one of those buffers holds
+one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
+source stream. Preparing the next track ahead of time never stops a paused queue. A player that
+could not be told to stop still shows paused on a stream its queue has ended, so play starts the
+queue again there rather than unpausing the player.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
-(Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)
+(Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the
+streamed item.)
 
 ## Radio and Dynamic Continuation
 

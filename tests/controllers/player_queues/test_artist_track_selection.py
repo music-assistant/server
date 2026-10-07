@@ -11,10 +11,12 @@ the multi-source union/dedup directly with mocked sources.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
@@ -210,3 +212,25 @@ async def test_provider_artist_tracks_respects_unique_providers() -> None:
     assert [t.name for t in result] == ["Dancing Queen"]
     # only the unique provider is queried (the duplicate streaming domain is skipped)
     assert fake.mass.music.artists.tracks.await_count == 1
+
+
+async def test_provider_artist_tracks_skips_failing_provider() -> None:
+    """A provider that errors is skipped (and logged); the other providers' tracks are kept."""
+    fake = _fake_queues("all_tracks")
+    artist = _artist_obj({_prov_mapping("p1", "a1"), _prov_mapping("p2", "a2")})
+    fake.mass.music.get_unique_providers = MagicMock(return_value=["p1", "p2"])
+
+    async def _tracks(item_id: str, _provider_instance: str) -> list[Track]:
+        if item_id == "a2":
+            raise MediaNotFoundError("provider returned garbage")
+        return [_track_obj("Dancing Queen")]
+
+    fake.mass.music.artists.tracks = AsyncMock(side_effect=_tracks)
+
+    result = await MediaResolver._provider_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert [t.name for t in result] == ["Dancing Queen"]
+    assert fake.mass.music.artists.tracks.await_count == 2
+    # an artist a provider no longer lists is noted, not warned about on every play
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG

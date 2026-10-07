@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Final
 
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -172,6 +172,64 @@ def provider_mappings_for_update(
         *update,
         *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
     }
+
+
+def preferred_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the thumb to show of a library item's stored (raw) images.
+
+    A library item can carry the artwork of several music sources, not all of which the
+    viewer can be shown. The first thumb that can be shown is preferred, falling back to
+    the first thumb.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    thumbs = [image for image in images or () if image["type"] == ImageType.THUMB.value]
+    # same semantics as the MediaItem.available property: an empty cache means unknown
+    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
+    return next(
+        (
+            image
+            for image in thumbs
+            if image.get("remotely_accessible")
+            or (
+                image["provider"] not in hidden_sources
+                and (not available_providers or image["provider"] in available_providers)
+            )
+        ),
+        thumbs[0] if thumbs else None,
+    )
+
+
+def sibling_instance_mappings(
+    mass: MusicAssistant, mappings: Iterable[ProviderMapping], mapped: Iterable[ProviderMapping]
+) -> list[ProviderMapping]:
+    """
+    Return copies of the mappings for the other instances of the same streaming provider.
+
+    :param mappings: Provider mappings to copy.
+    :param mapped: Provider mappings the item already has; their instances get no copy.
+    """
+    mappings = list(mappings)
+    mapped_instances = {x.provider_instance for x in (*mapped, *mappings)}
+    copies: list[ProviderMapping] = []
+    for mapping in mappings:
+        if mapping.is_unique:
+            continue
+        # unavailable instances count too: a mapping they hold must not be taken over
+        # once they are back
+        for instance in mass.music.get_provider_instances(
+            mapping.provider_domain, return_unavailable=True
+        ):
+            if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
+                continue
+            # whether the other instance holds the item in its library is unknown
+            copies.append(replace(mapping, provider_instance=instance.instance_id, in_library=None))
+            mapped_instances.add(instance.instance_id)
+    return copies
 
 
 async def provider_mappings_from_urls(

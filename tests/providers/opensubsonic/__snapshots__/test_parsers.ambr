@@ -1576,6 +1576,7 @@
   dict({
     'date_added': None,
     'duration': 1878,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -1638,7 +1639,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -1723,6 +1726,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
@@ -1732,6 +1736,7 @@
   dict({
     'date_added': None,
     'duration': 0,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -1794,7 +1799,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -1879,6 +1886,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
@@ -1888,6 +1896,7 @@
   dict({
     'date_added': None,
     'duration': 0,
+    'episode_number': None,
     'external_ids': list([
     ]),
     'favorite': None,
@@ -1950,7 +1959,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -2035,6 +2046,7 @@
       }),
     ]),
     'resume_position_ms': None,
+    'season': None,
     'sort_name': '179- the end',
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
@@ -2142,7 +2154,9 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
       'explicit': None,
-      'genres': None,
+      'genres': list([
+        'Spoken Word',
+      ]),
       'grouping': None,
       'has_transcript': None,
       'images': list([
@@ -2221,7 +2235,9 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
       'explicit': None,
-      'genres': None,
+      'genres': list([
+        'Spoken Word',
+      ]),
       'grouping': None,
       'has_transcript': None,
       'images': list([

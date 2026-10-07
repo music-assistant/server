@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from music_assistant_models.api import SortOptionInfo
 from music_assistant_models.enums import MediaType, SortDirection, SortField
 
 
@@ -19,29 +20,6 @@ class SortFieldDefinition:
     supports_direction: bool
     default_direction: SortDirection | None = None
     label_key: str | None = None
-
-
-@dataclass
-class SortOptionInfo:
-    """
-    Sort option information returned by the API.
-
-    Used by clients to build UI for sorting controls.
-    """
-
-    field: str
-    supports_direction: bool
-    default_direction: str | None = None
-    label_key: str | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        """Return dict representation for JSON serialization."""
-        return {
-            "field": self.field,
-            "supports_direction": self.supports_direction,
-            "default_direction": self.default_direction,
-            "label_key": self.label_key,
-        }
 
 
 # Complete definitions for all sort fields
@@ -227,11 +205,9 @@ def get_sort_options_for_media_type(media_type: MediaType) -> list[SortOptionInf
     fields = MEDIA_TYPE_SORT_FIELDS.get(media_type, [])
     return [
         SortOptionInfo(
-            field=definition.field.value,
+            field=definition.field,
             supports_direction=definition.supports_direction,
-            default_direction=(
-                definition.default_direction.value if definition.default_direction else None
-            ),
+            default_direction=definition.default_direction,
             label_key=definition.label_key,
         )
         for field in fields

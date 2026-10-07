@@ -40,6 +40,11 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    request_priority,
+    set_request_priority,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -331,6 +336,8 @@ class AudioBuffer:
         self._source_name = source_name
 
         async def _fill_task() -> None:
+            # the producer reads the source for playback
+            set_request_priority(RequestPriority.HIGH)
             chunk_count = 0
             status = "running"
             try:
@@ -422,6 +429,7 @@ class AudioBuffer:
         wait_ready: bool = False,
         reason: str = "",
         source_wait_timeout: float | None = STREAM_SLOT_WAIT_TIMEOUT,
+        on_complete: Callable[[], None] | None = None,
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -437,6 +445,8 @@ class AudioBuffer:
         :param source_wait_timeout: Maximum seconds the producer may wait for a free
             source-stream slot on the providing music provider, or None to wait
             without a timeout.
+        :param on_complete: Called once the source of a newly created buffer has delivered
+            all of its audio. Not called when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
         """
@@ -499,17 +509,7 @@ class AudioBuffer:
             source_wait_timeout=source_wait_timeout,
         )
 
-        def _source_complete() -> None:
-            # a realtime source's one stream slot frees the moment this item has
-            # fully arrived: start fetching the next item right away
-            if (
-                streamdetails.is_realtime
-                and streamdetails.media_type == MediaType.TRACK
-                and streamdetails.queue_id
-            ):
-                mass.player_queues.prepare_next_audio_buffer(streamdetails.queue_id)
-
-        audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=_source_complete)
+        audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
 
         if wait_ready:
             await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
@@ -914,7 +914,11 @@ def _new_buffer(
         # audio analysis providers (loudness, beat tracking, key detection, etc.).
         # Fire-and-forget: analysis setup — including a possible model (re)load — must never
         # delay the buffer fill. The analysis worker reads the retained chunks once ready.
-        mass.create_task(mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails))
+        # It is background work, whatever priority the stream that feeds it runs at.
+        with request_priority(RequestPriority.LOW):
+            mass.create_task(
+                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            )
 
     return audio_buffer, buffer_seek_seconds
 

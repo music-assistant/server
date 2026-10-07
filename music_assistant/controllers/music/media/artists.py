@@ -41,8 +41,10 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -51,6 +53,7 @@ from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
 )
+from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
     compare_album,
     compare_album_name,
@@ -60,7 +63,11 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 
 from .base import MediaControllerBase
 
@@ -68,7 +75,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Container, Mapping, Sequence
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
@@ -91,6 +98,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_appears_on",
+            self.appears_on,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
@@ -279,6 +291,26 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+
+    async def appears_on(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the albums an artist appears on without being an album artist.
+
+        These are the albums of the artist's library tracks, newest first, as summary items.
+        Only available for library artists; empty for a provider item.
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the tracks to.
+        """
+        if provider_instance_id_or_domain != "library":
+            return []
+        return await self.get_library_artist_appears_on(item_id, provider_filter=provider_filter)
 
     async def discography(self, item_id: str, provider_instance_id_or_domain: str) -> list[Album]:
         """
@@ -507,12 +539,26 @@ class ArtistsController(MediaControllerBase[Artist]):
             if artist_type == ArtistType.AUTHOR
             else self.get_provider_narrator_audiobooks
         )
+        provider_error: Exception | None = None
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
                 continue
-            provider_audiobooks = await audiobook_method(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
+            try:
+                provider_audiobooks = await audiobook_method(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not take the whole listing down: the audiobooks
+                # from the library and the other providers are still playable
+                provider_error = err
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch audiobooks for %s from provider %s: %s",
+                    library_artist.name,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                continue
             for provider_audiobook in provider_audiobooks:
                 unique_id = f"{provider_audiobook.name}.{provider_audiobook.version}"
                 if unique_id in unique_ids:
@@ -525,6 +571,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     result.append(db_item)
                 elif not in_library_only:
                     result.append(provider_audiobook)
+        if provider_error is not None and not has_available_item(result):
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_library_author_narrator_audiobooks(
@@ -639,24 +688,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top tracks in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_toptracks(mapping.item_id, mapping.provider_instance)
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.ARTIST_TOPTRACKS, allowed
             )
-            if (
-                music_prov is None
-                or ProviderFeature.ARTIST_TOPTRACKS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_toptracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-            )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.ARTIST_TOPTRACKS,
@@ -664,7 +702,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
-            fetches.append(cast("MetadataProvider", prov).get_artist_toptracks(ref_item))
+            fetches.append(cast("MusicDiscoveryMixin", prov).get_artist_toptracks(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[Track]] = []
@@ -740,24 +778,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top albums in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_topalbums(mapping.item_id, mapping.provider_instance)
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.ARTIST_TOPALBUMS, allowed
             )
-            if (
-                music_prov is None
-                or ProviderFeature.ARTIST_TOPALBUMS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_topalbums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-            )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.ARTIST_TOPALBUMS,
@@ -765,7 +792,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
-            fetches.append(cast("MetadataProvider", prov).get_artist_topalbums(ref_item))
+            fetches.append(cast("MusicDiscoveryMixin", prov).get_artist_topalbums(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[Album]] = []
@@ -806,13 +833,30 @@ class ArtistsController(MediaControllerBase[Artist]):
         # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
         result: list[Track] = []
         unique_ids: set[str] = set()
+        provider_error: Exception | None = None
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
-            for track in await self.mass.music.albums.tracks(album.item_id, album.provider):
+            try:
+                album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing album must not drop the artist's other tracks on this provider
+                provider_error = err
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for album %s from provider %s: %s",
+                    album.name,
+                    provider_instance_id_or_domain,
+                    err,
+                )
+                continue
+            for track in album_tracks:
                 unique_id = f"{track.name}.{track.version}"
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
                 result.append(track)
+        if provider_error is not None and not any(track.available for track in result):
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_library_artist_tracks(
@@ -874,6 +918,53 @@ class ArtistsController(MediaControllerBase[Artist]):
             in_library_only=True,
         )
 
+    async def get_library_artist_appears_on(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the albums of an artist's library tracks on which it is not an album artist.
+
+        :param item_id: The library item ID of the artist.
+        :param provider_filter: Optional provider instance ID to limit the tracks to.
+        """
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return []
+        query_params: dict[str, Any] = {"artist_id": db_id}
+        track_mapping_conditions = [
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {DB_TABLE_ALBUM_TRACKS}.track_id",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{MediaType.TRACK.value}'",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1",
+        ]
+        if provider_instances := self._ensure_provider_filter(provider_filter):
+            track_mapping_conditions.append(
+                f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance IN :provider_instances"
+            )
+            query_params["provider_instances"] = provider_instances
+        track_albums = (
+            f"SELECT {DB_TABLE_ALBUM_TRACKS}.album_id FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
+            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_ALBUM_TRACKS}.track_id "
+            f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
+            f"AND EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE {' AND '.join(track_mapping_conditions)})"
+        )
+        own_albums = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        return await self.mass.music.albums.get_library_items_by_query(
+            extra_query_parts=[
+                f"albums.item_id IN ({track_albums})",
+                f"albums.item_id NOT IN ({own_albums})",
+            ],
+            extra_query_params=query_params,
+            limit=0,  # no limit, the full list is returned
+            order_by="year_desc",
+            summary=True,
+        )
+
     async def get_provider_artist_similar_artists(
         self,
         item_id: str,
@@ -929,24 +1020,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's similar artists in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_similar_artists(
+                mapping.item_id, mapping.provider_instance, limit=limit
             )
-            if (
-                music_prov is None
-                or ProviderFeature.SIMILAR_ARTISTS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_similar_artists(
-                    provider_mapping.item_id, provider_mapping.provider_instance, limit=limit
-                )
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.SIMILAR_ARTISTS, allowed
             )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.SIMILAR_ARTISTS,
@@ -955,7 +1037,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             if allowed is not None and prov.instance_id not in allowed:
                 continue
             fetches.append(
-                cast("MetadataProvider", prov).get_similar_artists(ref_item, limit=limit)
+                cast("MusicDiscoveryMixin", prov).get_similar_artists(ref_item, limit=limit)
             )
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
@@ -1134,6 +1216,36 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider '{provider_instance_id_or_domain}'"
             )
 
+    def _provider_mappings_for_feature(
+        self, ref_item: Artist, feature: ProviderFeature, allowed: list[str] | None
+    ) -> list[ProviderMapping]:
+        """
+        Return the artist's provider mappings that can be queried for the given feature.
+
+        A streaming provider is returned once, through one of its instances.
+        """
+        mappings: list[ProviderMapping] = []
+        queried_streaming_domains: set[str] = set()
+        # sorted so the same (preferably available) instance is picked each time
+        for provider_mapping in sorted(
+            ref_item.provider_mappings,
+            key=lambda mapping: (not mapping.available, mapping.provider_instance),
+        ):
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if music_prov is None or feature not in music_prov.supported_features:
+                continue
+            # instances of the same streaming provider return the same catalog result
+            if music_prov.is_streaming_provider:
+                if music_prov.domain in queried_streaming_domains:
+                    continue
+                queried_streaming_domains.add(music_prov.domain)
+            mappings.append(provider_mapping)
+        return mappings
+
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
     ) -> list[ProviderMapping]:
@@ -1303,9 +1415,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         return []
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> ArtistSummary:
         """Parse a raw summary db row into an ArtistSummary object."""
-        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
 
@@ -1380,6 +1494,8 @@ def _album_from_release_group(
         album_type=album_type,
         external_ids={(ExternalID.MB_RELEASEGROUP, release_group.id)},
         provider_mappings=set(),
+        # resolves to a playable album on a music service only when opened or added
+        is_playable=False,
     )
     if cover_provider:
         album.metadata.add_image(

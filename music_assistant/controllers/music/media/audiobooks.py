@@ -395,11 +395,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
         db_id = int(item_id)  # ensure integer
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(item_id)
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, {"audiobook_id": db_id})
-        # delete the album itself from db
-        # this will raise if the item still has references and recursive is false
-        await super().remove_item_from_library(item_id)
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
@@ -737,9 +736,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AudiobookSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> AudiobookSummary:
         """Parse a raw summary db row into an AudiobookSummary object."""
-        item = cast("AudiobookSummary", super()._parse_summary_row(db_row))
+        item = cast("AudiobookSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.publisher = db_row["publisher"]
         item.duration = db_row["duration"] or 0

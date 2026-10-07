@@ -97,6 +97,9 @@ AI_QUERY_TIMEOUT_SECONDS = 60
 # a reply is persisted and served in every playlist listing, so a runaway one is discarded
 # in favour of the rules summary; the cap sits well above the sentence or two we ask for
 MAX_AI_DESCRIPTION_BYTES = 2048
+# barren batches in a row a seed may yield before it counts as exhausted; base tracks are
+# sampled at random, so one batch of only already-seen tracks doesn't mean the seed is spent
+MAX_UNPRODUCTIVE_SEED_ROUNDS = 1
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -1390,6 +1393,7 @@ class SmartPlaylistProvider(PluginProvider):
         """Accumulate one seed's endless-mix batches until it reaches its share of the pool."""
         seen: set[Track] = set()
         pool: list[Track] = []
+        unproductive_rounds = 0
         # a single batch tops out around ~55 tracks (5 base + ~50 similar), so a larger static
         # target needs several batches; each batch re-samples base tracks so the endless-mix
         # base/similar ratio holds at any scale
@@ -1406,7 +1410,10 @@ class SmartPlaylistProvider(PluginProvider):
                     seen.add(track)
                     pool.append(track)
                     added = True
-            if len(pool) >= per_seed_target or not added:
+            if len(pool) >= per_seed_target:
+                break
+            unproductive_rounds = 0 if added else unproductive_rounds + 1
+            if unproductive_rounds > MAX_UNPRODUCTIVE_SEED_ROUNDS:
                 break
         return pool
 

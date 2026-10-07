@@ -35,6 +35,11 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -388,6 +393,24 @@ async def test_fill_sets_eof() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fill_reads_the_source_with_playback_priority() -> None:
+    """The producer reads its source with playback priority, the caller keeps its own."""
+    seen: list[RequestPriority] = []
+
+    async def _source() -> AsyncGenerator[bytes]:
+        seen.append(current_priority())
+        yield _make_chunk(0)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    with request_priority(RequestPriority.NORMAL):
+        buf.fill(_source(), source_name="test")
+        assert current_priority() is RequestPriority.NORMAL
+    await asyncio.sleep(0.1)
+
+    assert seen == [RequestPriority.HIGH]
+
+
+@pytest.mark.asyncio
 async def test_fill_reports_completion_only_on_a_clean_eof() -> None:
     """on_complete fires when the source delivered everything, never on a failure."""
     completed: list[str] = []
@@ -652,8 +675,30 @@ async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: Medi
 
 
 @pytest.mark.asyncio
-async def test_get_buffer_fill_completion_prepares_the_next_item() -> None:
-    """A realtime track's finished fill frees its slot and starts the next item's fetch."""
+async def test_get_buffer_signals_when_the_fill_completes() -> None:
+    """The completion callback runs once the source has delivered all of its audio."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+    on_complete = MagicMock()
+
+    buffer = await AudioBuffer.get_buffer(
+        mass, streamdetails, reason="test", on_complete=on_complete
+    )
+    await asyncio.sleep(0.1)
+
+    assert buffer.eof
+    on_complete.assert_called_once_with()
+    # the buffer itself leaves the reaction to the caller
+    mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+    await asyncio.gather(*scheduled_tasks)
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_fills_without_a_completion_callback() -> None:
+    """A caller that needs no completion signal gets a fully filled buffer all the same."""
     mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
     streamdetails = _make_stream_details(
         MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
@@ -663,23 +708,8 @@ async def test_get_buffer_fill_completion_prepares_the_next_item() -> None:
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
     await asyncio.sleep(0.1)
 
-    mass.player_queues.prepare_next_audio_buffer.assert_called_once_with("queue_a")
-    await asyncio.gather(*scheduled_tasks)
-    await buffer.clear()
-
-
-@pytest.mark.asyncio
-async def test_get_buffer_fill_completion_is_ignored_for_non_realtime_sources() -> None:
-    """A source that delivers faster than playback frees no slot worth chaining on."""
-    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
-    streamdetails = _make_stream_details(
-        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
-    )
-
-    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
-    await asyncio.sleep(0.1)
-
-    mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+    assert buffer.eof
+    assert not buffer.has_error
     await asyncio.gather(*scheduled_tasks)
     await buffer.clear()
 
@@ -1289,8 +1319,11 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
     """Extend the base fixture with the player_queues/streams stand-ins get_queue_item_stream needs."""
     mass_minimal.player_queues = SimpleNamespace(  # type: ignore[assignment]
         get_active_queue=lambda _queue_id: None,
-        prepare_next_audio_buffer=lambda _queue_id: None,
+        get_next_item=lambda _queue_id, _item_id: None,
+        prepare_next_audio_buffer=lambda _queue_id, _item_id: None,
+        track_fully_buffered=lambda _queue_id, _item_id: None,
         queue_data_or_none=lambda _queue_id: None,
+        has_paused_stream_slot_holder=lambda _provider_instance, _queue_id: False,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
@@ -1317,16 +1350,19 @@ async def _stream_until_prebuffer_window(
     next_item_media_type: MediaType,
     queue_id: str,
     is_realtime: bool = False,
-) -> None:
+) -> list[str]:
     """
     Drive get_queue_item_stream for a 90s current TRACK item past the pre-buffer trigger point.
 
-    Sets up a queue whose next item has ``next_item_media_type`` and streams the current
-    item to completion, so the pre-buffer trigger condition (evaluated once more than
-    duration - 60 seconds of PCM has been yielded) gets a chance to fire.
+    Sets up a queue in which the streamed item is followed by an item of
+    ``next_item_media_type`` and streams the current item to completion, so the pre-buffer
+    trigger condition (evaluated once more than duration - 60 seconds of PCM has been
+    yielded) gets a chance to fire. The queue's audible next item still points at the
+    streamed item, as it does while the player's lead spans a track boundary.
 
     :param is_realtime: Whether the current item's source hands over its audio
-        just-in-time, which moves the trigger to the source itself.
+        just-in-time.
+    :return: The item ids the successor was looked up for.
     """
     streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
     streamdetails.is_realtime = is_realtime
@@ -1339,36 +1375,44 @@ async def _stream_until_prebuffer_window(
         streamdetails=streamdetails,
     )
     next_item = SimpleNamespace(queue_item_id="next", media_type=next_item_media_type)
-    queue = SimpleNamespace(next_item=next_item)
+    queue = SimpleNamespace(next_item=current_item)
     mass.player_queues.get_active_queue = lambda _player_id: queue  # type: ignore[method-assign, assignment, return-value]
+    looked_up: list[str] = []
+
+    def _get_next_item(_queue_id: str, item_id: str) -> SimpleNamespace:
+        looked_up.append(item_id)
+        return next_item
+
+    mass.player_queues.get_next_item = _get_next_item  # type: ignore[method-assign, assignment]
 
     controller = StreamsAudio(mass)
     with patch.object(audio_mod, "AudioBuffer", _FakeAudioBuffer):
         async for _chunk in controller.get_queue_item_stream(current_item, TEST_PCM_FORMAT):
             pass
+    return looked_up
 
 
 @pytest.mark.asyncio
 async def test_sound_effect_next_item_triggers_prebuffer(mass_minimal: MusicAssistant) -> None:
     """A SOUND_EFFECT next item is pre-buffered like a track."""
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
         mass_minimal, next_item_media_type=MediaType.SOUND_EFFECT, queue_id="player_a"
     )
 
-    assert calls == ["player_a"]
+    assert calls == [("player_a", "current")]
 
 
 @pytest.mark.asyncio
 async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssistant) -> None:
     """A live AUDIO_SOURCE next item is still excluded from pre-buffering."""
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1385,13 +1429,12 @@ async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
     """
     A realtime track keeps the read-side trigger as its fallback.
 
-    Its slot usually frees (and prepares the next item) when an earlier fill
-    completes, but once the lead spans a whole item that moment has no next
-    item yet - this trigger is what starts it then.
+    The fill-complete signal usually prepares the next item first, but a fill that
+    completed before the player fetched the item left that to this trigger.
     """
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1401,7 +1444,23 @@ async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
         is_realtime=True,
     )
 
-    assert calls == ["player_a"]
+    assert calls == [("player_a", "current")]
+
+
+@pytest.mark.asyncio
+async def test_prebuffer_trigger_follows_the_streamed_item(mass_minimal: MusicAssistant) -> None:
+    """The item after the streamed one is prepared while the audible next item lags behind."""
+    calls: list[tuple[str, str]] = []
+    mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+    )
+
+    looked_up = await _stream_until_prebuffer_window(
+        mass_minimal, next_item_media_type=MediaType.TRACK, queue_id="player_a"
+    )
+
+    assert looked_up == ["current"]
+    assert calls == [("player_a", "current")]
 
 
 @pytest.mark.asyncio

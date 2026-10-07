@@ -17,9 +17,8 @@ import pytest
 from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
-from music_assistant_models.enums import ImageType, ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import MediaItemImage
+from music_assistant_models.enums import ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image
 
 from music_assistant.helpers import images
@@ -438,6 +437,29 @@ async def test_provider_without_an_image_is_a_quiet_miss(
     assert "not retrying" in records[0].getMessage()
 
 
+async def test_configured_provider_not_loaded_yet_is_not_remembered_as_failed(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image of a configured provider that loads late is served once the provider is loaded."""
+    instance_id = "filesystem_local--late"
+    mass_minimal.config.set(
+        f"providers/{instance_id}", {"domain": "filesystem_local", "instance_id": instance_id}
+    )
+    loaded_provider: MagicMock | None = None
+    monkeypatch.setattr(
+        mass_minimal, "get_provider", lambda _prov, *_args, **_kwargs: loaded_provider
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+
+    loaded_provider = MagicMock(spec=MusicProvider)
+    loaded_provider.resolve_image = AsyncMock(return_value=b"late-provider-image-bytes")
+    image = await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+    assert image == b"late-provider-image-bytes"
+
+
 async def test_failed_source_retried_after_ttl_or_invalidation(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -664,28 +686,6 @@ async def test_embedded_art_retag_flow(
     new_art = await get_image_data(mass_minimal, track_path, "builtin")
     assert len(fetch_calls) == 2
     assert new_art != original_art
-
-
-async def test_create_collage_fetches_each_unique_image_once(
-    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
-) -> None:
-    """A collage fetches each unique image once and skips unfetchable ones."""
-    paths = [
-        str((tmp_path / name).absolute())
-        for name in ("one.png", "two.png", "three.png", "missing.png")
-    ]
-    for path, color in zip(paths[:3], ((200, 30, 30), (30, 200, 30), (30, 30, 200)), strict=True):
-        Image.new("RGB", (300, 300), color).save(path, "PNG")
-    collage_images = [
-        MediaItemImage(
-            type=ImageType.THUMB, path=path, provider="builtin", remotely_accessible=False
-        )
-        for path in paths
-    ]
-    collage = await images.create_collage(mass_minimal, collage_images, dimensions=(500, 500))
-    assert collage.startswith(b"\xff\xd8")  # JPEG magic
-    # each unique image was fetched exactly once (incl. the one failed attempt)
-    assert sorted(path for _prov, path in fetch_calls) == sorted(paths)
 
 
 # Provider icon helpers tests

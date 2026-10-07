@@ -93,7 +93,7 @@ The Music Assistant server is fully built in Python. The Python language has no 
 
 
 ## Building a new Music Provider
-A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
+A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
@@ -140,6 +140,10 @@ A provider that talks to a music service must therefore:
   service's API and set it to what that service actually tolerates, and put
   [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
   instead of asking again. Back off on a 429 rather than retrying into it.
+  The throttler serves playback first, user actions second and background work last. Background
+  work may use only half of the rate limit and is spread evenly over time, which keeps room free
+  for the user. Music Assistant sets the priority where a request starts, so a provider normally
+  does not have to.
   A provider that hammers a service puts every Music Assistant user's account at risk, not just
   the developer's.
 * **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
@@ -184,7 +188,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | icon | Name of the [Material Design Icon](https://pictogrammers.com/library/mdi) to use for the provider | string |
 | mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
-| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. Set it to `false` when the setup reaches into the server itself, like a folder on its local disk | boolean |
+| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).

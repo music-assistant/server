@@ -279,7 +279,9 @@ class QueueCommandsMixin:
                 await self._create_plex_playqueue_from_ma()
                 self._remember_synced_queue(player_id)
 
-            self.provider.mass.create_task(_apply_shuffle_deferred())
+            self.provider.mass.create_task(
+                _apply_shuffle_deferred(), task_name=f"plex_apply_shuffle_{player_id}"
+            )
             return True
         except Exception as e:
             LOGGER.debug(f"Could not resolve source for shuffled queue, falling back: {e}")

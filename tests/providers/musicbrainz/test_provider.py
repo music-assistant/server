@@ -69,7 +69,7 @@ def _provider(
 
 
 def _recordings(*first_release_dates: str | None) -> dict[str, Any]:
-    """Return an isrc lookup response with a recording per given release date."""
+    """Return an isrc lookup or search response with a recording per given release date."""
     return {
         "isrc": "GBAYE8600477",
         "recordings": [
@@ -93,13 +93,20 @@ async def test_release_year_parses_all_date_precisions() -> None:
         assert await provider.get_release_year_by_isrc("GBAYE8600477") == 1986
 
 
-async def test_release_year_looks_up_the_normalized_isrc() -> None:
-    """Look the recording up on the isrc resource, with its credits and links."""
+async def test_release_year_searches_recordings_by_the_normalized_isrc() -> None:
+    """Search recordings by ISRC in a single request, which carries the first release date."""
     provider, get_data = _provider(_recordings("1986"))
 
     await provider.get_release_year_by_isrc("GB-AYE-86-00477")
 
-    get_data.assert_awaited_once_with("isrc/GBAYE8600477?inc=isrcs+artist-credits+url-rels")
+    get_data.assert_awaited_once_with("recording", query="isrc:GBAYE8600477", limit="100")
+
+
+async def test_release_year_is_none_for_a_truncated_search() -> None:
+    """Refuse to date a song when the search does not return every recording."""
+    response = {**_recordings("1986"), "count": 2}
+    provider, _ = _provider(response)
+    assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
 
 
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:
@@ -1501,10 +1508,98 @@ async def test_resolve_release_tries_the_release_group_after_an_unknown_barcode(
 
 
 async def test_resolve_release_is_none_without_any_evidence() -> None:
-    """An album without ids, barcodes or streaming links is never searched by name."""
+    """An album without ids, barcodes, streaming links or a track count is never searched."""
     provider, get_data = _routed_provider({})
 
     assert await provider.resolve_release(_album_item()) is None
+    get_data.assert_not_awaited()
+
+
+async def test_resolve_release_by_name_as_the_last_resort() -> None:
+    """An album nothing else identifies is found by title, primary artist and track count."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-cd", media_format="CD", country="GB"),
+            _edition("rel-18", track_counts=(10, 8)),
+            _edition("rel-xw"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {"release?query": candidates, "release/rel-xw": _release_lookup("rel-xw")}
+    )
+
+    release = await provider.resolve_release(_album_item(), library_track_count=10)
+
+    assert release is not None
+    assert release.id == "rel-xw"
+    assert _requested(get_data) == ["release?query", "release/rel-xw"]
+
+
+async def test_resolve_release_by_name_needs_title_artist_and_track_count() -> None:
+    """A hit with another title, primary artist or track count is not looked up."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-1", title="OK Computer"),
+            _edition("rel-2", credit=_credit("Muse", "artist-muse")),
+            _edition("rel-3", track_counts=(12,)),
+        ],
+    }
+    provider, get_data = _routed_provider({"release?query": candidates})
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_several_release_groups() -> None:
+    """Two albums of the same name by the same artist cannot be told apart by name."""
+    other_album = _edition("rel-2")
+    other_album["release-group"] = {"id": "rg-other", "title": "In Rainbows"}
+    provider, get_data = _routed_provider(
+        {"release?query": {"count": 2, "releases": [_edition("rel-1"), other_album]}}
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_an_incomplete_search() -> None:
+    """A truncated search or one with an unparsable hit may hide another album."""
+    for result in (
+        {"count": 101, "releases": [_edition("rel-1")]},
+        {"count": 2, "releases": [_edition("rel-1"), {"title": "In Rainbows"}]},
+    ):
+        provider, get_data = _routed_provider(
+            {"release?query": result, "release/rel-1": _release_lookup("rel-1")}
+        )
+
+        assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+        assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_looks_up_two_editions_at_most() -> None:
+    """A name search spends one search and at most two release lookups."""
+    candidates = {"count": 3, "releases": [_edition(f"rel-{index}") for index in range(3)]}
+    provider, get_data = _routed_provider(
+        {
+            "release?query": candidates,
+            **{
+                f"release/rel-{index}": _release_lookup(f"rel-{index}", title="OK Computer")
+                for index in range(3)
+            },
+        }
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query", "release/rel-0", "release/rel-1"]
+
+
+async def test_resolve_release_by_name_needs_an_artist() -> None:
+    """An album without artists is never searched by name."""
+    provider, get_data = _routed_provider({})
+
+    assert await provider.resolve_release(_album_item(artist=None), library_track_count=10) is None
     get_data.assert_not_awaited()
 
 

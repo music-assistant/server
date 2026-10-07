@@ -5,25 +5,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import UniqueList
 
+from .media_capabilities import MusicDiscoveryMixin, RecommendationsMixin
 from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         Album,
         Artist,
-        BrowseFolder,
-        ItemMapping,
         MediaItemMetadata,
-        MediaItemType,
         Playlist,
-        RecommendationFolder,
         Track,
     )
 
 
-class MetadataProvider(Provider):
+class MetadataProvider(RecommendationsMixin, MusicDiscoveryMixin, Provider):
     """
     Base representation of a Metadata Provider (controller).
 
@@ -34,6 +30,11 @@ class MetadataProvider(Provider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 50
+
+    @property
+    def rate_limited(self) -> bool:
+        """Whether the provider currently holds its requests back because of a rate limit."""
+        return False
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""
@@ -58,94 +59,3 @@ class MetadataProvider(Provider):
         if ProviderFeature.PLAYLIST_METADATA in self.supported_features:
             raise NotImplementedError
         return None
-
-    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """
-        Retrieve a list of similar tracks for the given track.
-
-        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
-
-        :param track: The reference track.
-        :param limit: Maximum number of similar tracks to return.
-        """
-        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """
-        Retrieve a list of similar artists for the given artist.
-
-        Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
-
-        :param artist: The reference artist.
-        :param limit: Maximum number of similar artists to return.
-        """
-        if ProviderFeature.SIMILAR_ARTISTS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's available recommendation rows, without items.
-
-        Must be fast: return static or cached row descriptors only, without
-        live backend calls. The items for a row are fetched separately
-        through get_recommendation_items.
-
-        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        Live backend fetches belong here. Will only be called if
-        ProviderFeature.RECOMMENDATIONS is declared.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return UniqueList()
-
-    async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
-        """
-        Retrieve a list of top tracks for the given artist.
-
-        Will only be called if ProviderFeature.ARTIST_TOPTRACKS is declared.
-
-        :param artist: The reference artist.
-        :param limit: Maximum number of top tracks to return.
-        """
-        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_artist_topalbums(self, artist: Artist, limit: int = 25) -> list[Album]:
-        """
-        Retrieve a list of top albums for the given artist.
-
-        Will only be called if ProviderFeature.ARTIST_TOPALBUMS is declared.
-
-        :param artist: The reference artist.
-        :param limit: Maximum number of top albums to return.
-        """
-        if ProviderFeature.ARTIST_TOPALBUMS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def resolve_image(self, path: str) -> str | bytes | None:
-        """
-        Resolve an image from an image path.
-
-        This either returns raw bytes of the image, a string with an http(s) URL or local
-        path that is accessible from the server, or None when the provider has no image at
-        the path.
-        """
-        return path

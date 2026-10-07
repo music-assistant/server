@@ -1113,7 +1113,8 @@ class GenreController(MediaControllerBase[Genre]):
         Sync genre mappings for a media item.
 
         Ensures genre records exist and updates genre-media mappings.
-        Removes mappings that are no longer present in the incoming genre_names set.
+        Removes mappings that are no longer present in the incoming genre_names set,
+        except for genres the user linked manually.
 
         :param media_type: The type of media item being synced.
         :param media_id: The database ID of the media item.
@@ -1125,18 +1126,13 @@ class GenreController(MediaControllerBase[Genre]):
 
         # fast path for the (very common) unchanged case: resolve the incoming names
         # against a short-lived cached snapshot of this taxonomy — the same resolution
-        # the full path performs — and skip all writes when the resolved genre ids
-        # match the stored mappings exactly. Unknown names require genre creation, so
+        # the full path performs — and skip all writes when nothing would be added or
+        # removed (manual mappings are kept). Unknown names require genre creation, so
         # they (and any mismatch) fall through to the full path below.
         target_ids = await self._resolve_genre_names_cached(genre_names, content_type)
         if target_ids is not None:
-            stored_rows = await self.mass.music.database.get_rows_from_query(
-                f"SELECT DISTINCT genre_id FROM {gm} "
-                "WHERE media_type = :media_type AND media_id = :media_id",
-                {"media_type": media_type.value, "media_id": media_id_int},
-                limit=0,
-            )
-            if {int(row["genre_id"]) for row in stored_rows} == target_ids:
+            stored_ids, removable_ids = await self._get_synced_genre_ids(media_type, media_id_int)
+            if removable_ids <= target_ids <= stored_ids:
                 return
 
         # batch the (possible) genre creations and mapping changes into a single commit
@@ -1154,17 +1150,11 @@ class GenreController(MediaControllerBase[Genre]):
                     if gid not in target_mappings:
                         target_mappings[gid] = normalized[0]
 
-            # Get current genre_ids from database
-            rows = await self.mass.music.database.get_rows_from_query(
-                f"SELECT genre_id FROM {gm} "
-                "WHERE media_type = :media_type AND media_id = :media_id",
-                {"media_type": media_type.value, "media_id": media_id_int},
-                limit=0,
+            existing_genre_ids, removable_genre_ids = await self._get_synced_genre_ids(
+                media_type, media_id_int
             )
-            existing_genre_ids = {int(row["genre_id"]) for row in rows}
-
             to_add = set(target_mappings.keys()) - existing_genre_ids
-            to_remove = existing_genre_ids - set(target_mappings.keys())
+            to_remove = removable_genre_ids - set(target_mappings.keys())
 
             for genre_id in to_remove:
                 await self.mass.music.database.delete(
@@ -1721,8 +1711,8 @@ class GenreController(MediaControllerBase[Genre]):
         """
         Propagate track genre mappings to albums and artists for filesystem provider instances.
 
-        Only runs when at least one filesystem_local or filesystem_smb provider instance has
-        the 'propagate_track_genres' config option enabled. Albums and artists that already
+        Only runs when at least one Local files provider instance has the
+        'propagate_track_genres' config option enabled. Albums and artists that already
         have their own genre metadata (e.g. from an NFO file) are skipped.
 
         Derived mappings are stored with is_derived=1 and rebuilt from scratch on each
@@ -1731,7 +1721,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         enabled_instance_ids: list[str] = []
         for p in self.mass.music.providers:
-            if p.domain in {"filesystem_local", "filesystem_smb"}:
+            if p.domain == "filesystem_local":
                 enabled = await self.mass.config.get_provider_config_value(
                     p.instance_id, "propagate_track_genres", default=False
                 )
@@ -1993,6 +1983,20 @@ class GenreController(MediaControllerBase[Genre]):
             excluded_names={row["search_name"] for row in excluded_rows},
         )
 
+    async def _get_synced_genre_ids(
+        self, media_type: MediaType, media_id: int
+    ) -> tuple[set[int], set[int]]:
+        """Return all mapped genre ids of an item and the subset a provider sync may remove."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_type = :media_type AND media_id = :media_id",
+            {"media_type": media_type.value, "media_id": media_id},
+            limit=0,
+        )
+        all_ids = {int(row["genre_id"]) for row in rows}
+        removable_ids = {int(row["genre_id"]) for row in rows if not row["is_manual"]}
+        return all_ids, removable_ids
+
     async def _ensure_aliases(self, genre_id: int, aliases: list[str]) -> None:
         """
         Ensure a genre has all the specified aliases in its genre_aliases JSON.
@@ -2189,9 +2193,11 @@ class GenreController(MediaControllerBase[Genre]):
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> GenreSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> GenreSummary:
         """Parse a raw summary db row into a GenreSummary object."""
-        item = cast("GenreSummary", super()._parse_summary_row(db_row))
+        item = cast("GenreSummary", super()._parse_summary_row(db_row, hidden_sources))
         # only overwrite the (name-derived) translation key when explicitly stored
         if translation_key := db_row["translation_key"]:
             item.translation_key = translation_key

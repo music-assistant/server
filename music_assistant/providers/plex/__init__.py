@@ -70,6 +70,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     UNKNOWN_ARTIST,
 )
@@ -102,6 +103,7 @@ from music_assistant.providers.plex.constants import (
     ERR_INVALID_CREDENTIALS,
     ERR_ITEM_NOT_FOUND,
     ERR_NO_ARTIST_FOR_TRACK,
+    ERR_SERVER_ACCESS_DENIED,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
     MAX_TOP_TRACKS,
@@ -125,6 +127,8 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_TO_MEDIA_TYPES,
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
+    PlexServerAccessError,
+    configure_plex_identity,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
@@ -132,6 +136,7 @@ from music_assistant.providers.plex.helpers import (
     get_thumbnail_images,
     is_library_scan_finished,
     parse_plex_lyrics_payload,
+    resolve_server_auth_token,
 )
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
@@ -176,6 +181,7 @@ async def setup(
     if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -334,15 +340,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                     if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
-                # Add Music Assistant client identification headers
-                session.headers.update(
-                    {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
-                        "X-Plex-Version": self.mass.version,
-                    }
-                )
                 local_server_protocol = (
                     "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
@@ -362,14 +359,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         # Doing local connection, not via plex.tv.
                         plex_server = PlexServer(plex_url, session=session)
                     else:
+                        # the account token only authenticates against servers this account
+                        # owns; a server shared via Plex Home needs its own access token
+                        server_token = resolve_server_auth_token(
+                            str(token),
+                            plex_url,
+                            session,
+                            myplex_account=self._myplex_account,
+                        )
                         plex_server = PlexServer(
                             plex_url,
-                            token,
+                            server_token,
                             session=session,
                         )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
+            except PlexServerAccessError as err:
+                raise LoginFailed(ERR_SERVER_ACCESS_DENIED.format(reason=err)) from err
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # the stored token is invalid; surface an auth failure so the user is
@@ -1921,6 +1928,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images
+        podcast.metadata.genres = {genre.tag for genre in plex_album.genres or [] if genre.tag} or {
+            DEFAULT_AUDIOBOOK_PODCAST_GENRE
+        }
         if include_episodes:
             podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast

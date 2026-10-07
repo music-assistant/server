@@ -11,6 +11,10 @@ CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
 CONF_ACCOUNT_ID = "account_id"  # Spotify user id this instance serves (one instance per account)
+# account details of the last successful login, so a load goes ahead while Spotify does not answer
+CONF_ACCOUNT_NAME = "account_name"
+CONF_ACCOUNT_COUNTRY = "account_country"
+CONF_AUDIOBOOKS_SUPPORTED = "audiobooks_supported"
 
 # Playback backend selection; configs predating the choice default to librespot
 CONF_PLAYBACK_BACKEND = "playback_backend"

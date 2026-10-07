@@ -67,6 +67,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -82,6 +83,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -115,7 +117,6 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
-    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
     METADATA_FILE_EXTENSIONS,
@@ -129,6 +130,7 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
+    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -145,6 +147,7 @@ from .helpers import (
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    get_valid_isrcs,
     is_disc_dir,
     is_image_file,
     is_metadata_file,
@@ -163,11 +166,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 
-isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
-ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
-makedirs = wrap(os.makedirs)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -236,8 +236,8 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
-        # the plain local provider reads its scan directory from the setup data
+        # subclasses (cloud, WebDAV) pass their own base_path; the plain local provider
+        # reads its scan directory from the setup data
         self.base_path: str = (
             base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
         )
@@ -267,6 +267,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
+            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -323,8 +324,17 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await isdir(self.base_path):
-            msg = f"Music Directory {self.base_path} does not exist"
+        if not await self.mass.storage.is_available(self.base_path):
+            location = self.mass.storage.get_location_for_path(self.base_path)
+            if location is not None and not location.available:
+                msg = f"Storage location {location.path} is not available"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="storage_location_unavailable",
+                    translation_owner=self.translation_owner,
+                    translation_args=[location.path],
+                )
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
@@ -977,7 +987,7 @@ class LocalFileSystemProvider(MusicProvider):
         if cached_data is not None:
             return cached_data  # type: ignore[no-any-return]
 
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         try:
             # get playlist file contents
             playlist_data_raw = await self._read_file(prov_playlist_id)
@@ -1030,7 +1040,8 @@ class LocalFileSystemProvider(MusicProvider):
             or x.ext in IMAGE_EXTENSIONS
             or x.filename.lower() == "metadata.json"
         ]
-        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        # bump the version when parsing adds episode fields, so existing listings are rebuilt
+        cache_key = f"podcast_episodes.v2.{prov_podcast_id}"
         cache_checksum = get_folder_signature(signature_files)
         if (
             cached_episodes := await self.mass.cache.get(
@@ -1115,7 +1126,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
@@ -2138,7 +2149,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
-        return bool(await isdir(self.base_path))
+        return await self.mass.storage.is_available(self.base_path)
 
     @property
     def _availability_probe_id(self) -> str:
@@ -2353,10 +2364,18 @@ class LocalFileSystemProvider(MusicProvider):
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            elif "." not in file_path:
+            elif not file_path:
+                # an empty id matches no single library item
                 continue
+            elif "." not in file_path:
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    MediaType.AUDIOBOOK
+                    if self.media_content_type == "audiobooks"
+                    else MediaType.TRACK
+                )
             else:
-                _, ext = file_path.rsplit(".", 1)
+                ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
                     controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
                 elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2372,7 +2391,13 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if is_track(library_item):
+                is_last_mapping = all(
+                    x.provider_instance == self.instance_id and x.item_id == file_path
+                    for x in library_item.provider_mappings
+                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping
@@ -2383,7 +2408,11 @@ class LocalFileSystemProvider(MusicProvider):
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
-                await controller.remove_item_from_library(library_item.item_id)
+                # the library item may also be mapped to other providers,
+                # so only drop this file's mapping
+                await controller.remove_provider_mapping(
+                    library_item.item_id, self.instance_id, file_path
+                )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2553,9 +2582,8 @@ class LocalFileSystemProvider(MusicProvider):
             ),
         )
 
-        if isrc_tags := tags.isrc:
-            for isrsc in isrc_tags:
-                track.external_ids.add((ExternalID.ISRC, isrsc))
+        for isrc in get_valid_isrcs(tags.isrc, file_item.relative_path, self.logger):
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if acoustid := tags.get("acoustid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
@@ -3068,6 +3096,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
             position=tags.track or 0,
+            # tags.track falls back to a number guessed from the file name, so read the tag itself
+            episode_number=get_publisher_number(
+                try_parse_int(tags.tags.get("track", "").split("/")[0], None)
+            ),
+            season=get_publisher_number(tags.disc),
             duration=try_parse_int(tags.duration) or 0,
             podcast=Podcast(
                 item_id=podcast_path,
@@ -3103,6 +3136,7 @@ class LocalFileSystemProvider(MusicProvider):
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
         episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.release_date = tags.release_date
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")

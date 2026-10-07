@@ -34,10 +34,12 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 
+# the folder a new source is offered by default, where the caller may use it
+DEFAULT_MEDIA_FOLDER: Final[str] = "/media"
+
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
-    type=ConfigEntryType.STRING,
-    default_value="/media",
+    type=ConfigEntryType.FOLDER,
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
@@ -63,6 +65,15 @@ def content_type_config_entry(content_type: str) -> ConfigEntry:
     # mirrored as the entry default so the other entries resolve their depends_on chain
     # against it without it ever being persisted back into the stored values
     return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
+
+
+def folder_config_entry(path: str) -> ConfigEntry:
+    """
+    Return the line on the options page that shows which folder a source reads from.
+
+    :param path: The folder of the source.
+    """
+    return ConfigEntry(key="folder", type=ConfigEntryType.LABEL, translation_params=[path])
 
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
@@ -204,8 +215,6 @@ METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
-
-DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
 
 # how often storage that went away during a scan is re-checked, so the provider comes
 # back within minutes instead of waiting for the next scheduled sync
