@@ -64,7 +64,7 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 # Port used by the internal ingress webserver for the HA integration
-INGRESS_SERVER_PORT: Final[int] = 8094
+INGRESS_SERVER_PORT: Final[int] = 18094
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -223,6 +223,7 @@ def _default_background_scan_concurrency() -> int:
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
+DEFAULT_PORT: Final[int] = 18095
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 

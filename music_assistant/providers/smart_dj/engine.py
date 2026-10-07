@@ -138,7 +138,7 @@ def camelot_affinity(a: str | None, b: str | None) -> float:
     try:
         na, nb = int(str(a)[:-1]), int(str(b)[:-1])
         ma, mb = str(a)[-1].upper(), str(b)[-1].upper()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0.0
     if ma == mb and ((na - nb) % 12 in (1, 11)):
         return 0.85
@@ -155,7 +155,8 @@ def _artist_run_length(
     *,
     anchor_artist: str | None = None,
 ) -> int:
-    """Count consecutive same-artist tracks at the end of path, including the anchor.
+    """
+    Count consecutive same-artist tracks at the end of path, including the anchor.
 
     The anchor (now-playing / previous fixed track) is not in ``path`` but still
     counts toward the consecutive-run limit. When the entire path is the same
@@ -342,7 +343,8 @@ def score_candidate(
     *,
     artist_run_length: int = 0,
 ) -> tuple[float, list[str], list[str]]:
-    """Score one candidate against the current track.
+    """
+    Score one candidate against the current track.
 
     Returns (score, reasons, hard violations); an empty violation list means the
     candidate is allowed under the current hard constraints.
