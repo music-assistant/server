@@ -25,6 +25,9 @@ from music_assistant.helpers.datetime import utc
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
 
+JWT_ISSUER = "music-assistant"
+JWT_AUDIENCE = "music-assistant"
+
 
 class JWTHelper:
     """Helper class for JWT token operations."""
@@ -66,6 +69,8 @@ class JWTHelper:
             "role": user.role,
             "token_name": token_name,
             "is_long_lived": is_long_lived,
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
         }
 
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
@@ -74,17 +79,25 @@ class JWTHelper:
         """
         Decode and verify a JWT token.
 
+        Verifies the signature, the expiration (unless disabled) and, when present,
+        that the issuer and audience claims match this server.
+
         :param token: JWT token string to decode.
         :param verify_exp: Whether to verify token expiration.
         :return: Decoded token payload.
-        :raises jwt.InvalidTokenError: If token is invalid or expired.
+        :raises jwt.InvalidTokenError: If token is invalid, expired or not issued for us.
         """
         payload: dict[str, Any] = jwt.decode(
             token,
             self.secret_key,
             algorithms=[self.algorithm],
-            options={"verify_exp": verify_exp},
+            options={"verify_exp": verify_exp, "verify_aud": False},
         )
+        # Tokens without iss/aud claims are still accepted, so only check them when present
+        if "aud" in payload and not self._audience_matches(payload["aud"]):
+            raise jwt.InvalidAudienceError("Invalid audience")
+        if "iss" in payload and payload["iss"] != JWT_ISSUER:
+            raise jwt.InvalidIssuerError("Invalid issuer")
         return payload
 
     @staticmethod
@@ -112,3 +125,10 @@ class JWTHelper:
             return str(jti) if jti else None
         except Exception:
             return None
+
+    @staticmethod
+    def _audience_matches(aud: Any) -> bool:
+        """Return whether an aud claim (string or list) contains our audience."""
+        if isinstance(aud, list):
+            return JWT_AUDIENCE in aud
+        return bool(aud == JWT_AUDIENCE)
