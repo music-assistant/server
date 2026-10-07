@@ -454,7 +454,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             RecommendationFolder(
                 item_id="personal_recommend",
                 provider=self.instance_id,
-                name="Personal Recommend",
+                name="Personal Recommendations",
                 translation_key="personal_recommend",
                 icon="mdi:compass",
             ),

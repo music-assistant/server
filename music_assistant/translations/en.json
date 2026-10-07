@@ -1784,7 +1784,7 @@
   "provider.neteasecloudmusic.media.playlist.daily_recommendations.name": "Daily Recommendations",
   "provider.neteasecloudmusic.media.playlist.heart_mode.name": "Heart Mode",
   "provider.neteasecloudmusic.media.playlist.personal_fm.name": "Personal FM",
-  "provider.neteasecloudmusic.media.recommendations.personal_recommend.name": "Personal Recommend",
+  "provider.neteasecloudmusic.media.recommendations.personal_recommend.name": "Personal Recommendations",
   "provider.neteasecloudmusic.media.recommendations.recommended_new_tracks.name": "Recommended new tracks",
   "provider.neteasecloudmusic.media.recommendations.recommended_playlists.name": "Recommended playlists",
   "provider.neteasecloudmusic.setup_flow.scan_qr.description": "Scan the QR code with the NetEase Cloud Music app and confirm the login. A fresh code is shown automatically if it expires.",
