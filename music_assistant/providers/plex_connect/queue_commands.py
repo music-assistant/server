@@ -137,7 +137,7 @@ class QueueCommandsMixin:
                         window=page_size,
                         includeBefore=False,
                     )
-                except IndexError, TypeError:
+                except (IndexError, TypeError):
                     # plexapi resolves selectedItem by indexing the returned window with
                     # the queue-absolute selected offset, which can fall outside a
                     # forward-only page; treat such a page as the end of pagination.

@@ -249,7 +249,7 @@ async def _search_media_items(
             ),
             timeout=SEARCH_TIMEOUT,
         )
-    except MusicAssistantError, TimeoutError:
+    except (MusicAssistantError, TimeoutError):
         return []
     return _iter_search_result_items(search_result, media_type)
 

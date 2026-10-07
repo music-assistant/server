@@ -211,7 +211,7 @@ class DigitallyImportedProvider(MusicProvider):
             first_network = enabled_networks[0]
             await self._get_channels(first_network)
             self.logger.info("%s: Successfully connected to Digitally Imported API", self.domain)
-        except ProviderUnavailableError, MediaNotFoundError:
+        except (ProviderUnavailableError, MediaNotFoundError):
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
@@ -833,7 +833,7 @@ class DigitallyImportedProvider(MusicProvider):
 
             return stream_list
 
-        except ProviderUnavailableError, MediaNotFoundError:
+        except (ProviderUnavailableError, MediaNotFoundError):
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, ValueError) as err:

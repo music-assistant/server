@@ -70,7 +70,7 @@ async def run_setup(session: SetupSession) -> None:
                 expires_in=_PAIR_TIMEOUT,
             )
             bridge_id = await _fetch_bridge_id(host, credentials["username"])
-        except StepExpiredError, TimeoutError:
+        except (StepExpiredError, TimeoutError):
             errors = {"base": "button_not_pressed"}
             continue
         except LoginFailed as err:

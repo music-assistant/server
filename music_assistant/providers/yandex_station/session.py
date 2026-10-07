@@ -87,7 +87,7 @@ class YandexSession:
                 return await self.login_token()
             try:
                 resp = await r.json(content_type=None)
-            except aiohttp.ContentTypeError, ValueError:
+            except (aiohttp.ContentTypeError, ValueError):
                 return await self.login_token()
             if resp.get("storage", {}).get("user", {}).get("uid"):
                 return True

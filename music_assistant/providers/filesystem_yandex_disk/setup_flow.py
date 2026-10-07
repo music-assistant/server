@@ -112,7 +112,7 @@ async def _authorize(session: SetupSession, client_id: str, client_secret: str) 
                 translation_params=[grant.user_code],
             )
             return tokens.refresh_token
-        except StepExpiredError, DeviceCodeExpired, TimeoutError:
+        except (StepExpiredError, DeviceCodeExpired, TimeoutError):
             continue
         except DeviceCodeDenied as err:
             raise AbortFlow("login_denied") from err

@@ -373,7 +373,7 @@ def _reference_provider_ids(value: Any) -> set[str]:
             # here too), and only other URLs are plain builtin streams.
             try:
                 share_url = _parse_share_url(value)
-            except KeyError, ValueError, IndexError:
+            except (KeyError, ValueError, IndexError):
                 return {_UNRESOLVED_SHARE_URL}
             if share_url is not None:
                 return {share_url[1]}
@@ -463,7 +463,7 @@ def _known_player_ids(mass: Any) -> set[str]:
     for controller, attribute in (("players", "player_id"), ("player_queues", "queue_id")):
         try:
             items = list(getattr(mass, controller).all())
-        except AttributeError, TypeError:
+        except (AttributeError, TypeError):
             continue
         ids.update(str(value) for item in items if (value := getattr(item, attribute, None)))
     return ids

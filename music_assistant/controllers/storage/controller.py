@@ -602,7 +602,7 @@ class StorageController(CoreController):
             raise self._path_not_allowed(path)
         try:
             names = await asyncio.to_thread(_list_subfolders, real_path)
-        except FileNotFoundError, NotADirectoryError:
+        except (FileNotFoundError, NotADirectoryError):
             raise self._folder_not_found(path) from None
         except OSError as err:
             # e.g. a folder without read permission
@@ -1343,7 +1343,7 @@ class StorageController(CoreController):
         for name, record in self.mass.config.get(CONF_STORAGE_SHARES, {}).items():
             try:
                 shares[name] = NetworkShareSpec.from_dict(record)
-            except LookupError, ValueError:
+            except (LookupError, ValueError):
                 self.logger.debug("Skipping the unreadable network share %s", name)
         return shares
 
@@ -1556,7 +1556,7 @@ def _probe_path(path: str) -> _ProbeResult | None:
         # statvfs first: unlike a plain stat it wakes an automount trigger on the path
         fs_stats = os.statvfs(path)
         is_dir = stat.S_ISDIR(Path(path).stat().st_mode)
-    except FileNotFoundError, NotADirectoryError, ValueError:
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return _ProbeResult(is_dir=False)
     except OSError:
         return None

@@ -183,7 +183,7 @@ def _normalize_mbid(value: str) -> str:
     """Return a MusicBrainz identifier as a lowercase UUID."""
     try:
         return str(UUID(value.strip("{}")))
-    except ValueError, AttributeError:
+    except (ValueError, AttributeError):
         return value
 
 

@@ -106,7 +106,7 @@ class FullyKioskDashboards:
                 await client.stopScreensaver()
                 await client.toForeground()
                 await client.loadUrl(url)
-        except FullyKioskError, ClientError, TimeoutError:
+        except (FullyKioskError, ClientError, TimeoutError):
             # never chain the caught error: its repr may embed the request url with the password
             raise PlayerUnavailableError(
                 f"Unable to show the dashboard on {player.display_name}",
@@ -125,7 +125,7 @@ class FullyKioskDashboards:
         try:
             async with asyncio.timeout(15):
                 await client.loadStartUrl()
-        except FullyKioskError, ClientError, TimeoutError:
+        except (FullyKioskError, ClientError, TimeoutError):
             # never chain the caught error: its repr may embed the request url with the password
             raise PlayerCommandFailed(
                 f"Unable to hide the dashboard on {player.display_name}"

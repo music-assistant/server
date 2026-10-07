@@ -1893,7 +1893,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
+        except (KeyError, ValueError, Exception):
             # settings table doesn't exist yet or other error
             prev_version = 0
 
@@ -2200,7 +2200,7 @@ class AuthenticationManager:
         for row in await self.database.get_rows("roles", limit=0):
             try:
                 stored_values = {str(value) for value in json_loads(row["scopes"])}
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 # the role stays listed, so an admin can still give it its scopes again
                 self.logger.warning("Custom role '%s' has unreadable scopes", row["name"])
                 stored_values = set()

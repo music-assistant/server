@@ -1032,7 +1032,7 @@ class MusicbrainzProvider(MetadataProvider):
         for raw_release in releases:
             try:
                 candidate = MusicBrainzBarcodeRelease.from_raw(raw_release)
-            except MissingField, InvalidFieldValue:
+            except (MissingField, InvalidFieldValue):
                 return None
             if (
                 compare_album_name(candidate.title or "", album.name)

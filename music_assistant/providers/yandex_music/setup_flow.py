@@ -169,7 +169,7 @@ async def _qr_login(session: SetupSession) -> Credentials:
                             image=_qr_image(qr.qr_url),
                             expires_in=code_timeout,
                         )
-                    except StepExpiredError, QRTimeoutError:
+                    except (StepExpiredError, QRTimeoutError):
                         continue
     except TimeoutError as err:
         raise StepExpiredError from err
@@ -202,7 +202,7 @@ async def _device_login(session: SetupSession) -> Credentials:
                             image=_device_image(device.user_code, device.verification_url),
                             expires_in=code_timeout,
                         )
-                    except StepExpiredError, DeviceCodeTimeoutError:
+                    except (StepExpiredError, DeviceCodeTimeoutError):
                         continue
                     except InvalidCredentialsError as err:
                         raise AbortFlow("login_denied") from err

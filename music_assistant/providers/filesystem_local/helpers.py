@@ -288,7 +288,7 @@ def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
     try:
         text = data.decode("utf-8")
         parsed = xmltodict.parse(text)
-    except UnicodeDecodeError, ExpatError, ValueError:
+    except (UnicodeDecodeError, ExpatError, ValueError):
         return None
     root = parsed.get(root_tag)
     return root if isinstance(root, dict) else None

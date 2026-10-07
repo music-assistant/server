@@ -475,7 +475,7 @@ class SoloistBinaryManager:
             returncode, _ = await check_output(
                 str(self._binary_path), "--version", timeout=_VERSION_CMD_TIMEOUT
             )
-        except OSError, TimeoutError:
+        except (OSError, TimeoutError):
             return None
         return returncode
 
@@ -702,7 +702,7 @@ class SoloistBinaryManager:
             if not isinstance(raw, dict):
                 return None
             return _BinaryMetadata.from_dict(raw)
-        except OSError, ValueError, TypeError, MissingField, InvalidFieldValue:
+        except (OSError, ValueError, TypeError, MissingField, InvalidFieldValue):
             return None
 
     def _write_metadata(self, metadata: _BinaryMetadata) -> None:
@@ -953,7 +953,7 @@ class SoloistClient:
         try:
             addr = (self.data_dir / WS_ADDR_FILE).read_text(encoding="utf-8").strip()
             port = int((self.data_dir / WS_PORT_FILE).read_text(encoding="utf-8").strip())
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return None
         if not addr or not 0 < port <= 65535:
             return None

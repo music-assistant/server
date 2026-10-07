@@ -192,7 +192,7 @@ class MusicDatabaseSetupMixin:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
-        except KeyError, ValueError:
+        except (KeyError, ValueError):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):

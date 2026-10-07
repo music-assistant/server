@@ -238,7 +238,7 @@ class BaseConverter(ABC):
                 else:
                     return default
             return current
-        except AttributeError, KeyError, TypeError:
+        except (AttributeError, KeyError, TypeError):
             return default
 
     def _get_synopsis(self, obj: Any) -> str | None:

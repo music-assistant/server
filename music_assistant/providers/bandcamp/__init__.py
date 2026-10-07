@@ -466,7 +466,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 cached_int = int(cached)
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 self.logger.warning(
                     "Discarding corrupt performer_band_id cache for %r: %r",
                     target_slug,
@@ -1284,7 +1284,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 return [self._deserialize_content_item(item) for item in cached]
-            except LookupError, ValueError, UnserializableDataError, InvalidDataError:
+            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):

@@ -264,7 +264,7 @@ def _read_cap_eff() -> int | None:
             for line in status_file:
                 if line.startswith("CapEff:"):
                     return int(line.split()[1], 16)
-    except OSError, ValueError, IndexError:
+    except (OSError, ValueError, IndexError):
         pass
     return None
 

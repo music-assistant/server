@@ -1010,7 +1010,7 @@ class AIRadioRuntimeMixin:
         if tz_name:
             try:
                 return utc().astimezone(ZoneInfo(tz_name))
-            except ZoneInfoNotFoundError, ValueError:
+            except (ZoneInfoNotFoundError, ValueError):
                 # a typo must not take the run down, but it should not pass unnoticed either
                 self.logger.warning(
                     "Ignoring invalid timezone %r, falling back to the host timezone", tz_name

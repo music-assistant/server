@@ -206,5 +206,5 @@ def _row_artist_names(raw_artists: str | None) -> list[str]:
         return []
     try:
         return [name for artist in json_loads(raw_artists) if (name := artist.get("name"))]
-    except ValueError, TypeError, AttributeError:
+    except (ValueError, TypeError, AttributeError):
         return []

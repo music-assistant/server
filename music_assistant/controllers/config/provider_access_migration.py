@@ -170,7 +170,7 @@ def _normalized_filter(row: Mapping[str, Any], known_sources: set[str]) -> set[s
     """
     try:
         stored = json_loads(row["provider_filter"])
-    except KeyError, IndexError, TypeError, ValueError:
+    except (KeyError, IndexError, TypeError, ValueError):
         return set()
     if not isinstance(stored, list):
         return set()

@@ -243,7 +243,7 @@ def http_fetchers(session: ClientSession) -> tuple[FetchText, FetchBytes]:
         for attempt in range(1, SEGMENT_FETCH_ATTEMPTS):
             try:
                 return await fetch_once(url)
-            except ClientError, TimeoutError:
+            except (ClientError, TimeoutError):
                 await asyncio.sleep(attempt)
         try:
             return await fetch_once(url)

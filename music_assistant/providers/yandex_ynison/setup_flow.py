@@ -137,7 +137,7 @@ async def _qr_login(session: SetupSession) -> Credentials:
                     image=_qr_image(qr.qr_url),
                     expires_in=int(ttl),
                 )
-            except StepExpiredError, QRTimeoutError:
+            except (StepExpiredError, QRTimeoutError):
                 continue
 
 

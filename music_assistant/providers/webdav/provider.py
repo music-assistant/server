@@ -153,7 +153,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 session, webdav_url, depth=0, auth_header=self._auth_header
             )
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
-        except LoginFailed, SetupFailedError, ProviderUnavailableError:
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError:
             return False
@@ -331,7 +331,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             visited.add(path)
             try:
                 items = await self._scandir(path)
-            except LoginFailed, SetupFailedError, ProviderUnavailableError:
+            except (LoginFailed, SetupFailedError, ProviderUnavailableError):
                 raise
             except aiohttp.ClientError as err:
                 # a root-level failure aborts the sync right away, subdir failures only

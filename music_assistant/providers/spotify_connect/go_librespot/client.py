@@ -55,7 +55,7 @@ class GoLibrespotClient:
                 ) as resp:
                     if resp.status == HTTPStatus.OK:
                         return True
-            except ClientError, TimeoutError, OSError:
+            except (ClientError, TimeoutError, OSError):
                 pass
             await asyncio.sleep(0.25)
         return False

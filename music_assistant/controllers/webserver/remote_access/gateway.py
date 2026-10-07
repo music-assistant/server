@@ -851,7 +851,7 @@ class WebRTCGateway:
                                 self._handle_http_proxy_request(channel, msg_data)
                             )
                             continue
-                    except json.JSONDecodeError, ValueError:
+                    except (json.JSONDecodeError, ValueError):
                         pass
 
                 if session.local_ws and not session.local_ws.closed:
@@ -981,7 +981,7 @@ class WebRTCGateway:
                     continue
                 try:
                     request = json.loads(message)
-                except json.JSONDecodeError, ValueError:
+                except (json.JSONDecodeError, ValueError):
                     continue
                 if isinstance(request, dict) and request.get("type") == "http-proxy-request":
                     # handle off the receive loop so a slow fetch never holds up the next
@@ -1086,7 +1086,7 @@ class WebRTCGateway:
                 # Use callback to set sendspin player on the websocket client
                 if self._set_sendspin_player_callback:
                     self._set_sendspin_player_callback(session.session_id, client_id)
-        except json.JSONDecodeError, TypeError:
+        except (json.JSONDecodeError, TypeError):
             pass  # Not valid JSON, ignore
 
 

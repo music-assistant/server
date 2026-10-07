@@ -1693,7 +1693,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
                 # Handle protocol linking
                 self._evaluate_protocol_links(player)
-            except Exception, asyncio.CancelledError:
+            except (Exception, asyncio.CancelledError):
                 # a player whose setup failed never becomes initialized, which hides it
                 # everywhere while it keeps blocking every later registration of the same id.
                 # Cancellation counts too: a re-triggered provider discovery aborts the task

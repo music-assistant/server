@@ -387,7 +387,7 @@ class RadioArtworkMixin:
                     expiration=CACHE_EXPIRATION_RADIO_ARTWORK_MISS,
                     category=CACHE_CATEGORY_RADIO_ARTWORK,
                 )
-        except ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError:
+        except (ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError):
             pass
 
         return image_url or fallback_image_url, corrected_artist, corrected_track

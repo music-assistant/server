@@ -394,7 +394,7 @@ def _get_memory_info() -> dict[str, Any]:
                     **parse_proc_status_rss(status),
                     **collect_cgroup_memory(),
                 }
-    except OSError, ValueError, IndexError:
+    except (OSError, ValueError, IndexError):
         pass
     # ru_maxrss is in bytes on macOS, kilobytes on other platforms
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024

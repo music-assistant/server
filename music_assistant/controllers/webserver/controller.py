@@ -1013,7 +1013,7 @@ class WebserverController(CoreController):
 
             try:
                 body = await request.json()
-            except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            except (json.JSONDecodeError, UnicodeDecodeError, LookupError):
                 body = None
             # an undecodable or non-object body is a client error, not a server fault
             if not isinstance(body, dict):
@@ -1273,7 +1273,7 @@ class WebserverController(CoreController):
 
         try:
             body = await request.json()
-        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+        except (json.JSONDecodeError, UnicodeDecodeError, LookupError):
             body = None
         # an undecodable or non-object body is a client error, not a server fault
         if not isinstance(body, dict):

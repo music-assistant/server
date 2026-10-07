@@ -474,6 +474,6 @@ def _as_epoch_seconds(value: Any) -> int | None:
     """Convert an epoch timestamp in milliseconds to seconds, or None if unusable."""
     try:
         millis = int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     return millis // 1000 if millis > 0 else None

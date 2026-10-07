@@ -27,7 +27,7 @@ def collect_resident_memory_split() -> dict[str, float | None]:
     """
     try:
         return parse_proc_status_rss(Path("/proc/self/status").read_text(encoding="utf-8"))
-    except OSError, ValueError, IndexError:
+    except (OSError, ValueError, IndexError):
         return dict.fromkeys(_PROC_STATUS_RSS_KEYS.values())
 
 
@@ -69,7 +69,7 @@ def collect_cgroup_memory(
                 stat_text = (directory / "memory.stat").read_text(encoding="utf-8")
                 usage = int((directory / usage_file).read_text(encoding="utf-8"))
                 return parse_cgroup_memory(stat_text, usage)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         pass
     return dict.fromkeys(_CGROUP_KEYS)
 

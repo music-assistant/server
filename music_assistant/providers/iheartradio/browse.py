@@ -203,7 +203,7 @@ def _is_image_url(url: str) -> bool:
     encoded = url.split("/v3/url/", 1)[1].split("?", 1)[0]
     try:
         origin = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
-    except ValueError, UnicodeDecodeError:
+    except (ValueError, UnicodeDecodeError):
         return False
     return bool(urlparse(origin).path.strip("/"))
 

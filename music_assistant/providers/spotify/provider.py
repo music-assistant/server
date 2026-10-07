@@ -1158,7 +1158,7 @@ class SpotifyProvider(MusicProvider):
         if not self._sp_user:
             try:
                 userinfo = await self._get_data("me", auth_info=auth_info, use_global_session=True)
-            except RetriesExhausted, ResourceTemporarilyUnavailable:
+            except (RetriesExhausted, ResourceTemporarilyUnavailable):
                 if (stored := self._stored_account()) is None:
                     raise
                 userinfo = stored
@@ -1980,9 +1980,9 @@ class SpotifyProvider(MusicProvider):
             if e.status != 403:
                 raise  # Re-raise other HTTP errors
             supported = False  # Not available
-        except MediaNotFoundError, ProviderUnavailableError:
+        except (MediaNotFoundError, ProviderUnavailableError):
             supported = False
-        except RetriesExhausted, ResourceTemporarilyUnavailable:
+        except (RetriesExhausted, ResourceTemporarilyUnavailable):
             # Spotify did not answer: go with the answer of an earlier load
             return bool(self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED, False))
         if self.get_setup_value(CONF_AUDIOBOOKS_SUPPORTED) != supported:

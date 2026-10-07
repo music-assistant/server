@@ -231,7 +231,7 @@ def _as_seconds(value: Any) -> float | None:
         return None
     try:
         seconds = float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     return seconds if math.isfinite(seconds) else None
 

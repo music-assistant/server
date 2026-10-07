@@ -444,7 +444,7 @@ class SetupSession:
                 parsed[entry.key] = entry.parse_value(
                     raw_value, allow_none=not entry.dependency_met(submitted_entries)
                 )
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 errors[entry.key] = "required" if raw_value in (None, "") else "invalid_value"
                 if not isinstance(raw_value, list):
                     entry.value = raw_value

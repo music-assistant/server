@@ -1306,7 +1306,7 @@ class SonosPlayer(Player):
             async with asyncio.timeout(1):
                 # 1443 is the port aiosonos' websocket connects to
                 _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
-        except OSError, TimeoutError:
+        except (OSError, TimeoutError):
             return False
         writer.close()
         await writer.wait_closed()

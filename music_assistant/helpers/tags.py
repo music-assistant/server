@@ -76,7 +76,7 @@ def clean_mbid(
     # taggers may write NUL-terminated or padded values (e.g. in a UFID frame)
     try:
         return str(UUID(value.strip("\x00 \t\r\n")))
-    except ValueError, TypeError, AttributeError:
+    except (ValueError, TypeError, AttributeError):
         if source:
             (logger or LOGGER).warning(
                 "Ignoring invalid MusicBrainz identifier %r in %s", value, source

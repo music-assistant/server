@@ -259,7 +259,7 @@ class ProviderCommandSet:
                     "Server-wide diagnostics are not available to users with player "
                     "or provider filters"
                 )
-        except AuthenticationRequired, InsufficientPermissions:
+        except (AuthenticationRequired, InsufficientPermissions):
             self._emit_audit(context, "authorization.denied")
             raise
         return context

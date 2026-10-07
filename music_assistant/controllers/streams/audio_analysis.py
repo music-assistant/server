@@ -116,7 +116,7 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
     """Return a database row value without assuming dict-only helpers."""
     try:
         return row[key]
-    except IndexError, KeyError, TypeError:
+    except (IndexError, KeyError, TypeError):
         return None
 
 
@@ -774,7 +774,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         for row in rows:
             try:
                 extra = decode_extra_data(row["header"])
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 continue
             if extra is not None:
                 results.append(extra)
@@ -1665,7 +1665,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 )
                 or DEFAULT_BACKGROUND_SCAN_CONCURRENCY
             )
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
 

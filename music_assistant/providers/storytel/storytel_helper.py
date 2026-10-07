@@ -186,7 +186,7 @@ class StorytelHelper:
         try:
             resp_json = await resp.json()
             resp_message = resp_json.get("message") or ""
-        except ContentTypeError, JSONDecodeError:
+        except (ContentTypeError, JSONDecodeError):
             resp_message = await resp.text() or "<no response>"
         if resp.status in (401, 403):
             raise LoginFailed(f"Unauthorized ({resp.status}): {resp_message}")

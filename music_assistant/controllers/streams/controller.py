@@ -1231,7 +1231,7 @@ class StreamsController(CoreController):
                             break
                         try:
                             await resp.write(chunk)
-                        except BrokenPipeError, ConnectionResetError, ConnectionError:
+                        except (BrokenPipeError, ConnectionResetError, ConnectionError):
                             break
             finally:
                 self._active_output_streams -= 1
@@ -1404,7 +1404,7 @@ class StreamsController(CoreController):
                 async for chunk in audio_bytes:
                     try:
                         await resp.write(chunk)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError):
                         # race condition
                         client_disconnected = True
                         break
@@ -1434,7 +1434,7 @@ class StreamsController(CoreController):
                     length_b = chr(int(length / 16)).encode()
                     try:
                         await resp.write(length_b + metadata)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError):
                         # same as the chunk write above: a superseded response is
                         # aborted under us and this is its normal end
                         client_disconnected = True
@@ -1544,7 +1544,7 @@ class StreamsController(CoreController):
             async for chunk in announcement_stream:
                 try:
                     await resp.write(chunk)
-                except BrokenPipeError, ConnectionResetError:
+                except (BrokenPipeError, ConnectionResetError):
                     break
 
         self.logger.debug(

@@ -133,7 +133,7 @@ async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | No
             if response.status == 200:
                 return True
             return False if response.status in (401, 403) else None
-    except ClientError, TimeoutError:
+    except (ClientError, TimeoutError):
         return None
 
 

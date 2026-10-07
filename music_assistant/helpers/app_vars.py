@@ -99,7 +99,7 @@ def _bundled() -> Mapping[str, str] | None:
             name: _codec(salt, name, base64.b64decode(token)).decode()
             for name, token in data["secrets"].items()
         }
-    except ValueError, KeyError, TypeError, AttributeError:
+    except (ValueError, KeyError, TypeError, AttributeError):
         # A corrupt/incomplete bundle must not crash startup; fall through instead.
         return None
 
@@ -107,7 +107,7 @@ def _bundled() -> Mapping[str, str] | None:
 def _bundled_text() -> str | None:
     try:
         return (resources.files(__package__) / _BUNDLED_FILE).read_text(encoding="utf-8")
-    except FileNotFoundError, OSError, ModuleNotFoundError:
+    except (FileNotFoundError, OSError, ModuleNotFoundError):
         return None
 
 
@@ -124,7 +124,7 @@ def _read_json_map(path: str) -> Mapping[str, str]:
         return {}
     try:
         data = json.loads(file.read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
         return {}

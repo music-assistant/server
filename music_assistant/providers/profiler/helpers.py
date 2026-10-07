@@ -164,7 +164,7 @@ def collect_memory_stats(proc: psutil.Process) -> dict[str, Any]:
     mem = proc.memory_info()
     try:
         open_fds: int | None = proc.num_fds()
-    except AttributeError, psutil.Error:
+    except (AttributeError, psutil.Error):
         open_fds = None
     return {
         "rss_mb": round(mem.rss / 1024**2, 1),

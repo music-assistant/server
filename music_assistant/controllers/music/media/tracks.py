@@ -735,7 +735,7 @@ class TracksController(MediaControllerBase[Track]):
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
-                except MediaNotFoundError, InvalidDataError, InvalidProviderID:
+                except (MediaNotFoundError, InvalidDataError, InvalidProviderID):
                     # Ignore stale mappings and fall back to search.
                     mapped_candidate = None
             if mapped_candidate:
@@ -1072,7 +1072,7 @@ class TracksController(MediaControllerBase[Track]):
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
-                except MediaNotFoundError, InvalidDataError, InvalidProviderID:
+                except (MediaNotFoundError, InvalidDataError, InvalidProviderID):
                     # Skip unusable results but keep the rest of this search.
                     continue
                 except (
