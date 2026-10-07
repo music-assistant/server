@@ -5,13 +5,8 @@ from __future__ import annotations
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    ResourceTemporarilyUnavailable,
-)
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
@@ -20,7 +15,7 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
@@ -28,9 +23,6 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
-CONF_NCM_PROVIDER: Final[str] = "ncm_provider"
-
-NETEASE_DOMAIN: Final[str] = "neteasecloudmusic"
 # a track's album (the scrobble source id) is stable catalog data
 _SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 _CACHE_CATEGORY_SCROBBLE: Final[int] = 1
@@ -51,75 +43,31 @@ async def setup(
 class NeteaseScrobbleProvider(PluginProvider):
     """Plugin provider to scrobble NetEase Cloud Music plays (listening check-in)."""
 
-    _ncm_provider: NeteaseCloudMusicProvider | None = None
     _handler: NeteaseScrobbleHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the configuration entries for this plugin.
 
-        The only plugin-specific option is which NetEase Cloud Music provider
-        instance to report plays for; the shared scrobbler filters (users/players)
-        come from ScrobblerConfig.
+        There is no NetEase source to pick: a play is checked in to whichever NetEase
+        Cloud Music instance it actually streamed from, so only the shared scrobbler
+        filters (users/players) are configurable.
         """
-        options = [
-            ConfigValueOption(prov.instance_id, title=prov.name)
-            for prov in self.mass.providers
-            if isinstance(prov, NeteaseCloudMusicProvider)
-        ]
-        ncm_entry = ConfigEntry(
-            key=CONF_NCM_PROVIDER,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=options[0].value if len(options) == 1 else None,
-            options=options,
-        )
-        return (ncm_entry, *await ScrobblerConfig.get_shared_config_entries(self.mass, None))
+        return tuple(await ScrobblerConfig.get_shared_config_entries(self.mass, None))
 
     async def handle_async_init(self) -> None:
         """Handle async setup."""
-        # this plugin reuses a configured NetEase Cloud Music source rather than a
-        # second login: it reads that provider's client and credential through the
-        # read-only api_client/cookie properties it exposes for companion plugins, so
-        # it never reaches into the source's private state - the scrobbler counterpart
-        # of how subsonic_scrobble rides the OpenSubsonic source.
-        self._ncm_provider = self._resolve_ncm_provider()
-        if self._ncm_provider is None:
-            self.logger.warning(
-                "No usable NetEase Cloud Music provider instance available yet; "
-                "plays will be scrobbled once one becomes available"
-            )
+        # this plugin reuses the configured NetEase Cloud Music source(s) rather than a
+        # second login: per play it reports through the instance the track actually
+        # streamed from, using the read-only api_client/cookie properties those
+        # providers expose for companion plugins. The scrobbler counterpart of how
+        # subsonic_scrobble rides whichever OpenSubsonic source served the play.
+        self._handler = NeteaseScrobbleHandler(self)
 
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Forward a playback progress report to NetEase once a source is available."""
-        ncm = self._resolve_ncm_provider()
-        if ncm is None:
-            return
-        if self._handler is None or ncm is not self._ncm_provider:
-            # the selected provider instance became available or was (re)loaded since
-            # the handler was built (e.g. a fresh login): rebuild it so check-ins use
-            # the current instance and cookie instead of a stale one
-            self._ncm_provider = ncm
-            self._handler = NeteaseScrobbleHandler(self)
-        try:
+        """Forward a playback progress report to NetEase."""
+        if self._handler is not None:
             await self._handler.on_media_item_played(report)
-        except LoginFailed as err:
-            # stop submitting right away: the unload below only runs after a short delay
-            self._handler = None
-            self.logger.warning("%s, re-authenticate this plugin to resume scrobbling", err)
-            self.unload_with_error(err)
-
-    def _resolve_ncm_provider(self) -> NeteaseCloudMusicProvider | None:
-        """Return the configured NetEase Cloud Music provider instance, if loaded."""
-        selected = str(self.get_setup_value(CONF_NCM_PROVIDER) or "").strip()
-        candidates = [
-            prov
-            for prov in self.mass.providers
-            if isinstance(prov, NeteaseCloudMusicProvider) and prov.available
-        ]
-        if selected:
-            return next((prov for prov in candidates if prov.instance_id == selected), None)
-        return candidates[0] if len(candidates) == 1 else None
 
 
 class NeteaseScrobbleHandler(ScrobblerHelper):
@@ -139,10 +87,6 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             SUPPORTED_SCROBBLE_MEDIA_TYPES,
         )
         self._plugin = plugin
-        # the handler is only built once a provider instance was resolved
-        ncm = plugin._ncm_provider
-        assert ncm is not None
-        self._ncm: NeteaseCloudMusicProvider = ncm
         # one check-in per play of a track.
         # ScrobblerHelper's own last_scrobbled dedup cannot be used here because it
         # treats any same-uri progress report as a loop restart, which would re-check
@@ -180,13 +124,17 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         return True
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Scrobble a track to NetEase."""
+        """Scrobble a track to the NetEase instance it streamed from."""
+        resolved = await self._resolve_ncm_track(report)
+        if resolved is None:
+            return
+        ncm, track_id = resolved
         try:
-            resolved = await self._resolve_ncm_track(report)
-            if resolved is None:
+            source_id = await self._get_source_id(ncm, track_id)
+            if not source_id:
+                self.logger.debug("Skipping scrobble: no album id found for track %s", track_id)
                 return
-            track_id, source_id = resolved
-            await self._ncm.api_client.get(
+            await ncm.api_client.get(
                 "/scrobble",
                 # the login cookie must also travel as a query param: some NCM api
                 # backends only attribute the play to the account when it is sent that
@@ -197,13 +145,19 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
                     "id": track_id,
                     "sourceid": source_id,
                     "time": report.seconds_played,
-                    "cookie": self._ncm.cookie,
+                    "cookie": ncm.cookie,
                 },
-                cookie=self._ncm.cookie,
+                cookie=ncm.cookie,
             )
         except InvalidDataError as err:
             if _SESSION_EXPIRED_CODE in str(err):
-                raise self._session_expired_error() from err
+                # that one source's login lapsed; other instances may still be fine, so
+                # only skip this check-in (the user re-authenticates the source itself)
+                self.logger.warning(
+                    "NetEase session for instance %s is no longer valid; skipping check-in",
+                    ncm.instance_id,
+                )
+                return
             raise
         self.logger.info(
             "Checked in track %s to NetEase (source %s, played %ss)",
@@ -212,47 +166,38 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             report.seconds_played,
         )
 
-    def _session_expired_error(self) -> LoginFailed:
-        """Build the error that unloads this plugin until the user logs in again."""
-        return LoginFailed(
-            "NetEase Cloud Music session is no longer valid",
-            translation_key="session_invalid",
-            translation_owner=f"provider.{self._plugin.domain}",
-        )
-
     async def _resolve_ncm_track(
         self, report: MediaItemPlaybackProgressReport
-    ) -> tuple[str, str] | None:
+    ) -> tuple[NeteaseCloudMusicProvider, str] | None:
         """
-        Resolve a progress report to the NetEase track and source (album) id.
+        Resolve a progress report to the NetEase instance that served it and its track id.
 
-        Returns None when the play did not stream from the selected NetEase
-        provider instance, or the album needed as source id could not be resolved.
+        Returns None when the play did not stream from a loaded NetEase instance, or the
+        instance that served it can not be resolved.
 
         :param report: The playback progress report of the played item.
         """
-        track_id: str | None = None
-
         scheme, _, rest = report.uri.partition("://")
-        if scheme in (NETEASE_DOMAIN, self._ncm.instance_id) and rest.startswith("track/"):
+        if rest.startswith("track/") and self._find_ncm(scheme) is not None:
+            # a direct provider track uri names the NetEase instance in its scheme
+            instance_id = scheme
             track_id = rest.removeprefix("track/")
         else:
-            # library items may have been linked to any provider: only check in
-            # when the queue shows the track actually streamed from NetEase
-            track_id = await self._lookup_queue_stream_track(report)
-        if not track_id:
+            # library items may be linked to any provider: only check in when the
+            # queue shows the track actually streamed from a NetEase instance
+            streamed = await self._lookup_queue_stream_track(report)
+            if streamed is None:
+                return None
+            instance_id, track_id = streamed
+        ncm = self._find_ncm(instance_id)
+        if ncm is None or not track_id:
             return None
-
-        source_id = await self._get_source_id(track_id)
-        if not source_id:
-            self.logger.debug("Skipping scrobble: no album id found for track %s", track_id)
-            return None
-        return track_id, source_id
+        return ncm, track_id
 
     async def _lookup_queue_stream_track(
         self, report: MediaItemPlaybackProgressReport
-    ) -> str | None:
-        """Return the NetEase track id when the reported queue item streamed from NetEase."""
+    ) -> tuple[str, str] | None:
+        """Return (instance_id, track id) when the reported queue item streamed from NetEase."""
         if not report.player_id:
             return None
         # page through the whole queue: a large synced playlist holds more items
@@ -272,13 +217,26 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
                         "Skipping scrobble: queue item %s has no streamdetails yet", report.uri
                     )
                     return None
-                if streamdetails.provider != self._ncm.instance_id:
+                if self._find_ncm(str(streamdetails.provider)) is None:
                     return None
-                return str(streamdetails.item_id)
+                return str(streamdetails.provider), str(streamdetails.item_id)
         self.logger.debug("Skipping scrobble: queue item %s no longer present", report.uri)
         return None
 
-    async def _get_source_id(self, track_id: str) -> str | None:
+    def _find_ncm(self, instance_id_or_domain: str) -> NeteaseCloudMusicProvider | None:
+        """Return the loaded NetEase instance matching the given instance id or domain."""
+        return next(
+            (
+                prov
+                for prov in self._plugin.mass.providers
+                if isinstance(prov, NeteaseCloudMusicProvider)
+                and prov.available
+                and instance_id_or_domain in (prov.instance_id, prov.domain)
+            ),
+            None,
+        )
+
+    async def _get_source_id(self, ncm: NeteaseCloudMusicProvider, track_id: str) -> str | None:
         """Return the album id of a NetEase track (cached), used as the scrobble source id."""
         cache_key = f"sourceid:{track_id}"
         cached = await self._plugin.mass.cache.get(
@@ -290,8 +248,8 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         if isinstance(cached, str) and cached:
             return cached
 
-        payload = await self._ncm.api_client.get(
-            "/song/detail", params={"ids": track_id}, cookie=self._ncm.cookie
+        payload = await ncm.api_client.get(
+            "/song/detail", params={"ids": track_id}, cookie=ncm.cookie
         )
         songs = payload.get("songs")
         if not isinstance(songs, list) and isinstance(payload.get("data"), dict):
