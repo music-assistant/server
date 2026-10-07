@@ -1,5 +1,6 @@
 """Regression coverage for identifier-first album listings and safe backfill."""
 
+from dataclasses import replace
 from itertools import permutations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -23,6 +24,14 @@ def entry(provider: str, item_id: str, position: int = 1, isrc: str | None = Non
     track = create_track(provider, item_id, name="Allegro")
     track.external_ids = {(ExternalID.ISRC, isrc)} if isrc else set()
     track.track_number = position
+    return track
+
+
+def unplayable(track: Track) -> Track:
+    """Mark a listing entry as one its provider can not play."""
+    track.provider_mappings = {
+        replace(mapping, available=False) for mapping in track.provider_mappings
+    }
     return track
 
 
@@ -84,6 +93,40 @@ def test_unplaced_entries_sharing_an_isrc_are_one_entry() -> None:
     same_source = entry("a", "two", 0, "GBAYC2100001")
     same_source.name = "Allegro (Remastered)"
     assert len(album_tracks.select_album_tracks([], [first, same_source])) == 2
+
+
+def test_a_copy_joining_by_title_keeps_its_sources_entries_apart() -> None:
+    """A copy whose title names a slot its own source already fills stays an entry of its own."""
+    symphony = unplayable(entry("a", "a1", 1, "GBAYC2100001"))
+    symphony.name = "Allegro (Symphony 1)"
+    allegro = entry("a", "a2", 0, "GBAYC2100002")
+    other = entry("b", "b1", 1, "GBAYC2100001")
+    selected = album_tracks.select_album_tracks([], [symphony, allegro, other])
+    assert [track.item_id for track in selected] == ["b1", "a2"]
+
+
+def test_a_copy_that_took_a_slot_by_title_names_its_recording() -> None:
+    """A copy that took a slot by title holds the slot for its ISRC as well."""
+    placed = unplayable(entry("a", "one", 1))
+    allegro = entry("b", "two", 0, "GBAYC2100001")
+    remaster = entry("c", "three", 0, "GBAYC2100001")
+    remaster.name = "Allegro (Remastered)"
+    selected = album_tracks.select_album_tracks([], [placed, allegro, remaster])
+    assert [track.item_id for track in selected] == ["two"]
+    assert selected[0].track_number == 1
+
+
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_a_playable_copy_takes_a_slot_two_unplayable_copies_fill(order: tuple[int, ...]) -> None:
+    """Two unplayable placed copies and a playable one without a position are one entry."""
+    copies = [
+        unplayable(entry("a", "one", 1)),
+        unplayable(entry("b", "two", 1)),
+        entry("c", "three", 0),
+    ]
+    selected = album_tracks.select_album_tracks([], [copies[index] for index in order])
+    assert [track.item_id for track in selected] == ["three"]
+    assert selected[0].track_number == 1
 
 
 def test_unknown_title_does_not_choose_repeated_position() -> None:

@@ -18,8 +18,9 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     Select the provider entries to list next to the library rows of an album.
 
     A library row always keeps its slot. A provider entry joins an existing slot by
-    provider ID, then by ISRC, then by position; a source's own listing is never
-    collapsed, and an ISRC that one source lists more than once identifies nothing.
+    provider ID, then by ISRC, then by position or, without one, by a title no source
+    lists twice; a source's own listing is never collapsed, and an ISRC that one source
+    lists more than once identifies nothing.
 
     :param library: The album's library rows.
     :param providers: The album's tracklists as the providers list them.
@@ -28,14 +29,14 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     library_ids = {key for track in library for key in _ids(track)}
     usable_isrcs = _unique_isrcs_per_source(library + providers)
     library_isrcs = {isrc for track in library for isrc in usable_isrcs[id(track)]}
-    titles: dict[tuple[int, str, str], list[Track]] = defaultdict(list)
-    for track in library + providers:
-        titles[_title(track)].append(track)
+    title_of = {id(track): _title(track) for track in library + providers}
+    unique_titles = _unique_titles(library + providers, title_of)
+    library_titles = {title_of[id(track)] for track in library}
     slots: list[Track] = []
     slot_sources: list[set[str]] = []
     slot_by_isrc: dict[str, int] = {}
     slot_by_position: dict[tuple[int, int], int] = {}
-    unknown: list[Track] = []
+    slot_by_title: dict[tuple[int, str, str], int] = {}
     # the slot an identifier names is the one of the first entry carrying it, so the
     # entries are taken in a fixed order rather than the order the providers answered in:
     # the placed ones first, so the slots exist by the time the others look for theirs
@@ -46,24 +47,18 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         if isrcs.intersection(library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
             continue
+        title = title_of[id(track)]
+        position = _position(track) if track.track_number else None
         slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
-        if not track.track_number:
-            if slot is None or track.provider in slot_sources[slot]:
-                unknown.append(track)
-                continue
-            # the slot names this recording already: a playable copy takes it, and the
-            # position known for it, whatever title the copy goes by
-            if _preference(track) < _preference(slots[slot]):
-                track.disc_number = slots[slot].disc_number
-                track.track_number = slots[slot].track_number
-                slots[slot] = track
-            slot_sources[slot].add(track.provider)
-            continue
-        position = _position(track)
-        if slot is None:
+        if slot is None and position is not None:
             if position in occupied:
                 continue
             slot = slot_by_position.get(position)
+        elif slot is None and title in unique_titles:
+            if title in library_titles:
+                # the library row is this title's slot
+                continue
+            slot = slot_by_title.get(title)
         if slot is not None and track.provider in slot_sources[slot]:
             # a source's own listing is authoritative: two of its entries stay two
             slot = None
@@ -72,21 +67,18 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
             slots.append(track)
             slot_sources.append(set())
         elif _preference(track) < _preference(slots[slot]):
+            if position is None:
+                # the playable copy takes the slot's position along with the slot
+                track.disc_number = slots[slot].disc_number
+                track.track_number = slots[slot].track_number
             slots[slot] = track
         slot_sources[slot].add(track.provider)
-        slot_by_position.setdefault(position, slot)
+        if position is not None:
+            slot_by_position.setdefault(position, slot)
+        if title in unique_titles:
+            slot_by_title.setdefault(title, slot)
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
-
-    # entries without a position that share an ISRC are one recording as well; the
-    # preferred one of them came first
-    seen_isrcs: set[str] = set()
-    for track in _unplaced_additions(titles, unknown, slots):
-        isrcs = usable_isrcs[id(track)]
-        if isrcs.intersection(seen_isrcs):
-            continue
-        seen_isrcs.update(isrcs)
-        slots.append(track)
     return slots
 
 
@@ -176,43 +168,29 @@ def _preference(track: Track) -> tuple[bool, str, str]:
     return not track.available, track.provider, track.item_id
 
 
-def _unplaced_additions(
-    titles: dict[tuple[int, str, str], list[Track]], unknown: list[Track], slots: list[Track]
-) -> list[Track]:
+def _unique_titles(
+    tracks: list[Track], title_of: dict[int, tuple[int, str, str]]
+) -> set[tuple[int, str, str]]:
     """
-    Return the entries without a position that no other listing evidently already holds.
+    Return the titles that name an entry: listed once per source, at one position at most.
 
-    A playable one of them takes the slot, and the position, of an unplayable placed
-    entry with its title.
-
-    :param titles: The entries of every listing, library rows included, by title.
-    :param unknown: The provider entries without a position.
-    :param slots: The slots filled so far, a placed entry of which may be replaced.
+    :param tracks: The entries of every listing, library rows included.
+    :param title_of: The title of each entry, by its id.
     """
-    # Title fallback is only safe when each source supplies a single entry and
-    # there is at most one known position. Repeated movements remain separate.
-    suppressed: set[int] = set()
-    slot_of = {id(track): index for index, track in enumerate(slots)}
-    for entries in titles.values():
-        missing = [track for track in entries if not track.track_number]
-        if not missing:
-            continue
-        sources = Counter(track.provider for track in entries)
-        positions = {_position(track) for track in entries if track.track_number}
-        if max(sources.values()) > 1 or len(positions) > 1:
-            continue
-        if not any(track.provider == "library" for track in entries):
-            winner = min(missing, key=_preference)
-            placed = next((slot_of.get(id(track)) for track in entries if track.track_number), None)
-            if placed is None:
-                missing = [track for track in missing if track is not winner]
-            elif _preference(winner) < _preference(slots[placed]):
-                winner.disc_number = slots[placed].disc_number
-                winner.track_number = slots[placed].track_number
-                slots[placed] = winner
-        # Distinct listing rows may compare equal as media items.
-        suppressed.update(id(track) for track in missing)
-    return [track for track in unknown if id(track) not in suppressed]
+    # a title a source lists twice, or that is placed at two positions, is a repeated
+    # movement rather than a copy
+    sources: dict[tuple[int, str, str], Counter[str]] = defaultdict(Counter)
+    positions: dict[tuple[int, str, str], set[tuple[int, int]]] = defaultdict(set)
+    for track in tracks:
+        title = title_of[id(track)]
+        sources[title][track.provider] += 1
+        if track.track_number:
+            positions[title].add(_position(track))
+    return {
+        title
+        for title, counts in sources.items()
+        if max(counts.values()) == 1 and len(positions[title]) <= 1
+    }
 
 
 def _unique_isrcs_per_source(tracks: list[Track]) -> dict[int, set[str]]:
