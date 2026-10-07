@@ -5,7 +5,7 @@
   "name": "NetEase Cloud Music Scrobbler",
   "description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping your NetEase play counts and listening history in sync.",
   "codeowners": ["@Kiranwin"],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/plugins/neteasecloudmusic_scrobble/",
   "multi_instance": true,
   "builtin": false,
   "requirements": []
