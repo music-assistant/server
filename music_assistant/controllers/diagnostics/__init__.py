@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -310,7 +310,11 @@ class DiagnosticsController(CoreController):
             if type(provider).get_diagnostics is Provider.get_diagnostics:
                 continue
             producers.append(
-                (f"provider.{provider.instance_id}", provider.get_diagnostics, SECTION_TIMEOUT)
+                (
+                    f"provider.{provider.domain}.{provider.instance_id}",
+                    provider.get_diagnostics,
+                    SECTION_TIMEOUT,
+                )
             )
         producers.extend(
             (name, callback, SECTION_TIMEOUT if timeout is None else timeout)
