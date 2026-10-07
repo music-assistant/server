@@ -2498,8 +2498,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     1, self.mass.player_queues.resume, resume_queue.queue_id, False
                 )
 
-    async def on_player_dsp_change(self, player_id: str) -> None:
-        """Call (by config manager) when the DSP settings of a player change."""
+    async def on_player_dsp_change(
+        self, player_id: str, *, after_group_change: bool = False
+    ) -> None:
+        """
+        Restart playback so a changed DSP setup is applied.
+
+        :param player_id: The player whose DSP settings (or group shape) changed.
+        :param after_group_change: Whether the call follows a group membership change
+            instead of an edit of the DSP settings themselves.
+        """
         # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
@@ -2509,8 +2517,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # a group change the provider reported can hand this player a queue it is not
             # rendering (a Sonos that becomes coordinator of a group playing another
             # player's queue falls back to its own, idle queue); resuming that would
-            # replace the music with the wrong queue
-            if not self.mass.player_queues.is_playing_queue(active_queue.queue_id, player):
+            # replace the music with the wrong queue. Only checked after a group change:
+            # not every provider reports media that can be matched against the queue.
+            if after_group_change and not self.mass.player_queues.is_playing_queue(
+                active_queue.queue_id, player
+            ):
                 self.logger.debug(
                     "Not restarting %s after DSP change: it is not playing queue %s",
                     player.display_name,
@@ -3364,7 +3375,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # - we switched from a group with multiple players to a single player
             #   (or vice versa)
             # - the leader has DSP enabled
-            self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
+            self.mass.create_task(
+                self.mass.players.on_player_dsp_change(player.player_id, after_group_change=True)
+            )
 
     def _check_external_source_takeover(self, player: Player) -> None:
         """

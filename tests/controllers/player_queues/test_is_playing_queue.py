@@ -61,6 +61,15 @@ def test_item_of_the_queue_reported_by_stream_url() -> None:
     assert ctrl.is_playing_queue("q1", player)
 
 
+def test_flow_stream_of_the_queue_counts_even_when_its_item_is_gone() -> None:
+    """A flow stream names only its first item; the queue in its path is what counts."""
+    ctrl = _controller()
+    player = _player(PlayerMedia(uri=f"{BASE_URL}/flow/sess/q1/gone/q1.flac"))
+
+    assert ctrl.is_playing_queue("q1", player)
+    assert not ctrl.is_playing_queue("q2", player)
+
+
 def test_another_queues_stream_does_not_count() -> None:
     """A player rendering another queue's stream is not playing this queue."""
     ctrl = _controller()

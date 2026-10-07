@@ -75,12 +75,25 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def is_playing_queue(self, queue_id: str, player: Player) -> bool:
         """
-        Return whether the media the player reports is an item of the given queue.
+        Return whether the media the player reports belongs to the given queue.
 
         :param queue_id: The queue to check against.
         :param player: The player whose reported media is checked.
         """
-        return self._parse_player_current_item_id(queue_id, player) is not None
+        if self._parse_player_current_item_id(queue_id, player) is not None:
+            return True
+        # a flow stream names only its first item, which may have left the queue
+        # since; the stream url still names the queue it is generated from
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        base_url = self.mass.streams.base_url
+        uri = protocol_player.current_media.uri if protocol_player.current_media else None
+        if not uri or not base_url or not uri.startswith(base_url):
+            return False
+        path_parts = uri[len(base_url) :].strip("/").split("/")
+        # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+        return len(path_parts) >= 5 and path_parts[2] == queue_id
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """

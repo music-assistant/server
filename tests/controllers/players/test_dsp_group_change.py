@@ -77,7 +77,7 @@ class TestDspChangeRestart:
         queue = MagicMock(queue_id="player_1")
         mock_mass.player_queues.get = MagicMock(return_value=queue)
 
-        await controller.on_player_dsp_change("player_1")
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("player_1", player)
         mock_mass.call_later.assert_called_once_with(
@@ -85,21 +85,36 @@ class TestDspChangeRestart:
         )
         _stop_and_play(controller)[0].assert_not_awaited()
 
-    async def test_leaves_a_queue_the_player_is_not_playing_alone(
+    async def test_group_change_leaves_a_queue_the_player_is_not_playing_alone(
         self, mock_mass: MagicMock
     ) -> None:
-        """A player handed a queue it does not render (a regroup) is not restarted."""
+        """After a regroup, a player handed a queue it does not render is not restarted."""
         player = _player()
         controller = _controller(mock_mass, player)
         mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="player_1"))
         mock_mass.player_queues.is_playing_queue = MagicMock(return_value=False)
 
-        await controller.on_player_dsp_change("player_1")
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
 
         mock_mass.call_later.assert_not_called()
         stop, play = _stop_and_play(controller)
         stop.assert_not_awaited()
         play.assert_not_awaited()
+
+    async def test_settings_change_restarts_without_checking_the_media(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An edit of the DSP settings restarts as before, even when the media is unknown."""
+        controller = _controller(mock_mass, _player())
+        mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="player_1"))
+        mock_mass.player_queues.is_playing_queue = MagicMock(return_value=False)
+
+        await controller.on_player_dsp_change("player_1")
+
+        mock_mass.player_queues.is_playing_queue.assert_not_called()
+        mock_mass.call_later.assert_called_once_with(
+            0, mock_mass.player_queues.resume, "player_1", False
+        )
 
     async def test_does_nothing_when_not_playing(self, mock_mass: MagicMock) -> None:
         """An idle player has nothing to restart."""
@@ -132,7 +147,7 @@ class TestDspChangeRestart:
         controller = _controller(mock_mass, leader, child)
         mock_mass.player_queues.get = MagicMock(return_value=MagicMock(queue_id="leader"))
 
-        await controller.on_player_dsp_change("child")
+        await controller.on_player_dsp_change("child", after_group_change=True)
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("leader", child)
         mock_mass.call_later.assert_called_once_with(
@@ -154,6 +169,7 @@ class TestGroupDspChange:
         name, arguments = scheduled_call(mock_mass.create_task.call_args.args[0])
         assert name.endswith("on_player_dsp_change")
         assert arguments["player_id"] == "leader"
+        assert arguments["after_group_change"] is True
 
     def test_sync_child_is_left_alone(self, mock_mass: MagicMock) -> None:
         """A player that became a sync child renders its leader's stream: no restart."""
