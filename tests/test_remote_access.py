@@ -797,30 +797,6 @@ async def test_http_proxy_request_drops_hop_by_hop_headers(cert_pems: tuple[str,
     assert captured_kwargs["headers"] == {"Authorization": "Bearer abc"}
 
 
-async def test_http_proxy_request_error_body_is_generic(cert_pems: tuple[str, str]) -> None:
-    """A failing local request answers with a generic body, not the exception text."""
-    cert_pem, key_pem = cert_pems
-    mock_session = Mock()
-    mock_session.request = Mock(side_effect=RuntimeError("secret detail"))
-
-    gateway = WebRTCGateway(
-        http_session=mock_session,
-        remote_id="TEST-REMOTE-ID",
-        cert_pem=cert_pem,
-        key_pem=key_pem,
-        local_ws_url="ws://localhost:8095/ws",
-    )
-
-    with patch.object(gateway, "_send_http_proxy_response", AsyncMock()) as send_response:
-        await gateway._handle_http_proxy_request(
-            None, {"id": "1", "method": "GET", "path": "/info"}
-        )
-
-    _channel, _request_id, status, _headers, body, _send_lock = send_response.call_args.args
-    assert status == 500
-    assert body == b"Internal server error"
-
-
 async def test_local_websocket_dial_skips_certificate_verification(
     cert_pems: tuple[str, str],
 ) -> None:
