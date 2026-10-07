@@ -110,7 +110,7 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
 
 
 async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) -> None:
-    """Only a newly subscribed feed brings in its whole history, the known ones what is new."""
+    """Only a new feed brings in its whole history, also when its first refresh failed."""
     _serve(provider)
     new_feed = "https://example.com/new.xml"
     history = [
@@ -127,14 +127,21 @@ async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) ->
     cast("Mock", provider._client).get_episode_actions = AsyncMock(
         side_effect=lambda since=0: (history if since == 0 else [], 999)
     )
+    unreachable: set[str] = set()
+
+    async def refresh(*, feed_url: str, **_kwargs: Any) -> dict[str, Any]:
+        if feed_url in unreachable:
+            raise MediaNotFoundError("unreachable")
+        return PODCAST
+
     _subscribe(provider, [FEED])
-    with patch(
-        "music_assistant.providers.gpodder.refresh_cached_podcast",
-        AsyncMock(return_value=PODCAST),
-    ):
+    with patch("music_assistant.providers.gpodder.refresh_cached_podcast", side_effect=refresh):
         _ = [podcast async for podcast in provider.get_library_podcasts()]
         _ = [podcast async for podcast in provider.get_library_podcasts()]
         _subscribe(provider, [FEED, new_feed])
+        unreachable.add(new_feed)
+        _ = [podcast async for podcast in provider.get_library_podcasts()]
+        unreachable.clear()
         _ = [podcast async for podcast in provider.get_library_podcasts()]
 
     played = cast("Mock", provider.mass.music).mark_item_played

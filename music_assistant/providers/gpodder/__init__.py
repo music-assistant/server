@@ -99,7 +99,7 @@ CACHE_CATEGORY_OTHER = 1
 # tuple of two ints, timestamp_subscriptions and timestamp_actions; the actions timestamp marks
 # what the sync wrote to the playlog, the previous key ("timestamp") was also moved by listings
 CACHE_KEY_TIMESTAMP = "sync_timestamps"
-CACHE_KEY_FEEDS = "feeds"  # list[str] : all available rss feed urls
+CACHE_KEY_FEEDS = "feeds"  # list[str] : rss feed urls of the last completed sync
 
 # feeds refreshed at the same time during a library sync
 FEED_REFRESH_CONCURRENCY = 5
@@ -231,6 +231,8 @@ class GPodder(MusicProvider):
             history, _ = await self._client.get_episode_actions()
             episode_actions = episode_actions + [x for x in history if x.podcast in new_feeds]
         actions_by_podcast = index_actions(episode_actions)
+        # a feed that fails to refresh counts as new again, so its history is not lost
+        synced_feeds: set[str] = set()
         async for feed_url, parsed_podcast in self._refresh_feeds(list(feeds)):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
 
@@ -252,6 +254,7 @@ class GPodder(MusicProvider):
                 if mass_episode is not None:
                     await self._write_playlog(mass_episode, action)
 
+            synced_feeds.add(feed_url)
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
@@ -259,7 +262,7 @@ class GPodder(MusicProvider):
                 domain=self.domain,
             )
 
-        self.feeds = feeds
+        self.feeds = synced_feeds
         self.timestamp_subscriptions = subscriptions.timestamp
         if timestamp_action is not None:
             self.timestamp_actions = timestamp_action
