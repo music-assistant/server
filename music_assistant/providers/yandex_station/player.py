@@ -186,6 +186,7 @@ class YandexStationPlayer(Player):
         self._external_audio_client = False
         self._external_media: PlayerMedia | None = None
         self._external_play_generation = 0
+        self._pending_play_generation: int | None = None
         # Becomes True once Glagol reports playing=True during external playback.
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
@@ -433,7 +434,12 @@ class YandexStationPlayer(Player):
         generation = self._external_play_generation
         self._needs_replay = False
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        self._pending_play_generation = generation
+        try:
+            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        finally:
+            if self._pending_play_generation == generation:
+                self._pending_play_generation = None
         if self._external_play_generation != generation:
             return
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
@@ -570,11 +576,12 @@ class YandexStationPlayer(Player):
 
     def _handle_voice_interrupt(self, alice_state: str) -> None:
         """
-        Handle Alice activation during bypass playback.
+        Handle Alice activation during bypass playback or a pending play request.
 
         Intercept-mode voice handling lives in ``_handle_intercept_tick`` —
         this branch is reached only via ``_update_playback_state`` while
-        ``_external_playing`` is True (our own ``radio_play`` stream).
+        ``_external_playing`` is True (our own ``radio_play`` stream) or while
+        ``play_media`` is still resolving its stream URL.
         """
         _LOGGER.debug(
             "[%s] Alice active (%s) during bypass — pausing MA queue",
@@ -1077,6 +1084,14 @@ class YandexStationPlayer(Player):
         duration: float = 0,
     ) -> None:
         """Update playback state from Glagol data."""
+        if (
+            not self._external_playing
+            and self._voice_control_enabled
+            and alice_state not in ("IDLE", "")
+            and self._pending_play_generation == self._external_play_generation
+        ):
+            self._handle_voice_interrupt(alice_state)
+            return
         if self._external_playing:
             if self._voice_control_enabled and alice_state not in ("IDLE", ""):
                 self._handle_voice_interrupt(alice_state)

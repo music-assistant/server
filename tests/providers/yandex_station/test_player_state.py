@@ -35,6 +35,7 @@ def _make_player() -> YandexStationPlayer:
     player._external_playing = False
     player._external_media = None
     vars(player)["_external_play_generation"] = 0
+    vars(player)["_pending_play_generation"] = None
     player._external_play_confirmed = False
     vars(player)["_external_stop_observed"] = False
     vars(player)["_audio_client"] = False
@@ -463,6 +464,62 @@ async def test_station_interruption_discards_pending_stream_resolution(
     assert player._attr_playback_state == PlaybackState.PAUSED
     assert player._external_media is None
     assert player._needs_replay is True
+
+
+@pytest.mark.parametrize(
+    ("station_playing", "initial_state"),
+    [(False, PlaybackState.IDLE), (True, PlaybackState.PLAYING)],
+    ids=["idle", "native_playback"],
+)
+async def test_voice_activation_discards_pending_resolution_without_external_session(
+    station_playing: bool, initial_state: PlaybackState
+) -> None:
+    """Alice activation cancels a pending request even before any external session exists."""
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._attr_playback_state = initial_state
+    media = cast(
+        "PlayerMedia",
+        SimpleNamespace(uri="next", title="Next Track", artist="", duration=180, image_url=None),
+    )
+    resolution_started = asyncio.Event()
+    release_resolution = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
+        resolution_started.set()
+        await release_resolution.wait()
+        return "http://192.168.1.2:8097/next.wav"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+    task = asyncio.create_task(player.play_media(media))
+    try:
+        await asyncio.wait_for(resolution_started.wait(), 1)
+        player._update_playback_state(playing=station_playing, alice_state="LISTENING")
+    finally:
+        release_resolution.set()
+        await task
+
+    assert commands == []
+    assert published_media == []
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._needs_replay is True
+
+
+async def test_voice_activation_without_pending_request_keeps_native_state() -> None:
+    """Alice activation with no pending request leaves an idle station untouched."""
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+
+    player._update_playback_state(playing=False, alice_state="LISTENING")
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._needs_replay is False
 
 
 @pytest.mark.parametrize("audio_client", [False, True])
