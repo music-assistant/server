@@ -83,7 +83,10 @@ class RadioController(MediaControllerBase[Radio]):
             allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/export_radios",
+            self.export_radios,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/import_radios",
@@ -136,7 +139,7 @@ class RadioController(MediaControllerBase[Radio]):
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
         items: list[PlaylistItem] = []
-        async for radio in self.iter_library_items():
+        async for radio in self.iter_library_items(provider=self._ensure_provider_filter(None)):
             entry = media_item_to_playlist_item(radio)
             if radio.favorite:
                 # favorite is library-level user state, so only a library export carries it

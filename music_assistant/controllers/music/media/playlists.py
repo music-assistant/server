@@ -154,6 +154,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/export_playlist",
             self.export_playlist,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/import_playlist",

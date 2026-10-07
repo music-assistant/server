@@ -14,11 +14,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.auth import UserRole
-from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
 from music_assistant_models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
     TaskStatus,
 )
@@ -34,6 +35,7 @@ from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.builtin.constants import CONF_KEY_RADIOS
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -224,6 +226,34 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
     assert [item["item_id"] for item in stored_radios] == [BUILTIN_STREAM_URL]
     assert stored_radios[0]["name"] == "Jazz FM"
     assert stored_radios[0]["image_url"] == BUILTIN_IMAGE_URL
+
+
+async def test_export_holds_only_the_users_music_sources(radio_mass: MusicAssistant) -> None:
+    """A user's export leaves out stations that only exist on a source hidden from them."""
+    mass = radio_mass
+    await _clear_radio_library(mass)
+    for radio in (
+        _make_radio(
+            item_id=BUILTIN_STREAM_URL, provider="builtin", domain="builtin", name="Jazz FM"
+        ),
+        _make_radio(
+            item_id="station-123",
+            provider=FAKE_INSTANCE,
+            domain=FAKE_DOMAIN,
+            name="Provider Owned Radio",
+        ),
+    ):
+        await mass.music.add_item_to_library(radio)
+    set_music_source_access(
+        mass, {FAKE_INSTANCE: ProviderAccess(owner="someone-else", sharing=ProviderSharing.PRIVATE)}
+    )
+    user = await mass.webserver.auth.create_user(username="radio-fan", role=UserRole.USER)
+
+    with patch(GET_CURRENT_USER, return_value=user):
+        m3u_data = await mass.music.radio.export_radios()
+
+    assert "Jazz FM" in m3u_data
+    assert "Provider Owned Radio" not in m3u_data
 
 
 async def test_export_import_keeps_every_provider_mapping(radio_mass: MusicAssistant) -> None:
