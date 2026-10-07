@@ -46,7 +46,6 @@ from .constants import (
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_LIMIT,
-    PLAYLIST_TRACK_FETCH_LIMIT,
     PLAYLIST_TRACKS_PAGE_SIZE,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
@@ -275,27 +274,28 @@ class ZvukMusicProvider(MusicProvider):
 
         :param prov_playlist_id: The provider playlist ID.
         :param page: Page number for pagination.
-        :return: List of Track objects.
+        :return: List of Track objects with 1-based playlist positions.
         """
+        # Page over the playlist's own track order: the API's limit/offset windows
+        # return fewer items than requested, which would shift positions.
+        all_ids = await self._get_playlist_track_ids(prov_playlist_id)
         offset = page * PLAYLIST_TRACKS_PAGE_SIZE
-        simple_tracks = await self.client.get_playlist_tracks(
-            prov_playlist_id, limit=PLAYLIST_TRACKS_PAGE_SIZE, offset=offset
-        )
-        if not simple_tracks:
+        page_ids = all_ids[offset : offset + PLAYLIST_TRACKS_PAGE_SIZE]
+        if not page_ids:
             return []
 
-        # Fetch full track details from SimpleTrack IDs
-        track_ids = [str(t.id) for t in simple_tracks if t.id]
-        if not track_ids:
-            return []
-
-        full_tracks = await self.client.get_tracks(track_ids)
+        full_tracks = {str(t.id): t for t in await self.client.get_tracks(page_ids) if t.id}
         tracks = []
-        for track in full_tracks:
+        for index, track_id in enumerate(page_ids, start=offset + 1):
+            if (full_track := full_tracks.get(track_id)) is None:
+                continue
             try:
-                tracks.append(parse_track(self, track))
+                track = parse_track(self, full_track)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing playlist track: %s", err)
+                continue
+            track.position = index
+            tracks.append(track)
         return tracks
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
@@ -678,15 +678,14 @@ class ZvukMusicProvider(MusicProvider):
         Remove tracks from a playlist by position.
 
         :param prov_playlist_id: The provider playlist ID.
-        :param positions_to_remove: Tuple of track positions (0-based) to remove.
+        :param positions_to_remove: Tuple of 1-based track positions to remove.
         """
-        # Fetch current tracks and filter out the ones at given positions
-        simple_tracks = await self.client.get_playlist_tracks(
-            prov_playlist_id, limit=PLAYLIST_TRACK_FETCH_LIMIT
-        )
+        all_ids = await self._get_playlist_track_ids(prov_playlist_id)
         remove_positions = set(positions_to_remove)
         remaining_ids = [
-            str(t.id) for i, t in enumerate(simple_tracks) if t.id and i not in remove_positions
+            track_id
+            for position, track_id in enumerate(all_ids, start=1)
+            if position not in remove_positions
         ]
         await self.client.update_playlist(prov_playlist_id, remaining_ids)
 
@@ -698,10 +697,8 @@ class ZvukMusicProvider(MusicProvider):
         """
         Get stream details for a track.
 
-        Uses /api/tiny/track/stream to get a direct (non-DRM) URL. When lossless is
-        requested, always tries "flac" quality first, then falls back through "high"
-        (320kbps MP3) → "mid" (128kbps MP3). The ``has_flac`` field from the API is
-        not reliable enough to skip the FLAC attempt.
+        Prefers FLAC when lossless quality is selected and the track offers it,
+        otherwise MP3 320, then MP3 128.
 
         :param item_id: The track ID.
         :param media_type: The media type (should be TRACK).
@@ -711,69 +708,50 @@ class ZvukMusicProvider(MusicProvider):
         quality_pref = self.config.get_value(CONF_QUALITY)
         quality_str = str(quality_pref) if quality_pref is not None else QUALITY_LOSSLESS
 
-        # Fetch track metadata for duration.
-        # has_flac is read for diagnostics only — it is not reliable enough to
-        # skip the FLAC attempt, so it does not affect the quality fallback chain.
         track = await self.client.get_track(item_id)
         duration: int | None = None
-        has_flac: bool | None = None
-        if track is not None:
-            if getattr(track, "duration", None) is not None:
-                duration = int(track.duration)
-            if getattr(track, "has_flac", None) is not None:
-                has_flac = bool(track.has_flac)
+        if track is not None and getattr(track, "duration", None) is not None:
+            duration = int(track.duration)
 
-        # FLAC is only offered by /api/tiny/track/stream (plain, non-DRM URL),
-        # which Zvuk's anti-bot protection may block. MP3 URLs come from the
-        # GraphQL stream query, which returns both qualities in one request.
+        # One GraphQL request returns every available quality. FLAC is a
+        # progressive FLAC-in-MP4 file without DRM.
+        streams = await self.client.get_stream_urls(item_id)
+        stream = streams[0] if streams else None
+        candidates: list[tuple[str | None, AudioFormat]] = []
+        if quality_str == QUALITY_LOSSLESS:
+            candidates.append(
+                (
+                    getattr(stream, "flac", None),
+                    AudioFormat(content_type=ContentType.MP4, codec_type=ContentType.FLAC),
+                )
+            )
+        candidates += [
+            (
+                getattr(stream, "high", None),
+                AudioFormat(content_type=ContentType.MP3, bit_rate=320),
+            ),
+            (
+                getattr(stream, "mid", None),
+                AudioFormat(content_type=ContentType.MP3, bit_rate=128),
+            ),
+        ]
+        url, audio_format = next(
+            ((c_url, c_format) for c_url, c_format in candidates if c_url),
+            (None, AudioFormat()),
+        )
         self.logger.debug(
-            "Stream request for track %s: quality_pref=%s has_flac=%s (diagnostic only)",
+            "Stream for track %s (quality_pref=%s): %s",
             item_id,
             quality_str,
-            has_flac,
+            f"{audio_format.content_type}/{audio_format.codec_type}" if url else "none",
         )
-        url: str | None = None
-        content_type = ContentType.UNKNOWN
-        bitrate = 0
-
-        if quality_str == QUALITY_LOSSLESS:
-            try:
-                url = await self.client.get_direct_stream_url(item_id, "flac")
-            except (ResourceTemporarilyUnavailable, ProviderUnavailableError) as err:
-                self.logger.warning("Error getting FLAC stream URL for track %s: %s", item_id, err)
-            if url:
-                content_type = ContentType.FLAC
-
-        if not url:
-            streams = await self.client.get_stream_urls(item_id)
-            stream = streams[0] if streams else None
-            for q_url, q_bitrate in (
-                (getattr(stream, "high", None), 320),
-                (getattr(stream, "mid", None), 128),
-            ):
-                if q_url:
-                    url = q_url
-                    content_type = ContentType.MP3
-                    bitrate = q_bitrate
-                    break
-        self.logger.debug(
-            "Stream URL for track %s: %s (%s %s)",
-            item_id,
-            "OK" if url else "None",
-            content_type,
-            bitrate,
-        )
-
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
 
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-                bit_rate=bitrate,
-            ),
+            audio_format=audio_format,
             stream_type=StreamType.HTTP,
             path=url,
             duration=duration,
@@ -844,6 +822,13 @@ class ZvukMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing editorial playlist: %s", err)
         return result
+
+    async def _get_playlist_track_ids(self, prov_playlist_id: str) -> list[str]:
+        """Return the playlist's track IDs in playlist order."""
+        playlist = await self.client.get_playlist(prov_playlist_id)
+        if playlist is None:
+            return []
+        return [str(t.id) for t in playlist.tracks or [] if t.id]
 
     def _get_provider_item_id(self, item: MediaItemType) -> str | None:
         """Get provider item ID from media item."""

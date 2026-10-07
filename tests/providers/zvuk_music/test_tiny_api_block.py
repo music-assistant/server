@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from zvuk_music.exceptions import BotDetectedError
 
 from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient
 from music_assistant.providers.zvuk_music.parsers import parse_playlist
@@ -35,10 +34,7 @@ def _make_stream_provider(quality_pref: str, high: str | None, mid: str | None) 
     track.duration = 200
     track.has_flac = True
     client.get_track = AsyncMock(return_value=track)
-    client.get_stream_urls = AsyncMock(return_value=[MagicMock(high=high, mid=mid)])
-    client.get_direct_stream_url = AsyncMock(
-        side_effect=ProviderUnavailableError("Bot detected by Zvuk")
-    )
+    client.get_stream_urls = AsyncMock(return_value=[MagicMock(flac=None, high=high, mid=mid)])
     provider.client = client
     return provider
 
@@ -53,7 +49,7 @@ class TestConnectWithBlockedProfile:
         inner = MagicMock()
         inner.init = AsyncMock(return_value=inner)
         inner.is_authorized = AsyncMock(return_value=True)
-        inner.get_profile = AsyncMock(side_effect=BotDetectedError("blocked"))
+        inner.profile = None
 
         with patch(
             "music_assistant.providers.zvuk_music.api_client.ClientAsync",
@@ -81,7 +77,6 @@ class TestStreamsViaGraphql:
         assert result.path == CDN_HIGH
         assert result.audio_format.content_type == ContentType.MP3
         assert result.audio_format.bit_rate == 320
-        provider.client.get_direct_stream_url.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graphql_mid_when_high_missing(self) -> None:
@@ -94,16 +89,14 @@ class TestStreamsViaGraphql:
         assert result.audio_format.bit_rate == 128
 
     @pytest.mark.asyncio
-    async def test_lossless_blocked_flac_falls_back_to_graphql_high(self) -> None:
-        """A blocked FLAC request falls back to GraphQL MP3 320."""
+    async def test_lossless_without_flac_falls_back_to_graphql_high(self) -> None:
+        """Lossless falls back to GraphQL MP3 320 when no FLAC URL is offered."""
         provider = _make_stream_provider("lossless", CDN_HIGH, CDN_MID)
 
         result = await ZvukMusicProvider.get_stream_details(provider, "1")
 
         assert result.path == CDN_HIGH
         assert result.audio_format.content_type == ContentType.MP3
-        flac_calls = [c.args[1] for c in provider.client.get_direct_stream_url.call_args_list]
-        assert flac_calls == ["flac"]
 
     @pytest.mark.asyncio
     async def test_raises_when_no_stream_anywhere(self) -> None:
