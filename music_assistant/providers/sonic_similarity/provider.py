@@ -44,6 +44,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -471,13 +472,16 @@ class SonicSimilarityPlugin(PluginProvider):
         """
         if item_id != "inspired_by_recently_played":
             return UniqueList()
-        folder = await self._get_inspired_recommendations()
+        user = get_current_user()
+        folder = await self._get_inspired_recommendations(user.user_id if user else None)
         if folder is None:
             return UniqueList()
         return folder.items
 
     @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+    async def _get_inspired_recommendations(
+        self, user_id: str | None
+    ) -> RecommendationFolder | None:
         """
         Build the 'Inspired by recently played' folder with its items.
 
@@ -485,6 +489,8 @@ class SonicSimilarityPlugin(PluginProvider):
         recent tracks intersect the index. A None result is still cached
         (a negative hit), matching the previous behavior of caching the
         empty result for the same TTL.
+
+        :param user_id: The user whose plays seed the row, None for all users.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return None
@@ -498,6 +504,7 @@ class SonicSimilarityPlugin(PluginProvider):
             recent = await self.mass.music.recently_played(
                 limit=RECOMMEND_SEED_COUNT,
                 media_types=[MediaType.TRACK],
+                userid=user_id,
                 fully_played_only=False,
             )
         except Exception as err:

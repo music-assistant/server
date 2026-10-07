@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
@@ -26,13 +27,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 ROW_ID = "inspired_by_recently_played"
+GET_CURRENT_USER = "music_assistant.providers.sonic_similarity.provider.get_current_user"
 
 
 @pytest.mark.asyncio
 async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
     make_plugin: Callable[..., Any], mock_mass: MagicMock
 ) -> None:
-    """A second items call within the TTL is served from the cache, not the backend."""
+    """A second items call within the TTL is served from the cache, but never to another user."""
     cache_store: dict[str, Any] = {}
     background_tasks: list[asyncio.Future[Any]] = []
 
@@ -84,13 +86,22 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
         return_value={"items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}]}
     )
 
-    first = await plugin.get_recommendation_items(ROW_ID)
-    # let the background cache-store task complete before the second call
-    await asyncio.gather(*background_tasks)
-    second = await plugin.get_recommendation_items(ROW_ID)
+    user_a = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    user_b = User(user_id="user-b", username="user-b", role=UserRole.USER)
+    with patch(GET_CURRENT_USER, return_value=user_a):
+        first = await plugin.get_recommendation_items(ROW_ID)
+        # let the background cache-store task complete before the second call
+        await asyncio.gather(*background_tasks)
+        second = await plugin.get_recommendation_items(ROW_ID)
 
     # the backend was fetched exactly once: the warm call came from the cache
     assert mock_mass.music.recently_played.await_count == 1
     assert plugin._handle_similar.await_count == 1
     assert list(first) == [resolved]
     assert list(second) == [resolved]
+
+    # another user's row is built from their own plays, not served from the first user's entry
+    with patch(GET_CURRENT_USER, return_value=user_b):
+        await plugin.get_recommendation_items(ROW_ID)
+    assert mock_mass.music.recently_played.await_count == 2
+    assert mock_mass.music.recently_played.await_args.kwargs["userid"] == "user-b"
