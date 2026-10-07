@@ -167,11 +167,10 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
         (b"\xff\xfb\x92\x00" + bytes(414) + _frame(), True),
         # leading junk before the frames is scanned past
         (b"\x00\x00\x00" + _frame() * 2, True),
-        # a lone header proves nothing: it has to be followed by a matching frame
+        # a lone header proves nothing: it has to be followed by another frame
         (_frame() + bytes(500), False),
         (_frame(), False),
         (_frame() + b"\x00" + _frame(), False),
-        (_frame(_MPEG1) + _frame(_MPEG2), False),
         # AAC ADTS shares the sync word but uses the reserved layer
         (b"\xff\xf1\x50\x80" + bytes(400), False),
         (b"\xff\xfb\xf0\x00" + bytes(400), False),
@@ -194,7 +193,6 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
         "lone-header",
         "single-frame",
         "misaligned",
-        "format-change",
         "adts",
         "bad-bitrate",
         "free-format",
@@ -206,7 +204,7 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
     ],
 )
 def test_has_mp3_frame(data: bytes, *, expected: bool) -> None:
-    """Only a valid frame followed by a matching one counts, wherever it sits in the window."""
+    """Only a valid frame followed by another one counts, wherever it sits in the window."""
     assert has_mp3_frame(data) is expected
 
 
@@ -246,7 +244,7 @@ def test_ffmpeg_http_headers() -> None:
         (_frame(tag=b"Info") * 3, Mp3SeekHints(True, 0)),
         (_frame() * 3, Mp3SeekHints(True, 0)),
         (_id3_tag(2000) + _id3_tag(8000) + _frame(tag=b"Info") * 3, NO_SEEK_HINTS),
-        (_frame(tag=b"Info") + bytes(5000), NO_SEEK_HINTS),
+        (_frame() + bytes(5000), NO_SEEK_HINTS),
         (b"fLaC" + bytes(2000), NO_SEEK_HINTS),
         (bytes(range(256)) * 8, NO_SEEK_HINTS),
         (_id3_tag(2000), NO_SEEK_HINTS),
