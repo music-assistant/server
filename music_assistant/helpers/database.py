@@ -255,14 +255,17 @@ class DatabaseConnection:
 
     async def close(self) -> None:
         """Close db connection on exit."""
-        await self.execute("PRAGMA optimize;")
-        await self.commit()
-        await self._db.close()
-        # mirror the acquire in setup() exactly, so a connection that failed to set up or is
-        # closed twice cannot release a slot that belongs to one of the other connections
-        if self._tracking_loop_stalls:
-            self._tracking_loop_stalls = False
-            _loop_stalls.release()
+        try:
+            await self.execute("PRAGMA optimize;")
+            await self.commit()
+        finally:
+            # an unreadable file fails the optimize, but its connection thread must still end
+            await self._db.close()
+            # mirror the acquire in setup() exactly, so a connection that failed to set up or
+            # is closed twice cannot release a slot that belongs to one of the other connections
+            if self._tracking_loop_stalls:
+                self._tracking_loop_stalls = False
+                _loop_stalls.release()
 
     async def get_rows(
         self,
@@ -556,7 +559,7 @@ class DatabaseConnection:
         return freelist_count / page_count
 
     async def vacuum(self) -> None:
-        """Run vacuum command on database."""
+        """Run vacuum command on database and checkpoint the WAL so the freed space is reclaimed."""
         # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
         # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
         # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
@@ -564,6 +567,9 @@ class DatabaseConnection:
         try:
             await self._db.execute("VACUUM")
             await self._db.commit()
+            # in WAL mode VACUUM writes the rebuilt database into the WAL file instead of
+            # freeing disk space immediately, so checkpoint and truncate it right away
+            await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         finally:
             await self._db.execute("PRAGMA temp_store=memory;")
 

@@ -152,7 +152,7 @@ isfile = wrap(os.path.isfile)
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     """Return the normalization modes that can be picked as a preference."""
     return [
-        ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
+        ConfigValueOption(mode.value)
         for mode in VolumeNormalizationMode
         if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     ]
@@ -601,6 +601,8 @@ class StreamsController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
+        # the music library migrations have moved any legacy analysis rows over by now
+        await self._audio_analysis.setup_database()
         # the inbound half of a live announcement rides on the webserver: it is the only
         # one of the two servers that authenticates (and that browsers reach over https)
         self.live_announcements.setup()

@@ -226,6 +226,11 @@ class DigitallyImportedProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Premium subscriptions allow one stream at a time (DI.FM Terms of Use, section 4)."""
+        return 1
+
     async def search(
         self,
         search_query: str,

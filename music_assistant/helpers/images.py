@@ -32,10 +32,6 @@ from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
-from music_assistant.models.metadata_provider import MetadataProvider
-from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageClass
@@ -496,7 +492,6 @@ async def _fetch_source_image(
     :param depth: Recursion depth of the originating get_image_data call.
     """
     if prov := mass.get_provider(provider):
-        assert isinstance(prov, MusicProvider | MetadataProvider | PlayerProvider | PluginProvider)
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:
             # the provider looked and has nothing at this path: a miss, not a failed fetch

@@ -128,6 +128,7 @@ from music_assistant.providers.plex.helpers import (
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
     PlexServerAccessError,
+    configure_plex_identity,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
@@ -180,6 +181,7 @@ async def setup(
     if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -337,15 +339,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                     bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
-                )
-                # Add Music Assistant client identification headers
-                session.headers.update(
-                    {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
-                        "X-Plex-Version": self.mass.version,
-                    }
                 )
                 local_server_protocol = (
                     "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"

@@ -59,7 +59,6 @@ from music_assistant.controllers.music.constants import (
 from music_assistant.controllers.storage import StorageKind, StorageLocation, StorageUsage
 from music_assistant.controllers.storage import controller as storage_controller_module
 from music_assistant.controllers.storage.backends import local_mount as local_mount_module
-from music_assistant.controllers.storage.backends import mountinfo as mountinfo_module
 from music_assistant.controllers.storage.backends import supervisor as supervisor_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
@@ -534,7 +533,9 @@ async def _run_library_maintenance(mass: MusicAssistant) -> None:
     await mass.music.correct_multi_instance_provider_mappings()
     await mass.music._cleanup_database()
     for table in (DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES):
-        assert await mass.music.database.get_rows(table, {"provider": SMB_ID}) == []
+        assert (
+            await mass.streams.audio_analysis.database.get_rows(table, {"provider": SMB_ID}) == []
+        )
 
 
 def _library_on_disk(storage_path: Path) -> tuple[list[tuple[str, str, str, str]], int]:
@@ -984,21 +985,15 @@ async def test_the_owner_may_use_the_network_share_the_supervisor_mounts(
     assert location.backend == MountBackend.SUPERVISOR
 
 
-@pytest.mark.usefixtures("reconcile")
+@pytest.mark.usefixtures("reconcile", "discoverable_tmp_path")
 async def test_the_owner_may_use_the_mount_home_assistant_has(
     mass: MusicAssistant, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A source on a share added in Home Assistant reads the location of that mount."""
     supervisor.add_mount("nas_music", type="cifs", server="nas.local", share="Music")
-    # the app sees the mounts of the Supervisor in its own mount table, and runs in a container;
-    # the temporary folder of the test may lie below /tmp, which discovery leaves out
+    # the app sees the mounts of the Supervisor in its own mount table, and runs in a container
     monkeypatch.setattr(
         storage_controller_module, "read_mountinfo", lambda: supervisor.mount_table.text
-    )
-    monkeypatch.setattr(
-        mountinfo_module,
-        "SYSTEM_PATHS",
-        tuple(path for path in mountinfo_module.SYSTEM_PATHS if path != "/tmp"),  # noqa: S108
     )
     monkeypatch.setattr(mass.storage, "_in_container", True)
     # the mount is there when the server starts

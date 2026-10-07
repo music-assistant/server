@@ -70,6 +70,11 @@ HTML: str = """<!doctype html>
     text-align: center; font-weight: 500; font-size: 13px; }
   .client-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .client-tab:hover:not(.active) { border-color: var(--accent); }
+  .methods { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 8px; }
+  .method-tab { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .method-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .method-label.recommended::after { content: "Recommended"; margin-left: 7px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .8; }
   .hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
   .perm-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .perm-pill { background: var(--code-bg); border: 1px solid var(--border);
@@ -88,7 +93,7 @@ HTML: str = """<!doctype html>
 <body>
 <main>
   <h1>Connect Music Assistant to your AI</h1>
-  <div class="sub">Pick your AI client below and copy the generated config. A per-client
+  <div class="sub">Pick your AI client below and use the recommended connection method. A per-client
     token is minted in MA so you can revoke any one client without affecting the others.</div>
 
   <div id="msg"></div>
@@ -111,8 +116,8 @@ HTML: str = """<!doctype html>
         <span id="url-display" class="small"></span>
       </div>
       <div class="url-toggle" id="url-toggle">
-        <button data-which="loopback" class="active">Loopback</button>
-        <button data-which="advertised">Network</button>
+        <button data-which="network" class="active">Network</button>
+        <button data-which="loopback">Loopback</button>
       </div>
     </div>
 
@@ -120,9 +125,10 @@ HTML: str = """<!doctype html>
     <div id="clients" class="clients"></div>
 
     <div id="snippet-area" class="hidden">
+      <div id="methods" class="methods hidden"></div>
       <div class="hint" id="path-hint"></div>
       <div id="generate-area">
-        <button id="generate-btn">Generate config</button>
+        <button id="generate-btn">Generate connection details</button>
         <div class="hint" style="margin-top:6px">
           Mints a long-lived token labelled <code id="pending-token-name">MCP — …</code>.
         </div>
@@ -132,7 +138,6 @@ HTML: str = """<!doctype html>
         <div class="actions">
           <button id="copy-btn">Copy</button>
           <button id="download-btn" class="secondary">Download</button>
-          <button id="cursor-btn" class="secondary hidden">Add to Cursor</button>
           <button id="share-btn" class="secondary">Share wizard URL</button>
           <button id="regen-btn" class="secondary">Re-generate</button>
         </div>
@@ -146,15 +151,13 @@ HTML: str = """<!doctype html>
   </section>
 
   <section class="panel">
-    <strong>Active permissions</strong>
+    <strong>Default policy</strong>
     <div id="perms" class="perm-list" style="margin-top:8px"></div>
     <details>
       <summary>What if my AI says "permission denied"?</summary>
       <div class="hint" style="margin-top:6px">
-        Read-only tools are enabled by default. To let the AI control playback,
-        manage queues, or edit playlists, enable the matching toggles in this
-        plugin's settings (Control / Edit / Delete categories) — changes apply
-        without a restart.
+        Change the default profile in this plugin's settings. Token-specific
+        overrides remain private to the settings screen and are not shown here.
       </div>
     </details>
   </section>
@@ -175,9 +178,10 @@ HTML: str = """<!doctype html>
     info: null,
     sessionToken: null,
     selectedClientId: null,
-    urlMode: "loopback",   // or "advertised"
-    // Cache of minted tokens, keyed by client id, so toggling URL mode or
-    // re-clicking a tab does NOT mint a new token each time.
+    selectedMethodIds: {},
+    urlMode: "network",   // or "loopback"
+    // Tokens belong to clients, not connection methods. Switching methods,
+    // toggling URL mode, or re-clicking a client never mints another token.
     tokens: {},
     lastSnippet: "",
     lastFilename: "snippet.txt",
@@ -208,7 +212,7 @@ HTML: str = """<!doctype html>
 
   function urlOf(mode) {
     if (!state.info) return "";
-    return (mode === "advertised") ? state.info.mcp_url_advertised : state.info.mcp_url_loopback;
+    return (mode === "network") ? state.info.mcp_url_advertised : state.info.mcp_url_loopback;
   }
 
   function renderClients() {
@@ -227,28 +231,50 @@ HTML: str = """<!doctype html>
   function renderPerms() {
     const container = $("perms");
     container.innerHTML = "";
-    const perms = state.info.permissions || [];
-    if (perms.length === 0) {
-      const el = document.createElement("span");
-      el.className = "small";
-      el.textContent = "No permissions enabled.";
-      container.appendChild(el);
-      return;
-    }
-    perms.forEach((p) => {
-      const el = document.createElement("span");
-      el.className = "perm-pill on";
-      el.textContent = p;
-      container.appendChild(el);
-    });
+    const el = document.createElement("span");
+    el.className = "perm-pill on";
+    el.textContent = state.info.default_policy?.profile || "Safe queries";
+    container.appendChild(el);
   }
 
   function findClient(id) {
     return state.info.clients.find((c) => c.id === id);
   }
 
+  function selectedMethod(c) {
+    if (!c || !c.methods || !c.methods.length) return null;
+    const id = state.selectedMethodIds[c.id] || c.methods[0].id;
+    return c.methods.find((method) => method.id === id) || c.methods[0];
+  }
+
+  function renderMethods(c) {
+    const container = $("methods");
+    container.innerHTML = "";
+    container.classList.toggle("hidden", c.methods.length < 2);
+    c.methods.forEach((method, index) => {
+      const button = document.createElement("button");
+      const active = method.id === selectedMethod(c).id;
+      button.className = "method-tab" + (active ? " active" : "");
+      const label = document.createElement("span");
+      label.className = index === 0 ? "method-label recommended" : "method-label";
+      label.textContent = method.label;
+      button.appendChild(label);
+      button.addEventListener("click", () => selectMethod(c.id, method.id));
+      container.appendChild(button);
+    });
+  }
+
+  function selectMethod(clientId, methodId) {
+    state.selectedMethodIds[clientId] = methodId;
+    renderSelected();
+  }
+
   function selectClient(id) {
     state.selectedClientId = id;
+    const c = findClient(id);
+    if (c && !state.selectedMethodIds[id] && c.methods.length) {
+      state.selectedMethodIds[id] = c.methods[0].id;
+    }
     renderClients();
     renderSelected();
   }
@@ -260,22 +286,26 @@ HTML: str = """<!doctype html>
   function renderSelected() {
     const c = findClient(state.selectedClientId);
     if (!c) return;
+    const method = selectedMethod(c);
+    if (!method) return;
     const url = urlOf(state.urlMode);
     $("snippet-area").classList.remove("hidden");
-    $("path-hint").textContent = c.config_path_hint || "";
-    $("notes-area").textContent = c.notes || "";
+    renderMethods(c);
+    $("path-hint").textContent = method.config_path_hint || "";
+    $("notes-area").textContent = method.notes || "";
     $("pending-token-name").textContent = "MCP — " + c.label;
     $("token-name").textContent = "MCP — " + c.label;
     $("url-display").textContent = url;
     const cachedToken = state.tokens[c.id];
     if (cachedToken) {
-      const rendered = c.template.split("{{URL}}").join(url).split("{{TOKEN}}").join(cachedToken);
+      const rendered = method.template.split("{{URL}}").join(url).split("{{TOKEN}}").join(cachedToken);
       state.lastSnippet = rendered;
-      state.lastFilename = c.filename || (c.id + ".txt");
+      state.lastFilename = method.filename || (c.id + "-" + method.id + ".txt");
       $("snippet").textContent = rendered;
       $("snippet-output").classList.remove("hidden");
       $("generate-area").classList.add("hidden");
-      $("cursor-btn").classList.toggle("hidden", c.id !== "cursor");
+      $("copy-btn").classList.remove("hidden");
+      $("download-btn").classList.toggle("hidden", method.action !== "download");
       signalSetupComplete();
     } else {
       $("snippet-output").classList.add("hidden");
@@ -360,18 +390,6 @@ HTML: str = """<!doctype html>
     return Promise.resolve();
   }
 
-  function buildCursorDeeplink() {
-    const c = findClient("cursor");
-    if (!c || !state.lastSnippet) return null;
-    let parsed;
-    try { parsed = JSON.parse(state.lastSnippet); } catch (_) { return null; }
-    const inner = (parsed.mcpServers && parsed.mcpServers.ma) || null;
-    if (!inner) return null;
-    const json = JSON.stringify(inner);
-    const b64 = btoa(unescape(encodeURIComponent(json)));
-    return "cursor://anysphere.cursor-deeplink/mcp/install?name=ma&config=" + b64;
-  }
-
   function setupHandlers() {
     $("url-toggle").querySelectorAll("button").forEach((b) => {
       b.addEventListener("click", () => {
@@ -412,12 +430,6 @@ HTML: str = """<!doctype html>
       a.href = u; a.download = state.lastFilename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(u);
-    });
-
-    $("cursor-btn").addEventListener("click", () => {
-      const link = buildCursorDeeplink();
-      if (!link) { showMsg("Generate a Cursor config first.", "bad"); return; }
-      window.location.href = link;
     });
 
     $("share-btn").addEventListener("click", () => {

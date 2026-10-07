@@ -60,6 +60,7 @@ def _controller(tmp_path: Path, images: list[MediaItemImage]) -> tuple[TracksCon
     mass.music.database = AsyncMock()
     mass.music.database.deferred_commit = MagicMock()
     mass.music.favorites = AsyncMock()
+    mass.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     metadata = MediaItemMetadata(images=UniqueList(images) or None)
     mass.music.database.get_row = AsyncMock(return_value={"metadata": serialize_to_json(metadata)})
     mass.metadata.invalidate_image_cache = AsyncMock()
