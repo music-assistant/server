@@ -513,6 +513,8 @@ def test_is_svg_data_requires_an_svg_root_element() -> None:
     assert is_svg_data(b'<!DOCTYPE svg [ <!ENTITY e "x"> ]>\n<svg/>')
     assert is_svg_data(b"<!DOCTYPE svg [<!-- ]> -->]><svg/>")
     assert not is_svg_data(b"<!DOCTYPE secret [<!-- ]><svg --> ]><secret>token</secret>")
+    assert not is_svg_data(b'<!DOCTYPE secret [<!ENTITY e "]><svg ">]><secret>token</secret>')
+    assert is_svg_data(b'<!DOCTYPE svg [<!ENTITY e "]>"> ]><svg/>')
     assert is_svg_data(b"<svg\n  xmlns='http://www.w3.org/2000/svg'/>")
 
 

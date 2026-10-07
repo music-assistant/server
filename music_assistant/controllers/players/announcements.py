@@ -216,17 +216,11 @@ class AnnouncementsMixin:
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         if url:
             await self._ensure_safe_announcement_url(url)
-        if (
-            pre_announce
-            and pre_announce_url
-            and not validate_announcement_chime_url(pre_announce_url)
-        ):
+        # pre_announce may still resolve to True from the player config, so a supplied
+        # chime URL is checked regardless of its value
+        if pre_announce_url and not validate_announcement_chime_url(pre_announce_url):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
-        if (
-            pre_announce
-            and pre_announce_url
-            and pre_announce_url.startswith(("http://", "https://"))
-        ):
+        if pre_announce_url and pre_announce_url.startswith(("http://", "https://")):
             await self._ensure_safe_announcement_url(pre_announce_url)
         # A member's announcement detaches it from its (sync)group and joins it back
         # afterwards, which takes the group's lock - so that one is taken before the

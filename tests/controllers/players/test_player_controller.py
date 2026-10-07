@@ -5405,14 +5405,20 @@ class TestPlayAnnouncementCleanup:
         render.wait_finished.assert_not_awaited()
 
     @pytest.mark.parametrize(
-        ("url", "pre_announce_url"),
+        ("url", "pre_announce", "pre_announce_url"),
         [
-            ("http://127.0.0.1:8123/api/states", None),
-            ("http://test/announcement.mp3", "http://[::1]/chime.mp3"),
+            ("http://127.0.0.1:8123/api/states", None, None),
+            ("http://test/announcement.mp3", True, "http://[::1]/chime.mp3"),
+            # pre_announce left to the player config still uses the supplied chime
+            ("http://test/announcement.mp3", None, "http://[::1]/chime.mp3"),
         ],
     )
     async def test_loopback_announcement_url_is_refused(
-        self, mock_mass: MagicMock, url: str, pre_announce_url: str | None
+        self,
+        mock_mass: MagicMock,
+        url: str,
+        pre_announce: bool | None,
+        pre_announce_url: str | None,
     ) -> None:
         """An announcement or chime URL on a loopback address never reaches the player."""
         announcements: dict[str, object] = {}
@@ -5423,7 +5429,7 @@ class TestPlayAnnouncementCleanup:
             await controller.play_announcement(
                 "player_1",
                 url,
-                pre_announce=pre_announce_url is not None,
+                pre_announce=pre_announce,
                 pre_announce_url=pre_announce_url,
             )
 

@@ -950,11 +950,25 @@ def _doctype_end(sample: bytes) -> int:
     first_close = sample.find(b">")
     if subset_start == -1 or (first_close != -1 and first_close < subset_start):
         return first_close
-    # comments inside the internal subset may themselves contain ']>'
+    # the internal subset may hold ']>' inside comments and quoted values
     pos = subset_start + 1
-    while (comment := sample.find(b"<!--", pos)) != -1 and comment < sample.find(b"]>", pos):
-        pos = sample.find(b"-->", comment)
-        if pos == -1:
-            return -1
-    close = sample.find(b"]>", pos)
-    return -1 if close == -1 else close + 1
+    quote = b""
+    while pos < len(sample):
+        char = sample[pos : pos + 1]
+        if quote:
+            if char == quote:
+                quote = b""
+            pos += 1
+        elif sample.startswith(b"<!--", pos):
+            comment_end = sample.find(b"-->", pos)
+            if comment_end == -1:
+                return -1
+            pos = comment_end + 3
+        elif char in (b'"', b"'"):
+            quote = char
+            pos += 1
+        elif char == b"]":
+            return sample.find(b">", pos)
+        else:
+            pos += 1
+    return -1
