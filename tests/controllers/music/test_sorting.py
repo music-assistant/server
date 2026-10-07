@@ -414,3 +414,27 @@ def test_random_play_count_subquery_preserves_play_count_order(
     query = query_parts[0]
     assert "ORDER BY COALESCE(tracks.play_count, 0), RANDOM()" in query
     assert "LIMIT 12" in query
+
+
+def test_random_subquery_deduplicates_items_before_limit(mass: MusicAssistant) -> None:
+    """Artist joins must not let duplicate item IDs consume the random sample limit."""
+    query_parts: list[str] = []
+    mass.music.tracks._apply_random_subquery(
+        query_parts=query_parts,
+        query_params={},
+        join_parts=[
+            "JOIN track_artists ON track_artists.track_id = tracks.item_id",
+            "JOIN artists ON artists.item_id = track_artists.artist_id",
+        ],
+        favorite=None,
+        search=None,
+        genre_ids=None,
+        provider_filter=None,
+        order_by="random",
+        limit=5,
+        offset=2,
+    )
+
+    query = query_parts[0]
+    assert "SELECT DISTINCT tracks.item_id FROM tracks JOIN track_artists" in query
+    assert "LIMIT 7" in query

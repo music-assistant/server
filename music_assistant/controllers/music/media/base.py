@@ -2242,7 +2242,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
         # Build the subquery
-        sub_query = f"SELECT {self.db_table}.item_id FROM {self.db_table}"
+        sub_query = f"SELECT DISTINCT {self.db_table}.item_id FROM {self.db_table}"
 
         if sub_join_parts:
             sub_query += f" {' '.join(sub_join_parts)}"
