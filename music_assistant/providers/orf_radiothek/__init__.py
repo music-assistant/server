@@ -830,6 +830,8 @@ class RadiothekProvider(MusicProvider):
             item_id=eid,
             provider=self.instance_id,
             position=self._position_from_date(release_date),
+            episode_number=ep.episode_number,
+            season=ep.season,
             duration=duration_sec or 0,
             podcast=podcast,
             provider_mappings={

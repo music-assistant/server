@@ -5,6 +5,10 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_FLOW_MODE, create_sample_rates_config_entry
 
+# A device may acknowledge a skip before it has loaded the new track, so the state is
+# read back once quickly and once more after the track had time to load.
+COMMAND_REFRESH_DELAYS = (1, 5)
+
 PLAYER_CONFIG_ENTRIES = [
     # enable flow mode by default because
     # most dlna players do not support enqueueing

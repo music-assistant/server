@@ -332,9 +332,11 @@ class RadioController(MediaControllerBase[Radio]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
-        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item = cast("RadioSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.is_dynamic = bool(db_row["is_dynamic"])
         item.metadata.description = db_row["description"]
         return item

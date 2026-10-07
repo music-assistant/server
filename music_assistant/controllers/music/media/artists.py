@@ -1404,9 +1404,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         return []
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> ArtistSummary:
         """Parse a raw summary db row into an ArtistSummary object."""
-        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
 
