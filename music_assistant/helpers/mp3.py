@@ -9,7 +9,6 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from aiohttp import ClientError
-from mutagen.mp3 import HeaderNotFoundError, MPEGInfo
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -138,6 +137,8 @@ def has_mp3_frame(data: bytes) -> bool:
 
     :param data: Bytes starting where the audio is expected to begin.
     """
+    from mutagen.mp3 import HeaderNotFoundError, MPEGInfo  # noqa: PLC0415
+
     try:
         MPEGInfo(BytesIO(data))
     except HeaderNotFoundError:
