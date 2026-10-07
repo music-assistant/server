@@ -69,6 +69,7 @@ if TYPE_CHECKING:
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+
 def _unwrap_single_exception(err: ExceptionGroup[Exception]) -> BaseException:
     """
     Return the sole exception wrapped by a TaskGroup's ExceptionGroup, if there is only one.
