@@ -1,7 +1,9 @@
 """Tests for the Sendspin WebSocket proxy handler."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from aiohttp import ClientConnectorError, web
 from aiohttp.test_utils import make_mocked_request
@@ -14,7 +16,6 @@ def mock_webserver() -> MagicMock:
     """Create a mock webserver controller."""
     webserver = MagicMock()
     webserver.mass = MagicMock()
-    webserver.mass.streams.bind_ip = "0.0.0.0"
     webserver.mass.http_session = MagicMock()
     return webserver
 
@@ -29,6 +30,36 @@ def _make_connector_error() -> ClientConnectorError:
     """Create a realistic ClientConnectorError for testing."""
     connection_key = MagicMock()
     return ClientConnectorError(connection_key, OSError(111, "Connection refused"))
+
+
+async def test_proxy_dials_the_webserver_url(
+    handler: SendspinProxyHandler, mock_webserver: MagicMock
+) -> None:
+    """Verify the proxy connects to the URL resolved by the webserver controller."""
+    internal_url = "ws://127.0.0.1:8927/sendspin"
+    mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
+    mock_ws_response.closed = False
+    mock_webserver.internal_sendspin_url = internal_url
+
+    mock_internal_ws = AsyncMock()
+    mock_internal_ws.closed = False
+    mock_ws_connect = AsyncMock(return_value=mock_internal_ws)
+
+    with (
+        patch.object(handler, "_authenticate", return_value=MagicMock()),
+        patch.object(handler, "_proxy_messages", new_callable=AsyncMock),
+        patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
+        patch.object(handler.mass, "http_session", create=True) as mock_session,
+        patch(
+            "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+            return_value=False,
+        ),
+    ):
+        mock_session.ws_connect = mock_ws_connect
+        request = make_mocked_request("GET", "/sendspin")
+        await handler.handle_sendspin_proxy(request)
+
+    mock_ws_connect.assert_awaited_once_with(internal_url)
 
 
 class TestSendspinProxyRetry:
@@ -123,3 +154,85 @@ class TestSendspinProxyRetry:
         assert mock_ws_connect.call_count == 1
         mock_ws_response.close.assert_called_once_with(code=1011, message=b"Internal server error")
         assert result is mock_ws_response
+
+
+class TestSendspinProxyMessages:
+    """Tests for bidirectional proxy task handling."""
+
+    async def test_expected_disconnect_is_consumed(self, handler: SendspinProxyHandler) -> None:
+        """Verify normal client disconnects do not leak as unretrieved task exceptions."""
+
+        async def raise_disconnect(*_: object) -> None:
+            raise ConnectionError("Connection lost")
+
+        async def wait_forever(*_: object) -> None:
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(handler, "_forward_internal_to_client", new=raise_disconnect),
+            patch.object(handler, "_forward_client_to_internal", new=wait_forever),
+        ):
+            await handler._proxy_messages(MagicMock(), MagicMock())
+
+    async def test_unexpected_forwarding_error_is_raised(
+        self, handler: SendspinProxyHandler
+    ) -> None:
+        """Verify unexpected proxy task errors are still surfaced."""
+
+        async def raise_unexpected(*_: object) -> None:
+            raise RuntimeError("boom")
+
+        async def wait_forever(*_: object) -> None:
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(handler, "_forward_internal_to_client", new=raise_unexpected),
+            patch.object(handler, "_forward_client_to_internal", new=wait_forever),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await handler._proxy_messages(MagicMock(), MagicMock())
+
+    async def test_primary_error_is_not_masked_by_peer_cleanup_failure(
+        self, handler: SendspinProxyHandler
+    ) -> None:
+        """The first real failure must survive even if the peer task also errors."""
+
+        async def raise_primary(*_: object) -> None:
+            raise RuntimeError("primary failure")
+
+        async def raise_on_cancel(*_: object) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("secondary cleanup failure") from None
+
+        with (
+            patch.object(handler, "_forward_internal_to_client", new=raise_primary),
+            patch.object(handler, "_forward_client_to_internal", new=raise_on_cancel),
+            pytest.raises(RuntimeError, match="primary failure"),
+        ):
+            await handler._proxy_messages(MagicMock(), MagicMock())
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            aiohttp.ClientError("handshake failed"),
+            asyncio.IncompleteReadError(b"", 1),
+        ],
+    )
+    async def test_expected_transport_errors_are_consumed(
+        self, handler: SendspinProxyHandler, exc: BaseException
+    ) -> None:
+        """Normal aiohttp/stream disconnects must not bubble up as 500s."""
+
+        async def raise_disconnect(*_: object) -> None:
+            raise exc
+
+        async def wait_forever(*_: object) -> None:
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(handler, "_forward_internal_to_client", new=raise_disconnect),
+            patch.object(handler, "_forward_client_to_internal", new=wait_forever),
+        ):
+            await handler._proxy_messages(MagicMock(), MagicMock())

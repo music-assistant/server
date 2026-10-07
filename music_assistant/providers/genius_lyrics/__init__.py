@@ -10,19 +10,21 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 from lyricsgenius import Genius
+from requests.exceptions import RequestException
 
 from .helpers import clean_song_title, cleanup_lyrics
 
@@ -39,25 +41,12 @@ async def setup(
     return GeniusProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
-
-
 class GeniusProvider(MetadataProvider):
     """Genius Lyrics provider for handling lyrics."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()  # we do not have any config entries (yet)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -134,4 +123,12 @@ class GeniusProvider(MetadataProvider):
 
             return None
 
-        return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        try:
+            return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        except RequestException as err:
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err
+        except AssertionError as err:
+            # lyricsgenius raises AssertionError on any non-200 API response
+            if not str(err).startswith("Unexpected response status code"):
+                raise
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err

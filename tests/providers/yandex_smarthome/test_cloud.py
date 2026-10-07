@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
+from ya_dialogs_api import SecretStr
 
-from music_assistant.providers.yandex_smarthome._compat import SecretStr
 from music_assistant.providers.yandex_smarthome.cloud import (
     CloudManager,
     get_cloud_otp,

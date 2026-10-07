@@ -1,0 +1,20 @@
+{
+  "config_entries": {
+    "quality": {
+      "label": "Stream Quality",
+      "description": "Maximum streaming quality. Lower quality will be used if selected quality is unavailable.",
+      "options": {
+        "27": "Hi-Res 192kHz/24 bit",
+        "7": "Hi-Res 96kHz/24 bit",
+        "6": "CD Quality 44.1kHz/16 bit",
+        "5": "MP3 320kbps"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream high-resolution music from Qobuz’s catalogue — ideal for audiophiles."
+  },
+  "errors": {
+    "create_playlist_failed": "Failed to create playlist: {0}"
+  }
+}

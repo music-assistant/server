@@ -30,7 +30,8 @@ class SSLCertificateInfo:
 
 
 async def get_ssl_content(value: str) -> str:
-    """Get SSL content from either a file path or the raw PEM content.
+    """
+    Get SSL content from either a file path or the raw PEM content.
 
     :param value: Either an absolute file path or the raw PEM content.
     :return: The PEM content as a string.
@@ -55,7 +56,8 @@ async def get_ssl_content(value: str) -> str:
 
 
 def _run_openssl_command(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run an openssl command synchronously.
+    """
+    Run an openssl command synchronously.
 
     :param args: List of arguments for the openssl command (excluding 'openssl').
     :return: CompletedProcess result.
@@ -74,7 +76,8 @@ async def create_server_ssl_context(
     private_key: str,
     logger: logging.Logger | None = None,
 ) -> ssl.SSLContext | None:
-    """Create an SSL context for a server from certificate and private key.
+    """
+    Create an SSL context for a server from certificate and private key.
 
     :param certificate: The SSL certificate (file path or PEM content).
     :param private_key: The SSL private key (file path or PEM content).
@@ -114,8 +117,8 @@ async def create_server_ssl_context(
         log.info("SSL/TLS enabled for server")
         return ssl_context
 
-    except Exception as e:
-        log.exception("Failed to create SSL context: %s. Server will start without SSL.", e)
+    except Exception:
+        log.exception("Failed to create SSL context. Server will start without SSL.")
         return None
     finally:
         # Clean up temporary files
@@ -128,7 +131,8 @@ async def create_server_ssl_context(
 
 
 async def verify_ssl_certificate(certificate: str, private_key: str) -> SSLCertificateInfo:
-    """Verify SSL certificate and private key are valid and match.
+    """
+    Verify SSL certificate and private key are valid and match.
 
     :param certificate: The SSL certificate (file path or PEM content).
     :param private_key: The SSL private key (file path or PEM content).
@@ -218,7 +222,8 @@ async def verify_ssl_certificate(certificate: str, private_key: str) -> SSLCerti
 
 
 async def _verify_ssl_with_temp_files(cert_content: str, key_content: str) -> SSLCertificateInfo:
-    """Verify SSL using temporary files.
+    """
+    Verify SSL using temporary files.
 
     :param cert_content: Certificate PEM content.
     :param key_content: Private key PEM content.
@@ -252,7 +257,8 @@ async def _verify_ssl_with_temp_files(cert_content: str, key_content: str) -> SS
 
 
 async def _get_certificate_details(cert_path: str) -> SSLCertificateInfo:
-    """Get certificate details using openssl.
+    """
+    Get certificate details using openssl.
 
     :param cert_path: Path to the certificate file.
     :return: SSLCertificateInfo with certificate details.
@@ -317,7 +323,8 @@ async def _get_certificate_details(cert_path: str) -> SSLCertificateInfo:
 
 
 def _format_ssl_error(e: ssl.SSLError) -> str:
-    """Format an SSL error into a user-friendly message.
+    """
+    Format an SSL error into a user-friendly message.
 
     :param e: The SSL error.
     :return: User-friendly error message.
@@ -337,7 +344,8 @@ def _format_ssl_error(e: ssl.SSLError) -> str:
 
 
 def format_certificate_info(info: SSLCertificateInfo) -> str:
-    """Format SSLCertificateInfo into a human-readable string.
+    """
+    Format SSLCertificateInfo into a human-readable string.
 
     :param info: The certificate info to format.
     :return: Human-readable string.

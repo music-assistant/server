@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "api_url": {
+      "label": "API URL",
+      "description": "URL of the LRCLib API (including 'api' but excluding '/get')"
+    }
+  },
+  "manifest": {
+    "description": "Primary lyrics provider, delivering synced and unsynced lyrics from the LrcLib database."
+  }
+}

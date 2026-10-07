@@ -1,4 +1,5 @@
-"""JWT token helper for Music Assistant authentication.
+"""
+JWT token helper for Music Assistant authentication.
 
 Future OIDC Support:
 - Consuming external OIDC providers (Google, Keycloak, etc.): Can be added without
@@ -24,12 +25,16 @@ from music_assistant.helpers.datetime import utc
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
 
+JWT_ISSUER = "music-assistant"
+JWT_AUDIENCE = "music-assistant"
+
 
 class JWTHelper:
     """Helper class for JWT token operations."""
 
     def __init__(self, secret_key: str) -> None:
-        """Initialize JWT helper.
+        """
+        Initialize JWT helper.
 
         :param secret_key: Secret key for signing JWTs.
         """
@@ -44,7 +49,8 @@ class JWTHelper:
         expires_at: datetime,
         is_long_lived: bool = False,
     ) -> str:
-        """Encode a JWT token for a user.
+        """
+        Encode a JWT token for a user.
 
         :param user: User object to create token for.
         :param token_id: Unique token identifier.
@@ -60,39 +66,53 @@ class JWTHelper:
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
             "username": user.username,
-            "role": user.role.value,
+            "role": user.role,
             "token_name": token_name,
             "is_long_lived": is_long_lived,
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
         }
 
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
 
     def decode_token(self, token: str, verify_exp: bool = True) -> dict[str, Any]:
-        """Decode and verify a JWT token.
+        """
+        Decode and verify a JWT token.
+
+        Verifies the signature, the expiration (unless disabled) and, when present,
+        that the issuer and audience claims match this server.
 
         :param token: JWT token string to decode.
         :param verify_exp: Whether to verify token expiration.
         :return: Decoded token payload.
-        :raises jwt.InvalidTokenError: If token is invalid or expired.
+        :raises jwt.InvalidTokenError: If token is invalid, expired or not issued for us.
         """
         payload: dict[str, Any] = jwt.decode(
             token,
             self.secret_key,
             algorithms=[self.algorithm],
-            options={"verify_exp": verify_exp},
+            options={"verify_exp": verify_exp, "verify_aud": False},
         )
+        # Tokens issued without iss/aud are still accepted; once either is present both must match
+        if "aud" in payload or "iss" in payload:
+            if not self._audience_matches(payload.get("aud")):
+                raise jwt.InvalidAudienceError("Invalid audience")
+            if payload.get("iss") != JWT_ISSUER:
+                raise jwt.InvalidIssuerError("Invalid issuer")
         return payload
 
     @staticmethod
     def generate_secret_key() -> str:
-        """Generate a secure random secret key for JWT signing.
+        """
+        Generate a secure random secret key for JWT signing.
 
         :return: Base64-encoded 256-bit random key.
         """
         return secrets.token_urlsafe(32)  # 32 bytes = 256 bits
 
     def get_token_id(self, token: str) -> str | None:
-        """Extract token ID (jti) from JWT without full validation.
+        """
+        Extract token ID (jti) from JWT without full validation.
 
         :param token: JWT token string.
         :return: Token ID or None if invalid.
@@ -106,3 +126,10 @@ class JWTHelper:
             return str(jti) if jti else None
         except Exception:
             return None
+
+    @staticmethod
+    def _audience_matches(aud: Any) -> bool:
+        """Return whether an aud claim (string or list) contains our audience."""
+        if isinstance(aud, list):
+            return JWT_AUDIENCE in aud
+        return bool(aud == JWT_AUDIENCE)

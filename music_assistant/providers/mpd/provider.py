@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import cast
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
+
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -43,6 +46,18 @@ class MPDPlayerProvider(PlayerProvider):
     is registered as a separate MA player. Servers are specified as a
     list of host or host:port entries in the provider configuration.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key="manual_discovery_ip_addresses",
+                type=ConfigEntryType.STRING,
+                default_value=[],
+                required=True,
+                multi_value=True,
+            ),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Sync registered players against the current hosts config."""

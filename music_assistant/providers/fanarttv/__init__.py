@@ -11,12 +11,12 @@ from music_assistant_models.enums import ConfigEntryType, ExternalID, ImageType,
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import Album, Artist
     from music_assistant_models.provider import ProviderManifest
 
@@ -52,49 +52,30 @@ async def setup(
     return FanartTvMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_ENABLE_ARTIST_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist images.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_ALBUM_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album image(s).",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_CLIENT_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="VIP Member Personal API Key (optional)",
-            description="Support this metadata provider by becoming a VIP Member, "
-            "resulting in higher rate limits and faster response times among other benefits. "
-            "See https://wiki.fanart.tv/General/personal%20api/ for more information.",
-            required=False,
-        ),
-    )
-
-
 class FanartTvMetadataProvider(MetadataProvider):
     """Fanart.tv Metadata provider."""
 
     throttler: Throttler
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_ARTIST_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_ALBUM_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_CLIENT_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+            ),
+        )
 
     @property
     def priority(self) -> int:
@@ -187,15 +168,16 @@ class FanartTvMetadataProvider(MetadataProvider):
                     return metadata
         return None
 
-    @use_cache(86400 * 60)  # Cache for 60 days
+    # None here only signals a failed or rate-limited request, so don't cache it
+    @use_cache(86400 * 60, cache_none=False)  # Cache for 60 days
     async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         headers = {
-            "api-key": app_var(4),
+            "api-key": app_var("fanarttv_api_key"),
         }
         if client_key := self.config.get_value(CONF_CLIENT_KEY):
-            headers["client_key"] = client_key
+            headers["client_key"] = str(client_key)
         async with (
             self.throttler,
             self.mass.http_session_no_ssl.get(

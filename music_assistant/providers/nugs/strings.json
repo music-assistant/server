@@ -1,0 +1,12 @@
+{
+  "media": {
+    "recommendations": {
+      "nugs_popular_shows": { "name": "Most Popular" },
+      "nugs_recommended_shows": { "name": "Recommended Shows" },
+      "nugs_recent_shows": { "name": "Recent Shows" }
+    }
+  },
+  "manifest": {
+    "description": "Stream official live concert audio & video — new shows added regularly to a rich archive."
+  }
+}

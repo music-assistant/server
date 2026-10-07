@@ -33,7 +33,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_artists(
         self,
-    ) -> AsyncGenerator[Artist, None]:
+    ) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         # Include followed artists if user is logged in
         following_artists = await self.service_manager.user.get_own_followings()
@@ -41,13 +41,13 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             yield artist
 
     @override
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist (user's series)."""
         return await self.service_manager.series.get_user_series(prov_artist_id)
 
     @override
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get newest 50 tracks of an artist."""
         return await self.service_manager.video.get_user_videos(

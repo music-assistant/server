@@ -2,12 +2,10 @@
 
 import json
 import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
-from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.tidal.parsers import (
     parse_album,
@@ -16,6 +14,9 @@ from music_assistant.providers.tidal.parsers import (
     parse_track,
 )
 
+if TYPE_CHECKING:
+    from syrupy.assertion import SnapshotAssertion
+
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))
 ALBUM_FIXTURES = list(FIXTURES_DIR.glob("albums/*.json"))
@@ -23,35 +24,12 @@ TRACK_FIXTURES = list(FIXTURES_DIR.glob("tracks/*.json"))
 PLAYLIST_FIXTURES = list(FIXTURES_DIR.glob("playlists/*.json"))
 
 
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.auth.user.profile_name = "Test User"
-    provider.auth.user.user_name = "Test User"
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-
-    return provider
-
-
 @pytest.mark.parametrize("example", ARTIST_FIXTURES, ids=lambda val: str(val.stem))
 def test_parse_artist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse artists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_artist(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -62,7 +40,7 @@ def test_parse_album(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse albums."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_album(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -73,7 +51,7 @@ def test_parse_track(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_track(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -84,9 +62,43 @@ def test_parse_playlist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse playlists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
 
     is_mix = "mix" in example.name
     parsed = parse_playlist(provider_mock, data, is_mix=is_mix).to_dict()
     assert snapshot == parsed
+
+
+def test_parse_track_partial_album(provider_mock: Mock) -> None:
+    """Test track parsing tolerates partial album objects."""
+    track_obj = {
+        "id": 123,
+        "title": "Test Track",
+        "duration": 100,
+        "artists": [{"id": 1, "name": "Test Artist", "picture": None}],
+        "album": {"id": 456},  # No title or cover
+    }
+
+    track = parse_track(provider_mock, track_obj)
+
+    assert track.album is not None
+    assert track.album.item_id == "456"
+    assert track.album.name == ""
+
+    # An album without an id is useless: no mapping should be created
+    track_obj["album"] = {"title": "Test Album"}
+    track = parse_track(provider_mock, track_obj)
+    assert track.album is None
+
+
+def test_parse_track_skips_artist_with_null_name(provider_mock: Mock) -> None:
+    """Test a malformed artist does not prevent parsing the containing track."""
+    with open(TRACK_FIXTURES[0], encoding="utf-8") as f:
+        data = json.load(f)
+    data["item"]["artists"][0]["name"] = None
+
+    track = parse_track(provider_mock, data)
+
+    assert track.artists == []
+    provider_mock.logger.warning.assert_called_once()

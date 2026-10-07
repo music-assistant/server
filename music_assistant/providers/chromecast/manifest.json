@@ -8,7 +8,7 @@
   "credits": [
     "[PyChromecast](https://github.com/home-assistant-libs/pychromecast)"
   ],
-  "requirements": ["PyChromecast==14.0.9"],
+  "requirements": ["PyChromecast==14.0.10"],
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,

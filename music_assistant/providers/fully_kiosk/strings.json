@@ -1,0 +1,35 @@
+{
+  "config_entries": {
+    "manual_discovery_ip_addresses": {
+      "label": "Fully Kiosk devices",
+      "description": "List of Fully Kiosk devices to connect to. Enter one device per line as host or host:port. Port defaults to 2323 if not specified. After saving, configure the password (and optional SSL options) for each device on the individual player's settings page."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Password to use to connect to the Fully Kiosk API."
+    },
+    "use_ssl": {
+      "label": "Use HTTPS when connecting to the Fully Kiosk API."
+    },
+    "verify_ssl": {
+      "label": "Verify HTTPS certificates (recommended).",
+      "description": "Disabling verification trusts any certificate (no validation)."
+    },
+    "ssl_fingerprint": {
+      "label": "TLS certificate fingerprint",
+      "description": "Optional SHA-256 hex fingerprint. When provided it must match the device certificate and overrides the verify setting."
+    }
+  },
+  "errors": {
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+  },
+  "manifest": {
+    "description": "Play audio on Fully Kiosk-enabled displays or Android devices."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Fully Kiosk",
+      "description": "Enter the password configured for the Fully Kiosk REST API on this device."
+    }
+  }
+}

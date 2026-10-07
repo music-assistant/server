@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 import torch
 
-from music_assistant.providers.sonic_analysis import SonicAnalysisProvider
 from music_assistant.providers.sonic_analysis.clap_prompts import (
+    CALIBRATION,
     CALIBRATION_PROMPTS_HASH,
     SCALAR_PROMPT_PAIRS,
     compute_prompt_embeddings,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
     save_precomputed_prompt_embeddings,
-    validate_calibration_freshness,
+    score_scalars,
 )
 
 
@@ -126,7 +125,7 @@ def test_compute_prompt_embeddings_returns_float32_numpy() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T2.5: CALIBRATION_PROMPTS_HASH and validate_calibration_freshness tests
+# CALIBRATION_PROMPTS_HASH tripwire — fails CI if prompts drift from calibration
 # ---------------------------------------------------------------------------
 
 
@@ -137,55 +136,34 @@ def test_calibration_prompts_hash_is_sha256_hex() -> None:
     assert all(c in "0123456789abcdef" for c in CALIBRATION_PROMPTS_HASH)
 
 
-def test_calibration_prompts_hash_matches_current_prompts() -> None:
-    """CALIBRATION_PROMPTS_HASH must equal hash_scalar_prompt_pairs(SCALAR_PROMPT_PAIRS)."""
-    assert hash_scalar_prompt_pairs(SCALAR_PROMPT_PAIRS) == CALIBRATION_PROMPTS_HASH
-
-
-def test_validate_calibration_freshness_silent_when_fresh() -> None:
-    """No warning is logged when CALIBRATION_PROMPTS_HASH matches the current prompts."""
-    with patch("music_assistant.providers.sonic_analysis.clap_prompts._LOGGER") as mock_logger:
-        validate_calibration_freshness(SCALAR_PROMPT_PAIRS)
-        mock_logger.warning.assert_not_called()
-
-
-def test_validate_calibration_freshness_warns_on_drift() -> None:
-    """A warning is logged when the prompts hash drifts from CALIBRATION_PROMPTS_HASH."""
-    stale_prompts = dict(SCALAR_PROMPT_PAIRS)
-    pos, neg = stale_prompts["danceability"]
-    stale_prompts["danceability"] = (pos + " MODIFIED", neg)
-
-    with patch("music_assistant.providers.sonic_analysis.clap_prompts._LOGGER") as mock_logger:
-        validate_calibration_freshness(stale_prompts)
-        mock_logger.warning.assert_called_once()
-        # Verify both hashes are mentioned in the warning
-        call_args = mock_logger.warning.call_args
-        assert CALIBRATION_PROMPTS_HASH in str(call_args)
-
-
-def test_validate_calibration_freshness_drift_hash_differs() -> None:
-    """Modified prompts must produce a hash different from CALIBRATION_PROMPTS_HASH."""
-    modified = dict(SCALAR_PROMPT_PAIRS)
-    pos, neg = modified["valence"]
-    modified["valence"] = (pos + " extra", neg)
-    assert hash_scalar_prompt_pairs(modified) != CALIBRATION_PROMPTS_HASH
-
-
-@pytest.mark.asyncio
-async def test_handle_async_init_calls_validate_calibration_freshness() -> None:
-    """SonicAnalysisProvider.handle_async_init must call validate_calibration_freshness."""
-    p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
-    p.logger = MagicMock()
-    p._clap_model = None
-    p._clap_text_embeddings = None
-    p._clap_prompt_order = []
-    p._clap_load_task = None
-    p.mass = SimpleNamespace(  # type: ignore[assignment]
-        create_task=MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
+def test_clap_calibration_hash_matches_prompts() -> None:
+    """Tripwire: if CLAP prompts change, calibration coefficients must be re-tuned."""
+    assert hash_scalar_prompt_pairs(SCALAR_PROMPT_PAIRS) == CALIBRATION_PROMPTS_HASH, (
+        "CLAP prompts changed but CALIBRATION_PROMPTS_HASH was not updated. "
+        "Re-run calibration on the 50-track sample set and update the hash + scalars."
     )
 
-    with patch(
-        "music_assistant.providers.sonic_analysis.validate_calibration_freshness"
-    ) as mock_validate:
-        await p.handle_async_init()
-        mock_validate.assert_called_once_with()
+
+def test_score_scalars_zero_margin_returns_sigmoid_of_bias() -> None:
+    """All similarities equal -> margin 0 for every scalar -> score == sigmoid(b)."""
+    mean = np.zeros(2 * len(SCALAR_PROMPT_PAIRS), dtype=np.float32)
+    scores = score_scalars(mean)
+    assert set(scores) == set(SCALAR_PROMPT_PAIRS)
+    for name, (_a, b) in CALIBRATION.items():
+        assert math.isclose(scores[name], 1.0 / (1.0 + math.exp(-b)), rel_tol=1e-9)
+
+
+def test_score_scalars_uses_pos_minus_neg_margin() -> None:
+    """Danceability is index 0: set pos=1.0, neg=0.0 -> margin 1.0."""
+    mean = np.zeros(2 * len(SCALAR_PROMPT_PAIRS), dtype=np.float32)
+    mean[0] = 1.0  # danceability pos
+    mean[1] = 0.0  # danceability neg
+    a, b = CALIBRATION["danceability"]
+    expected = 1.0 / (1.0 + math.exp(-(a * 1.0 + b)))
+    assert math.isclose(score_scalars(mean)["danceability"], expected, rel_tol=1e-9)
+
+
+def test_score_scalars_rejects_wrong_shape() -> None:
+    """A too-long array would otherwise be silently truncated -> fail fast instead."""
+    with pytest.raises(ValueError, match="must have shape"):
+        score_scalars(np.zeros(2 * len(SCALAR_PROMPT_PAIRS) + 2, dtype=np.float32))

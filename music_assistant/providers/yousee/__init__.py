@@ -4,17 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ProviderFeature,
-)
+from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
-from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.provider import YouSeeMusikProvider
 
 if TYPE_CHECKING:
@@ -54,44 +45,3 @@ async def setup(
     # you are free to do any preflight checks here and but you must return
     #  an instance of the provider.
     return YouSeeMusikProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.INTEGER,
-            label="Stream Quality",
-            description="The streaming quality to use for playback",
-            default_value=320,
-            options=[
-                ConfigValueOption('"High" - MP4 320kbps', 320),
-                ConfigValueOption('"Normal" - MP4 192kbps', 192),
-            ],
-        ),
-    )

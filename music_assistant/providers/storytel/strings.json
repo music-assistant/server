@@ -1,0 +1,30 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Email",
+      "description": "Storytel account email."
+    },
+    "password": {
+      "label": "Password",
+      "description": "Storytel account password."
+    },
+    "languages": {
+      "label": "Content Languages",
+      "description": "Select which languages to include in recommendations and search results."
+    },
+    "kids_mode": {
+      "label": "Enable Kids Mode",
+      "description": "Hides non-children's books from search and recommendations."
+    }
+  },
+  "media": {
+    "recommendations": {
+      "recommended_for_you": {
+        "name": "Recommended for You"
+      },
+      "recommended_podcasts": {
+        "name": "Recommended Podcasts"
+      }
+    }
+  }
+}

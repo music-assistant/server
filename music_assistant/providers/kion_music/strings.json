@@ -1,0 +1,124 @@
+{
+  "config_entries": {
+    "token": {
+      "label": "KION Music Token",
+      "description": "Enter your KION Music OAuth token. See the documentation for how to obtain it."
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Select preferred audio quality.",
+      "options": {
+        "efficient": "Efficient (AAC ~64kbps)",
+        "balanced": "Balanced (AAC ~192kbps)",
+        "high": "High (MP3 ~320kbps)",
+        "superb": "Superb (FLAC Lossless)"
+      }
+    },
+    "my_wave_max_tracks": {
+      "label": "My Mix maximum tracks",
+      "description": "Maximum number of tracks to fetch for My Mix playlist. Lower values load faster but provide fewer tracks. Default: 150."
+    },
+    "liked_tracks_max_tracks": {
+      "label": "Liked Tracks maximum tracks",
+      "description": "Maximum number of tracks to show in Liked Tracks virtual playlist. Higher values may significantly increase load time. Lower values load faster. Default: 500."
+    },
+    "transport": {
+      "label": "Streaming transport",
+      "description": "Transport mode for audio streaming. 'raw' — direct unencrypted stream (default). 'encraw' — AES-CTR encrypted stream (fallback).",
+      "options": {
+        "raw": "Raw (unencrypted)",
+        "encraw": "Encrypted (AES-CTR)"
+      }
+    },
+    "codecs": {
+      "label": "Codecs override",
+      "description": "Comma-separated codec list to override quality-based defaults. Leave empty to use defaults. Example: 'flac-mp4,flac,aac-mp4,aac,mp3'."
+    },
+    "base_url": {
+      "label": "API Base URL",
+      "description": "API endpoint base URL. Only change if KION Music changes their API endpoint. Default: {0}"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to KION Music",
+      "description": "Music Assistant needs your personal KION Music OAuth token to reach your account and library."
+    }
+  },
+  "errors": {
+    "login_failed": "Could not sign in to KION Music with this token. See the documentation for how to obtain a fresh OAuth token."
+  },
+  "media": {
+    "folder": {
+      "my_wave": { "name": "My Mix" },
+      "for_you": { "name": "For You" },
+      "collection": { "name": "Collection" },
+      "my_waves_set": { "name": "AI Mix Sets" },
+      "pinned": { "name": "Pinned" },
+      "history": { "name": "Listening History" },
+      "load_more": { "name": "Load more" },
+      "picks": { "name": "Picks" },
+      "mixes": { "name": "Mixes" },
+      "waves_landing": { "name": "Featured Mixes" },
+      "my_waves": { "name": "Personal" },
+      "my_favorites": { "name": "My Favorites" },
+      "my_artists": { "name": "My Artists" },
+      "my_albums": { "name": "My Albums" },
+      "my_playlists": { "name": "My Playlists" },
+      "mood": { "name": "Mood" },
+      "activity": { "name": "Activity" },
+      "era": { "name": "Era" },
+      "epoch": { "name": "Era" },
+      "genres": { "name": "Genres" },
+      "genre": { "name": "Genres" },
+      "local": { "name": "Local" },
+      "chill": { "name": "[%key:common::media::folder::chill::name%]" },
+      "sad": { "name": "[%key:common::media::folder::sad::name%]" },
+      "romantic": { "name": "[%key:common::media::folder::romantic::name%]" },
+      "party": { "name": "[%key:common::media::folder::party::name%]" },
+      "relax": { "name": "[%key:common::media::folder::relax::name%]" },
+      "in_the_mood": { "name": "[%key:common::media::folder::in_the_mood::name%]" },
+      "background": { "name": "[%key:common::media::folder::background::name%]" },
+      "workout": { "name": "[%key:common::media::folder::workout::name%]" },
+      "focus": { "name": "[%key:common::media::folder::focus::name%]" },
+      "morning": { "name": "[%key:common::media::folder::morning::name%]" },
+      "evening": { "name": "[%key:common::media::folder::evening::name%]" },
+      "driving": { "name": "[%key:common::media::folder::driving::name%]" },
+      "80s": { "name": "[%key:common::media::folder::80s::name%]" },
+      "90s": { "name": "[%key:common::media::folder::90s::name%]" },
+      "2000s": { "name": "[%key:common::media::folder::2000s::name%]" },
+      "retro": { "name": "[%key:common::media::folder::retro::name%]" },
+      "rock": { "name": "[%key:common::media::folder::rock::name%]" },
+      "jazz": { "name": "[%key:common::media::folder::jazz::name%]" },
+      "classical": { "name": "[%key:common::media::folder::classical::name%]" },
+      "electronic": { "name": "[%key:common::media::folder::electronic::name%]" },
+      "rnb": { "name": "[%key:common::media::folder::rnb::name%]" },
+      "hiphop": { "name": "[%key:common::media::folder::hiphop::name%]" },
+      "top": { "name": "Top" },
+      "newbies": { "name": "By Genre" },
+      "winter": { "name": "[%key:common::media::folder::winter::name%]" },
+      "spring": { "name": "[%key:common::media::folder::spring::name%]" },
+      "summer": { "name": "[%key:common::media::folder::summer::name%]" },
+      "autumn": { "name": "[%key:common::media::folder::autumn::name%]" },
+      "newyear": { "name": "[%key:common::media::folder::newyear::name%]" }
+    },
+    "playlist": {
+      "my_wave": { "name": "My Mix" },
+      "liked_tracks": { "name": "My Favorites" }
+    },
+    "recommendations": {
+      "my_wave": { "name": "My Mix" },
+      "made_for_you": { "name": "Made for you" },
+      "chart": { "name": "Chart" },
+      "new_releases": { "name": "New Releases" },
+      "new_playlists": { "name": "New Playlists" },
+      "top_picks": { "name": "Top Picks" },
+      "mood_mix": { "name": "Mood Mix" },
+      "activity_mix": { "name": "Activity Mix" },
+      "seasonal_mix": { "name": "Seasonal: {0}" }
+    }
+  },
+  "manifest": {
+    "description": "Stream music, personalized recommendations, and lossless FLAC from KION Music — including My Wave radio and library sync."
+  }
+}

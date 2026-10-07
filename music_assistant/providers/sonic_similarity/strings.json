@@ -1,0 +1,81 @@
+{
+  "config_entries": {
+    "enable_clap_index": {
+      "label": "Enable Character index",
+      "description": "Also build a second usearch index over the 1024-dim CLAP audio embeddings already stored by sonic_analysis. Enables track-to-track semantic similarity via the sonic_similarity/similar_clap API. Requires no extra downloads — uses embeddings already on disk."
+    },
+    "enable_text_search": {
+      "label": "Enable free-text search",
+      "description": "Enable natural-language track search (e.g. 'super dancy disco') via the CLAP GPT2 text encoder, exposed as sonic_similarity/text_search. First-time use lazily downloads ~500MB of GPT2 weights to the local HuggingFace cache — the model is loaded on the first query, not at plugin start. Implicitly enables the Character index above (text and audio share the same 1024-dim joint embedding space)."
+    },
+    "similar_tracks_engine": {
+      "label": "Similar Tracks engine",
+      "description": "Which index powers library-wide Similar Tracks. Traits matches on measured sound traits (tempo, energy, loudness, key); Character matches on overall feel — how a listener would describe the sound.",
+      "options": {
+        "18dim": "Traits (default)",
+        "clap": "Character"
+      }
+    },
+    "similar_tracks_preset": {
+      "label": "Similar Tracks preset",
+      "description": "Similarity weight preset applied to the Similar Tracks action (Traits engine only). 'balanced' weights each trait by how much it drives sonic similarity; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade; 'discover' favours novelty (low genre/era weighting).",
+      "options": {
+        "balanced": "Balanced",
+        "vibe": "Vibe (mood + timbre)",
+        "party": "Party (rhythm-heavy)",
+        "genre_era": "Genre + Era (stay close)",
+        "discover": "Discover (novelty-leaning)"
+      }
+    },
+    "similar_tracks_diversity": {
+      "label": "Similar Tracks diversity",
+      "description": "0 keeps results closest to the seed; 10 maximises variety via MMR (some results may be less similar but more distinct from each other). Traits engine only."
+    },
+    "enable_discover_row": {
+      "label": "Show 'Inspired by recently played' on the discover page",
+      "description": "Yield a discover-page row seeded by your recently-played tracks. Disable to suppress the row without uninstalling the plugin."
+    },
+    "discover_engine": {
+      "label": "Discover row engine",
+      "description": "Which index seeds the discover row. Traits matches on measured sound traits; Character matches on overall feel. Character requires the Character index (Generic section) to be enabled — the row falls back to Traits otherwise.",
+      "options": {
+        "18dim": "Traits (default)",
+        "clap": "Character"
+      }
+    },
+    "discover_preset": {
+      "label": "Discover row preset",
+      "description": "Similarity weight preset used to rank candidates for the row (Traits engine only). 'discover' favours novelty (low genre/era weighting); 'balanced' weights each trait by how much it drives sonic similarity; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade.",
+      "options": {
+        "discover": "Discover (novelty-leaning)",
+        "balanced": "Balanced",
+        "vibe": "Vibe (mood + timbre)",
+        "party": "Party (rhythm-heavy)",
+        "genre_era": "Genre + Era (stay close)"
+      }
+    },
+    "discover_diversity": {
+      "label": "Discover row diversity",
+      "description": "0 keeps results closest to the seeds; 10 maximises variety via MMR (some results may be less similar but more distinct from each other). Traits engine only."
+    },
+    "rebuild_18dim_index": {
+      "label": "Rebuild Traits index",
+      "description": "Re-scan all stored signatures and rebuild the weighted-Euclidean search index. Runs in the background; refresh the page to see updated counts.",
+      "action_label": "Rebuild Traits index"
+    },
+    "rebuild_clap_index": {
+      "label": "Rebuild Character index",
+      "description": "Incrementally re-scan audio_analysis rows and add any missing CLAP embeddings to the 1024-dim index. Runs in the background; refresh the page to see updated counts.",
+      "action_label": "Rebuild Character index"
+    }
+  },
+  "config_categories": {
+    "similarity_search": "Similarity search"
+  },
+  "manifest": {
+    "description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures. Requires both sonic_analysis (perceptual scalars + CLAP embedding) and smart_fades (BPM + musical key) — vector assembly skips tracks missing either signal."
+  },
+  "errors": {
+    "clap_index_unavailable": "The Character index is not available; check the provider logs and reload the provider before rebuilding."
+  }
+}

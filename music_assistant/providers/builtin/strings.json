@@ -1,0 +1,63 @@
+{
+  "config_entries": {
+    "all_favorite_tracks": {
+      "label": "All favorited tracks"
+    },
+    "random_artist": {
+      "label": "Random Artist (from library)"
+    },
+    "random_album": {
+      "label": "Random Album (from library)"
+    },
+    "random_tracks": {
+      "label": "500 Random tracks (from library)"
+    },
+    "recently_played": {
+      "label": "Recently played tracks"
+    },
+    "recently_added_tracks": {
+      "label": "Recently added tracks"
+    },
+    "infinite_mix": {
+      "label": "Infinite Mix (library)",
+      "description": "An endless, ever-changing playlist that draws 25 random tracks from your full library each time the queue is about to run out. No pre-loading — memory usage stays constant regardless of library size."
+    },
+    "infinite_mix_favorites": {
+      "label": "Infinite Mix (favorites)",
+      "description": "Like Infinite Mix, but limited to your favorited tracks. 25 fresh random favorites are added whenever the queue is nearly empty."
+    }
+  },
+  "media": {
+    "playlist": {
+      "all_favorite_tracks": {
+        "name": "All favorited tracks"
+      },
+      "random_artist": {
+        "name": "Random Artist (from library)"
+      },
+      "random_album": {
+        "name": "Random Album (from library)"
+      },
+      "random_tracks": {
+        "name": "500 Random tracks (from library)"
+      },
+      "recently_played": {
+        "name": "Recently played tracks"
+      },
+      "recently_added_tracks": {
+        "name": "Recently added tracks"
+      },
+      "infinite_mix": {
+        "name": "Infinite Mix (library)",
+        "description": "An endless, ever-changing playlist that draws 25 random tracks from your full library each time the queue is about to run out. No pre-loading — memory usage stays constant regardless of library size."
+      },
+      "infinite_mix_favorites": {
+        "name": "Infinite Mix (favorites)",
+        "description": "Like Infinite Mix, but limited to your favorited tracks. 25 fresh random favorites are added whenever the queue is nearly empty."
+      }
+    }
+  },
+  "manifest": {
+    "description": "Built-in/generic provider that handles generic URLs and playlists."
+  }
+}

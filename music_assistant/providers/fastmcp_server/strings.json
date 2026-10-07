@@ -1,0 +1,105 @@
+{
+  "config_entries": {
+    "open_connect": {
+      "label": "Open Connect Wizard",
+      "description": "Guided setup for Claude Code, Cursor, OpenCode, VSCode and other static-token MCP clients. Mints a per-client token labelled `MCP — <Client>` (revocable in Profile → Long-lived access tokens) and provides reviewed connection methods."
+    },
+    "require_auth": {
+      "label": "Require authentication",
+      "description": "Require a fresh, enabled Music Assistant user and token for MCP requests. Keep authentication enabled for normal operation."
+    },
+    "mount_path": {
+      "label": "Mount path",
+      "description": "HTTP path prefix where the MCP server is mounted on MA's webserver. Change only if it conflicts with another route."
+    },
+    "enforce_audience": {
+      "label": "Enforce token audience (RFC 8707)",
+      "description": "Reject Bearer tokens whose `aud` claim does not match this MCP server's canonical URI. Mitigates the OAuth confused-deputy attack where a token issued for one MA endpoint is replayed against another. Requires upstream Music Assistant support for writing `aud` into JWTs (in progress) — until then enabling this rejects all existing tokens. Leave off unless your MA build issues audience-bound tokens."
+    },
+    "extra_allowed_origins": {
+      "label": "Additional allowed Origins (CSV)",
+      "description": "Comma-separated list of additional `Origin` headers to accept (e.g. `https://ha.example.com` for Home Assistant ingress, or a reverse-proxy hostname). By default the server only accepts `localhost`, `127.0.0.1`, the MA `base_url` host, and `publish_ip`. Mismatching Origins are rejected with 403 to mitigate DNS rebinding."
+    },
+    "connect_external_url": {
+      "label": "Connect Wizard external URL (fallback)",
+      "description": "Optional explicit base URL the Connect Wizard should open at (e.g. `https://ha.example.com/<addon-slug>` for Home Assistant add-on ingress). Used only when the wizard cannot auto-detect the external URL from the active client connection — set it if your reverse proxy strips the `X-Forwarded-Host` / `X-Ingress-Path` headers."
+    },
+    "trust_forwarded_proto": {
+      "label": "Trust reverse-proxy forwarded scheme",
+      "description": "Treat the Connect Wizard request as HTTPS when a trusted reverse proxy reports `X-Forwarded-Proto: https` (or `X-Forwarded-Scheme: https`), even though the proxy-to-MA hop is plain HTTP. Enable this only when MA sits behind a reverse proxy (nginx, Nginx Proxy Manager, Traefik, Caddy, ...) that terminates TLS and is configured to set this header and strip any client-supplied copy. Without it, the wizard refuses to mint credentials over the proxy because it sees plaintext HTTP from a non-loopback host. Leave OFF if MA is directly reachable — any LAN client could otherwise spoof the header."
+    },
+    "debug_event_buffer_capacity": {
+      "label": "Debug: event buffer capacity",
+      "description": "Maximum number of recent events retained while at least one resolvable policy grants or confirms `debug:events`. Older events are dropped FIFO."
+    },
+    "policy_default": {
+      "label": "Default policy",
+      "description": "Policy used when a token has no explicit override. Missing v2 configuration defaults to Safe queries. Select Custom and enable Advanced mode to edit individual capability modes.",
+      "options": {
+        "Safe queries": "Safe queries",
+        "Home control": "Home control",
+        "Interactive admin": "Interactive admin",
+        "Trusted": "Trusted",
+        "Custom": "Custom (Advanced mode required)"
+      }
+    },
+    "policy_token": {
+      "label": "{0}",
+      "description": "Select Custom and enable Advanced mode to edit individual capability modes.",
+      "options": {
+        "Inherit": "Inherit",
+        "Safe queries": "Safe queries",
+        "Home control": "Home control",
+        "Interactive admin": "Interactive admin",
+        "Trusted": "Trusted",
+        "Custom": "Custom (Advanced mode required)"
+      }
+    },
+    "policy_capability": {
+      "label": "{0}",
+      "description": "Permission mode for capability {0}.",
+      "options": {
+        "deny": "Deny",
+        "allow": "Allow",
+        "confirm": "Confirm"
+      }
+    },
+    "policy_manual_token_ids": {
+      "label": "Manual MCP token IDs",
+      "description": "Optional Music Assistant token IDs to configure when they cannot be discovered for the current settings user. Token IDs are not bearer secrets."
+    },
+    "policy_token_suffixes": {
+      "label": "Stored token policy references",
+      "description": "Internal non-reversible references that keep per-token policies available after restart. Bearer tokens and token IDs are never stored here."
+    },
+    "res_library": {
+      "label": "Expose library:// resources",
+      "description": "URI-addressable read-only views of artists, albums, tracks, playlists."
+    },
+    "res_player": {
+      "label": "Expose player:// and queue:// resources",
+      "description": "URI-addressable views of players and queues."
+    },
+    "res_prompts": {
+      "label": "Expose canned prompts",
+      "description": "Pre-defined prompts: find_and_play, party_playlist, now_playing_summary."
+    }
+  },
+  "config_categories": {
+    "policy": "Permissions & confirmations",
+    "mcp_resources": "MCP Resources",
+    "mcp_config": "Config"
+  },
+  "setup_flow": {
+    "connect": {
+      "title": "Connect an MCP client",
+      "description": "Open the Connect Wizard, choose your AI client and generate its Music Assistant configuration. Setup completes automatically when the configuration is ready."
+    }
+  },
+  "errors": {
+    "connect_wizard_unavailable": "The Connect Wizard could not be opened; check the provider logs."
+  },
+  "manifest": {
+    "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
+  }
+}

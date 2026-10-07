@@ -1,4 +1,5 @@
-"""Cloud connection manager for Yandex Smart Home via yaha-cloud.ru relay.
+"""
+Cloud connection manager for Yandex Smart Home via yaha-cloud.ru relay.
 
 Manages a persistent WebSocket connection to the yaha-cloud.ru relay service.
 Incoming Yandex Smart Home API requests are received over WS, processed by
@@ -18,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 if TYPE_CHECKING:
-    from ._compat import SecretStr
+    from ya_dialogs_api import SecretStr
 
 from .constants import (
     CLOUD_BASE_URL,
@@ -76,6 +77,14 @@ class CloudManager:
             # Backoff before reconnect (both after errors and clean disconnects)
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, CLOUD_RECONNECT_MAX)
+
+    async def disconnect(self) -> None:
+        """Stop the connection loop and close WebSocket."""
+        self._running = False
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+        self._logger.info("Cloud relay disconnected")
 
     async def _connect_once(self) -> None:
         """Single WebSocket connection attempt + message loop."""
@@ -142,14 +151,6 @@ class CloudManager:
                 except Exception:
                     self._logger.debug("Failed to send error response for %s", request_id)
 
-    async def disconnect(self) -> None:
-        """Stop the connection loop and close WebSocket."""
-        self._running = False
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        self._logger.info("Cloud relay disconnected")
-
 
 # ---------------------------------------------------------------------------
 # Cloud instance registration helpers
@@ -160,7 +161,8 @@ async def register_cloud_instance(
     session: aiohttp.ClientSession,
     platform: str | None = None,
 ) -> dict[str, str]:
-    """Register a new cloud instance on yaha-cloud.ru.
+    """
+    Register a new cloud instance on yaha-cloud.ru.
 
     Returns dict with 'id', 'password', 'connection_token'.
     No authentication is required — the relay auto-generates credentials.
@@ -184,7 +186,8 @@ async def get_cloud_otp(
     instance_id: str,
     token: SecretStr,
 ) -> str:
-    """Get a one-time password for linking the instance in the Yandex app.
+    """
+    Get a one-time password for linking the instance in the Yandex app.
 
     User enters this OTP in the Yandex Smart Home app to link their account.
     The token parameter is the connection_token from registration.

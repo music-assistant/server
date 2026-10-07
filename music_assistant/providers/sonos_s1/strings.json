@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "network_scan": {
+      "label": "Enable network scan for discovery",
+      "description": "Enable network scan for discovery of players. \nCan be used if (some of) your players are not automatically discovered.\nShould normally not be needed"
+    },
+    "household_id": {
+      "label": "Household ID",
+      "description": "Household ID for the Sonos (S1) system. Will be auto detected if empty."
+    }
+  },
+  "manifest": {
+    "description": "Play music, manage groups, and control Series 1 SONOS speakers throughout your home. Select this provider if you have SONOS devices on the S1 operating system (with the S1 Controller app)"
+  },
+  "errors": {
+    "play_media_synced": "Player {0} can not accept the play command, it is synced to another player.",
+    "enqueue_synced": "Player {0} can not accept the enqueue command, it is synced to another player."
+  }
+}

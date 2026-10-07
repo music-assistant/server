@@ -13,10 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from aiosendspin.models.visualizer import (
-    ClientHelloVisualizerSupport,
-    StreamStartVisualizer,
-)
+from aiosendspin.models.visualizer import StreamStartVisualizer, VisualizerStatePayload
 from aiosendspin.server.roles import AudioRequirements, Role
 from aiosendspin.server.roles.registry import register_role
 from aiosendspin.server.roles.visualizer.features import (
@@ -107,12 +104,13 @@ class SynchronizerRole(Role):
             )
             return
         payload: dict[str, object] = support_raw.to_dict()
+        payload.pop("buffer_capacity", None)
         if "types" not in payload:
             payload["types"] = ["loudness", "f_peak"]
-        if "batch_max" not in payload:
-            payload["batch_max"] = 8
-        support = ClientHelloVisualizerSupport.from_dict(payload)
-        self._stream_config = StreamStartVisualizer.from_support(support)
+        if "rate_max" not in payload:
+            payload["rate_max"] = 30
+        request = VisualizerStatePayload.from_dict(payload)
+        self._stream_config = StreamStartVisualizer.from_request(request)
 
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
@@ -161,9 +159,10 @@ class SynchronizerRole(Role):
         """Process audio chunk and forward visualization data via callback."""
         if self._extractor is None or self._stream_config is None:
             return
-        frame = self._extractor.process_chunk(chunk.data, chunk.timestamp_us)
+        frames = self._extractor.process_chunk(chunk.data, chunk.timestamp_us)
         if self._on_visualization_data_cb:
-            self._on_visualization_data_cb(frame)
+            for frame in frames:
+                self._on_visualization_data_cb(frame)
 
     def on_stream_clear(self) -> None:
         """Reset extractor state at stream boundaries."""

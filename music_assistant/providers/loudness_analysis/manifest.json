@@ -9,5 +9,5 @@
   "builtin": true,
   "allow_disable": false,
   "icon": "volume-high",
-  "documentation": "https://music-assistant.io/audio-analysis-providers/loudness-analysis/"
+  "documentation": "https://music-assistant.io/audio-analysis/loudness-analysis/"
 }

@@ -1,0 +1,42 @@
+{
+  "config_entries": {
+    "api_base_url": {
+      "label": "API base URL",
+      "description": "Base URL of your local NeteaseCloudMusicApi-compatible service."
+    },
+    "quality": {
+      "label": "Preferred quality",
+      "options": {
+        "standard": "Standard",
+        "higher": "Higher",
+        "exhigh": "Exhigh",
+        "lossless": "Lossless",
+        "hires": "Hi-Res",
+        "jyeffect": "JY Effect",
+        "jymaster": "JY Master"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect NetEase Cloud Music",
+      "description": "Enter the address of your local NeteaseCloudMusicApi-compatible backend service. The next step shows a QR code to sign in."
+    },
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the NetEase Cloud Music app and confirm the login. A fresh code is shown automatically if it expires."
+    }
+  },
+  "media": {
+    "playlist": {
+      "heart_mode": { "name": "Heart Mode" },
+      "personal_fm": { "name": "Personal FM" }
+    },
+    "recommendations": {
+      "personal_radio": { "name": "Personal Radio" }
+    }
+  },
+  "manifest": {
+    "description": "Stream NetEase Cloud Music catalog, playlists, lyrics, and recommendations."
+  }
+}

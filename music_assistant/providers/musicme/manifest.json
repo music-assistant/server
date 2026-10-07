@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "musicme",
-  "stage": "beta",
+  "stage": "stable",
   "name": "MusicMe",
   "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks.",
   "codeowners": ["@JulienDeveaux"],

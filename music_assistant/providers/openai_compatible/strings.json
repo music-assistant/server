@@ -1,0 +1,49 @@
+{
+  "config_entries": {
+    "service": {
+      "label": "Service",
+      "options": {
+        "openai": "OpenAI",
+        "groq": "Groq",
+        "openrouter": "OpenRouter",
+        "together": "Together AI",
+        "ollama": "Ollama",
+        "lmstudio": "LM Studio",
+        "custom": "Something else"
+      }
+    },
+    "base_url": {
+      "label": "API base URL",
+      "description": "Address of the API, including the version path. Adjust this if the service does not run where it normally would, for example on another machine than Music Assistant."
+    },
+    "api_key": {
+      "label": "API key",
+      "description": "Leave empty for a local server that does not ask for a key. When changing these settings later, leave it empty to keep the key you already saved."
+    },
+    "clear_api_key": {
+      "label": "Remove the saved API key",
+      "description": "Tick this when moving to a service that does not use a key."
+    },
+    "models": {
+      "label": "Models",
+      "description": "Pick the models you want to use. Each one becomes a separate choice for the AI features, so you can use a fast model for simple tasks and a smarter one where it matters."
+    }
+  },
+  "setup_flow": {
+    "service": {
+      "title": "Choose a service",
+      "description": "Anything that speaks the OpenAI API works here. Pick one of the services below to fill in its address for you, or choose \"Something else\" to enter your own."
+    },
+    "connection": {
+      "title": "Connection details",
+      "description": "Once connected, choose the models you want to use in the provider settings."
+    }
+  },
+  "errors": {
+    "invalid_api_key": "The service did not accept this API key. Check the key and try again.",
+    "cannot_connect": "Could not reach the service. Check the base URL and make sure the service is running."
+  },
+  "manifest": {
+    "description": "Use any service that speaks the OpenAI API for Music Assistant's AI features, including OpenAI, Groq, OpenRouter, Together and local servers such as Ollama or LM Studio."
+  }
+}

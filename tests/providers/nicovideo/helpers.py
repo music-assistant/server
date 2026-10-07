@@ -29,7 +29,8 @@ def create_converter_manager() -> NicovideoConverterManager:
 
 
 def sort_dict_keys_and_lists(obj: JsonValue) -> JsonValue:
-    """Sort dictionary keys and list elements for consistent snapshot comparison.
+    """
+    Sort dictionary keys and list elements for consistent snapshot comparison.
 
     This function ensures deterministic ordering by:
     - Sorting dictionary keys alphabetically
@@ -47,7 +48,7 @@ def sort_dict_keys_and_lists(obj: JsonValue) -> JsonValue:
         try:
             # Sort items for deterministic ordering (handles serialized sets)
             return sorted(sorted_items, key=lambda x: (type(x).__name__, str(x)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # If sorting fails, return in original order
             return sorted_items
     else:

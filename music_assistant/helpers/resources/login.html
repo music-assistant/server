@@ -273,9 +273,15 @@
                 if (data.success && data.access_token) {
                     // Redirect with the token
                     let redirectUrl = '/';
-                    // Only allow same-origin relative paths (e.g. "/path"), not external URLs
-                    if (typeof returnUrl === 'string' && returnUrl.startsWith('/') && !returnUrl.startsWith('//')) {
-                        redirectUrl = returnUrl;
+                    // Accept only same-origin paths; the URL API rejects prefix tricks like "//evil.com" or "/\evil.com".
+                    if (typeof returnUrl === 'string') {
+                        try {
+                            const parsed = new URL(returnUrl, window.location.origin);
+                            if (parsed.origin === window.location.origin) {
+                                // Drop any #fragment so the code param below stays in the query
+                                redirectUrl = parsed.pathname + parsed.search;
+                            }
+                        } catch (e) { /* keep default */ }
                     }
                     const separator = redirectUrl.includes('?') ? '&' : '?';
                     window.location.href = `${redirectUrl}${separator}code=${encodeURIComponent(data.access_token)}`;

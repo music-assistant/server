@@ -1,0 +1,38 @@
+{
+  "config_entries": {
+    "label_text": {
+      "label": "Successfully signed in as {0} {1}."
+    },
+    "email": {
+      "label": "E-Mail",
+      "description": "E-Mail address of ARD account."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Password of ARD account."
+    },
+    "max_num_episodes": {
+      "label": "Maximum bitrate for streams (0 for unlimited)",
+      "description": "Maximum bitrate for streams. Use 0 for unlimited"
+    },
+    "podcast_finished_time": {
+      "label": "Percentage required before podcast episode is marked as fully played",
+      "description": "This setting defines how much of a podcast must be listened to before an episode is marked as fully played"
+    },
+    "token": {
+      "label": "token"
+    },
+    "user_id": {
+      "label": "uid"
+    },
+    "token_expiry": {
+      "label": "token_expiry"
+    },
+    "display_name": {
+      "label": "username"
+    }
+  },
+  "manifest": {
+    "description": "Stream radio shows, news, and podcasts from ARD Sounds (Germany’s public broadcaster)."
+  }
+}

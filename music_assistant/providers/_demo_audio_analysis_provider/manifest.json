@@ -5,5 +5,5 @@
   "description": "Test/Example Audio Analysis Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/audio-analysis-providers/demo/"
+  "documentation": "https://music-assistant.io/audio-analysis/demo/"
 }

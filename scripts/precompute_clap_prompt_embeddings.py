@@ -1,4 +1,5 @@
-"""Precompute CLAP text embeddings for SCALAR_PROMPT_PAIRS and ship as .npz.
+"""
+Precompute CLAP text embeddings for SCALAR_PROMPT_PAIRS and ship as .npz.
 
 Run once whenever the prompts in clap_prompts.py change (and bump the
 provider's analysis_version alongside). The resulting artifact is loaded

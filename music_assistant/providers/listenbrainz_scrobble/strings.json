@@ -1,0 +1,17 @@
+{
+  "config_entries": {
+    "_user_token": {
+      "label": "User Token"
+    },
+    "api_base_url": {
+      "label": "Base URL",
+      "description": "URL for listenbrainz endpoint. Leave blank to default to the public listenbrainz API."
+    }
+  },
+  "errors": {
+    "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling."
+  },
+  "manifest": {
+    "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm."
+  }
+}

@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
@@ -46,7 +46,7 @@ from .parsers import (
 from .streaming import InternetArchiveStreaming
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -72,9 +72,30 @@ class InternetArchiveProvider(MusicProvider):
         self.streaming = InternetArchiveStreaming(self)
 
     @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
+    @property
     def is_streaming_provider(self) -> bool:
         """Return True if provider is a streaming provider."""
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # catalogue access is search/browse only, there are no library items at all
+        return {
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.AUDIOBOOK,
+            MediaType.PODCAST,
+        }
 
     @throttle_with_retries
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -91,8 +112,8 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled metadata wrapper."""
         return await self.client.get_metadata(identifier)
 
-    @throttle_with_retries
     @use_cache(expiration=86400 * 30)  # 30 days - file listings are static
+    @throttle_with_retries
     async def _get_audio_files(self, identifier: str) -> list[dict[str, Any]]:
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)
@@ -138,12 +159,22 @@ class InternetArchiveProvider(MusicProvider):
         search_strategies = []
 
         # For music searches: focus on title and creator
+        # Include both mediatype:audio and mediatype:etree (Live Music Archive)
         if any(mt in media_types for mt in [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST]):
             search_strategies.extend(
                 [
-                    (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
+                    (
+                        f"creator:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"title:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"subject:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
                 ]
             )
 
@@ -621,7 +652,9 @@ class InternetArchiveProvider(MusicProvider):
 
         return track_number
 
-    @use_cache(expiration=86400 * 30)  # Cache for 30 days - artist catalogs change infrequently
+    @use_cache(
+        expiration=86400 * 30, allow_expired_cache=True
+    )  # Cache for 30 days - artist catalogs change infrequently
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get albums for a specific artist.
@@ -672,15 +705,15 @@ class InternetArchiveProvider(MusicProvider):
                         "Network error processing album for artist %s: %s", prov_artist_id, err
                     )
                     continue
-                except Exception as err:
+                except Exception:
                     self.logger.exception(
-                        "Unexpected error processing album for artist %s: %s", prov_artist_id, err
+                        "Unexpected error processing album for artist %s", prov_artist_id
                     )
                     continue
             page += 1
         return albums
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week
+    @use_cache(expiration=86400 * 7, allow_expired_cache=True)  # Cache for 1 week
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """
         Get top tracks for a specific artist.
@@ -723,9 +756,9 @@ class InternetArchiveProvider(MusicProvider):
                     "Network error processing track for artist %s: %s", prov_artist_id, err
                 )
                 continue
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "Unexpected error processing track for artist %s: %s", prov_artist_id, err
+                    "Unexpected error processing track for artist %s", prov_artist_id
                 )
                 continue
 
@@ -779,7 +812,7 @@ class InternetArchiveProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from Internet Archive."""
         # Use sock_read=None to allow long audiobook chapters to stream fully
         timeout = aiohttp.ClientTimeout(sock_read=None, total=None)
@@ -868,6 +901,7 @@ class InternetArchiveProvider(MusicProvider):
         # Add metadata
         if description := clean_text(item_metadata.get("description")):
             podcast.metadata.description = description
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # Add thumbnail
         add_item_image(podcast, prov_podcast_id, self.instance_id)
@@ -882,9 +916,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return podcast
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
         metadata = await self._get_metadata(prov_podcast_id)
         item_metadata = metadata.get("metadata", {})

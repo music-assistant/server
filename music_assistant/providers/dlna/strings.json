@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "replace_pause_with_stop": {
+      "label": "Replace Pause with Stop",
+      "description": "Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA."
+    }
+  },
+  "manifest": {
+    "description": "Stream music to supported UPnP/DLNA-compatible devices."
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "vrt_max",
+  "name": "VRT MAX",
+  "stage": "experimental",
+  "description": "Stream live radio from VRT MAX, the Flemish public broadcaster (Radio 1, Radio 2, Klara, Studio Brussel, MNM and more).",
+  "documentation": "https://music-assistant.io/music-providers/vrt-max/",
+  "requirements": [],
+  "multi_instance": true,
+  "codeowners": ["@bollewolle"]
+}

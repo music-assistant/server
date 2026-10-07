@@ -1,0 +1,9 @@
+{
+  "type": "music",
+  "domain": "sverigesradio",
+  "name": "Sveriges Radio",
+  "description": "Listen to Sweden’s public service radio — live national and local channels.",
+  "codeowners": ["@romany"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/sveriges-radio/"
+}

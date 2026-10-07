@@ -24,6 +24,13 @@ from music_assistant.providers.yandex_smarthome.constants import (
 from music_assistant.providers.yandex_smarthome.direct import DirectConnectionHandler
 from music_assistant.providers.yandex_smarthome.plugin import YandexSmartHomePlugin
 
+
+def _body_json(resp: web.Response) -> Any:
+    """Decode the JSON body of a response."""
+    assert isinstance(resp.body, bytes | bytearray)
+    return json.loads(resp.body)
+
+
 TEST_CLIENT_SECRET = "test-client-secret-abc123"
 
 # token_store lists shared between fixtures and tests
@@ -44,6 +51,10 @@ def mock_mass() -> MagicMock:
     mass.webserver.register_dynamic_route = MagicMock(return_value=MagicMock())
     mass.players = []
     mass.http_session = MagicMock()
+    # No setup_data persisted on the mock config store, so get_setup_value falls through
+    # to the config entry value/default via get_config_value (the provided ProviderConfig).
+    mass.config.get = MagicMock(return_value=None)
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
     return mass
 
 
@@ -117,7 +128,7 @@ def _make_request(
 
 def _get_pending_code(h: DirectConnectionHandler) -> str:
     """Return the first pending authorization code from a handler."""
-    return next(iter(h._pending_codes.keys()))
+    return str(next(iter(h._pending_codes.keys())))
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +330,7 @@ async def test_devices_success(handler: DirectConnectionHandler) -> None:
     ):
         resp = await handler._handle_devices(req)
         assert resp.status == 200
-        body = json.loads(resp.body)  # type: ignore[arg-type]
+        body = _body_json(resp)
         assert body["request_id"] == "req-1"
 
 
@@ -543,7 +554,7 @@ async def test_token_exchange_valid_code(handler: DirectConnectionHandler) -> No
     )
     resp = await handler._handle_oauth_token(req_token)
     assert resp.status == 200
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["access_token"] == "test-token-abc"
     assert body["token_type"] == "bearer"
     assert "refresh_token" in body
@@ -579,7 +590,7 @@ async def test_token_exchange_generates_new_token(
     )
     resp = await handler_no_token._handle_oauth_token(req_token)
     assert resp.status == 200
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["access_token"]
     assert len(body["access_token"]) == 32  # uuid4().hex
     assert len(_handler_no_token_tokens) == 1
@@ -601,7 +612,7 @@ async def test_token_exchange_invalid_client_secret(handler: DirectConnectionHan
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 401
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["error"] == "invalid_client"
 
 
@@ -620,7 +631,7 @@ async def test_token_exchange_invalid_client_id(handler: DirectConnectionHandler
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 401
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["error"] == "invalid_client"
 
 
@@ -639,7 +650,7 @@ async def test_token_exchange_invalid_code(handler: DirectConnectionHandler) -> 
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 400
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["error"] == "invalid_grant"
 
 
@@ -676,7 +687,7 @@ async def test_refresh_token_valid(handler: DirectConnectionHandler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 200
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["access_token"] == "test-token-abc"
 
 
@@ -711,7 +722,7 @@ async def test_unsupported_grant_type(handler: DirectConnectionHandler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 400
-    body = json.loads(resp.body)  # type: ignore[arg-type]
+    body = _body_json(resp)
     assert body["error"] == "unsupported_grant_type"
 
 
@@ -771,7 +782,9 @@ def _make_direct_config(**overrides: Any) -> MagicMock:
     }
     defaults.update(overrides)
     config = MagicMock()
-    config.get_value = MagicMock(side_effect=lambda key: defaults.get(key, ""))
+    # accept the optional default arg too: get_setup_value falls through via
+    # get_config_value(key, default), a two-argument call
+    config.get_value = MagicMock(side_effect=lambda key, *_: defaults.get(key, ""))
     return config
 
 
@@ -795,7 +808,13 @@ async def test_start_direct_mode_registers_routes(mock_mass: MagicMock) -> None:
 
 @pytest.mark.asyncio
 async def test_start_direct_mode_missing_skill_id(mock_mass: MagicMock) -> None:
-    """Direct mode without skill_id should log error and not start."""
+    """
+    Direct mode still registers HTTP routes when skill_id is missing.
+
+    HTTP routes need to be live so Yandex's backend validation during
+    auto-create can succeed; the state notifier is skipped because
+    there is no skill to push state to yet.
+    """
     config = _make_direct_config(skill_id="")
     plugin = YandexSmartHomePlugin(
         mass=mock_mass,
@@ -807,8 +826,10 @@ async def test_start_direct_mode_missing_skill_id(mock_mass: MagicMock) -> None:
     await plugin.handle_async_init()
     await plugin.loaded_in_mass()
 
-    assert plugin._direct_handler is None
-    plugin.logger.error.assert_called()
+    assert plugin._direct_handler is not None
+    assert mock_mass.webserver.register_dynamic_route.call_count == 10
+    assert plugin._state_notifier is None
+    plugin.logger.info.assert_called()
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ import aiohttp
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
@@ -43,7 +44,7 @@ class InternetArchiveClient:
                 if response.status == 429:
                     # Rate limited - let throttler handle this
                     backoff_time = int(response.headers.get("Retry-After", 60))
-                    raise ResourceTemporarilyUnavailable(
+                    raise RateLimited(
                         "Internet Archive rate limit exceeded", backoff_time=backoff_time
                     )
 
@@ -260,7 +261,7 @@ def parse_duration(duration_str: str) -> int | None:
                 return int(minutes * 60 + seconds)
             return None
         return int(float(duration_str))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -306,7 +307,7 @@ def extract_year(date_str: str | list[str] | None) -> int | None:
     try:
         match = re.search(r"\b(19\d{2}|20\d{2})\b", date_text)
         return int(match.group(1)) if match else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 

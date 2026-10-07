@@ -1,0 +1,48 @@
+{
+  "config_entries": {
+    "snapcast_server_built_in_buffer_size": {
+      "label": "Snapserver buffer size"
+    },
+    "snapcast_server_built_in_chunk_ms": {
+      "label": "Snapserver chunk size"
+    },
+    "snapcast_server_built_in_initial_volume": {
+      "label": "Snapserver initial volume"
+    },
+    "snapcast_server_built_in_send_muted": {
+      "label": "Send audio to muted clients"
+    },
+    "snapcast_server_built_in_codec": {
+      "label": "Snapserver default transport codec",
+      "options": {
+        "flac": "FLAC",
+        "ogg": "OGG",
+        "opus": "OPUS",
+        "pcm": "PCM"
+      }
+    },
+    "snapcast_use_external_server": {
+      "label": "Use existing Snapserver"
+    },
+    "snapcast_server_host": {
+      "label": "Snapcast server ip"
+    },
+    "snapcast_server_control_port": {
+      "label": "Snapcast control port"
+    },
+    "snapcast_stream_idle_threshold": {
+      "label": "Snapcast idle threshold stream parameter"
+    },
+    "snapcast_stream_sample_rate": {
+      "label": "Snapcast stream sample rate",
+      "description": "Only used with an external Snapserver. Sample rate Music Assistant sends into Snapcast (48000, 96000, or 192000). Your Snapcast clients must support the chosen rate. Default is 48000."
+    },
+    "snapcast_stream_bit_depth": {
+      "label": "Snapcast stream bit depth",
+      "description": "Only used with an external Snapserver. Bit depth Music Assistant sends into Snapcast (16 or 24). 24-bit needs an external Snapserver built with packed 24-bit PCM support; the built-in Snapserver and normal package builds do not support this yet. Default is 16."
+    }
+  },
+  "manifest": {
+    "description": "Synchronize and play music across Snapcast clients (including web browsers and Android devices) on your network."
+  }
+}

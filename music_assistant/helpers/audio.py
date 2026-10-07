@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import struct
 import urllib.parse
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterable, Iterator
+from contextlib import aclosing, suppress
 from io import BytesIO
+from math import isfinite
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import (
@@ -18,23 +21,19 @@ from music_assistant_models.enums import (
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALIZATION,
-    CONF_VOLUME_NORMALIZATION_RADIO,
-    CONF_VOLUME_NORMALIZATION_TRACKS,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
-from .ffmpeg import get_ffmpeg_stream
+from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -54,9 +53,20 @@ _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
     "mp3": "audio/mpeg",
 }
 
+DSD_CONTENT_TYPES: Final[frozenset[ContentType]] = frozenset(
+    {
+        ContentType.DSF,
+        ContentType.DSD_LSBF,
+        ContentType.DSD_MSBF,
+        ContentType.DSD_LSBF_PLANAR,
+        ContentType.DSD_MSBF_PLANAR,
+    }
+)
+
 
 def get_mime_type(format_str: str) -> str:
-    """Get the proper IANA MIME type for a given audio format string.
+    """
+    Get the proper IANA MIME type for a given audio format string.
 
     :param format_str: The audio format string (e.g. "mp3", "flac",
         "pcm;codec=pcm;rate=44100;bitrate=16;channels=2").
@@ -68,7 +78,8 @@ def get_mime_type(format_str: str) -> str:
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
-    """Parse PCM info from a codec/content_type string.
+    """
+    Parse PCM info from a codec/content_type string.
 
     :param content_type: Content type string like "pcm;codec=pcm;rate=44100;bitrate=16;channels=2".
     """
@@ -90,7 +101,8 @@ def iter_pcm_slices(
     pcm_format: AudioFormat,
     target_duration_ms: int = 100,
 ) -> Iterator[bytes]:
-    """Yield frame-aligned PCM slices of approximately ``target_duration_ms``.
+    """
+    Yield frame-aligned PCM slices of approximately ``target_duration_ms``.
 
     Large PCM buffers (e.g. crossfade segments or full-track reads) are split
     into fixed-size sub-chunks so that downstream consumers get predictable
@@ -125,7 +137,8 @@ def iter_pcm_slices(
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
-    """Align audio data to frame boundaries by truncating incomplete frames.
+    """
+    Align audio data to frame boundaries by truncating incomplete frames.
 
     :param audio_data: Raw PCM audio data to align.
     :param pcm_format: AudioFormat of the audio data.
@@ -147,7 +160,8 @@ async def strip_silence(
     pcm_format: AudioFormat,
     reverse: bool = False,
 ) -> bytes:
-    """Strip silence from begin or end of pcm audio using ffmpeg.
+    """
+    Strip silence from begin or end of pcm audio using ffmpeg.
 
     :param audio_data: Raw PCM audio data.
     :param pcm_format: AudioFormat of the audio data.
@@ -252,6 +266,32 @@ def create_wave_header(
     return file.getvalue()
 
 
+def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
+    """
+    Generate a wave header for a stream whose length is not known up front.
+
+    :param audio_format: The PCM format the audio behind the header is in.
+    """
+    channels = audio_format.channels
+    sample_rate = audio_format.sample_rate
+    bits_per_sample = audio_format.bit_depth
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
+    # length fields don't cut the stream off (create_wave_header hardcodes ~6.7h).
+    return (
+        b"RIFF"
+        + struct.pack("<L", 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
+        )
+        + b"data"
+        + struct.pack("<L", 0xFFFFFFFF)
+    )
+
+
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     """
     Parse metadata from HLS EXTINF line.
@@ -284,7 +324,8 @@ def get_parts_from_position(
     parts: list[MultiPartPath],
     seek_position: int,
 ) -> tuple[list[MultiPartPath], int]:
-    """Get the remaining parts list from a timestamp.
+    """
+    Get the remaining parts list from a timestamp.
 
     Arguments:
     parts: The list of  parts
@@ -322,10 +363,145 @@ def get_parts_from_position(
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
 
 
+def build_concat_filelist(paths: list[str]) -> str:
+    """
+    Build the file list content for ffmpeg's concat demuxer.
+
+    :param paths: The file paths to include, in playback order.
+    """
+    lines = []
+    for path in paths:
+        # The concat demuxer uses single quotes as delimiters, so a literal quote in the
+        # path must be written as '\'' to prevent the path being truncated at the quote.
+        escaped_path = path.replace("'", "'\\''")
+        lines.append(f"file '{escaped_path}'\n")
+    return "".join(lines)
+
+
+async def realtime_pcm_pacer(
+    inner: AsyncGenerator[bytes],
+    pcm_format: AudioFormat,
+    initial_burst_s: float = 0.5,
+) -> AsyncGenerator[bytes]:
+    """
+    Pace a PCM byte stream at the format's native rate.
+
+    Useful for live AudioSource streams whose producer is not realtime-paced
+    (e.g. librespot's pipe backend) — without rate-limiting the consumer would
+    buffer many seconds of audio ahead of playback, making skip/next laggy.
+
+    :param inner: Source generator yielding raw PCM bytes.
+    :param pcm_format: PCM format the inner generator emits.
+    :param initial_burst_s: Bounded head start (in seconds of audio) passed
+        through unpaced, so downstream jitter does not immediately underrun.
+        Mirrors ffmpeg's ``-readrate_initial_burst``; producers that cannot
+        deliver faster than realtime simply never use the allowance.
+    """
+    bytes_per_second = pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
+    if bytes_per_second <= 0 or not pcm_format.content_type.is_pcm():
+        # non-PCM or malformed format: pass through unchanged
+        async for chunk in inner:
+            yield chunk
+        return
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
+    total_bytes = 0
+    async for chunk in inner:
+        yield chunk
+        total_bytes += len(chunk)
+        expected_elapsed = total_bytes / bytes_per_second - initial_burst_s
+        actual_elapsed = loop.time() - start_time
+        if actual_elapsed < expected_elapsed:
+            await asyncio.sleep(expected_elapsed - actual_elapsed)
+
+
+async def audio_source_silence_keepalive(
+    inner: AsyncGenerator[bytes],
+    pcm_format: AudioFormat,
+    silence_chunk_ms: int = 100,
+    idle_threshold_s: float | None = None,
+) -> AsyncGenerator[bytes]:
+    """
+    Wrap a live AudioSource PCM stream and emit silence during idle gaps.
+
+    Plugin providers exposing an AudioSource may stop yielding bytes while the
+    upstream device is paused (e.g. user paused in the Spotify app). Without
+    bytes flowing the downstream consumer (ffmpeg / the player) may disconnect.
+    This wrapper inserts ``silence_chunk_ms`` worth of zero bytes whenever the
+    inner generator hasn't produced for ``idle_threshold_s`` seconds, while
+    relaying real bytes immediately when they arrive.
+
+    Only meaningful for PCM streams — injecting raw zero bytes into a compressed
+    stream (MP3/AAC/etc.) would corrupt the bitstream. For non-PCM ``pcm_format``
+    inputs the wrapper degrades to a transparent pass-through.
+
+    :param inner: The underlying async generator yielding raw PCM bytes.
+    :param pcm_format: PCM format the inner generator emits (used to size the
+        silence chunk so it lines up to a frame boundary).
+    :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
+    :param idle_threshold_s: Seconds without input before silence is inserted.
+        Defaults to the chunk duration so silence flows at realtime — critical
+        for keeping HTTP consumers (Sonos, Chromecast) connected.
+    """
+    if idle_threshold_s is None:
+        idle_threshold_s = silence_chunk_ms / 1000
+    frame_size = pcm_format.channels * (pcm_format.bit_depth // 8)
+    bytes_per_second = (
+        pcm_format.sample_rate * frame_size if pcm_format.content_type.is_pcm() else 0
+    )
+    if bytes_per_second <= 0 or frame_size <= 0:
+        # non-PCM or malformed format: pass through unchanged, no silence injection
+        async for chunk in inner:
+            yield chunk
+        return
+
+    # Round the silence chunk size DOWN to a whole-frame multiple so emitted
+    # chunks line up to PCM frame boundaries for arbitrary silence_chunk_ms /
+    # sample-rate combinations.
+    raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
+    silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
+    silence_chunk = b"\x00" * silence_bytes
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
+
+    async def _producer() -> None:
+        try:
+            async with aclosing(inner) as managed_inner:
+                async for chunk in managed_inner:
+                    await queue.put(chunk)
+        except (Exception, asyncio.CancelledError) as err:
+            task = asyncio.current_task()
+            assert task is not None
+            # Cancellation must not wait for a queue the closing consumer no longer drains.
+            if task.cancelling():
+                raise
+            # A source-raised cancellation is a clean end, matching FFmpeg feeder semantics.
+            await queue.put(None if isinstance(err, asyncio.CancelledError) else err)
+        else:
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
+            except TimeoutError:
+                yield silence_chunk
+                continue
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        producer_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await producer_task
+
+
 async def get_silence(
     duration: int,
     output_format: AudioFormat,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Create stream of silence, encoded to format of choice."""
     if output_format.content_type.is_pcm():
         # pcm = just zeros
@@ -365,11 +541,11 @@ async def get_silence(
 
 
 async def resample_pcm_audio(
-    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_audio: bytes | AsyncGenerator[bytes],
     input_format: AudioFormat,
     output_format: AudioFormat,
     chunk_size: int | None = None,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Resample PCM audio from input_format to output_format using ffmpeg.
 
@@ -383,7 +559,7 @@ async def resample_pcm_audio(
     if chunk_size is None:
         chunk_size = output_format.pcm_sample_size
 
-    async def _as_generator() -> AsyncGenerator[bytes, None]:
+    async def _as_generator() -> AsyncGenerator[bytes]:
         if isinstance(input_audio, bytes):
             yield input_audio
         else:
@@ -437,8 +613,9 @@ def calculate_content_length(
         # Source: https://z-issue.com/wp/flac-compression-level-comparison/
         # Real-world variance: 65-85% depending on audio content.
         return int(pcm_size * 0.747)
-    if fmt.content_type in (ContentType.MP3, ContentType.OGG):
-        # CBR 320kbps as set in get_ffmpeg_args
+    if fmt.content_type == ContentType.MP3:
+        return int(((DEFAULT_MP3_BIT_RATE * 1000) / 8) * seconds)
+    if fmt.content_type == ContentType.OGG:
         return int((320000 / 8) * seconds)
     if fmt.content_type in (ContentType.AAC, ContentType.M4A):
         # CBR 256kbps as set in get_ffmpeg_args
@@ -446,12 +623,22 @@ def calculate_content_length(
     return int((320000 / 8) * seconds)
 
 
+# Bump whenever an encoder setting in get_ffmpeg_args moves the encoded size. The
+# content-length cache holds measured bytes, so a stale entry announces a body we no
+# longer produce. Older entries are never read again and expire on their own.
+OUTPUT_ENCODING_REVISION: Final[int] = 2
+
+
 def get_output_format_key(fmt: AudioFormat) -> str:
-    """Get a stable key representing the output encoding parameters.
+    """
+    Get a stable key representing the output encoding parameters.
 
     :param fmt: The output audio format.
     """
-    return f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}_{fmt.channels}"
+    return (
+        f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}"
+        f"_{fmt.channels}_r{OUTPUT_ENCODING_REVISION}"
+    )
 
 
 CONTENT_LENGTH_CACHE_CATEGORY = 50
@@ -526,6 +713,119 @@ async def store_content_length_in_cache(
     )
 
 
+PROBED_DURATION_CACHE_CATEGORY = 51
+PROBED_DURATION_CACHE_PROVIDER = "audio"
+PROBED_DURATION_CACHE_EXPIRATION = 365 * 86400  # 1 year
+
+
+async def get_probed_duration(mass: MusicAssistant, uri: str) -> int | None:
+    """
+    Get the duration determined during an earlier playback of the given item, if any.
+
+    Use for items whose provider does not report a duration, such as podcast episodes
+    from a feed without itunes:duration.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :return: The duration in seconds, or None if the item was never played.
+    """
+    duration: int | None = await mass.cache.get(
+        uri,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+    )
+    return duration
+
+
+async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -> None:
+    """
+    Store the duration of an item that was determined while streaming it.
+
+    A duration below a second is ignored.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :param duration: The duration in seconds.
+    """
+    if duration < 1:
+        return
+    await mass.cache.set(
+        uri,
+        duration,
+        expiration=PROBED_DURATION_CACHE_EXPIRATION,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+        persistent=True,
+    )
+
+
+def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the format the audio actually arrives in.
+
+    ``audio_format`` is what the source claims, which is meant for display and
+    may describe something the provider decoded on our behalf. Every decision
+    about the bytes themselves - what to hand ffmpeg, what a buffer holds, what
+    depth to carry - has to follow this instead, or real audio gets truncated or
+    reinterpreted.
+
+    :param streamdetails: The stream the audio belongs to.
+    """
+    return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
+def is_dsd_audio_format(audio_format: AudioFormat) -> bool:
+    """Return whether an audio format carries or identifies DSD samples."""
+    return (
+        audio_format.content_type in DSD_CONTENT_TYPES
+        or audio_format.codec_type in DSD_CONTENT_TYPES
+    )
+
+
+def is_dsd_stream(streamdetails: StreamDetails) -> bool:
+    """Return whether a stream contains DSD, including DFF/DST local files."""
+    if streamdetails.decoded_audio_format is not None:
+        return is_dsd_audio_format(streamdetails.decoded_audio_format)
+    if is_dsd_audio_format(streamdetails.audio_format):
+        return True
+    path = streamdetails.path
+    if not path or not isinstance(path, (str, list)):
+        return False
+    paths = [path] if isinstance(path, str) else [part.path for part in path]
+    for file_path in paths:
+        parsed = urllib.parse.urlparse(file_path)
+        comparison_path = parsed.path if parsed.scheme in ("http", "https") else file_path
+        if not comparison_path.lower().endswith(".dff"):
+            return False
+    return True
+
+
+def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM output format to request from FFmpeg for the arriving audio.
+
+    :param streamdetails: The stream whose decoded PCM format is required.
+    """
+    arriving = arriving_audio_format(streamdetails)
+    if is_dsd_stream(streamdetails):
+        # DSF's probed 8-bit depth maps to S32 output but still sizes chunks as
+        # 8-bit PCM. Request F32 with matching accounting, also preserving the
+        # decoder's precision for DFF/DST sources whose probe depth defaults to 16.
+        return AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            codec_type=ContentType.PCM_F32LE,
+            sample_rate=arriving.sample_rate,
+            bit_depth=32,
+            channels=min(arriving.channels, 2),
+        )
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=arriving.bit_depth,
+        channels=min(arriving.channels, 2),
+    )
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -533,8 +833,29 @@ def get_bit_rate(fmt: AudioFormat) -> int:
     return int((calculate_content_length(fmt, seconds=1) / 1000) * 8)
 
 
+def resolve_output_player_ids(
+    mass: MusicAssistant,
+    player_ids: Iterable[str],
+) -> set[str]:
+    """
+    Resolve output destinations to their user-facing player identifiers.
+
+    :param mass: Music Assistant instance.
+    :param player_ids: Player or protocol-player identifiers to resolve.
+    :return: Deduplicated user-facing player identifiers.
+    """
+    resolved_ids: set[str] = set()
+    for player_id in player_ids:
+        player = mass.players.get_player(player_id)
+        resolved_ids.add(
+            player.protocol_parent_id if player and player.protocol_parent_id else player_id
+        )
+    return resolved_ids
+
+
 def is_grouping_preventing_dsp(player: Player) -> bool:
-    """Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
+    """
+    Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
 
     If this returns True, no DSP should be applied to the player.
     This function will not check if the Player is in a group, the caller should do that first.
@@ -560,40 +881,60 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
 def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
-    if "[Parsed_loudnorm_0 @" not in stderr_data:
+    # the report is the last thing the filter logs, and ffmpeg prints it as a block of its
+    # own below the marker line, so the object is delimited rather than on a known line.
+    # the marker carries the filter's position in the chain, which is only zero when
+    # loudnorm runs on its own
+    marker = stderr_data.rfind("[Parsed_loudnorm_")
+    if marker < 0:
         return None
-    for jsun_chunk in stderr_data.split(" { "):
-        try:
-            stderr_data = "{" + jsun_chunk.rsplit("}")[0].strip() + "}"
-            loudness_data = json_loads(stderr_data)
-            return float(loudness_data["input_i"])
-        except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError, IndexError):
-            continue
-    return None
+    start = stderr_data.find("{", marker)
+    if start < 0 or (end := stderr_data.find("}", start)) < 0:
+        return None
+    try:
+        loudness_data = json_loads(stderr_data[start : end + 1])
+        measurement = float(loudness_data["input_i"])
+    except (*JSON_DECODE_EXCEPTIONS, KeyError, ValueError):
+        return None
+    # digital silence reads as -inf, which is a report that the clip has no level rather
+    # than a level to correct against
+    return measurement if isfinite(measurement) else None
 
 
 def get_normalization_mode(
-    core_config: CoreConfig,
-    player_config: PlayerConfig,
+    preference: VolumeNormalizationMode,
+    volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
+    source_normalized: bool = False,
 ) -> VolumeNormalizationMode:
-    """Get the volume normalization mode for a given player and stream."""
-    if not player_config.get_value(CONF_VOLUME_NORMALIZATION):
-        # disabled for this player
+    """
+    Get the volume normalization mode for a given queue and stream.
+
+    :param preference: The configured normalization preference for the stream's media type
+        (tracks or radio), from the streams core config.
+    :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
+        resolved from the per-queue setting and its global (queue controller) fallback.
+    :param streamdetails: The stream to evaluate.
+    :param source_normalized: Whether the provider already delivers this audio at a
+        loudness target of its own.
+    """
+    if not volume_normalization_enabled:
+        # disabled for this queue
+        return VolumeNormalizationMode.DISABLED
+    if streamdetails.media_type == MediaType.AUDIO_SOURCE:
+        # live/realtime: upstream producer owns loudness, no measurement to converge on
+        return VolumeNormalizationMode.DISABLED
+    if source_normalized:
+        # the source owns loudness here too: correcting a level it already set would
+        # mean normalizing twice, against a measurement of its own output. SOURCE says
+        # that out loud - the audio is levelled, just not by us
+        return VolumeNormalizationMode.SOURCE
+    if streamdetails.media_type == MediaType.SOUND_EFFECT:
+        # never measured, and the dynamic fallback compresses short clips
         return VolumeNormalizationMode.DISABLED
     if streamdetails.target_loudness is None:
         # no target loudness set, disable normalization
         return VolumeNormalizationMode.DISABLED
-    # work out preference for track or radio
-    preference = VolumeNormalizationMode(
-        str(
-            core_config.get_value(
-                CONF_VOLUME_NORMALIZATION_RADIO
-                if streamdetails.media_type == MediaType.RADIO
-                else CONF_VOLUME_NORMALIZATION_TRACKS,
-            ),
-        ),
-    )
 
     # handle no measurement available but fallback to dynamic mode is allowed
     if streamdetails.loudness is None and preference == VolumeNormalizationMode.FALLBACK_DYNAMIC:

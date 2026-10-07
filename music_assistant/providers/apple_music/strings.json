@@ -1,0 +1,30 @@
+{
+  "config_entries": {
+    "music_app_token": {
+      "label": "MusicKit App Token"
+    },
+    "music_user_manual_token": {
+      "label": "Manual Music User Token"
+    }
+  },
+  "setup_flow": {
+    "app_token": {
+      "title": "Enter a developer token",
+      "description": "The bundled Apple Music developer token is unavailable or expired. Paste a valid MusicKit developer token to continue."
+    },
+    "user": {
+      "title": "Sign in to Apple Music",
+      "description": "Continue to sign in with your Apple ID in a browser window. Advanced users can instead paste a Music User Token, for example for child accounts where the browser sign-in is unavailable."
+    },
+    "auth": {
+      "title": "Authorize Music Assistant",
+      "description": "Sign in with your Apple ID in the window that opens to grant Music Assistant access."
+    },
+    "abort": {
+      "auth_cancelled": "Sign-in was cancelled or timed out before Apple returned a token. Please try again."
+    }
+  },
+  "manifest": {
+    "description": "Stream Apple Music’s full catalogue and playlists."
+  }
+}

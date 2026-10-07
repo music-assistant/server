@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Parse manifest.json files to extract dependency changes.
+"""
+Parse manifest.json files to extract dependency changes.
 
 This script compares old and new versions of manifest.json files
 to identify changes in the requirements field.
@@ -12,14 +13,15 @@ import sys
 
 
 def parse_requirements(manifest_content: str) -> list[str]:
-    """Extract requirements from manifest JSON content.
+    """
+    Extract requirements from manifest JSON content.
 
     :param manifest_content: JSON string content of manifest file.
     """
     try:
         data = json.loads(manifest_content)
         return data.get("requirements", [])
-    except (json.JSONDecodeError, KeyError):
+    except json.JSONDecodeError, KeyError:
         return []
 
 

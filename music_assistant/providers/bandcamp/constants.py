@@ -1,5 +1,6 @@
 """Constants for the Bandcamp music provider."""
 
+from aiohttp import ClientTimeout
 from bandcamp_async_api.models import CollectionType
 from music_assistant_models.enums import ProviderFeature
 
@@ -11,20 +12,29 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 # Config keys
 CONF_IDENTITY = "identity"
 CONF_TOP_TRACKS_LIMIT = "top_tracks_limit"
+CONF_GET_LYRICS = "get_lyrics"
 DEFAULT_TOP_TRACKS_LIMIT = 50
 
 # Cache TTLs
 CACHE_METADATA = 3600 * 24 * 30  # 30 days - artist/album/track metadata rarely changes
 CACHE_USER_LISTS = 3600 * 4  # 4 hours - wishlists/following change with user activity
 CACHE_EMPTY_RESULTS = 300  # 5 minutes - avoid hammering API for genuinely empty lists
+CACHE_CHANGING_LISTING = 3600 * 24  # 1 day - an album or a single while a track has no stream
+# Bump when the converted form of a cached item changes, so that old cache rows are fetched again
+PARSED_ITEM_CACHE_CHECKSUM = "unavailable_tracks_v2"
+
+# A time limit for each request, which keeps the 30 s connect limit of aiohttp
+BANDCAMP_TIMEOUT = ClientTimeout(total=120, sock_connect=30)
 
 # Browse path slugs
 BROWSE_COLLECTION = "collection"
+BROWSE_FEED = "feed"
 BROWSE_WISHLIST = "wishlist"
 BROWSE_FOLLOWING = "following"
 BROWSE_FANS = "fans"

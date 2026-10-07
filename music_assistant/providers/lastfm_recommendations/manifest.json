@@ -1,11 +1,11 @@
 {
   "type": "metadata",
   "domain": "lastfm_recommendations",
-  "name": "Last.fm Recommendations",
+  "name": "Last.fm",
   "description": "Get music recommendations from Last.fm based on your listening history",
   "codeowners": [
     "@ozGav"
   ],
-  "stage": "beta",
+  "stage": "stable",
   "documentation": "https://music-assistant.io/metadata/lastfm_recommendations"
 }

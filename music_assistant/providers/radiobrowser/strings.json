@@ -1,0 +1,16 @@
+{
+  "media": {
+    "folder": {
+      "radiobrowser_by_popularity": { "name": "By popularity" },
+      "radiobrowser_by_category": { "name": "By category" },
+      "radiobrowser_by_clicks": { "name": "By clicks" },
+      "radiobrowser_by_votes": { "name": "By votes" },
+      "radiobrowser_by_country": { "name": "By country" },
+      "radiobrowser_by_language": { "name": "By language" },
+      "radiobrowser_by_tag": { "name": "By tag" }
+    }
+  },
+  "manifest": {
+    "description": "Listen to thousands of internet radio stations from across the world."
+  }
+}

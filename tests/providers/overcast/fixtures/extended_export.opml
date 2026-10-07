@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<opml version="1.0">
+  <head>
+    <title>Overcast Podcast Subscriptions</title>
+  </head>
+  <body>
+    <outline text="playlists">
+      <outline type="podcast-playlist" title="All Episodes" smart="1" sorting="chrono-desc"/>
+    </outline>
+    <outline text="feeds">
+      <outline type="rss" xmlUrl="https://example.com/feed1.xml" htmlUrl="https://example.com" title="Feed One" text="Feed One" subscribed="1" overcastId="111">
+        <outline type="podcast-episode" overcastId="1001" pubDate="2026-02-27T12:00:00-00:00" title="Episode A" url="https://overcast.fm/+abc" overcastUrl="https://overcast.fm/+abc" enclosureUrl="https://cdn.example.com/ep-a.mp3?token=xyz" progress="123" userUpdatedDate="2026-03-01T08:00:00-07:00"/>
+        <outline type="podcast-episode" overcastId="1002" pubDate="2026-02-20T12:00:00-00:00" title="Episode B" enclosureUrl="https://cdn.example.com/ep-b.mp3" played="1" userUpdatedDate="2026-02-21T10:30:00-07:00"/>
+        <outline type="podcast-episode" overcastId="1003" title="Episode C" enclosureUrl="https://cdn.example.com/ep-c.mp3"/>
+      </outline>
+      <outline type="rss" xmlUrl="https://example.com/feed2.xml" title="Feed Two" text="Feed Two" subscribed="1" overcastId="222">
+        <outline type="podcast-episode" overcastId="2001" pubDate="not-a-date" title="Only Episode" enclosureUrl="https://cdn2.example.com/only.mp3" progress="notanint" played="1" userUpdatedDate="2026-03-02T00:00:00"/>
+      </outline>
+      <outline type="rss" xmlUrl="https://example.com/feed3.xml" title="Unsubscribed Feed" text="Unsubscribed Feed" overcastId="333"/>
+    </outline>
+  </body>
+</opml>

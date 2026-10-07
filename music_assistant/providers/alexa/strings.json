@@ -1,0 +1,53 @@
+{
+  "config_entries": {
+    "url": {
+      "label": "URL"
+    },
+    "username": {
+      "label": "E-Mail"
+    },
+    "secret": {
+      "label": "OTP Secret"
+    },
+    "auth": {
+      "label": "Authenticate with Amazon",
+      "description": "Click to start the authentication process."
+    },
+    "api_url": {
+      "label": "API Url"
+    },
+    "api_username": {
+      "label": "API Basic Auth Username"
+    },
+    "api_password": {
+      "label": "API Basic Auth Password"
+    },
+    "alexa_language": {
+      "label": "Alexa Language",
+      "options": {
+        "en-US": "English (USA)",
+        "en-CA": "English (Canada)",
+        "de-DE": "German (Germany)",
+        "es-ES": "Spanish (Spain)",
+        "fr-FR": "French (France)",
+        "fr-CA": "French (Canada)",
+        "it-IT": "Italian (Italy)",
+        "pt-BR": "Portuguese (Brazil)",
+        "nl-NL": "Dutch (Netherlands)"
+      }
+    }
+  },
+  "setup_flow": {
+    "credentials": {
+      "title": "Enter your Amazon account details",
+      "description": "Provide your Amazon sign-in details and the address of the companion API. You will complete any CAPTCHA or two-step verification on Amazon's own page in the next step."
+    },
+    "amazon_login": {
+      "title": "Sign in to Amazon",
+      "description": "Complete the Amazon sign-in in the window that opens, including any CAPTCHA or two-step verification."
+    }
+  },
+  "manifest": {
+    "description": "Stream to Amazon Alexa (Echo) devices."
+  }
+}

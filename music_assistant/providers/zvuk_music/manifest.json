@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "zvuk_music",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Zvuk Music",
   "description": "Stream music from Zvuk Music service.",
   "codeowners": ["@TrudenBoy"],

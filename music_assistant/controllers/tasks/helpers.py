@@ -7,9 +7,12 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import TaskScheduleType, TaskStatus
+
+from music_assistant.controllers.webserver.helpers.auth_middleware import has_scope
+from music_assistant.helpers.datetime import utc
 
 from .constants import ACTIVE_TASK_ID
 from .models import ManagedTask
@@ -24,7 +27,7 @@ TASK_LOG_FORMATTER = logging.Formatter(TASK_LOG_FORMAT, datefmt=TASK_LOG_DATE_FO
 
 def utcnow() -> datetime:
     """Return current UTC datetime."""
-    return datetime.now(UTC)
+    return utc()
 
 
 def get_task_timer_id(task_id: str) -> str:
@@ -48,7 +51,7 @@ def task_sort_key(managed: ManagedTask) -> tuple[int, float]:
 
 def is_task_visible_to_user(task: ManagedTask, user: User | None) -> bool:
     """Return if a task should be visible to the given user."""
-    if user is None or user.role == UserRole.ADMIN:
+    if user is None or has_scope(user, Scope.SYSTEM_MANAGE):
         return True
     return task.task_info.user_id == user.user_id
 
@@ -56,7 +59,7 @@ def is_task_visible_to_user(task: ManagedTask, user: User | None) -> bool:
 def get_visible_tasks(tasks: Iterable[ManagedTask], user: User | None) -> list[ManagedTask]:
     """Return tasks visible to the given user."""
     visible_tasks = list(tasks)
-    if user is not None and user.role != UserRole.ADMIN:
+    if user is not None and not has_scope(user, Scope.SYSTEM_MANAGE):
         visible_tasks = [task for task in visible_tasks if is_task_visible_to_user(task, user)]
     visible_tasks.sort(key=task_sort_key)
     return visible_tasks
@@ -155,6 +158,7 @@ def serialize_task_state(task: BackgroundTask) -> dict[str, Any]:
         "last_error": task.last_error,
         "failure_count": task.failure_count,
         "failure_messages": list(task.failure_messages),
+        "report": task.report,
         "schedule": serialize_task_schedule_state(task.schedule),
         "schedule_enabled": task.schedule.enabled if task.schedule else True,
     }
@@ -192,6 +196,8 @@ def restore_task_state(task: BackgroundTask, state: Mapping[str, Any]) -> None:
         task.failure_messages = [item for item in failure_messages if isinstance(item, str)]
     else:
         task.failure_messages = []
+
+    task.report = state.get("report") if isinstance(state.get("report"), str) else None
 
 
 def serialize_task_schedule_state(schedule: TaskSchedule | None) -> dict[str, Any] | None:

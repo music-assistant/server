@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "use_mass_app": {
+      "label": "Use Music Assistant Cast App",
+      "description": "By default, Music Assistant will use a special Music Assistant Cast Receiver app to play media on cast devices. It is tweaked to provide better metadata and future expansion. \n\nIf you want to use the official Google Cast Receiver app instead, disable this option, for example if your device has issues with the Music Assistant app."
+    }
+  },
+  "manifest": {
+    "description": "Cast music and podcasts to Chromecast or Google Cast devices."
+  },
+  "errors": {
+    "app_launch_refused": "{0} refused to launch the cast app. Try toggling the 'Use Music Assistant Cast App' option in the player settings.",
+    "app_launch_timeout": "Timed out launching app on {0}.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+  }
+}

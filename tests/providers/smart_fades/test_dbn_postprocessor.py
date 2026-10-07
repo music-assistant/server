@@ -79,7 +79,7 @@ def test_dbn_tracker_constant_tempo() -> None:
     )
 
     tracker = DBNDownBeatTracker(beats_per_bar=[4], min_bpm=55, max_bpm=215, fps=fps)
-    result = tracker(combined)
+    result, _num_beats = tracker(combined)
 
     # Should detect ~20 beats in 10s at 120 BPM
     beat_times = result[:, 0]
@@ -121,12 +121,43 @@ def test_dbn_tracker_fills_intro_gaps() -> None:
     )
 
     tracker = DBNDownBeatTracker(beats_per_bar=[4], min_bpm=55, max_bpm=215, fps=fps, threshold=0.0)
-    result = tracker(combined)
+    result, _num_beats = tracker(combined)
 
     beat_times = result[:, 0]
     # DBN should still find beats in the first 5s via tempo continuity
     early_beats = beat_times[beat_times < 5.0]
     assert len(early_beats) >= 5, f"Expected beats in intro region, got {len(early_beats)}"
+
+
+def test_winning_meter_is_returned() -> None:
+    """A 4/4 activation pattern reports beats_per_bar=4 alongside the beats."""
+    fps = 50
+    bpm = 120.0
+    duration = 20.0
+    num_frames = int(duration * fps)
+
+    interval = 60.0 / bpm * fps
+    beat_act = np.full(num_frames, 0.05)
+    downbeat_act = np.full(num_frames, 0.02)
+    for i in range(int(duration * bpm / 60)):
+        frame = int(i * interval)
+        if frame < num_frames:
+            beat_act[frame] = 0.95
+            if i % 4 == 0:
+                downbeat_act[frame] = 0.95
+
+    combined = np.column_stack(
+        [
+            np.maximum(beat_act - downbeat_act, 1e-5),
+            downbeat_act,
+        ]
+    )
+
+    tracker = DBNDownBeatTracker(beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=fps)
+    result, num_beats = tracker(combined)
+
+    assert num_beats == 4
+    assert len(result) > 0
 
 
 def test_dbn_tracker_output_format() -> None:
@@ -142,7 +173,7 @@ def test_dbn_tracker_output_format() -> None:
             combined[i, 1] = 0.9
 
     tracker = DBNDownBeatTracker(beats_per_bar=[4], min_bpm=55, max_bpm=215, fps=fps)
-    result = tracker(combined)
+    result, _num_beats = tracker(combined)
 
     assert result.ndim == 2
     assert result.shape[1] == 2

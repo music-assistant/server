@@ -1,0 +1,62 @@
+---
+name: Redirect Issues
+
+# This repository is for code and pull requests. All bug reports live in
+# music-assistant/support, and the issue chooser links there. But the
+# chooser only governs one web page. The REST API, a direct /issues/new
+# and an unknown ?template= value each reach a blank form regardless.
+# So close what slips through and point the reporter at the right place,
+# rather than leaving them waiting on a repo nobody triages.
+
+# yamllint disable-line rule:truthy
+on:
+  issues:
+    types:
+      - opened
+
+permissions:
+  issues: write
+
+jobs:
+  redirect:
+    name: Redirect to support repository
+    runs-on: ubuntu-latest
+    # Maintainers file issues here deliberately and trusted automation
+    # opens its own, so only community-opened issues get redirected. An
+    # issue transferred in arrives as a fresh "opened" still carrying its
+    # original author, so the actor check leaves those alone.
+    if: >-
+      github.event.issue.user.type != 'Bot' &&
+      github.event.sender.login == github.event.issue.user.login &&
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+      github.event.issue.author_association)
+    steps:
+      - name: 👋 Comment and close
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+
+            // Single newlines render as line breaks in a GitHub comment,
+            // so keep each paragraph on one line.
+            const body = [
+              'Thanks for taking the time to write this up!',
+              '',
+              'This repository holds the Music Assistant server code and its pull requests. All bug reports are tracked centrally in our support repository, so an issue opened here never reaches the people who triage them.',
+              '',
+              'Please open it at https://github.com/music-assistant/support/issues/new/choose instead. That form asks for a few things we need in order to help, including your version and a diagnostics report, so fill it in rather than pasting this text across.',
+              '',
+              '- Questions and how-to: https://github.com/music-assistant/support/discussions/categories/q-a',
+              '- Feature requests and ideas: https://github.com/music-assistant/support/discussions/categories/feature-requests-and-ideas',
+              '- Chat with the community: https://discord.gg/kaVm8hGpne',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number, body,
+            });
+            await github.rest.issues.update({
+              owner, repo, issue_number,
+              state: 'closed',
+              state_reason: 'not_planned',
+            });

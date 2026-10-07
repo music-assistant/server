@@ -158,7 +158,7 @@ class TestSynchronizerRoleCallbacks:
 
         mock_extractor = MagicMock()
         mock_frame = MagicMock()
-        mock_extractor.process_chunk.return_value = mock_frame
+        mock_extractor.process_chunk.return_value = [mock_frame]
         role._extractor = mock_extractor
 
         chunk = MagicMock()

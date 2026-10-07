@@ -1,0 +1,43 @@
+{
+  "config_entries": {
+    "http_port": {
+      "label": "HTTP Server Port",
+      "description": "Port for the MSX HTTP server."
+    },
+    "output_format": {
+      "label": "Audio Output Format",
+      "description": "Audio format for streaming to MSX (mp3, aac, or flac)."
+    },
+    "player_idle_timeout": {
+      "label": "Player Idle Timeout (minutes)",
+      "description": "Unregister MSX players after this many minutes without activity."
+    },
+    "show_stop_notification": {
+      "label": "Show notification before closing player",
+      "description": "Show confirmation dialog on MSX when stopping playback from MA."
+    },
+    "enable_player_grouping": {
+      "label": "Enable player grouping (experimental)",
+      "description": "Experimental: allow grouping multiple MSX TVs to play the same track simultaneously. Disable if you experience issues with multi-TV setups."
+    },
+    "enable_sendspin_bridge": {
+      "label": "Sendspin bridge (experimental)",
+      "description": "Register each TV as a Sendspin client so it can join sample-synchronized playback groups with any Music Assistant players. When a synchronized stream starts, the TV automatically opens the web kiosk in Sendspin mode. Requires a TV browser capable of running the Sendspin web client; playback falls back to the regular HTTP player when the TV cannot connect."
+    },
+    "group_stream_mode": {
+      "label": "Stream Delivery Mode",
+      "description": "How audio reaches the TVs. 'Independent' proxies a separate stream per TV (more CPU, no sync). 'Shared Buffer' uses one ffmpeg process for all group members (less CPU). 'MA Streamserver' redirects TVs to the Music Assistant streamserver directly — least CPU, per-player codec and DSP applied by MA; falls back to Independent when the URL cannot be resolved. Note: in MA Streamserver mode grouped TVs each fetch their own stream (no shared-buffer sync).",
+      "options": {
+        "independent": "Independent (default) - each TV has own proxied stream",
+        "shared": "Shared Buffer - one ffmpeg, multiple readers (less CPU)",
+        "redirect": "MA Streamserver - redirect TVs to Music Assistant directly"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music to Smart TVs via Media Station X"
+  },
+  "errors": {
+    "player_offline": "MSX TV {0} is offline."
+  }
+}

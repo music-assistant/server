@@ -1,0 +1,5 @@
+{
+  "manifest": {
+    "description": "Provides support for players that have no native (vendor-specific) provider in Music Assistant but support one or more generic streaming protocols such as AirPlay, Chromecast, or DLNA. Automatically created for protocol-only devices."
+  }
+}

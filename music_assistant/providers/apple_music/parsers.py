@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
@@ -23,10 +26,77 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
 )
 
-from .constants import MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .constants import BLOBSTORE_DOMAIN, MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+
+def is_remotely_accessible_artwork_url(url: str) -> bool:
+    """
+    Check if artwork URL is remotely accessible without caching.
+
+    Blobstore URLs have AWS signatures that expire after 24h, so they must be cached immediately.
+    mzstatic.com URLs are permanent CDN URLs that can be used directly.
+
+    :param url: The artwork URL to check.
+    :return: True if the URL is remotely accessible (permanent), False if it needs caching.
+    """
+    hostname = urlparse(url).hostname or ""
+    return BLOBSTORE_DOMAIN not in hostname
+
+
+def format_artwork_url(attributes: dict[str, Any]) -> str | None:
+    """
+    Return the artwork URL from a raw api item object's (resolved) attributes, if any.
+
+    :param attributes: The attributes dict of the raw api item object.
+    """
+    if not (artwork := attributes.get("artwork")):
+        return None
+    if not (url := artwork.get("url")):
+        return None
+    if artwork.get("width") and artwork.get("height"):
+        url = url.format(
+            w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+            h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+        )
+    return cast("str", url)
+
+
+def parse_artwork_image(
+    provider: AppleMusicProvider,
+    media_type: MediaType,
+    item_id: str,
+    attributes: dict[str, Any],
+) -> MediaItemImage | None:
+    """
+    Parse the artwork of a raw api item object into a MediaItemImage, if any.
+
+    :param provider: The Apple Music provider instance.
+    :param media_type: The media type of the item the artwork belongs to.
+    :param item_id: The provider item id of the item the artwork belongs to.
+    :param attributes: The (resolved) attributes dict of the raw api item object.
+    """
+    if (url := format_artwork_url(attributes)) is None:
+        return None
+    if is_remotely_accessible_artwork_url(url):
+        return MediaItemImage(
+            provider=provider.instance_id,
+            type=ImageType.THUMB,
+            path=url,
+            remotely_accessible=True,
+        )
+    # blobstore artwork URLs are presigned with a ~24h expiry and must never be
+    # persisted: store a stable token instead, which is resolved to a freshly
+    # signed URL on demand (see AppleMusicProvider.resolve_image)
+    return MediaItemImage(
+        provider=provider.instance_id,
+        type=ImageType.THUMB,
+        path=f"{media_type.value}/{item_id}",
+        remotely_accessible=False,
+    )
 
 
 def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Artist | ItemMapping:
@@ -52,7 +122,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
         )
     artist = Artist(
         item_id=artist_id,
-        name=normalize_unicode(attributes.get("name")),
+        name=cast("str", normalize_unicode(attributes.get("name"))),
         provider=provider.domain,
         provider_mappings={
             ProviderMapping(
@@ -63,21 +133,8 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
             )
         },
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        artist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.ARTIST, artist_id, attributes):
+        artist.metadata.add_image(image)
     if genres := attributes.get("genreNames"):
         artist.metadata.genres = set(genres)
     if notes := attributes.get("editorialNotes"):
@@ -108,18 +165,11 @@ def parse_album(
             item_id=album_id,
             name=album_id,
         )
-    is_available_in_catalog = attributes.get("url") is not None
-    if not is_available_in_catalog:
-        provider.logger.debug(
-            "Skipping album %s. Album is not available in the Apple Music catalog.",
-            attributes.get("name"),
-        )
-        return None
     name, version = parse_title_and_version(attributes["name"])
     album = Album(
         item_id=album_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
         provider_mappings={
             ProviderMapping(
@@ -127,48 +177,33 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=_is_available(attributes),
             )
         },
     )
-    if artists := relationships.get("artists"):
-        album.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
-        album.artists = UniqueList(
-            [
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    provider=provider.instance_id,
-                    item_id=artist_name,
-                    name=artist_name,
-                )
-            ]
-        )
+    album_artists = _parse_album_artists(provider, attributes, relationships)
+    if album_artists:
+        album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
+        # Apple sends the full date (YYYY-MM-DD) when it is known; for pre-added
+        # albums this is the expected release date in the future, so clients can
+        # surface upcoming releases instead of only the (misleading) year.
+        if len(release_date) == 10:
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.strptime(release_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        album.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
+        album.metadata.add_image(image)
     if album_copyright := attributes.get("copyright"):
         album.metadata.copyright = album_copyright
     if record_label := attributes.get("recordLabel"):
         album.metadata.label = record_label
     if upc := attributes.get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + upc))
+        album.external_ids.add((ExternalID.BARCODE, upc))
     if notes := attributes.get("editorialNotes"):
         album.metadata.description = notes.get("standard") or notes.get("short")
     if content_rating := attributes.get("contentRating"):
@@ -183,7 +218,7 @@ def parse_album(
     inferred_type = infer_album_type(album.name, "")
     if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         album.album_type = inferred_type
-    album.favorite = is_favourite or False
+    album.favorite = is_favourite
     return album
 
 
@@ -194,6 +229,7 @@ def parse_track(
 ) -> Track:
     """Parse track object to generic layout."""
     relationships = track_obj.get("relationships", {})
+    raw_attributes = track_obj.get("attributes", {})
     if (
         track_obj.get("type") == "library-songs"
         and relationships.get("catalog", {}).get("data", []) != []
@@ -210,9 +246,9 @@ def parse_track(
     track = Track(
         item_id=track_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
-        duration=attributes.get("durationInMillis", 0) / 1000,
+        duration=int(attributes.get("durationInMillis", 0) / 1000),
         provider_mappings={
             ProviderMapping(
                 item_id=track_id,
@@ -220,7 +256,7 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=_is_available(attributes),
             )
         },
     )
@@ -229,36 +265,38 @@ def parse_track(
     if track_number := attributes.get("trackNumber"):
         track.track_number = track_number
     # Prefer catalog information over library information for artists.
-    if "artists" in relationships:
-        artists = relationships["artists"]
-        track.artists = [parse_artist(provider, artist) for artist in artists["data"]]
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
-        track.artists = [
-            ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=artist_name,
-                provider=provider.instance_id,
-                name=artist_name,
-            )
-        ]
+    # The artists relationship is empty when the artists are not in the user's library.
+    if artists_data := relationships.get("artists", {}).get("data"):
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists_data])
+    elif artist_name := normalize_unicode(
+        attributes.get("artistName") or raw_attributes.get("artistName")
+    ):
+        track.artists = UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=artist_name,
+                    provider=provider.instance_id,
+                    name=artist_name,
+                )
+            ]
+        )
     if albums := relationships.get("albums"):
         if "data" in albums and len(albums["data"]) > 0:
-            track.album = parse_album(provider, albums["data"][0])
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        track.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
+            parsed_album = parse_album(provider, albums["data"][0])
+            if parsed_album:
+                track.album = parsed_album
+    elif album_name := normalize_unicode(
+        attributes.get("albumName") or raw_attributes.get("albumName")
+    ):
+        track.album = ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=album_name,
+            provider=provider.instance_id,
+            name=album_name,
         )
+    if image := parse_artwork_image(provider, MediaType.TRACK, track_id, attributes):
+        track.metadata.add_image(image)
     if genres := attributes.get("genreNames"):
         track.metadata.genres = set(genres)
     if composers := attributes.get("composerName"):
@@ -267,7 +305,11 @@ def parse_track(
         track.metadata.explicit = content_rating == "explicit"
     if isrc := attributes.get("isrc"):
         track.external_ids.add((ExternalID.ISRC, isrc))
-    track.favorite = is_favourite or False
+    # dateAdded lives on the library object only, never on the catalog copy read above.
+    with suppress(TypeError, ValueError):
+        if added := raw_attributes.get("dateAdded"):
+            track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
+    track.favorite = is_favourite
     return track
 
 
@@ -275,11 +317,20 @@ def parse_playlist(
     provider: AppleMusicProvider,
     playlist_obj: dict[str, Any],
     is_favourite: bool | None = None,
+    can_edit_hint: bool | None = None,
+    library_id_override: str | None = None,
 ) -> Playlist:
     """Parse Apple Music playlist object to generic layout."""
     attributes = playlist_obj["attributes"]
-    playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
-    is_editable = attributes.get("canEdit", False)
+    raw_playlist_id = playlist_obj["id"]
+    play_params = attributes.get("playParams", {})
+    # Prefer write-safe library IDs when available.
+    playlist_id = (
+        library_id_override
+        or (raw_playlist_id if is_library_id(raw_playlist_id) else play_params.get("globalId"))
+        or raw_playlist_id
+    )
+    is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,
         provider=provider.instance_id,
@@ -296,24 +347,11 @@ def parse_playlist(
         },
         is_editable=is_editable,
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        playlist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.PLAYLIST, playlist_id, attributes):
+        playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
-    playlist.favorite = is_favourite or False
+    playlist.favorite = is_favourite
     return playlist
 
 
@@ -338,19 +376,67 @@ def parse_station_as_playlist(
             )
         },
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork.get("width") and artwork.get("height"):
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        playlist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.PLAYLIST, station_id, attributes):
+        playlist.metadata.add_image(image)
     return playlist
+
+
+def _parse_album_artists(
+    provider: AppleMusicProvider,
+    attributes: dict[str, Any],
+    relationships: dict[str, Any],
+) -> UniqueList[Artist | ItemMapping] | None:
+    """Parse the album artists from an album's attributes and relationships."""
+    album_artist_name = normalize_unicode(attributes.get("artistName"))
+    # Skip relationships that cannot produce a named artist.
+    artist_objs = [
+        artist
+        for artist in relationships.get("artists", {}).get("data", [])
+        if _has_artist_details(artist)
+    ]
+    artists = UniqueList([parse_artist(provider, artist) for artist in artist_objs])
+    if album_artist_name and attributes.get("isCompilation"):
+        # A lone related artist can be a contributor rather than the album artist.
+        if len(artists) == 1 and artists[0].name != album_artist_name:
+            artists = UniqueList()
+    if artists:
+        return artists
+    if album_artist_name:
+        return UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    provider=provider.instance_id,
+                    item_id=album_artist_name,
+                    name=album_artist_name,
+                )
+            ]
+        )
+    return None
+
+
+def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
+    """Check if an artist object holds enough details to parse it."""
+    relationships = artist_obj.get("relationships", {})
+    catalog_data = relationships.get("catalog", {}).get("data", [])
+    if artist_obj.get("type") == "library-artists" and catalog_data:
+        attributes = catalog_data[0].get("attributes", {})
+    else:
+        attributes = artist_obj.get("attributes", {})
+    return bool(normalize_unicode(attributes.get("name")))
+
+
+def _is_available(attributes: dict[str, Any]) -> bool:
+    """
+    Return whether Apple will actually serve a stream for this item.
+
+    ``playParams`` is absent entirely for items Apple has withdrawn. It is present
+    but carries a ``purchasedId`` with no ``catalogId`` for purchase-only items
+    (iTunes purchases, and the 2014 U2 giveaway), which the stream endpoint also
+    refuses. Uploads carry neither marker, so they stay available - see
+    music-assistant/support#6032 and #4108.
+    """
+    play_params = attributes.get("playParams") or {}
+    if play_params.get("id") is None:
+        return False
+    return not (play_params.get("purchasedId") is not None and play_params.get("catalogId") is None)

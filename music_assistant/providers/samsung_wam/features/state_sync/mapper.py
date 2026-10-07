@@ -41,7 +41,8 @@ class StateSyncMapper:
 
     @staticmethod
     def create_speaker_attributes(wam_speaker: Speaker) -> WamSpeakerAttributes:
-        """Create a type-safe attribute snapshot from the raw pywam object.
+        """
+        Create a type-safe attribute snapshot from the raw pywam object.
 
         :param wam_speaker: The underlying pywam speaker instance.
         :return: A WamSpeakerAttributes instance.
@@ -70,7 +71,8 @@ class StateSyncMapper:
         group_children: set[str],
         stream_active: bool,
     ) -> None:
-        """Apply a full attribute snapshot to the player state.
+        """
+        Apply a full attribute snapshot to the player state.
 
         :param player: The WamPlayer to update.
         :param speaker_attrs: The current speaker attributes.

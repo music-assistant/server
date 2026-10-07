@@ -1,0 +1,378 @@
+"""Store, gate, and API tests for audio_analysis_failures against a real temp DB."""
+
+from __future__ import annotations
+
+import pathlib
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
+
+import pytest
+
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS, AA_TABLE_FAILURES
+from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+
+_open_controllers: list[AudioAnalysisController] = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_analysis_databases() -> AsyncGenerator[None]:
+    """Close every analysis connection a test opened, so no connection thread outlives it."""
+    yield
+    while _open_controllers:
+        await _open_controllers.pop().close_database()
+
+
+@pytest.fixture
+async def real_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
+    """Create a real on-disk sqlite DB with the minimal tables the gate/store touch."""
+    db = DatabaseConnection(str(tmp_path / "test.db"))
+    await db.setup()
+    await db.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}("
+        "provider_item_id TEXT, provider_instance TEXT, provider_domain TEXT, media_type TEXT)"
+    )
+    await db.commit()
+    yield db
+    await db.close()
+
+
+def _make_fs_music_provider() -> MagicMock:
+    """Return a fake filesystem (non-streaming) MusicProvider keyed by instance_id."""
+    prov = MagicMock(spec=MusicProvider)
+    prov.is_streaming_provider = False
+    prov.domain = "filesystem_local"
+    prov.instance_id = "filesystem_local--abc"
+    prov.available = True
+    return prov
+
+
+async def _make_controller(
+    real_db: DatabaseConnection, music_prov: MagicMock, tmp_path: pathlib.Path
+) -> AudioAnalysisController:
+    """Return an AudioAnalysisController with audio_analysis.db open in the temp dir."""
+    streams = MagicMock()
+    mass = MagicMock()
+    streams.mass = mass
+    mass.music.database = real_db
+    mass.storage_path = str(tmp_path)
+    mass.get_provider = MagicMock(return_value=music_prov)
+    mass.providers = [music_prov]
+    ctrl = AudioAnalysisController(streams)
+    await ctrl.setup_database()
+    _open_controllers.append(ctrl)
+    return ctrl
+
+
+@pytest.mark.asyncio
+async def test_table_roundtrip(real_db: DatabaseConnection, tmp_path: pathlib.Path) -> None:
+    """A row inserted into the failures table reads back with next_retry NULL preserved."""
+    controller = await _make_controller(real_db, _make_fs_music_provider(), tmp_path)
+    await controller.database.insert_or_replace(
+        AA_TABLE_FAILURES,
+        {
+            "media_type": "track",
+            "item_id": "t1",
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": "sonic_analysis",
+            "reason": "boom",
+            "analysis_version": 1,
+            "next_retry": None,
+        },
+    )
+    rows = await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "boom"
+    assert rows[0]["next_retry"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_and_clear_failure_roundtrip(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """record_analysis_failure writes prov_key + NULL retry; clear deletes the row."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+
+    await controller.record_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="no usable audio frames extracted",
+    )
+    rows = await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "filesystem_local--abc"  # instance_id for non-streaming
+    assert rows[0]["next_retry"] is None
+    assert rows[0]["reason"] == "no usable audio frames extracted"
+
+    await controller.clear_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+    )
+    rows = await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_record_failure_converts_retry_at_to_epoch(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A datetime retry_at is stored as an integer epoch in next_retry."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+    when = datetime(2030, 6, 1, 12, 0, tzinfo=UTC)
+
+    await controller.record_analysis_failure(
+        item_id="t2",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="offline",
+        retry_at=when,
+    )
+    rows = await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert rows[0]["next_retry"] == int(when.timestamp())
+
+
+@pytest.mark.asyncio
+async def test_record_failure_skips_when_not_music_provider(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """No row is written when the provider lookup is not a MusicProvider."""
+    # not a MusicProvider spec
+    controller = await _make_controller(real_db, MagicMock(), tmp_path)
+
+    await controller.record_analysis_failure(
+        item_id="t3",
+        provider_instance_id_or_domain="whatever",
+        aa_provider_domain="sonic_analysis",
+        reason="x",
+    )
+    rows = await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_set_audio_analysis_clears_existing_failure(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A successful set_audio_analysis removes any prior failure row for the same key."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+
+    await controller.record_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="boom",
+    )
+    assert len(await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)) == 1
+
+    await controller.set_audio_analysis(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        analysis=AudioAnalysisData(energy=0.5),
+    )
+    assert await controller.database.get_rows(AA_TABLE_FAILURES, limit=0) == []
+
+
+async def _insert_pm(db: DatabaseConnection, item_id: str) -> None:
+    await db.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "provider_item_id": item_id,
+            "provider_instance": "filesystem_local--abc",
+            "provider_domain": "filesystem_local",
+            "media_type": "track",
+        },
+    )
+
+
+async def _insert_failure(
+    db: DatabaseConnection, item_id: str, *, next_retry: int | None, version: int = 1
+) -> None:
+    await db.insert_or_replace(
+        AA_TABLE_FAILURES,
+        {
+            "media_type": "track",
+            "item_id": item_id,
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": "sonic_analysis",
+            "reason": "x",
+            "analysis_version": version,
+            "next_retry": next_retry,
+        },
+    )
+
+
+async def _insert_analysis(
+    db: DatabaseConnection,
+    item_id: str,
+    *,
+    version: int | None,
+    aa_domain: str = "sonic_analysis",
+) -> None:
+    await db.insert_or_replace(
+        AA_TABLE_ANALYSIS,
+        {
+            "media_type": "track",
+            "item_id": item_id,
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": aa_domain,
+            "header": "{}",
+            "payload": b"",
+            "analysis_version": version,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_excludes_blocked_includes_eligible(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Blocked (NULL / future, current version) failures are excluded; others are candidates."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+
+    # never-retry, current version -> excluded
+    await _insert_pm(real_db, "blocked_null")
+    await _insert_failure(controller.database, "blocked_null", next_retry=None, version=2)
+    # future retry, current version -> excluded
+    future = int((datetime.now(UTC) + timedelta(days=1)).timestamp())
+    await _insert_pm(real_db, "blocked_future")
+    await _insert_failure(controller.database, "blocked_future", next_retry=future, version=2)
+    # past-due retry -> included
+    past = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
+    await _insert_pm(real_db, "due")
+    await _insert_failure(controller.database, "due", next_retry=past, version=2)
+    # stale version (1 < current 2) -> included
+    await _insert_pm(real_db, "stale")
+    await _insert_failure(controller.database, "stale", next_retry=None, version=1)
+    # no failure at all -> included
+    await _insert_pm(real_db, "clean")
+
+    candidates = await controller._find_candidates_missing_analysis({"sonic_analysis": 2}, limit=0)
+    found = {c["item_id"] for c in candidates}
+    assert found == {"due", "stale", "clean"}
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_resurfaces_stale_analysis_versions(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Analysis rows below the current version (or NULL) surface; current-or-newer do not."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+
+    # row at current version -> excluded
+    await _insert_pm(real_db, "current")
+    await _insert_analysis(controller.database, "current", version=2)
+    # row at newer version -> excluded
+    await _insert_pm(real_db, "newer")
+    await _insert_analysis(controller.database, "newer", version=3)
+    # row at older version -> included
+    await _insert_pm(real_db, "stale")
+    await _insert_analysis(controller.database, "stale", version=1)
+    # pre-versioning row (NULL version) -> included
+    await _insert_pm(real_db, "nullver")
+    await _insert_analysis(controller.database, "nullver", version=None)
+
+    candidates = await controller._find_candidates_missing_analysis({"sonic_analysis": 2}, limit=0)
+    found = {c["item_id"] for c in candidates}
+    assert found == {"stale", "nullver"}
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_tracks_versions_per_domain(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """With multiple AA domains, each domain is gated by its own current version."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+
+    # analyzed at v1 for both domains; only sonic_analysis bumped to v2
+    await _insert_pm(real_db, "t1")
+    await _insert_analysis(controller.database, "t1", version=1, aa_domain="sonic_analysis")
+    await _insert_analysis(controller.database, "t1", version=1, aa_domain="loudness_analysis")
+
+    candidates = await controller._find_candidates_missing_analysis(
+        {"sonic_analysis": 2, "loudness_analysis": 1}, limit=0
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["item_id"] == "t1"
+    assert candidates[0]["missing_domains"] == ["sonic_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_get_failures_returns_rows_and_filters_by_domain(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """get_failures returns the stored shape, optionally filtered by aa_domain."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+    await _insert_failure(controller.database, "t1", next_retry=None)
+    await controller.database.insert_or_replace(
+        AA_TABLE_FAILURES,
+        {
+            "media_type": "track",
+            "item_id": "t2",
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": "loudness_analysis",
+            "reason": "y",
+            "analysis_version": 1,
+            "next_retry": None,
+        },
+    )
+
+    all_rows = await controller.get_failures()
+    assert {r["item_id"] for r in all_rows} == {"t1", "t2"}
+    assert set(all_rows[0]) == {
+        "item_id",
+        "provider",
+        "aa_provider_domain",
+        "reason",
+        "next_retry",
+        "timestamp_created",
+    }
+
+    sonic_rows = await controller.get_failures(aa_domain="sonic_analysis")
+    assert {r["item_id"] for r in sonic_rows} == {"t1"}
+
+
+@pytest.mark.asyncio
+async def test_clear_failures_requires_a_filter(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """clear_failures with no filter deletes nothing and returns 0."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+    await _insert_failure(controller.database, "t1", next_retry=None)
+
+    deleted = await controller.clear_failures()
+    assert deleted == 0
+    assert len(await controller.database.get_rows(AA_TABLE_FAILURES, limit=0)) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_failures_by_domain(
+    real_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """clear_failures(aa_domain=...) deletes all rows for that domain and returns the count."""
+    music_prov = _make_fs_music_provider()
+    controller = await _make_controller(real_db, music_prov, tmp_path)
+    await _insert_failure(controller.database, "t1", next_retry=None)
+    await _insert_failure(controller.database, "t2", next_retry=None)
+
+    deleted = await controller.clear_failures(aa_domain="sonic_analysis")
+    assert deleted == 2
+    assert await controller.database.get_rows(AA_TABLE_FAILURES, limit=0) == []

@@ -1,11 +1,12 @@
-"""Schema for iTunes Podcast Search.
+"""
+Schema for iTunes Podcast Search.
 
 Only what is needed.
 """
 
 from dataclasses import dataclass, field
 
-from mashumaro import field_options
+from mashumaro import DataClassDictMixin, field_options
 from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 
@@ -48,6 +49,30 @@ class PodcastSearchResult(_BaseModel):
         metadata=field_options(alias="primaryGenreName"), default=None
     )
     genres: list[str] = field(default_factory=list)
+    genre_ids: list[str] = field(metadata=field_options(alias="genreIds"), default_factory=list)
+    collection_explicitness: str | None = field(
+        metadata=field_options(alias="collectionExplicitness"), default=None
+    )
+    track_explicitness: str | None = field(
+        metadata=field_options(alias="trackExplicitness"), default=None
+    )
+    content_advisory_rating: str | None = field(
+        metadata=field_options(alias="contentAdvisoryRating"), default=None
+    )
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether the podcast is explicit."""
+        # collectionExplicitness is "notExplicit" even for explicit podcasts,
+        # and the API also spells it "Explict"
+        return any(
+            (value or "").lower() in ("explicit", "explict")
+            for value in (
+                self.collection_explicitness,
+                self.track_explicitness,
+                self.content_advisory_rating,
+            )
+        )
 
 
 @dataclass(kw_only=True)
@@ -104,9 +129,19 @@ class TopPodcastsResponse(_BaseModel):
 # HELPER
 @dataclass(kw_only=True)
 class TopPodcastsHelper(_BaseModel):
-    """TopPodcastsHelper.
+    """
+    TopPodcastsHelper.
 
     This is used to cache the recommendations.
     """
 
     top_podcasts: list[PodcastSearchResult] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class MappingDetails(DataClassDictMixin):
+    """iTunes data stored in the details of a library podcast's provider mapping."""
+
+    # None: the podcast is not listed in iTunes
+    itunes_id: int | None = None
+    genre_ids: list[str] = field(default_factory=list)

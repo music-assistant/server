@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "connected_players": {
+      "label": "[%key:common::config_entries::connected_players::label%]",
+      "description": "The Music Assistant players to expose via AirPlay. Every selected player is advertised as its own AirPlay receiver; audio streamed to it plays on that player. Leave empty to keep the plugin idle."
+    },
+    "publish_name_template": {
+      "label": "[%key:common::config_entries::publish_name_template::label%]",
+      "description": "How each receiver shown in the AirPlay device list is named, based on the connected player's name."
+    }
+  },
+  "manifest": {
+    "description": "Receive AirPlay audio streams and use them as a source in Music Assistant."
+  }
+}

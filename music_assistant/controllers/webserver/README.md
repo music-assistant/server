@@ -49,29 +49,46 @@ The main orchestrator that manages:
 Handles all authentication and user management:
 
 **Database Schema:**
-- `users` - User accounts with roles (admin/user)
+- `users` - User accounts, each holding the id of a (builtin or custom) role
+- `roles` - Custom user roles (the builtin roles are defined in code and never stored)
 - `user_auth_providers` - Links users to authentication providers (many-to-many)
 - `auth_tokens` - Access tokens with expiration tracking
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
-- **Built-in Provider** - Username/password authentication with bcrypt hashing
+- **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
 
 **Token Types:**
-- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window (for user sessions)
-- **Long-lived tokens**: No auto-renewal, 10-year expiration (for integrations/API access)
+- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
-- Password hashing with bcrypt and user- and server specific salts
+- Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
 - Secure token generation with secrets.token_urlsafe()
 - WebSocket disconnect on token revocation
 - Session management and cleanup
 
 **User Roles:**
+
+A role is a named set of scopes. The builtin roles are defined in code (`ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py)) and can not be changed:
 - `ADMIN` - Full access to all commands and settings
-- `USER` - Standard access (configurable via player/provider filters)
+- `USER` - Standard access, including adding and managing their own music sources
+- `GUEST` - Read-only library access plus player/queue control
+- `SERVICE` - Standard access plus player config, reading user accounts and impersonation,
+  but no music sources of its own (used by the Home Assistant integration)
+
+Admins can add custom roles (`auth/role/create`, `auth/role/update`, `auth/role/delete`),
+which are stored in the `roles` table and kept in memory for the scope checks. A custom role
+is a household member: it always holds the guest scopes and the scopes its granted scopes are
+of no use without. The scopes that reach into accounts, the private things of other members or
+the server itself (`users.manage`, `users.impersonate`, `library.manage`,
+`config.providers.write`, `config.core.write` and `system.manage`) stay with the builtin admin
+role. The live sessions of a user are closed when its role, or the
+scopes of its custom role, change, so its clients reconnect with the new scopes. The last
+enabled admin can not lose the admin role.
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 
@@ -121,8 +138,8 @@ Manages individual WebSocket connections:
 
 ### 5. Authentication Helpers
 
-**Middleware ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
-- Request authentication for HTTP endpoints
+**Helpers ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
+- Request authentication for HTTP endpoints, called per handler (there is no aiohttp middleware)
 - User context management (thread-local storage)
 - Ingress detection (Home Assistant add-on)
 - Token extraction from Authorization header
@@ -138,11 +155,14 @@ Manages individual WebSocket connections:
 ### First-Time Setup Flow
 
 1. **Initial State**: No users exist
-2. **Setup Required**: User is redirected to `/setup`
-3. **Admin Creation**: User creates the first admin account with username/password
-4. **Setup completes** User gets redirected to the frontend
-5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
-4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
+2. **Setup Required**: User is redirected to `/setup`, which serves the frontend; the query string
+   travels along so a client's `return_url` and `device_name` survive a reload
+3. **Admin Creation**: The frontend opens its setup wizard on the "Create your account" step,
+   which posts username, password and display name to `POST /setup`; the server creates the
+   first admin and answers with a token (or, for a trusted `return_url`, where to hand it back)
+4. **Onboarding wizard** The frontend signs in with the token and continues the wizard on the
+   same page; `POST /setup` answers 409 from then on
+5. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
 
 ### First-Time Setup Flow when HA Ingress is used
 
@@ -188,6 +208,7 @@ When running as a Home Assistant add-on:
 - A dedicated webserver TCP site is hosted (on port 8094) bound to the internal HA docker network only
 - Ingress requests include HA user headers (`X-Remote-User-ID`, `X-Remote-User-Name`)
 - Users are auto-created on first access
+- A user whose Music Assistant account is disabled is refused
 - No password required (authentication handled by HA)
 - System user created for HA integration communication
 
@@ -262,6 +283,56 @@ Remote access enables users to connect to their Music Assistant instance from an
    - Responses and events sent back through data channel
    - Authentication and authorization work identically to local WebSocket
 
+### Data Channels
+
+A single remote session multiplexes several WebRTC data channels over one peer connection.
+The gateway routes each incoming channel by its label through a label -> handler table, with
+two kinds of handlers:
+
+- **Bridged**: the channel is pumped both ways to a local WebSocket
+  - `sendspin`: the built-in Sendspin server (web player)
+  - `live_announcement`: the live announcement route on the local webserver
+- **Served in-process**: handled by the gateway itself, without a local WebSocket
+  - `http_proxy`: proxied HTTP requests (album art and other assets)
+
+When one of these channels or its local WebSocket closes, only that channel is torn down and
+the session stays up.
+
+The client's own API channel has no fixed label: the **first** channel with a label the server
+does not recognise becomes the API channel (the frontend labels it `ma-api`) and is bridged to
+`/ws`. Any **later** unrecognised label is refused, since taking it for a second API channel
+would replace the live bridge and break the session. The API channel shares its lifetime with
+the session: when it or its local WebSocket closes, the whole session is torn down.
+
+Proxied HTTP requests are answered on the channel they arrived on. That is what keeps older
+clients working: they send `http-proxy-request` over `ma-api` and get the response back there,
+so the gateway needs no version negotiation of its own.
+
+The reply is framed to suit that channel. On `ma-api` it is one JSON message with the body
+hex-encoded, which costs about 2.7x the image once the oversized-message chunking below is
+applied on top. `http_proxy` carries nothing else, so there the reply is a JSON header
+(`type`, `id`, `status`, `headers`, `size`) followed by the body as raw binary messages — the
+image costs its own size and no more. Those binary messages carry no request id, so the
+gateway holds the channel for a whole reply: replies go out one at a time rather than
+interleaving, which a channel that sends one message at a time would do anyway. A client that
+stops draining is given a bounded time per frame, after which the reply is abandoned where it
+stands — so a reply can end short of its announced `size`, and the next header is what follows.
+
+`ma-api` and `http_proxy` size their bulk frames to the channel's `max_message_size`, the lower of
+our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
+only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary body frames. On
+`ma-api` any message over 64 KiB — or over the cap, whichever is lower — is split into
+`__chunk__` frames (`id`, `seq`, `count`, `b64`) the client reassembles by group id. A client
+therefore has to expect chunking well before the cap: pieces are 64 KiB by preference, sized
+down only when the cap cannot fit that much base64 plus the frame's JSON envelope.
+
+**Adding a new label** is not backwards compatible by itself: servers from before the routing
+table mistake an unknown label for the API channel, which breaks the entire remote session
+instead of just the new feature. A client must therefore feature-detect on `schema_version`
+from `server_info` before opening one: `http_proxy` requires `API_SCHEMA_VERSION >= 49`. Bump
+`API_SCHEMA_VERSION` ([constants.py](../../constants.py)) when adding a label and gate the
+client on the new value.
+
 ### ICE Servers (STUN/TURN)
 
 NAT traversal is critical for WebRTC connections. Music Assistant uses:
@@ -318,10 +389,11 @@ Enable or disable remote access:
 ### HTTP Request Flow
 
 ```
-HTTP Request → Webserver → Auth Middleware → Command Handler → Response
+HTTP Request → Webserver → Command Handler → Response
                                 |
-                                ├─ Ingress? → Auto-authenticate with HA headers
-                                └─ Regular? → Validate Bearer token
+                                └─ get_authenticated_user()
+                                   ├─ Ingress? → Auto-authenticate with HA headers
+                                   └─ Regular? → Validate Bearer token
 ```
 
 ### WebSocket Request Flow
@@ -347,15 +419,17 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Mandatory authentication**: All API access requires authentication (except Ingress)
 - **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: bcrypt with user-specific salts
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding) and long-lived (10 years) tokens supported
+- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
 
 ### Authorization
 
-- **Role-based access**: Admin vs User roles
-- **Command-level enforcement**: API commands can require specific roles
-- **Player/Provider filtering**: Users can be restricted to specific players/providers
+- **Role-based access**: Each user holds one (builtin or custom) role, which grants its scopes
+- **Command-level enforcement**: API commands can require a specific scope
+- **Player filtering**: Users can be restricted to specific players. Which music sources a
+  user may see is not set on the user: it follows from the owner and sharing on each source
+  (`config/providers/set_access`)
 - **Token revocation**: Immediate WebSocket disconnect on token revocation
 
 ### Network Security
@@ -374,7 +448,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Data Protection
 
 - **Token storage**: Only hashed tokens stored in database
-- **Password storage**: bcrypt with user-specific salts
+- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Session cleanup**: Expired tokens automatically deleted
 - **User disable**: Immediate disconnect of all user sessions
 
@@ -391,7 +465,10 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 1. Define route handler in [controller.py](controller.py) (for HTTP endpoints)
 2. Use `@api_command()` decorator for WebSocket commands (in respective controllers)
-3. Specify authentication requirements: `authenticated=True` or `required_role="admin"`
+3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>` (or a tuple of scopes, one of which the caller needs)
+4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
+   another user via the injected `user` argument (requires the `users.impersonate` scope
+   when targeting another user)
 
 ### Testing Authentication
 
@@ -406,6 +483,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
+
 @api_command("my_command")
 async def my_command():
     user = get_current_user()
@@ -418,19 +496,29 @@ async def my_command():
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_token
 
+
 @api_command("my_command")
 async def my_command():
     token = get_current_token()
     # ... use token ...
 ```
 
-**Requiring admin role:**
+**Requiring a scope:**
 ```python
-@api_command("admin_only_command", required_role="admin")
+from music_assistant_models.auth import Scope
+
+
+@api_command("admin_only_command", required_scope=Scope.CONFIG_CORE_WRITE)
 async def admin_command():
-    # Only admins can call this
+    # Only users whose role grants the config.core.write scope can call this
     pass
 ```
+
+A tuple of scopes (`required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)`) means the
+caller needs one of them.
+
+Scopes are granted to users through their role, see `ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.
 
 ### Database Migrations
 
@@ -460,7 +548,7 @@ webserver/
 ├── api_docs.py                         # API documentation generator
 ├── README.md                           # This file
 ├── helpers/
-│   ├── auth_middleware.py              # HTTP auth middleware
+│   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
 │   └── auth_providers.py               # Authentication providers
 └── remote_access/
     ├── __init__.py                     # Remote access manager

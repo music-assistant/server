@@ -35,6 +35,20 @@ async def test_connect_sets_base_url(client: KionMusicClient) -> None:
         mock_cls.assert_called_once_with("fake_token", base_url=DEFAULT_BASE_URL)
 
 
+async def test_reconnect_retry_takes_its_own_throttler_slot(client: KionMusicClient) -> None:
+    """A request retried after a connection error takes a second throttler slot."""
+    client._throttler = mock.AsyncMock()
+    client._reconnect = mock.AsyncMock()  # type: ignore[method-assign]
+    client._client = mock.MagicMock()
+    client._ensure_connected = mock.AsyncMock(return_value=client._client)  # type: ignore[method-assign]
+    func = mock.AsyncMock(side_effect=[NetworkError("connection reset"), "ok"])
+
+    assert await client._call_with_retry(func) == "ok"
+
+    assert func.await_count == 2
+    assert client._throttler.acquire.await_count == 2
+
+
 async def test_get_liked_albums_batching(client: KionMusicClient) -> None:
     """Test that liked albums are fetched in batches of 50."""
     mock_client = mock.AsyncMock()

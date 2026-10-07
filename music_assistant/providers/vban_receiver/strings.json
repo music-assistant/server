@@ -1,0 +1,56 @@
+{
+  "config_entries": {
+    "bind_port": {
+      "label": "Receiver: UDP Port",
+      "description": "The UDP port the VBAN receiver will listen on for connections. Make sure that this server can be reached on the given IP and UDP port by remote VBAN senders."
+    },
+    "vban_stream_name": {
+      "label": "Sender: VBAN Stream Name",
+      "description": "Max 16 ASCII chars.\nThe VBAN stream name to expect from the remote VBAN sender.\nThis MUST match what the remote VBAN sender has set for the session name otherwise audio streaming will not work."
+    },
+    "sender_host": {
+      "label": "Sender: VBAN Sender hostname/IP address",
+      "description": "The hostname/IP Address of the remote VBAN SENDER."
+    },
+    "audio_format": {
+      "label": "PCM audio format",
+      "description": "The VBAN PCM audio format to expect from the remote VBAN sender. This MUST match what the remote VBAN sender has set otherwise audio streaming will not work."
+    },
+    "sample_rate": {
+      "label": "PCM sample rate",
+      "description": "The VBAN PCM sample rate to expect from the remote VBAN sender. This MUST match what the remote VBAN sender has set otherwise audio streaming will not work."
+    },
+    "audio_channels": {
+      "label": "Channels",
+      "description": "The number of audio channels"
+    },
+    "bind_ip": {
+      "label": "Receiver: Bind to IP/interface",
+      "description": "Start the VBAN receiver on this specific interface. \nUse 0.0.0.0 to bind to all interfaces, which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
+    },
+    "vban_queue_strategy": {
+      "label": "Receiver: VBAN queue strategy",
+      "description": "What should happen if the receiving queue fills up?"
+    },
+    "vban_queue_size": {
+      "label": "Receiver: VBAN packets queue size",
+      "description": "This can be increased if MA is running on a very low power device, otherwise this should not need to be changed."
+    },
+    "log_vban_stream_stats": {
+      "label": "Log VBAN stream statistics",
+      "description": "Log VBAN stream statistics when DEBUG/VERBOSE logging is enabled. Target numbers not being hit will result in audio glitches/dropouts and is indicative of a low power device unable to keep up with the incoming stream rate."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Configure VBAN Receiver",
+      "description": "Enter the remote VBAN sender details, stream format and local receiver endpoint."
+    }
+  },
+  "manifest": {
+    "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender"
+  },
+  "errors": {
+    "no_packets": "VBAN sender {0} did not send any packets on stream {1}."
+  }
+}

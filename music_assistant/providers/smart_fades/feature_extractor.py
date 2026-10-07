@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import math
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 import torchaudio
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 
 class AdvancedBeatFeatureExtractor:
-    """Streaming log-mel extractor using torchaudio for Beat This compatibility.
+    """
+    Streaming log-mel extractor using torchaudio for Beat This compatibility.
 
     Uses the same torchaudio.transforms.MelSpectrogram as beat_this.preprocessing.LogMelSpect:
     - sample_rate=22050
@@ -41,8 +46,10 @@ class AdvancedBeatFeatureExtractor:
         fmin: float = 30.0,
         fmax: float = 11000.0,
         device: str = "cpu",
+        offload: Callable[..., Awaitable[Any]] | None = None,
     ):
-        """Initialize the feature extractor.
+        """
+        Initialize the feature extractor.
 
         :param sample_rate: Audio sample rate (default 22050 Hz).
         :param n_fft: FFT window size.
@@ -51,7 +58,11 @@ class AdvancedBeatFeatureExtractor:
         :param fmin: Minimum frequency for mel filter.
         :param fmax: Maximum frequency for mel filter.
         :param device: Torch device to use.
+        :param offload: Awaitable runner for the blocking mel extraction. When given (the
+            provider passes its concurrency-bounded runner), it is used instead of a plain
+            asyncio.to_thread so the work counts against the host's analysis CPU cap.
         """
+        self._offload = offload
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.sample_rate = sample_rate
@@ -92,7 +103,8 @@ class AdvancedBeatFeatureExtractor:
         self._last_output_frame = -1
 
     async def process_pcm(self, pcm: np.ndarray) -> np.ndarray:
-        """Process a PCM chunk and return log-mel features.
+        """
+        Process a PCM chunk and return log-mel features.
 
         :param pcm: Audio samples as float32 array.
         :return: Log-mel features with shape (T, n_mels).
@@ -172,10 +184,14 @@ class AdvancedBeatFeatureExtractor:
 
             return features[start_in_segment:end_in_segment]
 
+        if self._offload is not None:
+            offloaded: np.ndarray = await self._offload(_process_sync)
+            return offloaded
         return await asyncio.to_thread(_process_sync)
 
     async def finalize(self) -> np.ndarray:
-        """Flush delayed frames and process any remaining samples.
+        """
+        Flush delayed frames and process any remaining samples.
 
         :return: Final log-mel features.
         """
@@ -202,6 +218,9 @@ class AdvancedBeatFeatureExtractor:
 
             return features[-extra_count:]
 
+        if self._offload is not None:
+            offloaded: np.ndarray = await self._offload(_finalize_sync)
+            return offloaded
         return await asyncio.to_thread(_finalize_sync)
 
     def reset(self) -> None:
