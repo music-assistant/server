@@ -1097,13 +1097,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
             "WHERE media_type in ('audiobook', 'podcast_episode') "
-            f"AND provider in ('library','{provider_instance_id}')"
+            "AND provider in ('library', :provider_instance_id)"
         )
-
+        params: dict[str, Any] = {"provider_instance_id": provider_instance_id}
         if user:
             # NOTE: if no user was found, we will return playlog items for all users
-            query += f" AND userid = '{user.user_id}'"
-        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+            query += " AND userid = :userid"
+            params["userid"] = user.user_id
+        db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
         result: list[tuple[MediaType, str]] = []
         for db_row in db_rows:
@@ -1114,10 +1115,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # so these entries must be audiobooks.
                 subquery = (
                     f"SELECT * FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                    f"WHERE media_type = 'audiobook' AND item_id = {db_row['item_id']} "
-                    f"AND provider_instance = '{provider_instance_id}'"
+                    "WHERE media_type = 'audiobook' AND item_id = :item_id "
+                    "AND provider_instance = :provider_instance_id"
                 )
-                subrow = await self.mass.music.database.get_rows_from_query(subquery)
+                subrow = await self.mass.music.database.get_rows_from_query(
+                    subquery,
+                    {
+                        "item_id": db_row["item_id"],
+                        "provider_instance_id": provider_instance_id,
+                    },
+                )
                 if len(subrow) != 1:
                     continue
                 result.append((MediaType.AUDIOBOOK, subrow[0]["provider_item_id"]))
