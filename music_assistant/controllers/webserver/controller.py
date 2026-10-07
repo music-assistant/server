@@ -37,6 +37,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    PlayerUnavailableError,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -821,6 +822,8 @@ class WebserverController(CoreController):
             return web.Response(status=403, text=str(e))
         except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
+        except PlayerUnavailableError as e:
+            return web.Response(status=404, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__

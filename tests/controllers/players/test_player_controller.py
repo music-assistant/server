@@ -656,6 +656,73 @@ class TestPlayerCommandPermission:
             await self._stop(mock_mass, "living_room", private=False, own_player_id="living_room")
 
 
+class TestPlayerCommandAvailability:
+    """The command decorator refuses commands for players that cannot take them."""
+
+    async def test_command_for_unknown_player_raises(self, mock_mass: MagicMock) -> None:
+        """A command addressed at an unknown player id raises PlayerUnavailableError."""
+        controller = self._setup(mock_mass)
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_stop("missing")
+
+    async def test_command_for_unavailable_player_raises(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A command addressed at an unavailable player raises PlayerUnavailableError."""
+        player = MockPlayer(provider, "p1", "Player 1")
+        player._attr_available = False
+        controller = self._setup(mock_mass, player)
+        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_volume_set("p1", 50)
+
+        controller._handle_cmd_volume_set.assert_not_awaited()
+
+    async def test_protocol_player_command_runs_on_available_parent(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A protocol player id resolves to its available parent even when itself unavailable."""
+        parent = MockPlayer(provider, "parent", "Parent")
+        protocol = MockPlayer(provider, "proto", "Proto", player_type=PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("parent")
+        protocol._attr_available = False
+        controller = self._setup(mock_mass, parent, protocol)
+
+        await controller.cmd_stop("proto")
+
+        cast("AsyncMock", controller._handle_cmd_stop).assert_awaited_once_with("parent")
+
+    async def test_protocol_player_command_for_unavailable_parent_raises(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A protocol player id whose parent is unavailable raises PlayerUnavailableError."""
+        parent = MockPlayer(provider, "parent", "Parent")
+        parent._attr_available = False
+        protocol = MockPlayer(provider, "proto", "Proto", player_type=PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("parent")
+        controller = self._setup(mock_mass, parent, protocol)
+        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_volume_set("proto", 50)
+
+        controller._handle_cmd_volume_set.assert_not_awaited()
+
+    def _setup(self, mock_mass: MagicMock, *players: MockPlayer) -> PlayerController:
+        """Register the given players on a fresh controller with stubbed stop handling."""
+        controller = PlayerController(mock_mass)
+        for player in players:
+            player.initialized.set()
+            player.update_state(signal_event=False)
+        controller._players = {player.player_id: player for player in players}
+        mock_mass.players = controller
+        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        return controller
+
+
 class TestStateForwarding:
     """Test forwarding of player state changes to related players."""
 
@@ -1938,6 +2005,27 @@ class TestCmdUngroupNewBranches:
 
         assert stop_called == ["g1"]
         assert power_called == []  # powerless group → never goes through cmd_power
+
+    async def test_ungroup_many_skips_unavailable_players(self, mock_mass: MagicMock) -> None:
+        """Unknown or unavailable ids are skipped so the remaining players still ungroup."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        group = MockPlayer(provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None
+        group._attr_group_members = ["member"]
+        gone = MockPlayer(provider, "gone", "Gone")
+        gone._attr_available = False
+
+        controller._players = {"g1": group, "gone": gone}
+        mock_mass.players = controller
+        for player in (group, gone):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller.cmd_ungroup_many(["missing", "gone", "g1"])
+
+        controller._handle_cmd_stop.assert_awaited_once_with("g1")
 
 
 class TestPowerOffEndsTheQueue:
