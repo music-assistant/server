@@ -1370,7 +1370,7 @@ async def test_session_check_disconnects_clients_with_an_expired_token(
     """
     user = await auth_manager.create_user(username="sessioncheckuser", role=UserRole.USER)
     clients: dict[str, WebsocketClientHandler] = {}
-    for name in ("Valid", "Expired", "Removed"):
+    for name in ("Valid", "Expired", "Capped", "Removed"):
         token = await auth_manager.create_token(user, name, is_long_lived=False)
         client = await _create_ws_client(auth_manager.mass, user.user_id)
         client._token_id = auth_manager.jwt_helper.get_token_id(token)
@@ -1384,12 +1384,18 @@ async def test_session_check_disconnects_clients_with_an_expired_token(
         {"token_id": clients["Expired"].token_id},
         {"expires_at": (utc() - timedelta(minutes=1)).isoformat()},
     )
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": clients["Capped"].token_id},
+        {"created_at": (utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)).isoformat()},
+    )
     await auth_manager.database.delete("auth_tokens", {"token_id": clients["Removed"].token_id})
 
     await auth_manager._disconnect_expired_sessions()
 
     clients["Valid"].cancel.assert_not_called()  # type: ignore[attr-defined]
     clients["Expired"].cancel.assert_called_once()  # type: ignore[attr-defined]
+    clients["Capped"].cancel.assert_called_once()  # type: ignore[attr-defined]
     clients["Removed"].cancel.assert_called_once()  # type: ignore[attr-defined]
     ingress.cancel.assert_not_called()  # type: ignore[attr-defined]
 

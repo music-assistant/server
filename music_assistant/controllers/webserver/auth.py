@@ -2572,16 +2572,24 @@ class AuthenticationManager:
         now = utc()
         for token_id in {client.token_id for client in self.webserver.clients if client.token_id}:
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
-            if token_row is not None:
-                expires_at = token_row["expires_at"]
-                if not expires_at or now <= datetime.fromisoformat(expires_at):
-                    continue
+            if token_row is not None and not self._token_row_expired(token_row, now):
+                continue
             self.webserver.disconnect_websockets_for_token(token_id, "token expiry")
 
     def _schedule_session_check(self) -> None:
         """Schedule the hourly check of the auth tokens held by WebSocket clients."""
         self.mass.create_task(self._disconnect_expired_sessions())
         self.mass.call_later(3600, self._schedule_session_check)
+
+    @staticmethod
+    def _token_row_expired(token_row: Mapping[str, Any], now: datetime) -> bool:
+        """Return whether a token row is past its expiry or its absolute lifetime cap."""
+        if (expires_at := token_row["expires_at"]) and now > datetime.fromisoformat(expires_at):
+            return True
+        if token_row["is_long_lived"]:
+            return False
+        created_at = datetime.fromisoformat(token_row["created_at"])
+        return now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
 
     async def _refresh_token_expiration(
         self, token_row: Mapping[str, Any], user: User, is_long_lived: bool
