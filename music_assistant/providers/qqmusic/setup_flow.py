@@ -13,7 +13,7 @@ import base64
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
-from qqmusic_api import ApiDataError, CgiApiException, NetworkError
+from qqmusic_api import BaseApiException, NetworkError
 from qqmusic_api import Client as QQClient
 from qqmusic_api.models.login import QRCodeLoginEvents, QRLoginType
 from qqmusic_api.modules.login_utils import QRCodeLoginSession
@@ -73,7 +73,7 @@ async def _run_qr_login(session: SetupSession, client: QQClient) -> Credential:
             continue
         except NetworkError as err:
             raise SetupFlowError(f"QQ Music app connection failed: {err}") from err
-        except (ApiDataError, CgiApiException, ValidationError) as err:
+        except (BaseApiException, ValidationError) as err:
             raise SetupFlowError(f"QQ Music app login failed: {err}") from err
 
 

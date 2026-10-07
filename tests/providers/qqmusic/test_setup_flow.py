@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 
 import pytest
-from qqmusic_api import ApiDataError, LoginError, NetworkError
+from qqmusic_api import ApiDataError, GlobalApiError, HTTPError, LoginError, NetworkError
 from qqmusic_api.models.login import QR, QRCodeLoginEvents, QRLoginResult, QRLoginType
 from qqmusic_api.models.request import Credential
 from qqmusic_api.modules.login_utils import QRCodeLoginSession
@@ -168,6 +168,8 @@ async def test_run_qr_login_converts_mobile_network_error() -> None:
     [
         (ApiDataError("malformed QR"), "QQ Music app login failed"),
         (LoginError("rejected", code=-1), "QQ Music app login failed"),
+        (HTTPError("gateway unavailable", status_code=502), "QQ Music app login failed"),
+        (GlobalApiError(code=1), "QQ Music app login failed"),
     ],
 )
 async def test_run_qr_login_converts_public_login_errors(error, message) -> None:
