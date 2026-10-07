@@ -8,8 +8,9 @@ import hmac
 from unittest import mock
 
 import pytest
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from yandex_music import ClientAsync
-from yandex_music.exceptions import NetworkError
+from yandex_music.exceptions import BadRequestError, NetworkError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.providers.kion_music.api_client import KionMusicClient
@@ -418,3 +419,17 @@ async def test_get_track_lyrics_missing_track_returns_none(
     client._client = mock_client
 
     assert await client.get_track_lyrics("42") == (None, False)
+
+
+async def test_get_tracks_rejected_request_raises(client: KionMusicClient) -> None:
+    """A rejected batch is a request failure, never a successful empty response."""
+    real_client = ClientAsync()
+    client._client = real_client
+    with (
+        mock.patch.object(real_client.request, "post", side_effect=BadRequestError("rejected")),
+        mock.patch.object(client, "_reconnect", new_callable=mock.AsyncMock) as reconnect,
+        pytest.raises(ResourceTemporarilyUnavailable) as caught,
+    ):
+        await client.get_tracks(["101", "102"])
+    assert isinstance(caught.value.__cause__, BadRequestError)
+    reconnect.assert_not_awaited()

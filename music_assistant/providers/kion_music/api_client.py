@@ -482,14 +482,14 @@ class KionMusicClient:
 
         :param track_ids: List of track IDs.
         :return: List of track objects.
-        :raises ResourceTemporarilyUnavailable: On network errors after retry.
+        :raises ResourceTemporarilyUnavailable: On a rejected request or network errors after retry.
         """
         try:
             result = await self._call_with_retry(lambda c: c.tracks(track_ids))
             return result or []
         except BadRequestError as err:
             LOGGER.error("Error fetching tracks: %s", err)
-            return []
+            raise ResourceTemporarilyUnavailable("Track batch request rejected") from err
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching tracks (retry failed): %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
@@ -1167,6 +1167,8 @@ class KionMusicClient:
 
     def _is_connection_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a connection or server drop."""
+        if isinstance(err, BadRequestError):
+            return False
         if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
             return True
         msg = str(err).lower()

@@ -37,7 +37,7 @@ from PIL import Image as PilImage
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, sync_run_state
 
 from .api_client import KionMusicClient
 from .constants import (
@@ -926,6 +926,11 @@ class KionMusicProvider(MusicProvider):
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
             full_tracks = await self.client.get_tracks(batch_ids)
+            returned_ids = {str(track.id).split(":", 1)[0] for track in full_tracks}
+            omitted_ids = {item_id.split(":", 1)[0] for item_id in batch_ids} - returned_ids
+            # A still-liked track can be unavailable in this region. Keep it out of the
+            # deletion pass without reporting an ordinary omission as a sync failure.
+            sync_run_state().skipped_item_ids.setdefault(MediaType.TRACK, set()).update(omitted_ids)
             for track in full_tracks:
                 try:
                     yield parse_track(self, track)
@@ -2491,8 +2496,7 @@ class KionMusicProvider(MusicProvider):
                 try:
                     tracks.append(parse_track(self, found))
                 except InvalidDataError as err:
-                    item_id = str(found.id) if found.id is not None else None
-                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
+                    self.logger.debug("Error parsing liked track %s: %s", track_id, err)
 
         self.logger.debug("Liked tracks: fetched %s, parsed %s", len(track_shorts), len(tracks))
         return tracks

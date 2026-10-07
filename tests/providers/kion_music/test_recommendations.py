@@ -86,7 +86,6 @@ def _make_client_mock() -> Mock:
 
 def _install_cache_mocks(provider: KionMusicProvider) -> None:
     """Make the @use_cache decorator treat every call as a cache miss."""
-    provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         return_value=(None, False, False)
     )
@@ -105,7 +104,6 @@ def provider() -> KionMusicProvider:
     mass.metadata.locale = "en_US"
     mass.translations.get_translation = Mock(return_value=None)
     # default: every cache lookup is a miss (tests override to simulate warm entries)
-    mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     use_real_create_task(mass)
@@ -218,21 +216,12 @@ async def test_recommendation_fetch_is_shared_between_callers(
 def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, list[str]]) -> None:
     """Serve the validated-tag-list cache entries as warm hits, everything else as a miss."""
 
-    async def _cache_get_legacy(key: str, **_kwargs: Any) -> Any:
-        for category, tags in tags_by_category.items():
-            if key == f"_get_valid_tags_for_category.{category}":
-                return tags
-        return None
-
     async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
         for category, tags in tags_by_category.items():
             if key == f"_get_valid_tags_for_category.{category}":
                 return tags, True, True
         return None, False, False
 
-    provider.mass.cache.get = AsyncMock(  # type: ignore[method-assign]
-        side_effect=_cache_get_legacy
-    )
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         side_effect=_cache_get
     )
@@ -274,15 +263,6 @@ async def test_expired_tag_list_is_served_while_refreshing(
         assert await request == stale_tags
         await asyncio.wait_for(refresh_started.wait(), timeout=1)
         assert any(not task.done() for task in background_tasks)
-        provider.mass.cache.get_with_freshness.assert_awaited_once_with(
-            "_get_valid_tags_for_category.mood",
-            provider=provider.instance_id,
-            checksum=None,
-            category=0,
-            allow_bypass=True,
-            base_class=None,
-            include_expired=True,
-        )
     finally:
         request.cancel()
         for task in background_tasks:

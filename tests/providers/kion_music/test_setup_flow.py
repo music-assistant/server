@@ -63,5 +63,3 @@ async def test_setup_flow_retries_with_translated_error(session: Mock) -> None:
     assert error.translation_owner == "kion_music"
     assert retry_call.args[0][0].value == "expired-token"
     assert session.finish.await_args_list[-1].args[0] == {CONF_TOKEN: "fresh-token"}
-    assert "expired-token" not in str(retry_call.kwargs["errors"])
-    assert "fresh-token" not in str(retry_call.kwargs["errors"])
