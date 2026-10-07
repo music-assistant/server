@@ -131,6 +131,19 @@ def test_cifs_command_on_linux_keeps_names_as_they_are() -> None:
     assert "username=user@realm" in cmd[4]
 
 
+@pytest.mark.parametrize(
+    ("username", "share"),
+    [("user,uid=1000", "music"), ("user=x", "music"), ("marcel", "music,uid=1000")],
+)
+def test_cifs_command_on_linux_rejects_option_separators(username: str, share: str) -> None:
+    """A user or share that would add options to the Linux mount command is refused."""
+    with pytest.raises(SetupFailedError):
+        build_cifs_mount_cmd("Linux", "nas.local", share, MOUNT_PATH, username=username)
+
+    # the macOS URL encodes them instead
+    build_cifs_mount_cmd("Darwin", "nas.local", share, MOUNT_PATH, username=username)
+
+
 @pytest.mark.parametrize(("username", "password"), [(None, None), ("Guest", "pw"), ("", "pw")])
 def test_cifs_command_on_macos_as_guest_read_only(
     username: str | None, password: str | None
