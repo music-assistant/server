@@ -1020,6 +1020,7 @@ async def test_get_media_stream_sends_probed_user_agent_to_ffmpeg(
 
 @pytest.mark.asyncio
 async def test_get_media_stream_probes_remote_mp3_once_per_url(
+    monkeypatch: pytest.MonkeyPatch,
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
 ) -> None:
@@ -1042,15 +1043,19 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
     assert patch_ffmpeg.last_instance is not None
     assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "1200"]
 
-    # a probe that could not reach the server is retried on the next seek
+    # a probe that could not reach the server is not repeated until its retry time
     mp3_probe.result = None
-    mp3_probe.calls.clear()
-    streamdetails.path = "http://test.invalid/unreachable.mp3"
-    for seek_position in (600, 1200):
-        await _drain(
-            audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=seek_position)
-        )
-    assert len(mp3_probe.calls) == 2
+    for retry_seconds, expected_calls in ((60, 1), (-1, 2)):
+        monkeypatch.setattr(audio_mod, "MP3_SEEK_PROBE_RETRY_SECONDS", retry_seconds)
+        mp3_probe.calls.clear()
+        streamdetails.path = f"http://test.invalid/unreachable{retry_seconds}.mp3"
+        for seek_position in (600, 1200):
+            await _drain(
+                audio.get_media_stream(
+                    streamdetails, _make_pcm_format(), seek_position=seek_position
+                )
+            )
+        assert len(mp3_probe.calls) == expected_calls
 
     # another user agent may get another answer from the server
     streamdetails = _seekable_streamdetails()

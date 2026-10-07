@@ -143,6 +143,7 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.mp3 import (
+    NO_SEEK_HINTS,
     Mp3SeekHints,
     ffmpeg_http_headers,
     probe_mp3_seek_hints,
@@ -212,6 +213,7 @@ FADE_SOURCE_WAIT = 5.0
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
 
 MP3_SEEK_HINTS_CACHE_SIZE = 64
+MP3_SEEK_PROBE_RETRY_SECONDS = 60
 
 # Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
 # multi-mirror reader treats these as the signal to fail over to the next URL.
@@ -583,10 +585,11 @@ class StreamsAudio:
         self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             WeakValueDictionary()
         )
-        # seeks within the same episode reuse the probe instead of fetching it again
-        self._mp3_seek_hints: OrderedDict[tuple[str, frozenset[tuple[str, str]]], Mp3SeekHints] = (
-            OrderedDict()
-        )
+        # seeks within the same episode reuse the probe instead of fetching it again,
+        # a failed probe only until its retry time
+        self._mp3_seek_hints: OrderedDict[
+            tuple[str, frozenset[tuple[str, str]]], tuple[Mp3SeekHints, float | None]
+        ] = OrderedDict()
         # serializes streamdetails resolution per queue item, so concurrent callers share
         # one result instead of each fetching details the others then overwrite
         self._stream_details_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
@@ -5186,14 +5189,19 @@ class StreamsAudio:
             return []
         headers = ffmpeg_http_headers(extra_input_args)
         cache_key = (audio_source, frozenset(headers.items()))
-        if (hints := self._mp3_seek_hints.get(cache_key)) is not None:
+        cached = self._mp3_seek_hints.get(cache_key)
+        if cached is not None and (cached[1] is None or cached[1] > time.monotonic()):
+            hints = cached[0]
             self._mp3_seek_hints.move_to_end(cache_key)
         else:
-            hints = await probe_mp3_seek_hints(self.mass.http_session, audio_source, headers)
-            if hints is None:
+            probed = await probe_mp3_seek_hints(self.mass.http_session, audio_source, headers)
+            retry_at: float | None = None
+            if probed is None:
                 self.logger.debug("Could not probe %s for seek hints", streamdetails.uri)
-                return []
-            self._mp3_seek_hints[cache_key] = hints
+                retry_at = time.monotonic() + MP3_SEEK_PROBE_RETRY_SECONDS
+            hints = probed or NO_SEEK_HINTS
+            self._mp3_seek_hints[cache_key] = (hints, retry_at)
+            self._mp3_seek_hints.move_to_end(cache_key)
             while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
                 self._mp3_seek_hints.popitem(last=False)
         if not hints.fastseek:
