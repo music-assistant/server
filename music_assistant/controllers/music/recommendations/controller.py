@@ -79,10 +79,9 @@ class RecommendationsController:
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
         try:
-            prov = self.mass.get_provider(provider)
-            # re-apply the user provider filter the rows listing applies, so a user
-            # can not fetch items from a music provider an admin has restricted them from
-            if prov is None or not self.mass.music._apply_user_provider_filter([prov]):
+            # bound to the user's music sources like the rows listing, never a hidden account
+            prov = self.mass.get_provider(self.mass.music.resolve_visible_provider(provider))
+            if prov is None:
                 return UniqueList()
             if ProviderFeature.RECOMMENDATIONS not in prov.supported_features:
                 # keep the base-model guarantee that this method is only called for

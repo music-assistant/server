@@ -891,9 +891,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # provider level
         prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
-        browse_prov = self.mass.get_provider(provider_instance)
-        if browse_prov and not self._apply_user_provider_filter([browse_prov]):
-            raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
+        browse_prov = self.mass.get_provider(self.resolve_visible_provider(provider_instance))
         # handle regular provider listing, always add back folder first
         if not browse_prov or not sub_path:
             prepend_items.append(

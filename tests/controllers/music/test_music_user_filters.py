@@ -206,16 +206,11 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
 async def test_browse_refuses_a_source_the_user_may_not_see(mock_get_user: Mock) -> None:
     """Browsing straight into another member's music source by path is refused."""
     mock_get_user.return_value = _user(USER_A)
-    mass = Mock()
-    set_music_source_access(mass, {"m_a": None, "m_b": _private(USER_B)})
-    music_a = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
+    music_a = _music_source_prov("m_a")
     music_a.browse = AsyncMock(return_value=[])
-    music_b = _make_prov("m_b", ProviderType.MUSIC, {ProviderFeature.BROWSE})
-    music_b.name = "Music B"
-    mass.get_provider.side_effect = {"m_a": music_a, "m_b": music_b}.get
-
-    controller = MusicController.__new__(MusicController)
-    controller.mass = mass
+    controller = _controller_with_sources(
+        {"m_a": None, "m_b": _private(USER_B)}, [music_a, _music_source_prov("m_b")]
+    )
 
     with pytest.raises(InsufficientPermissions):
         await controller.browse(path="m_b://")
@@ -1154,6 +1149,43 @@ async def test_reads_stay_on_the_users_account_when_it_drops_mid_request(
                 await read(counted_mass)
         else:
             assert await read(counted_mass) == [own_track]
+
+
+async def test_browse_and_recommendations_stay_on_the_users_account(
+    counted_mass: MusicAssistant,
+) -> None:
+    """Browsing and recommendation rows are served by the user's own account, never a hidden one."""
+    providers: dict[str, Mock] = {}
+    # the hidden account is listed first, so an unfiltered domain lookup would return it
+    for instance_id in (PROV_B, PROV_A):
+        provider = Mock(spec=MusicProvider)
+        provider.instance_id = instance_id
+        provider.type = ProviderType.MUSIC
+        provider.domain = "service"
+        provider.is_streaming_provider = True
+        provider.available = True
+        provider.supported_features = {ProviderFeature.BROWSE, ProviderFeature.RECOMMENDATIONS}
+        provider.browse = AsyncMock(return_value=[provider])
+        provider.get_recommendation_items = AsyncMock(return_value=UniqueList([provider]))
+        providers[instance_id] = provider
+    with (
+        patch.dict(counted_mass._providers, providers),
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=_user(USER_A),
+        ),
+    ):
+        assert (await counted_mass.music.browse("service://"))[-1] is providers[PROV_A]
+        rows = await counted_mass.music.recommendations.get_recommendation_items("service", "row")
+        assert list(rows) == [providers[PROV_A]]
+        providers[PROV_A].available = False
+        with pytest.raises(ProviderUnavailableError):
+            await counted_mass.music.browse(f"{PROV_A}://")
+        assert (
+            await counted_mass.music.recommendations.get_recommendation_items(PROV_A, "row") == []
+        )
+    providers[PROV_B].browse.assert_not_awaited()
+    providers[PROV_B].get_recommendation_items.assert_not_awaited()
 
 
 async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:
