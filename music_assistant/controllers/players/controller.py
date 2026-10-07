@@ -1352,6 +1352,34 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._handle_enqueue_next_media(player_id, media)
 
     @api_command("players/cmd/set_members", required_scope=Scope.PLAYERS_CONTROL)
+    async def cmd_set_members_for_api(
+        self,
+        target_player: str,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """
+        Join/unjoin given player(s) to/from target player.
+
+        Will add the given player(s) to the target player (sync leader or group player).
+
+        :param target_player: player_id of the syncgroup leader or group player.
+        :param player_ids_to_add: List of player_id's to add to the target player.
+        :param player_ids_to_remove: List of player_id's to remove from the target player.
+
+        :raises InsufficientPermissions: if the user may not use one of the given players.
+        :raises UnsupportedFeaturedException: if the target player does not support grouping.
+        :raises PlayerUnavailableError: if the target player is not available.
+        """
+        current_user = get_current_user()
+        for player_id in (target_player, *(player_ids_to_add or ()), *(player_ids_to_remove or ())):
+            player = self.get_player(player_id)
+            if current_user and not has_player_access(current_user, player_id, player):
+                name = player.display_name if player else player_id
+                msg = f"{current_user.username} does not have access to player {name}"
+                raise InsufficientPermissions(msg)
+        await self.cmd_set_members(target_player, player_ids_to_add, player_ids_to_remove)
+
     async def cmd_set_members(
         self,
         target_player: str,
@@ -1425,7 +1453,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :raises PlayerUnavailableError: if the target player is not available.
         :raises PlayerCommandFailed: if the player is already grouped to another player.
         """
-        await self.cmd_set_members(target_player, player_ids_to_add=[player_id])
+        await self.cmd_set_members_for_api(target_player, player_ids_to_add=[player_id])
 
     @api_command("players/cmd/group_many", required_scope=Scope.PLAYERS_CONTROL)
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
@@ -1435,7 +1463,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Will add the given player(s) to the target player (sync leader or group player).
         This is a (deprecated) alias for cmd_set_members.
         """
-        await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
+        await self.cmd_set_members_for_api(target_player, player_ids_to_add=child_player_ids)
 
     @api_command("players/cmd/ungroup", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
