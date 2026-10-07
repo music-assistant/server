@@ -93,11 +93,12 @@ class JWTHelper:
             algorithms=[self.algorithm],
             options={"verify_exp": verify_exp, "verify_aud": False},
         )
-        # Tokens without iss/aud claims are still accepted, so only check them when present
-        if "aud" in payload and not self._audience_matches(payload["aud"]):
-            raise jwt.InvalidAudienceError("Invalid audience")
-        if "iss" in payload and payload["iss"] != JWT_ISSUER:
-            raise jwt.InvalidIssuerError("Invalid issuer")
+        # Tokens issued without iss/aud are still accepted; once either is present both must match
+        if "aud" in payload or "iss" in payload:
+            if not self._audience_matches(payload.get("aud")):
+                raise jwt.InvalidAudienceError("Invalid audience")
+            if payload.get("iss") != JWT_ISSUER:
+                raise jwt.InvalidIssuerError("Invalid issuer")
         return payload
 
     @staticmethod
