@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 from music_assistant.models.plugin import PluginProvider
+from music_assistant_models.auth import Scope
 
 from .engine import (
     MODES,
@@ -274,6 +275,37 @@ class SmartDJProvider(PluginProvider):
         self._session: aiohttp.ClientSession | None = None
         self._handles: list[Any] = []
         self._cache_file = Path(self.mass.storage_path) / "smart_dj" / "analysis_cache.json"
+
+    async def loaded_in_mass(self) -> None:
+        """Register the Smart DJ API commands and load the persistent cache."""
+        await self._load_cache()
+        handlers = (
+            # rank_queue can replace the whole upcoming queue, so it is member-only:
+            # LIBRARY_WRITE is the member/guest boundary (user/admin/service hold it,
+            # guests don't), preserving the old required_role="user" exclusion of
+            # guest accounts. The read-only commands (required_scope=None) stay
+            # available to any authenticated user.
+            ("smart_dj/analyze", self.analyze, None),
+            ("smart_dj/rank_queue", self.rank_queue, Scope.LIBRARY_WRITE),
+            ("smart_dj/status", self.status, None),
+            ("smart_dj/capabilities", self.capabilities, None),
+        )
+        for command, handler, required_scope in handlers:
+            self._handles.append(
+                self.mass.register_api_command(
+                    command, handler, required_scope=required_scope
+                )
+            )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Close the HTTP client and unregister commands."""
+        for handle in self._handles:
+            handle()
+        self._handles.clear()
+        if self._session:
+            await self._session.close()
+            self._session = None
+        await super().unload(is_removed)
 
     async def _load_cache(self) -> None:
         """Load the persistent analysis cache."""

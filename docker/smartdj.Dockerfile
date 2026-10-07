@@ -36,14 +36,29 @@ COPY --from=fewheel /wheels /wheels
 COPY requirements_all.txt MANIFEST.in /build/
 COPY pyproject.toml README.md setup.cfg /build/
 COPY music_assistant /build/music_assistant
-# NOTE: no app_secrets.json handling here — that file is a nightly-only artifact;
-# the fork server never references it (verified: zero `app_secrets` hits in fork source).
+# Preserve the base image's bundled app_secrets.json (upstream's private
+# provider credentials: spotify_client_id, tidal, deezer, qobuz, apple_music_token,
+# lastfm, acoustid — consumed at runtime by music_assistant/helpers/app_vars.py).
+# Reinstalling the fork's music_assistant package replaces the base install and
+# would otherwise delete this file, leaving app_var() empty and every provider
+# that relies on bundled credentials broken at setup ("client_id: Not present").
+# Fail loudly if upstream stops shipping it — a silent skip re-breaks providers.
+RUN set -eux; \
+  src="$(find /app/venv -name app_secrets.json -path '*music_assistant*')"; \
+  mkdir -p /tmp/appvars; \
+  cp "$src" /tmp/app_secrets.json; \
+  dirname "$src" > /tmp/appvars/destdir
 RUN . /app/venv/bin/activate \
   && export UV_INDEX_STRATEGY=unsafe-best-match \
   && uv pip install --python /app/venv/bin/python --no-cache -r /build/requirements_all.txt \
   && uv pip install --python /app/venv/bin/python --no-cache /build \
   && uv pip install --python /app/venv/bin/python --no-cache /wheels/*.whl \
   && rm -rf /build /wheels /root/.cache
+# Restore the bundled app secrets into the reinstalled package tree.
+RUN set -eux; \
+  destdir="$(cat /tmp/appvars/destdir)"; \
+  cp /tmp/app_secrets.json "$destdir/app_secrets.json"; \
+  rm -rf /tmp/appvars /tmp/app_secrets.json
 EXPOSE 18095 18097
 
 # Admin-reset hook: wrap the base entrypoint. If the add-on option reset_admin
