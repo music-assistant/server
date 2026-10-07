@@ -3,7 +3,7 @@
   "domain": "neteasecloudmusic_scrobble",
   "stage": "beta",
   "name": "NetEase Cloud Music Scrobbler",
-  "description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping play counts, listening stats and daily recommendations in sync.",
+  "description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping your NetEase play counts and listening history in sync.",
   "codeowners": ["@Kiranwin"],
   "documentation": "",
   "multi_instance": true,
