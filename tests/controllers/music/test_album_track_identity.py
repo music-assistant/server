@@ -247,6 +247,12 @@ def test_sources_at_one_position_collapse_in_any_order(order: tuple[int, ...]) -
     assert [track.item_id for track in selected] == ["one"]
 
 
+def test_repeated_provider_id_within_a_listing_identifies_nothing() -> None:
+    """A listing carrying one provider id at two positions still joins the slots by position."""
+    tracks = [entry("a", "a1", 1), entry("a", "a2", 2), entry("b", "b1", 1), entry("b", "b1", 2)]
+    assert sorted(track.track_number for track in select([], tracks)) == [1, 2]
+
+
 def test_repeated_isrc_within_a_listing_identifies_nothing() -> None:
     """A source reusing one ISRC keeps both entries; another source then matches by position."""
     reused = [entry("a", "one", 1, "GBAYC2100001"), entry("a", "five", 5, "GBAYC2100001")]

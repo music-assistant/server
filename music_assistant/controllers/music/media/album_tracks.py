@@ -23,8 +23,8 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
 
     A library row always keeps its slot. A provider entry joins an existing slot by
     provider ID, then by ISRC, then by position or, without one, by a title no listing
-    has twice; a listing is never collapsed onto itself, and an ISRC that one listing
-    has more than once identifies nothing.
+    has twice; a listing is never collapsed onto itself, and a provider id or ISRC that
+    one listing has more than once identifies nothing.
 
     :param library: The album's library rows.
     :param listings: The album's tracklists, one per provider album it is fetched as.
@@ -39,9 +39,9 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
         if isrcs.intersection(entries.library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
             continue
-        ids = _ids(track)
-        if entries.library_ids.intersection(ids):
+        if entries.library_ids.intersection(_ids(track)):
             continue
+        ids = entries.usable_ids[id(track)]
         source = entries.source_of[id(track)]
         title = entries.title_of[id(track)]
         position = _position(track) if track.track_number else None
@@ -187,6 +187,7 @@ class _Entries:
     providers: list[Track]
     source_of: dict[int, int]
     order_of: dict[int, tuple[int, int]]
+    usable_ids: dict[int, set[tuple[str, str]]]
     usable_isrcs: dict[int, set[str]]
     title_of: dict[int, tuple[int, str, str]]
     unique_titles: set[tuple[int, str, str]]
@@ -207,7 +208,9 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
     # provider does), which are not entries of their own
     providers = [track for listing in listings for track in listing if track.provider != "library"]
     source_of = _source_of(library, listings)
-    usable_isrcs = _unique_isrcs_per_source(library + providers, source_of)
+    usable_isrcs = _listed_once(
+        {id(track): _isrcs(track) for track in library + providers}, source_of
+    )
     title_of = {id(track): _title(track) for track in library + providers}
     library_isrcs_by_title: dict[tuple[int, str, str], set[str]] = defaultdict(set)
     for track in library:
@@ -220,6 +223,7 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
             for source, listing in enumerate(listings)
             for index, track in enumerate(listing)
         },
+        usable_ids=_listed_once({id(track): _ids(track) for track in providers}, source_of),
         usable_isrcs=usable_isrcs,
         title_of=title_of,
         unique_titles=_unique_titles(library + providers, title_of, source_of),
@@ -386,18 +390,19 @@ def _unique_titles(
     }
 
 
-def _unique_isrcs_per_source(tracks: list[Track], source_of: dict[int, int]) -> dict[int, set[str]]:
+def _listed_once(
+    values_of: dict[int, set[_Key]], source_of: dict[int, int]
+) -> dict[int, set[_Key]]:
     """
-    Return, per entry, the ISRCs its own listing has exactly once.
+    Return, per entry, the identifiers of its own that its listing has exactly once.
 
-    :param tracks: The entries of every listing, library rows included.
+    :param values_of: The identifiers of each entry, by its id.
     :param source_of: The listing of each entry, by its id.
     """
-    isrcs_of = {id(track): _isrcs(track) for track in tracks}
-    seen: dict[int, Counter[str]] = defaultdict(Counter)
-    for track in tracks:
-        seen[source_of[id(track)]].update(isrcs_of[id(track)])
+    seen: dict[int, Counter[_Key]] = defaultdict(Counter)
+    for entry, values in values_of.items():
+        seen[source_of[entry]].update(values)
     return {
-        id(track): {isrc for isrc in isrcs_of[id(track)] if seen[source_of[id(track)]][isrc] == 1}
-        for track in tracks
+        entry: {value for value in values if seen[source_of[entry]][value] == 1}
+        for entry, values in values_of.items()
     }
