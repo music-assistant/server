@@ -15,7 +15,7 @@ aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@fea
 aiomusiccast==0.15.0
 aiosendspin[server]==10.0.0
 aioslimproto==3.2.3
-aiosonos==0.1.13
+aiosonos==0.1.14
 aiosqlite==0.22.1
 aiosxm==0.3.0
 aiovban==1.1.0
