@@ -805,7 +805,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get a single collection."""
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
-        sql_query, base_query_params = self._build_final_query([], [], None, summary=False)
+        query_parts: list[str] = []
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(self._provider_filter_clause(query_params, provider_filter))
+        sql_query, base_query_params = self._build_final_query(query_parts, [], None, summary=False)
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
         sql_query = await self._adapt_query_for_collections(

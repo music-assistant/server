@@ -28,7 +28,10 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     Genre,
+    MediaItemCollection,
+    MediaItemMetadata,
     Playlist,
     ProviderMapping,
     Radio,
@@ -40,6 +43,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.helpers.collections import get_collection_item_id
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     current_priority,
@@ -1186,6 +1190,29 @@ async def test_browse_and_recommendations_stay_on_the_users_account(
         )
     providers[PROV_B].browse.assert_not_awaited()
     providers[PROV_B].get_recommendation_items.assert_not_awaited()
+
+
+async def test_collection_holds_only_the_users_music_sources(mass: MusicAssistant) -> None:
+    """A collection only holds the items of the music sources the user may see."""
+    set_music_source_access(mass, {PROV_A: _private(USER_A), PROV_B: _private(USER_B)})
+    for name, provider_instance in (("Book 1", PROV_A), ("Book 2", PROV_B)):
+        await mass.music.audiobooks.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping(provider_instance)},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList([MediaItemCollection(title="Series", sequence=1.0)])
+                ),
+            )
+        )
+    item_id = get_collection_item_id("Series", item_media_type=MediaType.AUDIOBOOK)
+
+    with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
+        collection = await mass.music.audiobooks.get_collection(item_id)
+
+    assert [item.name for item in collection.items] == ["Book 1"]
 
 
 async def test_item_listings_respect_user_music_sources(counted_mass: MusicAssistant) -> None:
