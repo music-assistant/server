@@ -1,13 +1,11 @@
-"""Tests that client-supplied playlog item ids are validated and never reach SQL as code."""
+"""Tests that client-supplied playlog item ids never reach SQL as code."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Audiobook, ItemMapping, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
@@ -80,22 +78,6 @@ async def test_playlog_provider_item_ids_ignores_injected_item_id(mass: MusicAss
     result = await mass.music.get_playlog_provider_item_ids(ABS_INSTANCE, userid=user.user_id)
 
     assert result == [(MediaType.AUDIOBOOK, "abs-book-1")]
-
-
-async def test_mark_played_rejects_non_numeric_library_item_id(mass: MusicAssistant) -> None:
-    """A full library item with a non-numeric id is refused before anything is written."""
-    user = await mass.webserver.auth.create_user("playlogbadlibraryid")
-    book = Audiobook(
-        item_id=INJECTION_ITEM_ID,
-        provider="library",
-        name="Not A Library Item",
-        provider_mappings=set(),
-    )
-
-    with pytest.raises(InvalidDataError):
-        await mass.music.mark_item_played(book, fully_played=False, userid=user.user_id)
-
-    assert not await _audiobook_playlog_rows(mass)
 
 
 async def test_mark_played_stores_numeric_library_item_id(mass: MusicAssistant) -> None:

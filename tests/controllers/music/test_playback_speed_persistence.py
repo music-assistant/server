@@ -34,7 +34,7 @@ def _library_mapping() -> set[ProviderMapping]:
 def _audiobook() -> Audiobook:
     """Create a minimal audiobook with a unique item id."""
     return Audiobook(
-        item_id=str(uuid4().int),
+        item_id=uuid4().hex,
         provider="library",
         name="A Book",
         provider_mappings=_library_mapping(),

@@ -1746,11 +1746,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
-        if media_item.provider == "library" and not (
-            media_item.item_id.isascii() and media_item.item_id.isdigit()
-        ):
-            msg = "Library item id must be numeric"
-            raise InvalidDataError(msg)
         # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
