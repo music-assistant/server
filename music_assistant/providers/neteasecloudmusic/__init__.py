@@ -1970,8 +1970,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if isinstance(fm_rows, list) and fm_rows and isinstance(fm_rows[0], dict):
                 fm_item = fm_rows[0]
                 song_obj = fm_item.get("song") if isinstance(fm_item.get("song"), dict) else fm_item
-                if isinstance(song_obj, dict):
-                    return _extract_song_image_url(song_obj)
+                if isinstance(song_obj, dict) and (image_url := _extract_song_image_url(song_obj)):
+                    return image_url
         # fallback to the daily recommendations cover when no FM artwork is available
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             rows = daily_rows if daily_rows is not None else await self._get_daily_recommend_rows()
