@@ -103,7 +103,7 @@ def _mock_mass() -> MagicMock:
     """Return a mocked mass whose TaskManager tasks really run."""
     mass = MagicMock()
 
-    def _create_task(coro: Any) -> asyncio.Task[Any]:
+    def _create_task(coro: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         return asyncio.get_running_loop().create_task(coro)
 
     mass.create_task = MagicMock(side_effect=_create_task)

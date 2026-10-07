@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -13,7 +13,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.beets import BeetsProvider
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
@@ -26,6 +26,7 @@ MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 LIBRARY_A = "beets--libA"
 LIBRARY_B = "beets--libB"
 OTHER_INSTANCE = "other--instance"
+USER_ID = "listener"
 
 # the sync's TaskManager runs its imports through mass.create_task, which pins tasks to
 # mass.loop, so each test must run on the loop its class-scoped Music Assistant was created on
@@ -35,6 +36,13 @@ pytestmark = pytest.mark.asyncio(loop_scope="class")
 @pytest.fixture(scope="class")
 def library_mass(music_mass_class: MusicAssistant) -> MusicAssistant:
     """Return a database-only Music Assistant with an empty library for each test class."""
+    # imports store ReplayGain loudness and removals clean up audio analysis, both through
+    # the audio analysis controller this database-only instance does not run
+    music_mass_class.streams = MagicMock()
+    music_mass_class.streams.audio_analysis.set_track_loudness = AsyncMock()
+    music_mass_class.streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    # setting a favorite clears cached search results, and this instance sets up no cache
+    music_mass_class.cache.delete = AsyncMock()  # type: ignore[method-assign]
     return music_mass_class
 
 
@@ -154,6 +162,16 @@ async def _library_albums(mass: MusicAssistant) -> dict[str, Album]:
     return {album.name: album for album in await mass.music.albums.get_library_items_by_query()}
 
 
+async def _is_favorite(mass: MusicAssistant, track: Track) -> bool:
+    """Return whether the test user likes a library track."""
+    assert mass.music.database
+    rows = await mass.music.database.get_rows(
+        DB_TABLE_FAVORITES,
+        {"media_type": MediaType.TRACK.value, "item_id": int(track.item_id), "user_id": USER_ID},
+    )
+    return any(row["favorite"] for row in rows)
+
+
 def _other_mapping(item_id: str) -> ProviderMapping:
     """Return a mapping of another music provider, as a saved album or followed artist has."""
     return ProviderMapping(
@@ -231,7 +249,7 @@ class TestReimportedItem:
         await _sync(provider)
         library_track = await _library_track(library_mass, old_id)
         assert library_track is not None
-        await library_mass.music.tracks.set_favorite(library_track.item_id, True)
+        await library_mass.music.tracks.set_favorite(library_track.item_id, True, [USER_ID])
 
         beets_db.delete_item(old_id)
         new_id = _add_item(beets_db, album_id, "Song", **recording)
@@ -242,7 +260,7 @@ class TestReimportedItem:
         reimported = await _library_track(library_mass, new_id)
         assert reimported is not None
         assert reimported.item_id == library_track.item_id
-        assert reimported.favorite is True
+        assert await _is_favorite(library_mass, reimported)
         assert {
             mapping.item_id
             for mapping in reimported.provider_mappings
@@ -299,7 +317,7 @@ class TestMergedItemRetaggedAsAnotherRecording:
             (INSTANCE_ID, track_prov_id(retagged)),
             (INSTANCE_ID, track_prov_id(other)),
         }
-        await library_mass.music.tracks.set_favorite(merged.item_id, True)
+        await library_mass.music.tracks.set_favorite(merged.item_id, True, [USER_ID])
 
         beets_db.update_item(
             retagged,
@@ -321,8 +339,8 @@ class TestMergedItemRetaggedAsAnotherRecording:
         assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
         # the library track, with its favorite, stays with the item that did not change
         assert other_track.item_id == merged.item_id
-        assert other_track.favorite is True
-        assert retagged_track.favorite is False
+        assert await _is_favorite(library_mass, other_track)
+        assert not await _is_favorite(library_mass, retagged_track)
 
 
 class TestMergedItemRematchedKeepingItsFingerprint:
@@ -350,7 +368,7 @@ class TestMergedItemRematchedKeepingItsFingerprint:
             (INSTANCE_ID, track_prov_id(rematched)),
             (INSTANCE_ID, track_prov_id(other)),
         }
-        await library_mass.music.tracks.set_favorite(merged.item_id, True)
+        await library_mass.music.tracks.set_favorite(merged.item_id, True, [USER_ID])
 
         beets_db.update_item(
             rematched, title="Totally Different", mb_trackid=str(uuid4()), isrc="TESTREMATCH01"
@@ -368,8 +386,8 @@ class TestMergedItemRematchedKeepingItsFingerprint:
         assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
         # the library track, with its favorite, stays with the item that did not change
         assert other_track.item_id == merged.item_id
-        assert other_track.favorite is True
-        assert rematched_track.favorite is False
+        assert await _is_favorite(library_mass, other_track)
+        assert not await _is_favorite(library_mass, rematched_track)
 
 
 class TestMergedItemsWithoutExternalIds:

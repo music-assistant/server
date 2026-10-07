@@ -301,7 +301,7 @@ def test_parse_track_maps_fields() -> None:
     assert track.metadata.description == "A comment"
     assert track.metadata.release_date == datetime(2001, 5, 7, tzinfo=UTC)
     assert track.metadata.mood == "happy"
-    assert track.favorite is False
+    assert track.favorite is None
     mapping = next(iter(track.provider_mappings))
     assert mapping.details == "abc123"
     assert mapping.in_library is True
