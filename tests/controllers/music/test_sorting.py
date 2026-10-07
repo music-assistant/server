@@ -136,10 +136,11 @@ def test_get_sort_options_for_album_includes_artist_name_and_random() -> None:
 
 
 def test_get_sort_options_for_genre_includes_supported_fields() -> None:
-    """Genre sort options include date-added and both play-count fields."""
+    """Genre sort options include timestamp and play-count fields."""
     options = get_sort_options_for_media_type(MediaType.GENRE)
     fields = {option.field for option in options}
     assert SortField.TIMESTAMP_ADDED.value in fields
+    assert SortField.TIMESTAMP_MODIFIED.value in fields
     assert SortField.PLAY_COUNT.value in fields
     assert SortField.RANDOM_PLAY_COUNT.value in fields
 
@@ -172,6 +173,7 @@ async def test_resolve_sort_parameters_accepts_supported_field_for_media_type(
         sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
     )
     await mass.music.genres.library_items(sort_field=SortField.TIMESTAMP_ADDED)
+    await mass.music.genres.library_items(sort_field=SortField.TIMESTAMP_MODIFIED)
     await mass.music.genres.library_items(sort_field=SortField.PLAY_COUNT)
     await mass.music.genres.library_items(sort_field=SortField.RANDOM_PLAY_COUNT)
 

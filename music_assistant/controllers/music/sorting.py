@@ -177,6 +177,7 @@ MEDIA_TYPE_SORT_FIELDS: dict[MediaType, list[SortField]] = {
         SortField.NAME,
         SortField.SORT_NAME,
         SortField.TIMESTAMP_ADDED,
+        SortField.TIMESTAMP_MODIFIED,
         SortField.PLAY_COUNT,
         SortField.RANDOM,
         SortField.RANDOM_PLAY_COUNT,
