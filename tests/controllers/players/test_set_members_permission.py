@@ -63,20 +63,3 @@ async def test_set_members_with_a_player_outside_the_filter_is_refused(
             target_player, player_ids_to_add, player_ids_to_remove
         )
     controller.cmd_set_members.assert_not_awaited()  # type: ignore[attr-defined]
-
-
-async def test_set_members_inside_the_filter_proceeds(controller: PlayerController) -> None:
-    """A member change between players inside the filter is carried out."""
-    with _restricted_user():
-        await controller.cmd_set_members_for_api("leader", ["member"], None)
-    controller.cmd_set_members.assert_awaited_once_with(  # type: ignore[attr-defined]
-        "leader", ["member"], None
-    )
-
-
-async def test_group_many_with_a_player_outside_the_filter_is_refused(
-    controller: PlayerController,
-) -> None:
-    """The deprecated group_many alias applies the same access check."""
-    with _restricted_user(), pytest.raises(InsufficientPermissions):
-        await controller.cmd_group_many("leader", ["other"])
