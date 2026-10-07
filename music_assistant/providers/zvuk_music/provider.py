@@ -273,29 +273,29 @@ class ZvukMusicProvider(MusicProvider):
         Get playlist tracks.
 
         :param prov_playlist_id: The provider playlist ID.
-        :param page: Page number for pagination.
+        :param page: Page number; the whole playlist is returned on page 0.
         :return: List of Track objects with 1-based playlist positions.
         """
-        # Page over the playlist's own track order: the API's limit/offset windows
-        # return fewer items than requested, which would shift positions.
-        all_ids = await self._get_playlist_track_ids(prov_playlist_id)
-        offset = page * PLAYLIST_TRACKS_PAGE_SIZE
-        page_ids = all_ids[offset : offset + PLAYLIST_TRACKS_PAGE_SIZE]
-        if not page_ids:
+        # The whole playlist is returned on page 0 so its track order is read once
+        # per listing; the API's own limit/offset windows return fewer items than
+        # requested, which would shift positions.
+        if page > 0:
             return []
-
-        full_tracks = {str(t.id): t for t in await self.client.get_tracks(page_ids) if t.id}
+        all_ids = await self._get_playlist_track_ids(prov_playlist_id)
         tracks = []
-        for index, track_id in enumerate(page_ids, start=offset + 1):
-            if (full_track := full_tracks.get(track_id)) is None:
-                continue
-            try:
-                track = parse_track(self, full_track)
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing playlist track: %s", err)
-                continue
-            track.position = index
-            tracks.append(track)
+        for offset in range(0, len(all_ids), PLAYLIST_TRACKS_PAGE_SIZE):
+            batch_ids = all_ids[offset : offset + PLAYLIST_TRACKS_PAGE_SIZE]
+            full_tracks = {str(t.id): t for t in await self.client.get_tracks(batch_ids) if t.id}
+            for index, track_id in enumerate(batch_ids, start=offset + 1):
+                if (full_track := full_tracks.get(track_id)) is None:
+                    continue
+                try:
+                    track = parse_track(self, full_track)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing playlist track: %s", err)
+                    continue
+                track.position = index
+                tracks.append(track)
         return tracks
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)

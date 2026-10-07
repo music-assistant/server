@@ -64,26 +64,29 @@ class TestPlaylistTrackPositions:
         assert [(t.item_id, t.position) for t in tracks] == [("10", 1), ("20", 2), ("30", 3)]
 
     @pytest.mark.asyncio
-    async def test_second_page_continues_positions(self) -> None:
-        """The second page starts at position 51."""
+    async def test_first_page_returns_whole_playlist_in_batches(self) -> None:
+        """Page 0 reads the playlist once and returns every track, fetching details in batches."""
         ids = [str(i) for i in range(1, 76)]
         provider = _playlist_provider(ids)
 
         with patch("music_assistant.providers.zvuk_music.provider.parse_track", _fake_parse_track):
-            tracks = await _get_playlist_tracks(provider, "pl", page=1)
+            tracks = await _get_playlist_tracks(provider, "pl", page=0)
 
-        assert tracks[0].item_id == "51"
-        assert tracks[0].position == 51
-        assert tracks[-1].position == 75
+        assert [t.item_id for t in tracks] == ids
+        assert [t.position for t in tracks] == list(range(1, 76))
+        provider.client.get_playlist.assert_awaited_once_with("pl")
+        assert [len(c.args[0]) for c in provider.client.get_tracks.await_args_list] == [50, 25]
 
     @pytest.mark.asyncio
-    async def test_page_past_end_is_empty(self) -> None:
-        """A page beyond the playlist returns no tracks."""
-        provider = _playlist_provider(["10", "20"])
+    async def test_later_pages_are_empty_without_api_calls(self) -> None:
+        """Pages after the first end the listing without re-reading the playlist."""
+        provider = _playlist_provider([str(i) for i in range(1, 76)])
 
         tracks = await _get_playlist_tracks(provider, "pl", page=1)
 
         assert tracks == []
+        provider.client.get_playlist.assert_not_awaited()
+        provider.client.get_tracks.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_remove_uses_one_based_positions(self) -> None:
