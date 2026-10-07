@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 LIBRARY_A = "beets--libA"
 LIBRARY_B = "beets--libB"
+OTHER_INSTANCE = "other--instance"
 
 # the sync's TaskManager runs its imports through mass.create_task, which pins tasks to
 # mass.loop, so each test must run on the loop its class-scoped Music Assistant was created on
@@ -39,7 +41,6 @@ def library_mass(music_mass_class: MusicAssistant) -> MusicAssistant:
 async def _attach(
     make_provider: MakeProvider,
     mass: MusicAssistant,
-    favorite_rating_threshold: float | None = None,
     instance_id: str = INSTANCE_ID,
     db_path: Path | None = None,
 ) -> BeetsProvider:
@@ -51,15 +52,10 @@ async def _attach(
 
     :param make_provider: The beets provider factory fixture.
     :param mass: The database-only Music Assistant.
-    :param favorite_rating_threshold: The favorite threshold the provider is configured with.
     :param instance_id: The provider instance id.
     :param db_path: The beets database to read, when not the default test database.
     """
-    provider = await make_provider(
-        favorite_rating_threshold=favorite_rating_threshold,
-        instance_id=instance_id,
-        db_path=db_path,
-    )
+    provider = await make_provider(instance_id=instance_id, db_path=db_path)
     provider.mass = mass
     # make_provider skips Provider.__init__, which sets `available`; the library controller
     # finds providers through mass.get_provider, which only returns available ones
@@ -158,6 +154,16 @@ async def _library_albums(mass: MusicAssistant) -> dict[str, Album]:
     return {album.name: album for album in await mass.music.albums.get_library_items_by_query()}
 
 
+def _other_mapping(item_id: str) -> ProviderMapping:
+    """Return a mapping of another music provider, as a saved album or followed artist has."""
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain="other",
+        provider_instance=OTHER_INSTANCE,
+        in_library=True,
+    )
+
+
 def _mappings(item: Track | Album) -> set[tuple[str, str]]:
     """Return the (provider instance, provider item id) pairs of a library item."""
     return {(mapping.provider_instance, mapping.item_id) for mapping in item.provider_mappings}
@@ -209,36 +215,6 @@ class TestEditedItem:
         assert library_track.name == "Renamed"
 
 
-class TestFavoriteThreshold:
-    """Setting the favorite threshold favorites the rated tracks of an unchanged library."""
-
-    async def test_threshold_marks_rated_track_favorite(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """Only the item whose rating reaches the new threshold is imported and favorited."""
-        album_id = beets_db.add_album(**album_fields())
-        rated = _add_item(beets_db, album_id, "Rated", track=1)
-        beets_db.set_item_flex(rated, "rating", "0.9")
-        unrated = _add_item(beets_db, album_id, "Unrated", track=2)
-        await _sync(await _attach(make_provider, library_mass))
-        rated_track = await _library_track(library_mass, rated)
-        assert rated_track is not None
-        assert rated_track.favorite is False
-
-        provider = await _attach(make_provider, library_mass, favorite_rating_threshold=0.8)
-        tracks = library_mass.music.tracks
-        with patch.object(tracks, "add_item_to_library", wraps=tracks.add_item_to_library) as add:
-            await _sync(provider)
-
-        assert [call.args[0].item_id for call in add.await_args_list] == [track_prov_id(rated)]
-        rated_track = await _library_track(library_mass, rated)
-        unrated_track = await _library_track(library_mass, unrated)
-        assert rated_track is not None
-        assert unrated_track is not None
-        assert rated_track.favorite is True
-        assert unrated_track.favorite is False
-
-
 class TestReimportedItem:
     """A beets re-import that gives an item a new id keeps the library track it merges into."""
 
@@ -249,14 +225,13 @@ class TestReimportedItem:
         album_id = beets_db.add_album(**album_fields())
         recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
         old_id = _add_item(beets_db, album_id, "Song", **recording)
-        beets_db.set_item_flex(old_id, "rating", "0.9")
         # a later row keeps sqlite from handing the re-imported item the deleted item's id
         _add_item(beets_db, album_id, "Other", track=2)
-        provider = await _attach(make_provider, library_mass, favorite_rating_threshold=0.8)
+        provider = await _attach(make_provider, library_mass)
         await _sync(provider)
         library_track = await _library_track(library_mass, old_id)
         assert library_track is not None
-        assert library_track.favorite is True
+        await library_mass.music.tracks.set_favorite(library_track.item_id, True)
 
         beets_db.delete_item(old_id)
         new_id = _add_item(beets_db, album_id, "Song", **recording)
@@ -310,7 +285,7 @@ class TestMergedItemRetaggedAsAnotherRecording:
     async def test_retagged_item_and_other_item_end_on_separate_tracks(
         self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
     ) -> None:
-        """Each beets item ends on its own library track with its own title."""
+        """Each beets item ends on its own library track with its own title in one sync."""
         recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
         first_album = _add_album(beets_db, "First Album")
         second_album = _add_album(beets_db, "Second Album")
@@ -324,6 +299,7 @@ class TestMergedItemRetaggedAsAnotherRecording:
             (INSTANCE_ID, track_prov_id(retagged)),
             (INSTANCE_ID, track_prov_id(other)),
         }
+        await library_mass.music.tracks.set_favorite(merged.item_id, True)
 
         beets_db.update_item(
             retagged,
@@ -332,8 +308,6 @@ class TestMergedItemRetaggedAsAnotherRecording:
             acoustid_id=str(uuid4()),
             isrc="TESTRETAG0001",
         )
-        # the first sync splits the retagged item off, the second re-imports the other item
-        await _sync(provider)
         await _sync(provider)
 
         retagged_track = await _library_track(library_mass, retagged)
@@ -345,6 +319,10 @@ class TestMergedItemRetaggedAsAnotherRecording:
         assert other_track.name == "Song"
         assert _mappings(retagged_track) == {(INSTANCE_ID, track_prov_id(retagged))}
         assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
+        # the library track, with its favorite, stays with the item that did not change
+        assert other_track.item_id == merged.item_id
+        assert other_track.favorite is True
+        assert retagged_track.favorite is False
 
 
 class TestMergedItemRematchedKeepingItsFingerprint:
@@ -372,12 +350,11 @@ class TestMergedItemRematchedKeepingItsFingerprint:
             (INSTANCE_ID, track_prov_id(rematched)),
             (INSTANCE_ID, track_prov_id(other)),
         }
+        await library_mass.music.tracks.set_favorite(merged.item_id, True)
 
         beets_db.update_item(
             rematched, title="Totally Different", mb_trackid=str(uuid4()), isrc="TESTREMATCH01"
         )
-        # the first sync splits the re-matched item off, the second re-imports the other item
-        await _sync(provider)
         await _sync(provider)
 
         rematched_track = await _library_track(library_mass, rematched)
@@ -389,6 +366,10 @@ class TestMergedItemRematchedKeepingItsFingerprint:
         assert other_track.name == "Song"
         assert _mappings(rematched_track) == {(INSTANCE_ID, track_prov_id(rematched))}
         assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
+        # the library track, with its favorite, stays with the item that did not change
+        assert other_track.item_id == merged.item_id
+        assert other_track.favorite is True
+        assert rematched_track.favorite is False
 
 
 class TestMergedItemsWithoutExternalIds:
@@ -438,11 +419,11 @@ class TestMergedItemsChangedTogether:
         second_album = _add_album(beets_db, "Second Album")
         first = _add_item(beets_db, first_album, "Song", **recording)
         second = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
-        beets_db.set_item_flex(first, "rating", "0.9")
-        beets_db.set_item_flex(second, "rating", "0.9")
-        await _sync(await _attach(make_provider, library_mass))
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
 
-        provider = await _attach(make_provider, library_mass, favorite_rating_threshold=0.8)
+        beets_db.set_item_flex(first, "mood", "happy")
+        beets_db.set_item_flex(second, "mood", "happy")
         await _sync(provider)
 
         library_track = await _library_track(library_mass, first)
@@ -521,6 +502,50 @@ class TestDeletedAlbum:
         artists = await library_mass.music.artists.get_library_items_by_query()
         assert {artist.name for artist in artists} == {"Kept Artist"}
         assert await _library_track(library_mass, kept) is not None
+
+
+class TestDeletedAlbumAlsoOnAnotherProvider:
+    """An album and artist another provider also maps survive their beets album's deletion."""
+
+    async def test_other_providers_mappings_keep_album_and_artist(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """Only the beets mappings go; the saved album and followed artist stay in the library."""
+        artist = _artist_fields("Shared Artist", str(uuid4()))
+        album_id = _add_album(
+            beets_db,
+            "Shared Album",
+            **_artist_fields("Shared Artist", artist["mb_artistid"], "album"),
+        )
+        item_id = _add_item(beets_db, album_id, "Song", track=1, **artist)
+        # a later album keeps the library from looking emptied, which aborts the sync
+        _add_item(beets_db, _add_album(beets_db, "Other Album"), "Other", track=1)
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        library_album = (await _library_albums(library_mass))["Shared Album"]
+        library_artist = next(
+            artist
+            for artist in await library_mass.music.artists.get_library_items_by_query()
+            if artist.name == "Shared Artist"
+        )
+        await library_mass.music.albums.add_provider_mapping(
+            library_album.item_id, _other_mapping("other-album")
+        )
+        await library_mass.music.artists.add_provider_mapping(
+            library_artist.item_id, _other_mapping("other-artist")
+        )
+
+        beets_db.delete_album(album_id)
+        await _sync(provider)
+
+        assert await _library_track(library_mass, item_id) is None
+        album = await library_mass.music.albums.get_library_item(library_album.item_id)
+        artist_item = await library_mass.music.artists.get_library_item(library_artist.item_id)
+        assert _mappings(album) == {(OTHER_INSTANCE, "other-album")}
+        assert {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in artist_item.provider_mappings
+        } == {(OTHER_INSTANCE, "other-artist")}
 
 
 class TestItemAndAlbumWithTheSameBeetsId:

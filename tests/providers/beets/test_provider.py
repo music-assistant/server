@@ -10,14 +10,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import Album
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers import beets
-from music_assistant.providers.beets import BeetsProvider
+from music_assistant.providers.beets import SUPPORTED_FEATURES, BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError
 from music_assistant.providers.beets.setup_flow import run_setup
 from tests.providers.beets.beets_db import (
@@ -71,24 +72,24 @@ async def test_setup_fails_for_missing_music_directory(
         await provider.library.count_items()
 
 
-async def test_setup_opens_library_and_reads_threshold(
-    make_provider: MakeProvider, beets_db: BeetsDb
-) -> None:
-    """A valid setup opens the library and applies the configured rating threshold."""
+async def test_setup_opens_library(make_provider: MakeProvider, beets_db: BeetsDb) -> None:
+    """A valid setup opens the library."""
     beets_db.add_item(**item_fields())
     provider = await make_provider(open_library=False)
-    provider.config.get_value = MagicMock(return_value=0.5)  # type: ignore[method-assign]
     await provider.handle_async_init()
     assert await provider.library.count_items() == 1
-    assert provider._ctx.favorite_rating_threshold == 0.5
 
 
-async def test_config_entries_offer_rating_threshold(make_provider: MakeProvider) -> None:
-    """The only runtime option is the favorite rating threshold."""
+def test_only_track_sync_is_offered() -> None:
+    """Artists and albums come with their tracks, so only the track sync is declared."""
+    assert {ProviderFeature.LIBRARY_TRACKS} == SUPPORTED_FEATURES
+
+
+async def test_get_various_artists_without_beets_row(make_provider: MakeProvider) -> None:
+    """Compilations get Various Artists from the comp flag, so it resolves without a beets row."""
     provider = await make_provider()
-    assert [entry.key for entry in await provider.get_config_entries()] == [
-        "favorite_rating_threshold"
-    ]
+    artist = await provider.get_artist(VARIOUS_ARTISTS_NAME)
+    assert (artist.name, artist.mbid) == (VARIOUS_ARTISTS_NAME, VARIOUS_ARTISTS_MBID)
 
 
 async def test_mock_mass_accepts_library_calls(make_provider: MakeProvider) -> None:

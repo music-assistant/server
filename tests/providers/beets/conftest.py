@@ -69,7 +69,6 @@ async def make_provider(
         *,
         db_path: Path | None = None,
         beets_directory: str | None = None,
-        favorite_rating_threshold: float | None = None,
         open_library: bool = True,
         instance_id: str = INSTANCE_ID,
     ) -> BeetsProvider:
@@ -77,20 +76,18 @@ async def make_provider(
         provider.manifest = MagicMock(domain="beets")
         provider.config = MagicMock(instance_id=instance_id)
         provider.config.name = "beets"
-        provider.config.get_value = MagicMock(return_value=favorite_rating_threshold)
         provider.logger = MagicMock()
         provider.mass = _mock_mass()
         provider.library = BeetsLibrary(str(db_path or beets_db.path))
         provider.music_directory = str(music_dir)
         provider.beets_directory = beets_directory
         provider.sync_running = False
-        provider._merged_track_lock = asyncio.Lock()
+        provider._library_write_lock = asyncio.Lock()
         provider._ctx = ParseContext(
             instance_id=instance_id,
             domain="beets",
             music_directory=str(music_dir),
             beets_directory=beets_directory,
-            favorite_rating_threshold=favorite_rating_threshold,
         )
         if open_library:
             await provider.library.open()

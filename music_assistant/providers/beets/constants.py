@@ -10,7 +10,6 @@ from music_assistant_models.enums import AlbumType, ConfigEntryType
 CONF_LIBRARY_DB: Final = "library_db"
 CONF_MUSIC_DIRECTORY: Final = "music_directory"
 CONF_BEETS_DIRECTORY: Final = "beets_directory"
-CONF_FAVORITE_RATING_THRESHOLD: Final = "favorite_rating_threshold"
 
 CONF_ENTRY_LIBRARY_DB = ConfigEntry(
     key=CONF_LIBRARY_DB,
@@ -26,11 +25,6 @@ CONF_ENTRY_BEETS_DIRECTORY = ConfigEntry(
     key=CONF_BEETS_DIRECTORY,
     type=ConfigEntryType.STRING,
     default_value="",
-    required=False,
-)
-CONF_ENTRY_FAVORITE_RATING_THRESHOLD = ConfigEntry(
-    key=CONF_FAVORITE_RATING_THRESHOLD,
-    type=ConfigEntryType.FLOAT,
     required=False,
 )
 
@@ -57,3 +51,6 @@ ALBUM_ID_PREFIX: Final = "album-"
 SQLITE_BUSY_TIMEOUT: Final = 30.0
 ITEM_BATCH_SIZE: Final = 500
 SYNC_CONCURRENCY: Final = 8
+# part of every item checksum: raise it whenever parsing changes, so the next sync re-imports
+# the items that were parsed by the previous version
+PARSER_VERSION: Final = 1

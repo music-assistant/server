@@ -1196,8 +1196,6 @@
   "provider.bbc_sounds.media.folder.yesterday.name": "Yesterday",
   "provider.beets.config_entries.beets_directory.description": "Optional. The directory value from your beets config, for example /home/you/Music. Files beets stored with this full path are looked up in the music directory instead.",
   "provider.beets.config_entries.beets_directory.label": "beets music directory on its own host",
-  "provider.beets.config_entries.favorite_rating_threshold.description": "Mark tracks as favorite when their beets rating attribute is at least this value. Leave empty to ignore ratings.",
-  "provider.beets.config_entries.favorite_rating_threshold.label": "Mark as favorite at rating",
   "provider.beets.config_entries.library_db.description": "Path to beets' library.db as seen by Music Assistant, for example /media/beets/library.db. Music Assistant only reads it.",
   "provider.beets.config_entries.library_db.label": "beets library database",
   "provider.beets.config_entries.music_directory.description": "Where beets' music directory is mounted, as seen by Music Assistant.",

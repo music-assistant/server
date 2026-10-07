@@ -25,7 +25,6 @@ from music_assistant.providers.beets.parsers import (
     parse_album_type,
     parse_artist,
     parse_audio_format,
-    parse_favorite,
     parse_track,
     split_multi_value,
     track_id_prefix,
@@ -47,7 +46,6 @@ CTX = ParseContext(
     domain="beets",
     music_directory="/media/music",
     beets_directory="/home/kate/Music",
-    favorite_rating_threshold=None,
 )
 
 
@@ -125,22 +123,6 @@ def test_loudness_prefers_r128_then_replaygain() -> None:
 
 
 @pytest.mark.parametrize(
-    ("flex", "threshold", "expected"),
-    [
-        ({"rating": "0.9"}, None, False),
-        ({"rating": "0.9"}, 0.8, True),
-        ({"rating": 0.8}, 0.8, True),
-        ({"rating": "0.5"}, 0.8, False),
-        ({"rating": "high"}, 0.8, False),
-        ({}, 0.8, False),
-    ],
-)
-def test_parse_favorite(flex: dict[str, Any], threshold: float | None, expected: bool) -> None:
-    """Only a numeric rating at or above a configured threshold marks a favorite."""
-    assert parse_favorite(flex, threshold) is expected
-
-
-@pytest.mark.parametrize(
     ("path", "beets_format", "content_type", "codec_type"),
     [
         (b"a/01.flac", "FLAC", ContentType.FLAC, ContentType.FLAC),
@@ -182,29 +164,23 @@ def test_item_checksum_follows_item_album_and_flex_changes() -> None:
     """Any change to the item, its album or either's flexible attributes changes the checksum."""
     album = _row(7, album_fields())
     item = _row(1, item_fields(album_id=7))
-    base = item_checksum(item, album, None)
+    base = item_checksum(item, album)
 
-    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields()), None) == base
-    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album, None) != base
-    assert (
-        item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album, None) != base
-    )
-    assert item_checksum(item, _row(7, album_fields(label="Other")), None) != base
-    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"}), None) != base
-    assert item_checksum(item, None, None) != base
+    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields())) == base
+    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album) != base
+    assert item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album) != base
+    assert item_checksum(item, _row(7, album_fields(label="Other"))) != base
+    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"})) != base
+    assert item_checksum(item, None) != base
     assert album_checksum(album) != album_checksum(_row(7, album_fields(), flex={"a": "b"}))
 
 
-def test_item_checksum_follows_favorite_outcome_not_threshold() -> None:
-    """The checksum changes when the threshold flips the favorite outcome, and only then."""
-    rated = _row(1, item_fields(), flex={"rating": "0.9"})
-    unrated = _row(2, item_fields())
-    ignored = item_checksum(rated, None, None)
-
-    assert item_checksum(rated, None, 0.95) == ignored
-    assert item_checksum(rated, None, 0.8) != ignored
-    assert item_checksum(rated, None, 0.5) == item_checksum(rated, None, 0.8)
-    assert item_checksum(unrated, None, 0.8) == item_checksum(unrated, None, None)
+def test_item_checksum_follows_parser_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raising the parser version changes every checksum, so the next sync re-imports."""
+    item = _row(1, item_fields())
+    before = item_checksum(item, None)
+    monkeypatch.setattr("music_assistant.providers.beets.parsers.PARSER_VERSION", 2)
+    assert item_checksum(item, None) != before
 
 
 def test_parse_artist_uses_name_as_id_and_drops_invalid_mbid() -> None:
@@ -298,8 +274,8 @@ def test_parse_legacy_album_uses_single_artist_fields() -> None:
 def test_parse_track_maps_fields() -> None:
     """Track fields, ids, flexible attributes and the provider mapping map onto the MA track."""
     album = _row(7, album_fields(artpath=b"Artist/Album/cover.jpg"))
-    item = _row(42, item_fields(album_id=7), flex={"mood": "happy", "rating": "0.9"})
-    track = parse_track(item, album, replace(CTX, favorite_rating_threshold=0.8), "abc123")
+    item = _row(42, item_fields(album_id=7), flex={"mood": "happy"})
+    track = parse_track(item, album, CTX, "abc123")
 
     assert track.item_id == "track-beets--test-42"
     assert track.provider == "beets--test"
@@ -325,7 +301,7 @@ def test_parse_track_maps_fields() -> None:
     assert track.metadata.description == "A comment"
     assert track.metadata.release_date == datetime(2001, 5, 7, tzinfo=UTC)
     assert track.metadata.mood == "happy"
-    assert track.favorite is True
+    assert track.favorite is False
     mapping = next(iter(track.provider_mappings))
     assert mapping.details == "abc123"
     assert mapping.in_library is True

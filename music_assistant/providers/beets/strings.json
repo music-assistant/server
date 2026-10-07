@@ -11,10 +11,6 @@
     "beets_directory": {
       "label": "beets music directory on its own host",
       "description": "Optional. The directory value from your beets config, for example /home/you/Music. Files beets stored with this full path are looked up in the music directory instead."
-    },
-    "favorite_rating_threshold": {
-      "label": "Mark as favorite at rating",
-      "description": "Mark tracks as favorite when their beets rating attribute is at least this value. Leave empty to ignore ratings."
     }
   },
   "manifest": {

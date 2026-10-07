@@ -17,10 +17,10 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_ALBUMS,
-    DB_TABLE_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    VARIOUS_ARTISTS_MBID,
+    VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
@@ -32,8 +32,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_BEETS_DIRECTORY,
-    CONF_ENTRY_FAVORITE_RATING_THRESHOLD,
-    CONF_FAVORITE_RATING_THRESHOLD,
     CONF_LIBRARY_DB,
     CONF_MUSIC_DIRECTORY,
     IMAGE_PATH_PREFIX,
@@ -56,7 +54,7 @@ from .parsers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
     from music_assistant_models.provider import ProviderManifest
 
@@ -67,11 +65,8 @@ isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
 getsize = wrap(os.path.getsize)
 
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-}
+# artists and albums are imported together with their tracks, so only the track sync exists
+SUPPORTED_FEATURES = {ProviderFeature.LIBRARY_TRACKS}
 
 
 async def setup(
@@ -95,18 +90,13 @@ class BeetsProvider(MusicProvider):
             str(self.get_setup_value(CONF_BEETS_DIRECTORY) or "") or None
         )
         self.sync_running = False
-        self._merged_track_lock = asyncio.Lock()
+        self._library_write_lock = asyncio.Lock()
         self._ctx = ParseContext(
             instance_id=self.instance_id,
             domain=self.domain,
             music_directory=self.music_directory,
             beets_directory=self.beets_directory,
-            favorite_rating_threshold=None,
         )
-
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_FAVORITE_RATING_THRESHOLD,)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -145,16 +135,6 @@ class BeetsProvider(MusicProvider):
                 translation_key="music_directory_not_found",
                 translation_owner=self.translation_owner,
             )
-        threshold = self.config.get_value(CONF_FAVORITE_RATING_THRESHOLD)
-        self._ctx = ParseContext(
-            instance_id=self.instance_id,
-            domain=self.domain,
-            music_directory=self.music_directory,
-            beets_directory=self.beets_directory,
-            favorite_rating_threshold=(
-                float(threshold) if isinstance(threshold, int | float) else None
-            ),
-        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -162,9 +142,6 @@ class BeetsProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
-        if media_type != MediaType.TRACK:
-            # artists and albums are imported together with their tracks
-            return
         if self.sync_running:
             self.logger.warning("Library sync already running for %s", self.name)
             return
@@ -182,7 +159,7 @@ class BeetsProvider(MusicProvider):
             item,
             album,
             self._ctx,
-            item_checksum(item, album, self._ctx.favorite_rating_threshold),
+            item_checksum(item, album),
         )
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -197,13 +174,16 @@ class BeetsProvider(MusicProvider):
                 item,
                 album,
                 self._ctx,
-                item_checksum(item, album, self._ctx.favorite_rating_threshold),
+                item_checksum(item, album),
             )
             for item in await self.library.get_album_items(album.id)
         ]
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id == VARIOUS_ARTISTS_NAME:
+            # compilations get this artist from beets' comp flag, whatever albumartist says
+            return parse_artist(prov_artist_id, self._ctx, mbid=VARIOUS_ARTISTS_MBID)
         details = await self.library.get_artist_details(prov_artist_id)
         if details is None:
             msg = f"Artist not found: {prov_artist_id}"
@@ -284,7 +264,7 @@ class BeetsProvider(MusicProvider):
                         album = await self._album_for(item, albums)
                         item_id = track_item_id(self._ctx, item.id)
                         current_ids.add(item_id)
-                        checksum = item_checksum(item, album, self._ctx.favorite_rating_threshold)
+                        checksum = item_checksum(item, album)
                         if previous.get(item_id) == checksum:
                             continue
                         await task_manager.create_task_with_limit(
@@ -333,14 +313,16 @@ class BeetsProvider(MusicProvider):
         """Add or update one beets item in the Music Assistant library."""
         try:
             track = parse_track(item, album, self._ctx, checksum)
-            if overwrite:
-                library_item = await self._overwrite_library_track(track)
-            else:
-                library_item = await self.mass.music.tracks.add_item_to_library(
-                    track, overwrite_existing=False
-                )
-            if track.favorite and not library_item.favorite:
-                await self.mass.music.tracks.set_favorite(library_item.item_id, True)
+            # every library write of the sync holds this lock: an overwrite reads the mappings
+            # of the library track before replacing them, and a concurrent add merging another
+            # beets item into that track in between would have its mapping dropped
+            async with self._library_write_lock:
+                if overwrite:
+                    await self._overwrite_library_track(track)
+                else:
+                    await self.mass.music.tracks.add_item_to_library(
+                        track, overwrite_existing=False
+                    )
             if (loudness := loudness_from_gains(item.fields, "track")) is not None:
                 await self.mass.streams.audio_analysis.set_track_loudness(
                     track.item_id,
@@ -360,20 +342,23 @@ class BeetsProvider(MusicProvider):
             )
             report_current_task_failure(f"Failed to import beets item {item.id}: {err}")
 
-    async def _overwrite_library_track(self, track: Track) -> Track:
+    async def _overwrite_library_track(self, track: Track) -> None:
         """Replace a library track with a changed beets item, keeping other items merged into it."""
         tracks = self.mass.music.tracks
         current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
-        if current is None or not _mappings_to_carry(current, track):
-            return await tracks.add_item_to_library(track, overwrite_existing=True)
-        # an overwrite replaces every mapping of this instance on the library track, so the
-        # other beets items' mappings are passed along; the lock keeps two merged items that
-        # changed together from writing back each other's previous mapping
-        async with self._merged_track_lock:
-            current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
-            if current is not None:
-                track.provider_mappings.update(_mappings_to_carry(current, track))
-            return await tracks.add_item_to_library(track, overwrite_existing=True)
+        other_mappings = _other_item_mappings(current, track) if current else set()
+        if current is None or not other_mappings:
+            await tracks.add_item_to_library(track, overwrite_existing=True)
+        elif _is_same_recording(current, track):
+            # an overwrite replaces every mapping of this instance on the library track, so the
+            # other beets items' mappings are passed along
+            track.provider_mappings.update(other_mappings)
+            await tracks.add_item_to_library(track, overwrite_existing=True)
+        else:
+            # retagged as another recording: the library track stays with the other items,
+            # its favorite and its history, and the changed item is added on its own
+            await tracks.remove_provider_mapping(current.item_id, self.instance_id, track.item_id)
+            await tracks.add_item_to_library(track, overwrite_existing=False)
 
     async def _get_previous_checksums(self) -> dict[str, str]:
         """Return the checksum stored for every beets item this instance imported before."""
@@ -388,97 +373,91 @@ class BeetsProvider(MusicProvider):
         return {str(row["provider_item_id"]): str(row["details"]) for row in rows}
 
     async def _process_deletions(self, deleted_ids: set[str]) -> None:
-        """Unmap tracks beets no longer has, and remove the albums and artists left empty."""
-        album_ids: set[str] = set()
-        artist_ids: set[str] = set()
-        for item_id in deleted_ids:
-            library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
-                item_id, self.instance_id
-            )
-            if library_item is None:
-                continue
-            if library_item.album:
-                try:
-                    # the track's album is an ItemMapping; the library album carries its artists
-                    db_album = await self.mass.music.albums.get_library_item(
-                        library_item.album.item_id
-                    )
-                except MediaNotFoundError:
-                    pass
-                else:
-                    album_ids.add(library_item.album.item_id)
-                    artist_ids.update(artist.item_id for artist in db_album.artists)
-            artist_ids.update(artist.item_id for artist in library_item.artists)
-            # the library track may also hold another mapping (a re-imported beets item merged
-            # into it, or another provider), which keeps it together with its favorite and history
-            await self.mass.music.tracks.remove_provider_mapping(
-                library_item.item_id, self.instance_id, item_id
-            )
-        # emptiness is read from the library alone: the albums and artists still carry this
-        # instance's mappings, and beets may no longer have them
-        for album_id in album_ids:
-            try:
-                if not await self.mass.music.albums.get_library_album_tracks(album_id):
-                    await self.mass.music.albums.remove_item_from_library(album_id)
-            except (MediaNotFoundError, InvalidDataError) as err:
-                self.logger.warning("Unable to clean up library album %s: %s", album_id, err)
-        for artist_id in artist_ids:
-            try:
-                if not (
-                    await self.mass.music.artists.get_library_artist_albums(artist_id)
-                    or await self.mass.music.artists.get_library_artist_tracks(artist_id)
-                ):
-                    await self.mass.music.artists.remove_item_from_library(artist_id)
-            except (MediaNotFoundError, InvalidDataError) as err:
-                self.logger.warning("Unable to clean up library artist %s: %s", artist_id, err)
+        """Unmap the tracks beets no longer has; the orphan pass cleans up their albums and artists."""
+        assert self.mass.music.database
+        tracks = self.mass.music.tracks
+        async with self.mass.music.database.deferred_commit():
+            for item_id in deleted_ids:
+                library_item = await tracks.get_library_item_by_prov_id(item_id, self.instance_id)
+                if library_item is None:
+                    continue
+                # the library track may also hold another mapping (a re-imported beets item
+                # merged into it, or another provider), which keeps it together with its
+                # favorite and history
+                await tracks.remove_provider_mapping(
+                    library_item.item_id, self.instance_id, item_id
+                )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
-        """Remove albums and artists of this instance that no longer have any tracks."""
+        """Unmap this instance from albums and artists that no longer hold any of its tracks."""
         assert self.mass.music.database
         params = {"instance_id": self.instance_id}
         album_query = (
-            f"SELECT item_id FROM {DB_TABLE_ALBUMS} "
-            f"WHERE item_id NOT IN (SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS}) "
-            f"AND item_id IN (SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            "WHERE provider_instance = :instance_id AND media_type = 'album')"
+            f"SELECT DISTINCT item_id FROM ({_mapped_ids('album')}) "
+            f"WHERE item_id NOT IN (SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE track_id IN ({_mapped_ids('track')}))"
         )
-        for row in await self.mass.music.database.get_rows_from_query(album_query, params, limit=0):
-            await self.mass.music.albums.remove_item_from_library(row["item_id"])
+        # albums go first, so an artist only kept by an album unmapped here is unmapped too
         artist_query = (
-            f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
+            f"SELECT DISTINCT item_id FROM ({_mapped_ids('artist')}) "
             f"WHERE item_id NOT IN (SELECT artist_id FROM {DB_TABLE_TRACK_ARTISTS} "
-            f"UNION SELECT artist_id FROM {DB_TABLE_ALBUM_ARTISTS}) "
-            f"AND item_id IN (SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            "WHERE provider_instance = :instance_id AND media_type = 'artist')"
+            f"WHERE track_id IN ({_mapped_ids('track')})) "
+            f"AND item_id NOT IN (SELECT artist_id FROM {DB_TABLE_ALBUM_ARTISTS} "
+            f"WHERE album_id IN ({_mapped_ids('album')}))"
         )
-        for row in await self.mass.music.database.get_rows_from_query(
-            artist_query, params, limit=0
-        ):
-            await self.mass.music.artists.remove_item_from_library(row["item_id"])
+        # only this instance's mappings go; an album or artist another provider also maps (a
+        # saved album, a followed artist) stays in the library with that provider's mapping,
+        # and one without any other mapping is removed with its last mapping
+        database = self.mass.music.database
+        async with database.deferred_commit():
+            for row in await database.get_rows_from_query(album_query, params, limit=0):
+                await self.mass.music.albums.remove_provider_mappings(
+                    row["item_id"], self.instance_id
+                )
+            for row in await database.get_rows_from_query(artist_query, params, limit=0):
+                await self.mass.music.artists.remove_provider_mappings(
+                    row["item_id"], self.instance_id
+                )
 
 
-def _mappings_to_carry(library_track: Track, track: Track) -> set[ProviderMapping]:
+def _mapped_ids(media_type: str) -> str:
     """
-    Return the mappings of this instance's other beets items to keep on an overwrite.
+    Return a subquery of the library ids of a media type that the :instance_id instance maps.
 
-    None are kept when the changed item no longer matches the library track as the same
-    recording, since it was retagged as another one and the other items must split off.
+    :param media_type: The media type value, as stored in the provider mappings table.
+    """
+    return (
+        f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE provider_instance = :instance_id AND media_type = '{media_type}'"
+    )
+
+
+def _other_item_mappings(library_track: Track, track: Track) -> set[ProviderMapping]:
+    """
+    Return the mappings of this instance's other beets items merged into a library track.
 
     :param library_track: The library track the changed beets item is mapped to.
     :param track: The provider track of the changed beets item.
     """
-    other_mappings = {
+    return {
         mapping
         for mapping in library_track.provider_mappings
         if mapping.provider_instance == track.provider and mapping.item_id != track.item_id
     }
-    if not other_mappings:
-        return set()
+
+
+def _is_same_recording(library_track: Track, track: Track) -> bool:
+    """
+    Return whether a changed beets item still is the recording of its library track.
+
+    :param library_track: The library track the changed beets item is mapped to.
+    :param track: The provider track of the changed beets item.
+    """
     # without its mappings the library track cannot match the changed item on its own
     # mapping, so the comparison decides on the metadata alone
     reference = copy(library_track)
     reference.provider_mappings = set()
-    return other_mappings if compare_track(reference, track, strict=True) else set()
+    return compare_track(reference, track, strict=True)
 
 
 def _parse_id(prov_item_id: str, prefix: str) -> int:

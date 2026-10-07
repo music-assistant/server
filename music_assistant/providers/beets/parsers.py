@@ -34,6 +34,7 @@ from .constants import (
     ALBUM_ID_PREFIX,
     ALBUM_TYPE_PRIORITY,
     IMAGE_PATH_PREFIX,
+    PARSER_VERSION,
     TRACK_ID_PREFIX,
 )
 from .library import BeetsRow, value_at
@@ -48,7 +49,6 @@ class ParseContext:
     domain: str
     music_directory: str
     beets_directory: str | None
-    favorite_rating_threshold: float | None
 
 
 def track_id_prefix(instance_id: str) -> str:
@@ -155,19 +155,6 @@ def loudness_from_gains(
     return None
 
 
-def parse_favorite(flex: Mapping[str, Any], threshold: float | None) -> bool:
-    """
-    Return whether a flexible rating reaches the favorite threshold.
-
-    :param flex: The item's flexible attributes.
-    :param threshold: The configured threshold, or None when ratings are ignored.
-    """
-    if threshold is None:
-        return False
-    rating = _float(flex.get("rating"))
-    return rating is not None and rating >= threshold
-
-
 def parse_audio_format(fields: Mapping[str, Any]) -> AudioFormat:
     """
     Return the audio format of a beets item.
@@ -207,24 +194,20 @@ def album_checksum(album: BeetsRow) -> str:
     return _digest([album.fields, album.flex])
 
 
-def item_checksum(
-    item: BeetsRow, album: BeetsRow | None, favorite_rating_threshold: float | None
-) -> str:
+def item_checksum(item: BeetsRow, album: BeetsRow | None) -> str:
     """
-    Return a checksum that changes whenever the item, its album or its favorite outcome change.
+    Return a checksum that changes whenever the item, its album or the parsers change.
 
     :param item: The beets item row.
     :param album: The item's album row, or None for singletons.
-    :param favorite_rating_threshold: The configured favorite threshold, or None when ratings
-        are ignored.
     """
     return _digest(
         [
+            PARSER_VERSION,
             item.fields,
             item.flex,
             album.fields if album else None,
             album.flex if album else None,
-            parse_favorite(item.flex, favorite_rating_threshold),
         ]
     )
 
@@ -358,7 +341,6 @@ def parse_track(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext, check
         date_added=from_utc_timestamp(float(fields["added"])) if fields.get("added") else None,
     )
     track.duration = int(fields.get("length") or 0)
-    track.favorite = parse_favorite(item.flex, ctx.favorite_rating_threshold)
     if album is not None and _text(album.fields.get("album")):
         track.album = parse_album(album, ctx)
     track.artists = _artists_from_fields(

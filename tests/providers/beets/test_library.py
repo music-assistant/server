@@ -126,6 +126,26 @@ async def test_get_artist_details_finds_featured_artist_in_list_column(
         await library.close()
 
 
+async def test_get_artist_details_ignores_surrounding_whitespace(beets_db: BeetsDb) -> None:
+    """A single-valued name stored with stray spaces is found by the name the parsers read."""
+    beets_db.add_item(
+        **item_fields(
+            artist=" Padded ",
+            artist_sort=" Padded, The ",
+            mb_artistid=GUEST_MBID,
+            artists=None,
+            artists_sort=None,
+            mb_artistids=None,
+        )
+    )
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.get_artist_details("Padded") == ("Padded, The", GUEST_MBID)
+    finally:
+        await library.close()
+
+
 async def test_get_artist_details_requires_an_exact_element_match(beets_db: BeetsDb) -> None:
     """A substring of a list element, or a name using LIKE wildcard characters, is not a match."""
     beets_db.add_item(**item_fields())
