@@ -65,6 +65,27 @@ def test_two_listings_of_one_provider_are_two_sources() -> None:
     assert [track.item_id for track in twice] == ["one"]
 
 
+def test_a_title_does_not_join_entries_whose_isrcs_disagree() -> None:
+    """Two movements of one name and no position stay apart when their ISRCs differ."""
+    tracks = [entry("a", "one", 0, "GBAYC2100001"), entry("b", "two", 0, "GBAYC2100002")]
+    assert len(select([], tracks)) == 2
+    # the same against a library row of that title: a different recording is listed
+    row = entry("library", "42", 3, "GBAYC2100001")
+    row.provider_mappings = entry("fs", "path").provider_mappings
+    assert len(select([row], [entry("b", "two", 0, "GBAYC2100002")])) == 1
+    assert select([row], [entry("b", "two", 0)]) == []
+
+
+def test_backfill_takes_a_position_two_listings_agree_on() -> None:
+    """An ISRC two listings carry at one position repairs the library row; at two, it does not."""
+    row = entry("library", "42", 0, "GBAYC2100001")
+    row.provider_mappings = entry("fs", "path").provider_mappings
+    agreeing = [entry("a", "one", 3, "GBAYC2100001"), entry("b", "two", 3, "GBAYC2100001")]
+    assert [(t.item_id, s.track_number) for t, s in backfills([row], agreeing)] == [("42", 3)]
+    disagreeing = [entry("a", "one", 3, "GBAYC2100001"), entry("b", "two", 4, "GBAYC2100001")]
+    assert backfills([row], disagreeing) == []
+
+
 def test_a_listing_of_the_librarys_own_rows_adds_nothing() -> None:
     """A provider handing back the library rows (a filesystem does) leaves them the slots."""
     row = entry("library", "42", 3, "GBAYC2100001")
