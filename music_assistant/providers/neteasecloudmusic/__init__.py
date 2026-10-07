@@ -95,6 +95,8 @@ _RECOMMEND_DAILY_TTL = 60 * 30
 _RECOMMEND_PERSONAL_FM_TTL = 60 * 5
 _RECOMMEND_HEART_MODE_TTL = 60 * 60
 CACHE_CATEGORY_RECOMMENDATIONS = 1
+# bump to invalidate cached recommendation/playlist data written before the cookie-in-query fix
+_CACHE_VERSION = "v2"
 # NetEase song-detail payload uses this bit in `hr`/`h` mark metadata to indicate
 # that the track has a Hi-Res tier in catalog metadata.
 # Value observed from NeteaseCloudMusicApi-compatible responses.
@@ -478,8 +480,11 @@ class NeteaseCloudMusicProvider(MusicProvider):
             return await self._build_radio_items()
 
         if item_id == "daily_songs":
+            # personalized endpoints return different (non-personalized) data on
+            # some NCM api backends unless the login cookie is also passed as a
+            # query param, so it is sent in the params of every call below too
             daily_payload = await self._get_recommend_payload_cached(
-                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
+                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs", {"cookie": self._cookie}
             )
             daily_data = _extract_data(daily_payload)
             daily_songs = daily_data.get("dailySongs")
@@ -520,7 +525,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "recommended_playlists",
                 _RECOMMEND_PLAYLIST_TTL,
                 "/personalized",
-                {"limit": 25},
+                {"limit": 25, "cookie": self._cookie},
             )
             playlist_data = _extract_data(playlist_payload)
             raw_playlists = playlist_data.get("result")
@@ -1295,7 +1300,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 track.metadata.lyrics = tlyric_text
         return track
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, cache_checksum=_CACHE_VERSION)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
@@ -1316,7 +1321,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         payload = await self._client.get(
             "/playlist/detail",
-            params={"id": prov_playlist_id},
+            params={"id": prov_playlist_id, "cookie": self._cookie},
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1325,7 +1330,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, cache_checksum=_CACHE_VERSION)
     async def _get_playlist_tracks_cached(
         self,
         prov_playlist_id: str,
@@ -1336,7 +1341,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
         offset = page * limit
         payload = await self._client.get(
             "/playlist/track/all",
-            params={"id": prov_playlist_id, "limit": limit, "offset": offset},
+            params={
+                "id": prov_playlist_id,
+                "limit": limit,
+                "offset": offset,
+                "cookie": self._cookie,
+            },
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1544,8 +1554,11 @@ class NeteaseCloudMusicProvider(MusicProvider):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return recommendation payload from MA cache or fetch fresh."""
-        params_key = json.dumps(params or {}, sort_keys=True, separators=(",", ":"))
-        cache_key = f"{key}:{params_key}"
+        # the login cookie is sent as a query param for some backends, but it is a
+        # credential and must stay out of the cache key that gets persisted to disk
+        cache_params = {k: v for k, v in (params or {}).items() if k != "cookie"}
+        params_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
+        cache_key = f"{_CACHE_VERSION}:{key}:{params_key}"
         cached = await self.mass.cache.get(
             key=cache_key,
             provider=self.instance_id,
@@ -1575,6 +1588,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_songs = fm_data.get("data")
@@ -1599,7 +1613,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for _ in range(attempts):
             fm_payload = await self._client.get(
                 "/personal_fm",
-                params={"timestamp": int(time.time() * 1000)},
+                params={"timestamp": int(time.time() * 1000), "cookie": self._cookie},
                 cookie=self._cookie,
             )
             fm_data = _extract_data(fm_payload)
@@ -1638,6 +1652,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             "daily_songs",
             _RECOMMEND_DAILY_TTL,
             "/recommend/songs",
+            {"cookie": self._cookie},
         )
         daily_data = _extract_data(daily_payload)
         daily_songs = daily_data.get("dailySongs")
@@ -1658,7 +1673,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             "heart_mode_playlist",
             _RECOMMEND_HEART_MODE_TTL,
             "/user/playlist",
-            {"uid": self._uid, "limit": 1, "offset": 0},
+            {"uid": self._uid, "limit": 1, "offset": 0, "cookie": self._cookie},
         )
         playlist_data = _extract_data(playlist_payload)
         playlist_rows = playlist_data.get("playlist")
@@ -1961,6 +1976,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_rows = fm_data.get("data")
@@ -1975,6 +1991,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                     "daily_songs",
                     _RECOMMEND_DAILY_TTL,
                     "/recommend/songs",
+                    {"cookie": self._cookie},
                 )
                 daily_data = _extract_data(daily_payload)
                 daily_rows = daily_data.get("dailySongs")
