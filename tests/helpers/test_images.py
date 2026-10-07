@@ -623,6 +623,21 @@ async def test_loaded_provider_image_is_not_guarded(
     resolver.assert_not_called()
 
 
+async def test_untrusted_url_is_refused_before_the_provider_fetches_it(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that fetches http paths itself never sees a URL on a blocked address."""
+    podcast = MagicMock(spec=MusicProvider, domain="podcastfeed", instance_id="podcastfeed--1")
+    podcast.config = _provider_config({"feed_url": "https://feeds.example.com/show.xml"})
+    podcast.resolve_image = AsyncMock(return_value=b"fetched-by-provider")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: podcast)
+    with pytest.raises(FileNotFoundError, match="blocked address"):
+        await images._fetch_source_image(
+            mass_minimal, "http://127.0.0.1:8095/x", "podcastfeed--1", 0
+        )
+    podcast.resolve_image.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "configured_url",
     ["http://192.168.1.10:8096", "http://127.0.0.1:8096"],

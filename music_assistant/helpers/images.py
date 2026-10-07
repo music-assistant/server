@@ -467,6 +467,12 @@ async def _fetch_source_image(
     """
     prov = mass.get_provider(provider)
     if prov:
+        if path_or_url.startswith("http") and not _is_provider_endpoint(
+            prov, provider, path_or_url
+        ):
+            # some providers fetch an http path themselves (podcast feeds), so an untrusted
+            # URL is checked before they get the chance
+            await _ensure_safe_image_url(mass, path_or_url)
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:
             # the provider looked and has nothing at this path: a miss, not a failed fetch
@@ -524,11 +530,7 @@ async def _fetch_source_image(
                 return cast("bytes", await _file.read()), True
     if not trusted_origin and _has_url_scheme(path_or_url):
         # ffmpeg would open a stream URL (rtsp, rtmp) on the client's behalf
-        try:
-            await ensure_safe_outbound_url(mass, path_or_url, BUILTIN_SCHEME_NAMES)
-        except InvalidDataError as err:
-            msg = f"Failed to fetch image from {path_or_url}: {err}"
-            raise FileNotFoundError(msg) from err
+        await _ensure_safe_image_url(mass, path_or_url, BUILTIN_SCHEME_NAMES)
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
@@ -993,6 +995,17 @@ def _is_provider_endpoint(prov: Provider | None, provider: str, url: str) -> boo
         and (endpoint := url_endpoint(url)) is not None
         and endpoint in provider_configured_endpoints(prov)
     )
+
+
+async def _ensure_safe_image_url(
+    mass: MusicAssistant, url: str, allowed_schemes: tuple[str, ...] = ("http", "https")
+) -> None:
+    """Raise FileNotFoundError if url points at a blocked address."""
+    try:
+        await ensure_safe_outbound_url(mass, url, allowed_schemes)
+    except InvalidDataError as err:
+        msg = f"Failed to fetch image from {url}: {err}"
+        raise FileNotFoundError(msg) from err
 
 
 def _has_url_scheme(path_or_url: str) -> bool:
