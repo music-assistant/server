@@ -35,7 +35,7 @@ def register_library_resources(mcp: Any, mass: MusicAssistant) -> None:
     async def playlist_resource(playlist_id: str) -> str | None:
         """Full playlist record by library id."""
         playlist = await mass.music.playlists.get_library_item(playlist_id)
-        # get_library_item skips the playlist access record; hide it like MA's own getters
+        # get_library_item loads the access record without enforcing it; MA's getters check it
         if playlist is not None and not mass.music.playlists.visible_to_caller(playlist):
             return visible_text(None)
         return visible_text(playlist)
