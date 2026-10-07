@@ -56,16 +56,16 @@ Handles all authentication and user management:
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
-- **Built-in Provider** - Username/password authentication with bcrypt hashing
+- **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
 
 **Token Types:**
-- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window (for user sessions)
-- **Long-lived tokens**: No auto-renewal, 10-year expiration (for integrations/API access)
+- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
-- Password hashing with bcrypt and user- and server specific salts
+- Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
 - Secure token generation with secrets.token_urlsafe()
 - WebSocket disconnect on token revocation
 - Session management and cleanup
@@ -419,9 +419,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Mandatory authentication**: All API access requires authentication (except Ingress)
 - **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: bcrypt with user-specific salts
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding) and long-lived (10 years) tokens supported
+- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
 
 ### Authorization
 
@@ -448,7 +448,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Data Protection
 
 - **Token storage**: Only hashed tokens stored in database
-- **Password storage**: bcrypt with user-specific salts
+- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Session cleanup**: Expired tokens automatically deleted
 - **User disable**: Immediate disconnect of all user sessions
 

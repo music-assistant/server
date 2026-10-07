@@ -332,13 +332,27 @@ async def test_unload_revokes_guest_tokens_when_guest_access_is_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unload_keeps_guest_tokens_while_guest_access_is_on() -> None:
-    """A plain reload with guest access still on leaves the guest tokens intact."""
+async def test_unload_keeps_guest_tokens_on_reload_while_enabled() -> None:
+    """A plain reload of the enabled plugin with guest access on leaves the guest tokens intact."""
     plugin = _create_unload_plugin(guest_access_enabled=True)
+    plugin.mass.config = await _create_stored_config_controller(guest_access_enabled=True)
 
     await plugin.unload()
 
     cast("AsyncMock", plugin._revoke_guest_tokens).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_when_provider_is_disabled() -> None:
+    """Disabling the plugin revokes the guest tokens even with guest access still on."""
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+    plugin.mass.config = await _create_stored_config_controller(
+        guest_access_enabled=True, provider_enabled=False
+    )
+
+    await plugin.unload()
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -351,7 +365,9 @@ async def test_unload_revokes_guest_tokens_on_removal() -> None:
     cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
 
 
-async def _create_stored_config_controller(*, guest_access_enabled: bool) -> ConfigController:
+async def _create_stored_config_controller(
+    *, guest_access_enabled: bool, provider_enabled: bool = True
+) -> ConfigController:
     """Store the party config the way a real save does and return a controller holding it."""
     entries = await _create_config_entries_plugin(
         guest_access_enabled=guest_access_enabled
@@ -360,7 +376,7 @@ async def _create_stored_config_controller(*, guest_access_enabled: bool) -> Con
         entries,
         {"type": ProviderType.PLUGIN, "domain": "party", "instance_id": "party--test"},
     )
-    config.update({CONF_ENABLE_GUEST_ACCESS: guest_access_enabled})
+    config.update({"enabled": provider_enabled, CONF_ENABLE_GUEST_ACCESS: guest_access_enabled})
 
     controller = ConfigController.__new__(ConfigController)
     controller._data = {"providers": {"party--test": config.to_raw()}}
