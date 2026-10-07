@@ -102,3 +102,24 @@ async def test_unsupported_platform() -> None:
         pytest.raises(UnsupportedSystemError),
     ):
         await provider.mount()
+
+
+@pytest.mark.parametrize(
+    ("username", "share"),
+    [("user,uid=1000", "music"), ("user=x", "music"), ("user", "music,uid=1000")],
+)
+async def test_linux_mount_rejects_option_separators(username: str, share: str) -> None:
+    """A user or share that would add options to the Linux mount command is refused."""
+    provider = _make_provider()
+    values = {**SETUP_VALUES, "username": username, "share": share}
+    provider.get_setup_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: values.get(key, default)
+    )
+    check = AsyncMock(return_value=(0, b""))
+    with (
+        patch("music_assistant.providers.filesystem_smb.check_output", check),
+        patch("music_assistant.providers.filesystem_smb.platform.system", return_value="Linux"),
+        pytest.raises(SetupFailedError),
+    ):
+        await provider.mount()
+    check.assert_not_called()
