@@ -42,7 +42,6 @@ from music_assistant.helpers.throttle_retry import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
-from music_assistant.providers.yandex_ynison.config_helpers import list_yandex_music_instances
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
@@ -2250,41 +2249,6 @@ class TestYandexProviderMatch:
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is wanted
-
-
-# ------------------------------------------------------------------
-# Yandex Music instance enumeration
-# ------------------------------------------------------------------
-
-
-class TestListYandexMusicInstances:
-    """Tests for list_yandex_music_instances."""
-
-    async def test_returns_empty_when_none_configured(self) -> None:
-        """Empty list when no yandex_music instances exist."""
-        mass = _make_mock_mass()
-        mass.config.get_provider_configs = AsyncMock(return_value=[])
-        assert await list_yandex_music_instances(mass) == []
-
-    async def test_lists_instances_with_display_name(self) -> None:
-        """Returns (instance_id, display_name) pairs for yandex_music domains."""
-        mass = _make_mock_mass()
-        first = MagicMock(instance_id="ym-a", enabled=True)
-        first.name = "Main Account"
-        second = MagicMock(instance_id="ym-b", enabled=True)
-        second.name = "Family"
-        mass.config.get_provider_configs = AsyncMock(return_value=[first, second])
-        result = await list_yandex_music_instances(mass)
-        assert sorted(result) == [("ym-a", "Main Account"), ("ym-b", "Family")]
-
-    async def test_falls_back_to_instance_id_when_name_missing(self) -> None:
-        """Uses instance_id as display name when 'name' is absent."""
-        mass = _make_mock_mass()
-        config = MagicMock(instance_id="ym-a", enabled=True)
-        config.name = None
-        mass.config.get_provider_configs = AsyncMock(return_value=[config])
-        result = await list_yandex_music_instances(mass)
-        assert result == [("ym-a", "ym-a")]
 
 
 class TestPCMFrameAlignment:

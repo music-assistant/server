@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerType
@@ -51,15 +51,6 @@ class _SetupSession(SetupSession):
         self._mass_mock = MagicMock()
         self.mass = self._mass_mock
         self._mass_mock.config.get.return_value = providers
-        configs = []
-        for instance_id, provider_values in providers.items():
-            if provider_values.get("domain") == "yandex_music":
-                config = MagicMock(
-                    instance_id=instance_id, enabled=provider_values.get("enabled", True)
-                )
-                config.name = provider_values.get("name")
-                configs.append(config)
-        self._mass_mock.config.get_provider_configs = AsyncMock(return_value=configs)
         self._mass_mock.players.all_players.return_value = (
             [_player()] if players is None else players
         )

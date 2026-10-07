@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from ya_passport_auth.ma import list_yandex_music_instances
 
 from music_assistant.helpers.config_entries import create_player_selector
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
-from .config_helpers import list_yandex_music_instances
 from .constants import (
     CONF_MASS_PLAYER_ID,
     CONF_YM_INSTANCE,
@@ -34,7 +34,7 @@ async def run_setup(session: SetupSession) -> None:
     if not player_entry.options:
         raise AbortFlow("no_players")
 
-    ym_instances = await list_yandex_music_instances(session.mass)
+    ym_instances = list_yandex_music_instances(session.mass)
     if not ym_instances:
         raise AbortFlow("missing_dependency")
 
