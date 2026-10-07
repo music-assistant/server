@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.enums import PlaybackState, PlayerType, RepeatMode
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -159,6 +159,23 @@ async def test_a_queue_outside_the_filter_is_refused(command: str) -> None:
     controller = _controller(ALLOWED_PLAYER, OTHER_PLAYER)
     with _restricted_user([ALLOWED_PLAYER]), pytest.raises(InsufficientPermissions):
         await _run(QUEUE_COMMANDS[command], controller, OTHER_PLAYER)
+
+
+async def test_transfer_onto_a_member_of_a_group_outside_the_filter_is_refused() -> None:
+    """Transferring onto a grouped player is refused when its group is outside the filter."""
+    controller = _controller(ALLOWED_PLAYER, OTHER_PLAYER)
+    member = SimpleNamespace(
+        player_id=OTHER_PLAYER,
+        private=False,
+        name=OTHER_PLAYER,
+        state=SimpleNamespace(type=PlayerType.PLAYER, active_group="group", synced_to=None),
+    )
+    controller.mass.players.get_player = {OTHER_PLAYER: member}.get  # type: ignore[method-assign, assignment]
+    with (
+        _restricted_user([ALLOWED_PLAYER, OTHER_PLAYER]),
+        pytest.raises(InsufficientPermissions, match="group"),
+    ):
+        await controller.transfer_queue(ALLOWED_PLAYER, OTHER_PLAYER)
 
 
 @pytest.mark.parametrize(
