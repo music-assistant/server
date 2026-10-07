@@ -105,6 +105,24 @@ def test_persist_credential_writes_only_current_format() -> None:
     assert provider._update_setup_data.call_args.args[0] == CONF_CREDENTIAL_JSON
 
 
+@pytest.mark.asyncio
+async def test_run_with_session_translates_sdk_validation_error() -> None:
+    """Malformed typed SDK responses become a temporary provider error."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider._api_semaphore = asyncio.Semaphore(1)
+    provider._ensure_valid_credential = AsyncMock()
+
+    async def _malformed_response() -> None:
+        GetSongUrlsResponse.model_validate({"midurlinfo": ["invalid"]})
+
+    with pytest.raises(
+        ResourceTemporarilyUnavailable, match="QQ Music API returned invalid data"
+    ) as exc:
+        await provider._run_with_session(_malformed_response())
+
+    assert exc.value.backoff_time == 30
+
+
 def test_get_candidate_file_types_hires_with_fallback_chain() -> None:
     """Hi-Res preference should fall back to FLAC -> MP3 320 -> MP3 128."""
     provider = QQMusicProvider.__new__(QQMusicProvider)

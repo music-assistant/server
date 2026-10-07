@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from qqmusic_api import ApiDataError, LoginError, NetworkError
 from qqmusic_api.models.login import QR, QRCodeLoginEvents, QRLoginResult, QRLoginType
+from qqmusic_api.models.request import Credential
 from qqmusic_api.modules.login_utils import QRCodeLoginSession
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
@@ -178,3 +179,22 @@ async def test_run_qr_login_converts_public_login_errors(error, message) -> None
 
     with pytest.raises(SetupFlowError, match=message):
         await _run_qr_login(_FakeSetupSession(), SimpleNamespace(login=_ErrorLogin()))
+
+
+@pytest.mark.asyncio
+async def test_run_qr_login_converts_mobile_credential_validation_error() -> None:
+    """Malformed credentials from the mobile QR event stream become a flow error."""
+
+    class _MalformedCredentialLogin:
+        async def get_qrcode(self, login_type: QRLoginType) -> QR:
+            return QR(b"qr", login_type, "image/png", "qr-id")
+
+        async def checking_mobile_qrcode(
+            self, _qrcode: QR, deadline: float | None = None
+        ) -> AsyncGenerator[QRLoginResult]:
+            assert deadline is not None
+            Credential.model_validate({"musicid": "invalid", "musickey": "key"})
+            yield QRLoginResult(QRCodeLoginEvents.SCAN)
+
+    with pytest.raises(SetupFlowError, match="QQ Music app login failed"):
+        await _run_qr_login(_FakeSetupSession(), SimpleNamespace(login=_MalformedCredentialLogin()))

@@ -345,6 +345,11 @@ class QQMusicProvider(MusicProvider):
             await self._ensure_valid_credential()
             async with self._api_semaphore:
                 return await coro
+        except ValidationError as err:
+            raise ResourceTemporarilyUnavailable(
+                "QQ Music API returned invalid data",
+                backoff_time=30,
+            ) from err
         except BaseApiException as err:
             raise self._translate_qq_exception(err) from err
 
