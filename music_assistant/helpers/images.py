@@ -100,7 +100,7 @@ def is_svg_data(data: bytes) -> bool:
         elif sample.startswith(b"<!--"):
             end = sample.find(b"-->")
         elif sample.startswith(b"<!doctype"):
-            end = sample.find(b"]>") if b"[" in sample[: sample.find(b">")] else sample.find(b">")
+            end = _doctype_end(sample)
         else:
             break
         if end == -1:
@@ -942,3 +942,19 @@ async def _write_thumb_to_disk(
     finally:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(Path(temp_filepath).unlink)
+
+
+def _doctype_end(sample: bytes) -> int:
+    """Return the index of the closing '>' of the doctype at the start of sample, or -1."""
+    subset_start = sample.find(b"[")
+    first_close = sample.find(b">")
+    if subset_start == -1 or (first_close != -1 and first_close < subset_start):
+        return first_close
+    # comments inside the internal subset may themselves contain ']>'
+    pos = subset_start + 1
+    while (comment := sample.find(b"<!--", pos)) != -1 and comment < sample.find(b"]>", pos):
+        pos = sample.find(b"-->", comment)
+        if pos == -1:
+            return -1
+    close = sample.find(b"]>", pos)
+    return -1 if close == -1 else close + 1
