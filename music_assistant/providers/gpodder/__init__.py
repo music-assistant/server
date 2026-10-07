@@ -223,10 +223,13 @@ class GPodder(MusicProvider):
         feeds = self.feeds | set(subscriptions.add)
         # a podcast might have been added and removed in our absence...
         feeds.difference_update(subscriptions.remove)
-        # a feed not in the last completed sync needs its whole history, the others what is new
-        since = self.timestamp_actions if feeds <= self.feeds else 0
-
-        episode_actions, timestamp_action = await self._client.get_episode_actions(since=since)
+        episode_actions, timestamp_action = await self._client.get_episode_actions(
+            since=self.timestamp_actions
+        )
+        if self.timestamp_actions and (new_feeds := feeds - self.feeds):
+            # a feed not in the last completed sync needs its whole history
+            history, _ = await self._client.get_episode_actions()
+            episode_actions = episode_actions + [x for x in history if x.podcast in new_feeds]
         actions_by_podcast = index_actions(episode_actions)
         async for feed_url, parsed_podcast in self._refresh_feeds(list(feeds)):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)

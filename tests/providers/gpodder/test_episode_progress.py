@@ -110,27 +110,38 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
 
 
 async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) -> None:
-    """After a completed sync, the next one asks gPodder only for the actions since."""
+    """Only a newly subscribed feed brings in its whole history, the known ones what is new."""
     _serve(provider)
+    new_feed = "https://example.com/new.xml"
+    history = [
+        *ACTIONS,
+        EpisodeActionPlay(
+            podcast=new_feed,
+            episode="https://example.com/ep3.mp3",
+            position=60,
+            total=1200,
+            timestamp="2024-01-05T10:00:00",
+        ),
+    ]
     # the server returns the whole history for since=0 and nothing newer than the last sync
     cast("Mock", provider._client).get_episode_actions = AsyncMock(
-        side_effect=lambda since=0: (ACTIONS if since == 0 else [], 999)
+        side_effect=lambda since=0: (history if since == 0 else [], 999)
     )
     _subscribe(provider, [FEED])
-    music = cast("Mock", provider.mass.music)
     with patch(
         "music_assistant.providers.gpodder.refresh_cached_podcast",
         AsyncMock(return_value=PODCAST),
     ):
         _ = [podcast async for podcast in provider.get_library_podcasts()]
-        assert music.mark_item_played.call_count == 1
         _ = [podcast async for podcast in provider.get_library_podcasts()]
-        assert music.mark_item_played.call_count == 1
-        # a newly subscribed feed brings in the whole history again
-        _subscribe(provider, [FEED, "https://example.com/new.xml"])
+        _subscribe(provider, [FEED, new_feed])
         _ = [podcast async for podcast in provider.get_library_podcasts()]
 
-    assert music.mark_item_played.call_count == 2
+    played = cast("Mock", provider.mass.music).mark_item_played
+    assert [c.args[0].item_id for c in played.call_args_list] == [
+        f"{FEED} guid-1",
+        f"{new_feed} guid-3",
+    ]
 
 
 async def test_sync_refreshes_several_feeds_at_once(provider: GPodder) -> None:
