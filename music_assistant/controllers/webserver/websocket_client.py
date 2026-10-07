@@ -57,6 +57,8 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
+# seconds a client may stay connected without authenticating
+UNAUTHENTICATED_TIMEOUT = 60
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
 
@@ -179,8 +181,21 @@ class WebsocketClientHandler:
             if self._is_ingress:
                 await self._handle_ingress_auth()
 
+            deadline = asyncio.get_running_loop().time() + UNAUTHENTICATED_TIMEOUT
             while not wsock.closed:
-                msg = await wsock.receive()
+                try:
+                    async with asyncio.timeout_at(
+                        deadline if self._authenticated_user is None else None
+                    ):
+                        msg = await wsock.receive()
+                except TimeoutError:
+                    # debug only: an idle login page reconnects after every timeout
+                    self._logger.debug(
+                        "Closing connection from %s: not authenticated within %s seconds",
+                        request.remote,
+                        UNAUTHENTICATED_TIMEOUT,
+                    )
+                    break
 
                 if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
                     break

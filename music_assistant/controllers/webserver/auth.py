@@ -176,6 +176,7 @@ class AuthenticationManager:
         await self._prune_orphaned_user_rows()
 
         self._schedule_periodic_cleanup()
+        self._schedule_session_check()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -2565,6 +2566,22 @@ class AuthenticationManager:
         self.mass.create_task(self._cleanup_expired_join_codes())
         self.mass.create_task(self._cleanup_expired_tokens())
         self.mass.call_later(86400, self._schedule_periodic_cleanup)
+
+    async def _disconnect_expired_sessions(self) -> None:
+        """Disconnect WebSocket clients whose auth token expired or no longer exists."""
+        now = utc()
+        for token_id in {client.token_id for client in self.webserver.clients if client.token_id}:
+            token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
+            if token_row is not None:
+                expires_at = token_row["expires_at"]
+                if not expires_at or now <= datetime.fromisoformat(expires_at):
+                    continue
+            self.webserver.disconnect_websockets_for_token(token_id, "token expiry")
+
+    def _schedule_session_check(self) -> None:
+        """Schedule the hourly check of the auth tokens held by WebSocket clients."""
+        self.mass.create_task(self._disconnect_expired_sessions())
+        self.mass.call_later(3600, self._schedule_session_check)
 
     async def _refresh_token_expiration(
         self, token_row: Mapping[str, Any], user: User, is_long_lived: bool

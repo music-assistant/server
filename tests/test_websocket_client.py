@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
@@ -19,6 +21,7 @@ from music_assistant_models.setup_flow import SetupFlowStep
 
 from music_assistant.controllers.config.flows import SetupFlowAccess, SetupFlowMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
+from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     custom_role_scopes,
     get_current_client_id,
@@ -132,6 +135,23 @@ def _flow_event(flow_id: str = "flow1") -> MassEvent:
         object_id=flow_id,
         data=SetupFlowStep(flow_id=flow_id, step_id="credentials", type=FlowStepType.FORM),
     )
+
+
+def _connecting_client(user: User | None) -> WebsocketClientHandler:
+    """
+    Create a websocket client handler ready to run handle_client against a mocked server.
+
+    :param user: User the connection is already authenticated as, None for an anonymous socket.
+    """
+    webserver = MagicMock()
+    webserver.auth.has_users = True
+    webserver.mass.create_task = MagicMock(
+        side_effect=lambda coro, *_: asyncio.get_running_loop().create_task(coro)
+    )
+    request = make_mocked_request("GET", "/ws", app=web.Application())
+    client = WebsocketClientHandler(webserver, request)
+    client._authenticated_user = user
+    return client
 
 
 PERMISSION_DENIED = str(InsufficientPermissions.error_code)
@@ -581,3 +601,54 @@ async def test_a_playlist_created_or_removed_out_of_sight_is_not_announced(
 
     assert _sent_events(client, _playlist_event(private, event=event_type)) == []
     assert _sent_events(client, _playlist_event(private)) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unauthenticated_client_is_closed_after_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A client that never authenticates is disconnected once the timeout passes.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    monkeypatch.setattr(websocket_client, "UNAUTHENTICATED_TIMEOUT", 0.05)
+    client = _connecting_client(None)
+
+    with (
+        patch.object(client.wsock, "prepare", AsyncMock()),
+        patch.object(client.wsock, "close", AsyncMock()) as close,
+        patch.object(client.wsock, "receive", AsyncMock(side_effect=asyncio.Event().wait)),
+        patch.object(client, "_send_message", AsyncMock()),
+    ):
+        await asyncio.wait_for(client.handle_client(), timeout=1)
+
+    close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_authenticated_client_is_not_closed_by_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An authenticated client stays connected past the unauthenticated timeout.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    monkeypatch.setattr(websocket_client, "UNAUTHENTICATED_TIMEOUT", 0.05)
+    client = _connecting_client(User(user_id="user_1", username="tester", role=UserRole.USER))
+
+    with (
+        patch.object(client.wsock, "prepare", AsyncMock()),
+        patch.object(client.wsock, "close", AsyncMock()) as close,
+        patch.object(client.wsock, "receive", AsyncMock(side_effect=asyncio.Event().wait)),
+        patch.object(client, "_send_message", AsyncMock()),
+    ):
+        task = asyncio.create_task(client.handle_client())
+        await asyncio.sleep(0.2)
+        still_connected = not task.done()
+        task.cancel()
+        await task
+
+    assert still_connected
+    close.assert_awaited_once()

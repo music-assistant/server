@@ -1359,6 +1359,61 @@ async def test_periodic_cleanup_schedules_token_sweep(
     assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
 
 
+async def test_session_check_disconnects_clients_with_an_expired_token(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that the session check disconnects clients whose token expired or was removed.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="sessioncheckuser", role=UserRole.USER)
+    clients: dict[str, WebsocketClientHandler] = {}
+    for name in ("Valid", "Expired", "Removed"):
+        token = await auth_manager.create_token(user, name, is_long_lived=False)
+        client = await _create_ws_client(auth_manager.mass, user.user_id)
+        client._token_id = auth_manager.jwt_helper.get_token_id(token)
+        monkeypatch.setattr(client, "cancel", MagicMock())
+        clients[name] = client
+    ingress = await _create_ws_client(auth_manager.mass, user.user_id)
+    monkeypatch.setattr(ingress, "cancel", MagicMock())
+
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": clients["Expired"].token_id},
+        {"expires_at": (utc() - timedelta(minutes=1)).isoformat()},
+    )
+    await auth_manager.database.delete("auth_tokens", {"token_id": clients["Removed"].token_id})
+
+    await auth_manager._disconnect_expired_sessions()
+
+    clients["Valid"].cancel.assert_not_called()  # type: ignore[attr-defined]
+    clients["Expired"].cancel.assert_called_once()  # type: ignore[attr-defined]
+    clients["Removed"].cancel.assert_called_once()  # type: ignore[attr-defined]
+    ingress.cancel.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_session_check_is_scheduled_hourly(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that the session check runs immediately and reschedules itself every hour.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    create_task = MagicMock(side_effect=lambda coro, *_args, **_kwargs: coro.close())
+    call_later = MagicMock()
+    monkeypatch.setattr(auth_manager.mass, "create_task", create_task)
+    monkeypatch.setattr(auth_manager.mass, "call_later", call_later)
+
+    auth_manager._schedule_session_check()
+
+    create_task.assert_called_once()
+    call_later.assert_called_once_with(3600, auth_manager._schedule_session_check)
+
+
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     """
     Test getting available login providers.

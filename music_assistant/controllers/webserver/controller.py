@@ -460,13 +460,16 @@ class WebserverController(CoreController):
         """Unregister a WebSocket client."""
         self.clients.discard(client)
 
-    def disconnect_websockets_for_token(self, token_id: str) -> None:
+    def disconnect_websockets_for_token(
+        self, token_id: str, reason: str = "token revocation"
+    ) -> None:
         """
         Disconnect all WebSocket clients that authenticated with the given token.
 
         :param token_id: Id of the token that is no longer valid.
+        :param reason: Why the token is no longer valid, included in the log message.
         """
-        self._disconnect_websockets(lambda client: client.token_id == token_id, "token revocation")
+        self._disconnect_websockets(lambda client: client.token_id == token_id, reason)
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
         """
