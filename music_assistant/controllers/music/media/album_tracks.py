@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ExternalID
@@ -13,54 +15,55 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
 
-def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Track]:
+def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]]) -> list[Track]:
     """
     Select the provider entries to list next to the library rows of an album.
 
     A library row always keeps its slot. A provider entry joins an existing slot by
-    provider ID, then by ISRC, then by position or, without one, by a title no source
-    lists twice; a source's own listing is never collapsed, and an ISRC that one source
-    lists more than once identifies nothing.
+    provider ID, then by ISRC, then by position or, without one, by a title no listing
+    has twice; a listing is never collapsed onto itself, and an ISRC that one listing
+    has more than once identifies nothing.
 
     :param library: The album's library rows.
-    :param providers: The album's tracklists as the providers list them.
+    :param listings: The album's tracklists, one per provider album it is fetched as.
     """
-    occupied = {_position(track) for track in library if track.track_number}
-    library_ids = {key for track in library for key in _ids(track)}
-    usable_isrcs = _unique_isrcs_per_source(library + providers)
-    library_isrcs = {isrc for track in library for isrc in usable_isrcs[id(track)]}
-    title_of = {id(track): _title(track) for track in library + providers}
-    unique_titles = _unique_titles(library + providers, title_of)
-    library_titles = {title_of[id(track)] for track in library}
+    entries = _entries(library, listings)
     slots: list[Track] = []
-    slot_sources: list[set[str]] = []
+    slot_sources: list[set[int]] = []
+    slot_by_id: dict[tuple[str, str], int] = {}
     slot_by_isrc: dict[str, int] = {}
     slot_by_position: dict[tuple[int, int], int] = {}
     slot_by_title: dict[tuple[int, str, str], int] = {}
     # the slot an identifier names is the one of the first entry carrying it, so the
     # entries are taken in a fixed order rather than the order the providers answered in:
     # the placed ones first, so the slots exist by the time the others look for theirs
-    for track in sorted(providers, key=lambda track: (not track.track_number, _preference(track))):
-        if library_ids.intersection(_ids(track)):
-            continue
-        isrcs = usable_isrcs[id(track)]
-        if isrcs.intersection(library_isrcs):
+    for track in sorted(
+        entries.providers, key=lambda track: (not track.track_number, _preference(track))
+    ):
+        isrcs = entries.usable_isrcs[id(track)]
+        if isrcs.intersection(entries.library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
             continue
-        title = title_of[id(track)]
+        ids = _ids(track)
+        if entries.library_ids.intersection(ids):
+            continue
+        source = entries.source_of[id(track)]
+        title = entries.title_of[id(track)]
         position = _position(track) if track.track_number else None
-        slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
+        slot = next((slot_by_id[key] for key in ids if key in slot_by_id), None)
+        if slot is None:
+            slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
         if slot is None and position is not None:
-            if position in occupied:
+            if position in entries.occupied:
                 continue
             slot = slot_by_position.get(position)
-        elif slot is None and title in unique_titles:
-            if title in library_titles:
+        elif slot is None and title in entries.unique_titles:
+            if title in entries.library_titles:
                 # the library row is this title's slot
                 continue
             slot = slot_by_title.get(title)
-        if slot is not None and track.provider in slot_sources[slot]:
-            # a source's own listing is authoritative: two of its entries stay two
+        if slot is not None and source in slot_sources[slot]:
+            # a listing is authoritative about itself: two of its entries stay two
             slot = None
         if slot is None:
             slot = len(slots)
@@ -72,20 +75,28 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
                 track.disc_number = slots[slot].disc_number
                 track.track_number = slots[slot].track_number
             slots[slot] = track
-        slot_sources[slot].add(track.provider)
-        if position is not None:
-            slot_by_position.setdefault(position, slot)
-        if title in unique_titles:
-            slot_by_title.setdefault(title, slot)
+        slot_sources[slot].add(source)
+        for key in ids:
+            slot_by_id.setdefault(key, slot)
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
+        if position is not None:
+            slot_by_position.setdefault(position, slot)
+        if title in entries.unique_titles:
+            slot_by_title.setdefault(title, slot)
     return slots
 
 
 def album_track_backfills(
-    library: list[Track], providers: list[Track]
+    library: list[Track], listings: Sequence[Sequence[Track]]
 ) -> list[tuple[Track, Track]]:
-    """Find conservative, unambiguous missing library positions to persist."""
+    """
+    Find conservative, unambiguous missing library positions to persist.
+
+    :param library: The album's library rows.
+    :param listings: The album's tracklists, one per provider album it is fetched as.
+    """
+    providers = [track for listing in listings for track in listing if track.provider != "library"]
     by_id: dict[tuple[str, str], Track | None] = {}
     by_isrc: dict[str, Track | None] = {}
     by_title: dict[tuple[int, str, str], Track | None] = {}
@@ -168,22 +179,72 @@ def _preference(track: Track) -> tuple[bool, str, str]:
     return not track.available, track.provider, track.item_id
 
 
+@dataclass(frozen=True)
+class _Entries:
+    """The provider entries of an album, with the library's and their identifiers judged."""
+
+    providers: list[Track]
+    source_of: dict[int, int]
+    usable_isrcs: dict[int, set[str]]
+    title_of: dict[int, tuple[int, str, str]]
+    unique_titles: set[tuple[int, str, str]]
+    library_ids: set[tuple[str, str]]
+    library_isrcs: set[str]
+    library_titles: set[tuple[int, str, str]]
+    occupied: set[tuple[int, int]]
+
+
+def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entries:
+    """
+    Judge the identifiers of an album's entries ahead of selecting them.
+
+    :param library: The album's library rows.
+    :param listings: The album's tracklists, one per provider album it is fetched as.
+    """
+    # a provider may hand back the library's own rows for the album (a filesystem
+    # provider does), which are not entries of their own
+    providers = [track for listing in listings for track in listing if track.provider != "library"]
+    source_of = _source_of(library, listings)
+    usable_isrcs = _unique_isrcs_per_source(library + providers, source_of)
+    title_of = {id(track): _title(track) for track in library + providers}
+    return _Entries(
+        providers=providers,
+        source_of=source_of,
+        usable_isrcs=usable_isrcs,
+        title_of=title_of,
+        unique_titles=_unique_titles(library + providers, title_of, source_of),
+        library_ids={key for track in library for key in _ids(track)},
+        library_isrcs={isrc for track in library for isrc in usable_isrcs[id(track)]},
+        library_titles={title_of[id(track)] for track in library},
+        occupied={_position(track) for track in library if track.track_number},
+    )
+
+
+def _source_of(library: list[Track], listings: Sequence[Sequence[Track]]) -> dict[int, int]:
+    """Return the listing each entry belongs to, by entry id; the library counts as one."""
+    source_of = {id(track): -1 for track in library}
+    for source, listing in enumerate(listings):
+        source_of.update({id(track): source for track in listing})
+    return source_of
+
+
 def _unique_titles(
-    tracks: list[Track], title_of: dict[int, tuple[int, str, str]]
+    tracks: list[Track], title_of: dict[int, tuple[int, str, str]], source_of: dict[int, int]
 ) -> set[tuple[int, str, str]]:
     """
-    Return the titles that name an entry: listed once per source, at one position at most.
+    Return the titles that name an entry: listed once per listing, at one position at most.
 
     :param tracks: The entries of every listing, library rows included.
     :param title_of: The title of each entry, by its id.
+    :param source_of: The listing of each entry, by its id.
     """
-    # a title a source lists twice, or that is placed at two positions, is a repeated
+    # a title a listing has twice, or that is placed at two positions, is a repeated
     # movement rather than a copy
-    sources: dict[tuple[int, str, str], Counter[str]] = defaultdict(Counter)
+    sources: dict[tuple[int, str, str], Counter[int]] = defaultdict(Counter)
     positions: dict[tuple[int, str, str], set[tuple[int, int]]] = defaultdict(set)
     for track in tracks:
         title = title_of[id(track)]
-        sources[title][track.provider] += 1
+        sources[title][source_of[id(track)]] += 1
         if track.track_number:
             positions[title].add(_position(track))
     return {
@@ -193,13 +254,18 @@ def _unique_titles(
     }
 
 
-def _unique_isrcs_per_source(tracks: list[Track]) -> dict[int, set[str]]:
-    """Return, per track, the ISRCs its own source lists exactly once."""
+def _unique_isrcs_per_source(tracks: list[Track], source_of: dict[int, int]) -> dict[int, set[str]]:
+    """
+    Return, per entry, the ISRCs its own listing has exactly once.
+
+    :param tracks: The entries of every listing, library rows included.
+    :param source_of: The listing of each entry, by its id.
+    """
     isrcs_of = {id(track): _isrcs(track) for track in tracks}
-    seen: dict[str, Counter[str]] = defaultdict(Counter)
+    seen: dict[int, Counter[str]] = defaultdict(Counter)
     for track in tracks:
-        seen[track.provider].update(isrcs_of[id(track)])
+        seen[source_of[id(track)]].update(isrcs_of[id(track)])
     return {
-        id(track): {isrc for isrc in isrcs_of[id(track)] if seen[track.provider][isrc] == 1}
+        id(track): {isrc for isrc in isrcs_of[id(track)] if seen[source_of[id(track)]][isrc] == 1}
         for track in tracks
     }

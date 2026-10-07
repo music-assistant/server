@@ -426,7 +426,7 @@ class AlbumsController(MediaControllerBase[Album]):
         db_items = await self.get_library_album_tracks(
             library_album.item_id, provider_filter=allowed_providers
         )
-        all_tracks: list[Track] = []
+        listings: list[list[Track]] = []
         if in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
@@ -475,8 +475,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     err,
                 )
                 continue
-            all_tracks.extend(provider_tracks)
-        for db_track, source in album_track_backfills(db_items, all_tracks):
+            listings.append(provider_tracks)
+        for db_track, source in album_track_backfills(db_items, listings):
             await self._set_album_track(
                 db_id=int(library_album.item_id),
                 db_track_id=int(db_track.item_id),
@@ -485,7 +485,7 @@ class AlbumsController(MediaControllerBase[Album]):
             db_track.disc_number = source.disc_number
             db_track.track_number = source.track_number
         result: list[Track] = list(db_items)
-        for provider_track in select_album_tracks(db_items, all_tracks):
+        for provider_track in select_album_tracks(db_items, listings):
             provider_track.album = library_album
             # always prefer album image
             album_images = [library_album.image] if library_album.image else []

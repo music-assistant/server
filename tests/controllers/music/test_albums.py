@@ -371,7 +371,8 @@ def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) 
         expected = 1
     else:
         expected = position
-    assert len(select_album_tracks([], [base, candidate])) == expected
+    tracklists = [[base, candidate]] if same_provider else [[base], [candidate]]
+    assert len(select_album_tracks([], tracklists)) == expected
 
 
 async def test_album_tracks_fetch_a_listing_once_per_answering_provider(

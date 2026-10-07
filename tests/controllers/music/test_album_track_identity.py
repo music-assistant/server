@@ -1,5 +1,6 @@
 """Regression coverage for identifier-first album listings and safe backfill."""
 
+from collections import defaultdict
 from dataclasses import replace
 from itertools import permutations
 from typing import TYPE_CHECKING
@@ -35,26 +36,66 @@ def unplayable(track: Track) -> Track:
     return track
 
 
+def listings(tracks: list[Track]) -> list[list[Track]]:
+    """Group entries into one listing per provider, as the controller fetches them."""
+    by_provider: dict[str, list[Track]] = defaultdict(list)
+    for track in tracks:
+        by_provider[track.provider].append(track)
+    return list(by_provider.values())
+
+
+def select(library: list[Track], tracks: list[Track]) -> list[Track]:
+    """Select from entries given flat, one listing per provider."""
+    return album_tracks.select_album_tracks(library, listings(tracks))
+
+
+def backfills(library: list[Track], tracks: list[Track]) -> list[tuple[Track, Track]]:
+    """Find backfills from entries given flat, one listing per provider."""
+    return album_tracks.album_track_backfills(library, listings(tracks))
+
+
+def test_two_listings_of_one_provider_are_two_sources() -> None:
+    """Two provider albums one instance is matched as are collapsed like any two listings."""
+    first = [entry("a", "one", 1, "GBAYC2100001"), entry("a", "two", 2, "GBAYC2100002")]
+    second = [entry("a", "three", 1, "GBAYC2100001"), entry("a", "four", 2, "GBAYC2100002")]
+    selected = album_tracks.select_album_tracks([], [first, second])
+    assert sorted(track.track_number for track in selected) == [1, 2]
+    # a track both albums list under one provider id is one entry as well
+    twice = album_tracks.select_album_tracks([], [[entry("a", "one", 1)], [entry("a", "one", 1)]])
+    assert [track.item_id for track in twice] == ["one"]
+
+
+def test_a_listing_of_the_librarys_own_rows_adds_nothing() -> None:
+    """A provider handing back the library rows (a filesystem does) leaves them the slots."""
+    row = entry("library", "42", 3, "GBAYC2100001")
+    row.provider_mappings = entry("fs", "path").provider_mappings
+    handed_back = entry("library", "42", 3, "GBAYC2100001")
+    handed_back.provider_mappings = set(row.provider_mappings)
+    remote = entry("b", "two", 0, "GBAYC2100001")
+    assert album_tracks.select_album_tracks([row], [[handed_back], [remote]]) == []
+    assert album_tracks.album_track_backfills([row], [[handed_back], [remote]]) == []
+
+
 @pytest.mark.parametrize(("disc", "count"), [(1, 1), (2, 2)])
 def test_unknown_disc(disc: int, count: int) -> None:
     """Disc zero means disc one, never an arbitrary multidisc wildcard."""
     left, right = entry("a", "one"), entry("b", "two")
     left.disc_number, right.disc_number = 0, disc
-    assert len(album_tracks.select_album_tracks([], [left, right])) == count
+    assert len(select([], [left, right])) == count
 
 
 @pytest.mark.parametrize("position", [0, 1, 2])
 def test_repeated_unknown_titles_are_preserved(position: int) -> None:
     """Distinct IDs in one source must never disappear through title fallback."""
     tracks = [entry("a", "one", 0), entry("a", "two", 0), entry("b", "three", position)]
-    assert len(album_tracks.select_album_tracks([], tracks)) == 3
+    assert len(select([], tracks)) == 3
 
 
 @pytest.mark.parametrize("position", [0, 1])
 def test_unambiguous_cross_provider_title(position: int) -> None:
     """A single missing entry can match a single entry from another source."""
     tracks = [entry("a", "one", 0), entry("b", "two", position)]
-    assert len(album_tracks.select_album_tracks([], tracks)) == 1
+    assert len(select([], tracks)) == 1
 
 
 def test_playable_unplaced_copy_takes_an_unplayable_placed_slot() -> None:
@@ -64,7 +105,7 @@ def test_playable_unplaced_copy_takes_an_unplayable_placed_slot() -> None:
         ProviderMapping(item_id="one", provider_domain="a", provider_instance="a", available=False)
     }
     copy = entry("b", "two", 0)
-    selected = album_tracks.select_album_tracks([], [placed, copy])
+    selected = select([], [placed, copy])
     assert [track.item_id for track in selected] == ["two"]
     assert (selected[0].disc_number, selected[0].track_number) == (placed.disc_number, 3)
 
@@ -77,7 +118,7 @@ def test_playable_unplaced_isrc_copy_takes_an_unplayable_placed_slot() -> None:
     }
     copy = entry("b", "two", 0, "GBAYC2100001")
     copy.name = "Allegro (Remastered)"
-    selected = album_tracks.select_album_tracks([], [placed, copy])
+    selected = select([], [placed, copy])
     assert [track.item_id for track in selected] == ["two"]
     assert selected[0].track_number == 3
 
@@ -87,12 +128,12 @@ def test_unplaced_entries_sharing_an_isrc_are_one_entry() -> None:
     first = entry("a", "one", 0, "GBAYC2100001")
     second = entry("b", "two", 0, "GBAYC2100001")
     second.name = "Allegro (Remastered)"
-    selected = album_tracks.select_album_tracks([], [first, second])
+    selected = select([], [first, second])
     assert [track.item_id for track in selected] == ["one"]
     # one source listing the ISRC twice identifies nothing: both of its entries stay
     same_source = entry("a", "two", 0, "GBAYC2100001")
     same_source.name = "Allegro (Remastered)"
-    assert len(album_tracks.select_album_tracks([], [first, same_source])) == 2
+    assert len(select([], [first, same_source])) == 2
 
 
 def test_a_copy_joining_by_title_keeps_its_sources_entries_apart() -> None:
@@ -101,7 +142,7 @@ def test_a_copy_joining_by_title_keeps_its_sources_entries_apart() -> None:
     symphony.name = "Allegro (Symphony 1)"
     allegro = entry("a", "a2", 0, "GBAYC2100002")
     other = entry("b", "b1", 1, "GBAYC2100001")
-    selected = album_tracks.select_album_tracks([], [symphony, allegro, other])
+    selected = select([], [symphony, allegro, other])
     assert [track.item_id for track in selected] == ["b1", "a2"]
 
 
@@ -111,7 +152,7 @@ def test_a_copy_that_took_a_slot_by_title_names_its_recording() -> None:
     allegro = entry("b", "two", 0, "GBAYC2100001")
     remaster = entry("c", "three", 0, "GBAYC2100001")
     remaster.name = "Allegro (Remastered)"
-    selected = album_tracks.select_album_tracks([], [placed, allegro, remaster])
+    selected = select([], [placed, allegro, remaster])
     assert [track.item_id for track in selected] == ["two"]
     assert selected[0].track_number == 1
 
@@ -124,7 +165,7 @@ def test_a_playable_copy_takes_a_slot_two_unplayable_copies_fill(order: tuple[in
         unplayable(entry("b", "two", 1)),
         entry("c", "three", 0),
     ]
-    selected = album_tracks.select_album_tracks([], [copies[index] for index in order])
+    selected = select([], [copies[index] for index in order])
     assert [track.item_id for track in selected] == ["three"]
     assert selected[0].track_number == 1
 
@@ -132,7 +173,7 @@ def test_a_playable_copy_takes_a_slot_two_unplayable_copies_fill(order: tuple[in
 def test_unknown_title_does_not_choose_repeated_position() -> None:
     """One unknown movement cannot be assigned to either of two positions."""
     tracks = [entry("a", "one", 0), entry("b", "two", 1), entry("c", "three", 2)]
-    assert len(album_tracks.select_album_tracks([], tracks)) == 3
+    assert len(select([], tracks)) == 3
 
 
 @pytest.mark.parametrize("order", list(permutations(range(3))))
@@ -144,23 +185,23 @@ def test_sources_at_one_position_collapse_in_any_order(order: tuple[int, ...]) -
         entry("c", "three", 1, "GBAYC2100003"),
     ]
     tracks = [editions[index] for index in order]
-    selected = album_tracks.select_album_tracks([], tracks)
+    selected = select([], tracks)
     assert [track.item_id for track in selected] == ["one"]
 
 
 def test_repeated_isrc_within_a_listing_identifies_nothing() -> None:
     """A source reusing one ISRC keeps both entries; another source then matches by position."""
     reused = [entry("a", "one", 1, "GBAYC2100001"), entry("a", "five", 5, "GBAYC2100001")]
-    assert len(album_tracks.select_album_tracks([], reused)) == 2
+    assert len(select([], reused)) == 2
     other = entry("b", "two", 1, "GBAYC2100001")
-    assert len(album_tracks.select_album_tracks([], [*reused, other])) == 2
+    assert len(select([], [*reused, other])) == 2
 
 
 @pytest.mark.parametrize("position", [1, 9])
 def test_shared_isrc_matches_across_positions(position: int) -> None:
     """Another source's entry with the same ISRC is the same recording wherever it lists it."""
     tracks = [entry("a", "one", 2, "GBAYC2100001"), entry("b", "two", position, "GBAYC2100001")]
-    assert len(album_tracks.select_album_tracks([], tracks)) == 1
+    assert len(select([], tracks)) == 1
 
 
 def test_positionless_copy_of_a_placed_recording_is_not_listed_by_title() -> None:
@@ -168,7 +209,7 @@ def test_positionless_copy_of_a_placed_recording_is_not_listed_by_title() -> Non
     placed = entry("a", "one", 3, "GBAYC2100001")
     copy = entry("b", "two", 0, "GBAYC2100001")
     copy.name = "Allegro (Remastered)"
-    assert album_tracks.select_album_tracks([], [placed, copy]) == [placed]
+    assert select([], [placed, copy]) == [placed]
 
 
 def test_library_recording_suppresses_its_provider_copy_by_isrc() -> None:
@@ -176,7 +217,7 @@ def test_library_recording_suppresses_its_provider_copy_by_isrc() -> None:
     library = entry("library", "42", 0, "GBAYC2100001")
     library.provider_mappings = set()
     source = entry("a", "new", 7, "GBAYC2100001")
-    assert album_tracks.select_album_tracks([library], [source]) == []
+    assert select([library], [source]) == []
 
 
 def test_library_slot_preferred_despite_identifier_drift() -> None:
@@ -185,8 +226,8 @@ def test_library_slot_preferred_despite_identifier_drift() -> None:
     source = entry("a", "new", 1, "GBAYC2100002")
     library.provider_mappings = entry("a", "old").provider_mappings
     source.name = "Different title"
-    assert album_tracks.select_album_tracks([library], [source]) == []
-    assert album_tracks.album_track_backfills([library], [source]) == []
+    assert select([library], [source]) == []
+    assert backfills([library], [source]) == []
 
 
 @pytest.mark.parametrize("count", [1000, 3000])
@@ -194,8 +235,8 @@ def test_repeated_titles_have_linear_index_work(count: int) -> None:
     """Large classical listings index each entry a bounded number of times."""
     tracks = [entry("a", str(index), index + 1) for index in range(count)]
     with patch.object(album_tracks, "_title", wraps=album_tracks._title) as title:
-        assert len(album_tracks.select_album_tracks([], tracks)) == count
-        assert album_tracks.album_track_backfills([], tracks) == []
+        assert len(select([], tracks)) == count
+        assert backfills([], tracks) == []
     assert title.call_count == count * 2
 
 
@@ -289,4 +330,4 @@ def test_ambiguous_or_conflicting_backfill_is_rejected(reason: str) -> None:
         libraries.append(entry("library", "43", 1))
         library.provider_mappings = first.provider_mappings
         providers = [first]
-    assert album_tracks.album_track_backfills(libraries, providers) == []
+    assert backfills(libraries, providers) == []
