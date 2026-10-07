@@ -73,6 +73,15 @@ UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 class PlaybackTrackerMixin(_PlayerQueuesBase):
     """Reconcile a queue's state against its player and drive playback-progress reporting."""
 
+    def is_playing_queue(self, queue_id: str, player: Player) -> bool:
+        """
+        Return whether the media the player reports is an item of the given queue.
+
+        :param queue_id: The queue to check against.
+        :param player: The player whose reported media is checked.
+        """
+        return self._parse_player_current_item_id(queue_id, player) is not None
+
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
         Update the current item/index/elapsed time on the queue from the player state.

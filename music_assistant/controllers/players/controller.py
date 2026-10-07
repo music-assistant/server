@@ -2503,17 +2503,28 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
-        if player.state.playback_state == PlaybackState.PLAYING:
-            self.logger.info("Restarting playback of Player %s after DSP change", player_id)
-            # this will restart the queue stream/playback
-            if self.get_active_queue(player):
-                self.mass.call_later(
-                    0, self.mass.player_queues.resume, player.state.active_source, False
+        if player.state.playback_state != PlaybackState.PLAYING:
+            return
+        if active_queue := self.get_active_queue(player):
+            # a group change the provider reported can hand this player a queue it is not
+            # rendering (a Sonos that becomes coordinator of a group playing another
+            # player's queue falls back to its own, idle queue); resuming that would
+            # replace the music with the wrong queue
+            if not self.mass.player_queues.is_playing_queue(active_queue.queue_id, player):
+                self.logger.debug(
+                    "Not restarting %s after DSP change: it is not playing queue %s",
+                    player.display_name,
+                    active_queue.queue_id,
                 )
                 return
-            # if the player is not using a queue, we need to stop and start playback
-            await self.cmd_stop(player_id)
-            await self.cmd_play(player_id)
+            self.logger.info("Restarting playback of Player %s after DSP change", player_id)
+            # this will restart the queue stream/playback
+            self.mass.call_later(0, self.mass.player_queues.resume, active_queue.queue_id, False)
+            return
+        self.logger.info("Restarting playback of Player %s after DSP change", player_id)
+        # if the player is not using a queue, we need to stop and start playback
+        await self.cmd_stop(player_id)
+        await self.cmd_play(player_id)
 
     def schedule_active_output_protocol_clear(self, player: Player) -> None:
         """
@@ -3304,6 +3315,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Handle DSP reload when group membership changes."""
         # reset cached group volume snapshot since membership changed
         player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            # a sync child renders its leader's stream, so its own DSP setting cannot
+            # require a restart (a leader that just became a child reports its members
+            # as gone, which would otherwise read as the group shrinking)
+            return
         prev_child_count = len(prev_group_members)
         new_child_count = len(new_group_members)
         is_player_group = player.state.type == PlayerType.GROUP
