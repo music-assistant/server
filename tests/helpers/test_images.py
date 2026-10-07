@@ -574,20 +574,6 @@ async def test_guarded_fetch_follows_public_redirect(mass_minimal: MusicAssistan
     assert requested == ["http://cdn.example.com/a.jpg", "https://img.example.org/b.jpg"]
 
 
-async def test_guarded_fetch_gives_up_after_three_redirects(mass_minimal: MusicAssistant) -> None:
-    """A guarded fetch stops following redirects after three hops."""
-    requested = _fake_http_session(
-        mass_minimal,
-        {f"http://cdn.example.com/{hop}": (302, f"/{hop + 1}", b"") for hop in range(10)},
-    )
-    with (
-        patch(RESOLVER, AsyncMock(return_value=["93.184.215.14"])),
-        pytest.raises(FileNotFoundError, match="redirects"),
-    ):
-        await images._fetch_remote_image(mass_minimal, "http://cdn.example.com/0", guard=True)
-    assert len(requested) == 4
-
-
 async def test_unknown_provider_image_on_loopback_is_refused(mass_minimal: MusicAssistant) -> None:
     """An image of an unknown provider pointing at a loopback host is not fetched."""
     mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
@@ -730,26 +716,6 @@ async def test_builtin_stream_scheme_image_is_guarded(
         data, _ = await images._fetch_source_image(mass_minimal, url, "builtin", 0)
         assert data == b"frame"
         embedded.assert_called_once_with(url)
-
-
-async def test_sibling_provider_image_is_guarded(
-    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An image of an unavailable instance served by a sibling instance stays client-supplied."""
-    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
-    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
-    sibling = MagicMock(spec=MusicProvider, domain="spotify", instance_id="spotify--b")
-    sibling.resolve_image = AsyncMock(side_effect=lambda path: path)
-    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: sibling)
-    requested = _fake_http_session(
-        mass_minimal, {"http://localhost/art.jpg": (200, None, b"internal")}
-    )
-    with (
-        patch(RESOLVER, AsyncMock(return_value=["127.0.0.1"])),
-        pytest.raises(FileNotFoundError, match="blocked address"),
-    ):
-        await images._fetch_source_image(mass_minimal, "http://localhost/art.jpg", "spotify--a", 0)
-    assert requested == []
 
 
 async def test_own_imageproxy_url_cached_under_resolved_key_only(

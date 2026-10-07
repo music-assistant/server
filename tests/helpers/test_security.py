@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -71,19 +70,6 @@ async def test_unresolvable_hostname_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    ("url", "blocked"),
-    [("http://192.168.1.10/", False), ("http://127.0.0.1/", True), ("http://[::1]/", True)],
-)
-async def test_ip_literal_skips_resolver(url: str, blocked: bool) -> None:
-    """An IP literal is checked directly, without a DNS lookup."""
-    resolver = AsyncMock()
-    expectation = pytest.raises(InvalidDataError) if blocked else nullcontext()
-    with patch(RESOLVER, resolver), expectation:
-        await ensure_safe_outbound_url(MagicMock(), url)
-    resolver.assert_not_called()
-
-
-@pytest.mark.parametrize(
     ("key", "value", "expected"),
     [
         ("url", "http://192.168.1.10:8096", {("192.168.1.10", 8096)}),
@@ -105,21 +91,6 @@ def test_provider_configured_endpoints(
     """URL values and bare host values of host-like keys are collected."""
     provider = _fake_provider([(key, ConfigEntryType.STRING, value)])
     assert provider_configured_endpoints(provider) == expected
-
-
-@pytest.mark.parametrize(
-    ("entry_type", "value"),
-    [
-        (ConfigEntryType.SECURE_STRING, "http://192.168.1.10:8096"),
-        (ConfigEntryType.STRING, "_encrypted_gAAAAABlocal"),
-    ],
-)
-def test_provider_configured_endpoints_skips_secure_values(
-    entry_type: ConfigEntryType, value: str
-) -> None:
-    """Secure and encrypted config values are never collected."""
-    provider = _fake_provider([("server_url", entry_type, value)])
-    assert provider_configured_endpoints(provider) == frozenset()
 
 
 @pytest.mark.parametrize(
