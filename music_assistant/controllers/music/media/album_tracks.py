@@ -37,19 +37,29 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     slot_by_position: dict[tuple[int, int], int] = {}
     unknown: list[Track] = []
     # the slot an identifier names is the one of the first entry carrying it, so the
-    # entries are taken in a fixed order rather than the order the providers answered in
-    for track in sorted(providers, key=_preference):
+    # entries are taken in a fixed order rather than the order the providers answered in:
+    # the placed ones first, so the slots exist by the time the others look for theirs
+    for track in sorted(providers, key=lambda track: (not track.track_number, _preference(track))):
         if library_ids.intersection(_ids(track)):
             continue
         isrcs = usable_isrcs[id(track)]
         if isrcs.intersection(library_isrcs):
             # the library row is this recording's slot, wherever the provider lists it
             continue
+        slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
         if not track.track_number:
-            unknown.append(track)
+            if slot is None or track.provider in slot_sources[slot]:
+                unknown.append(track)
+                continue
+            # the slot names this recording already: a playable copy takes it, and the
+            # position known for it, whatever title the copy goes by
+            if _preference(track) < _preference(slots[slot]):
+                track.disc_number = slots[slot].disc_number
+                track.track_number = slots[slot].track_number
+                slots[slot] = track
+            slot_sources[slot].add(track.provider)
             continue
         position = _position(track)
-        slot = next((slot_by_isrc[isrc] for isrc in isrcs if isrc in slot_by_isrc), None)
         if slot is None:
             if position in occupied:
                 continue
@@ -68,10 +78,15 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
 
-    # an entry without a position still names its recording: one that a slot already
-    # holds must not fall through to the title fallback and be listed twice
-    unknown = [track for track in unknown if not usable_isrcs[id(track)].intersection(slot_by_isrc)]
-    slots.extend(_unplaced_additions(titles, unknown, slots))
+    # entries without a position that share an ISRC are one recording as well; the
+    # preferred one of them came first
+    seen_isrcs: set[str] = set()
+    for track in _unplaced_additions(titles, unknown, slots):
+        isrcs = usable_isrcs[id(track)]
+        if isrcs.intersection(seen_isrcs):
+            continue
+        seen_isrcs.update(isrcs)
+        slots.append(track)
     return slots
 
 

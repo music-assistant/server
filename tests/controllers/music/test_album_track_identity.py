@@ -60,6 +60,32 @@ def test_playable_unplaced_copy_takes_an_unplayable_placed_slot() -> None:
     assert (selected[0].disc_number, selected[0].track_number) == (placed.disc_number, 3)
 
 
+def test_playable_unplaced_isrc_copy_takes_an_unplayable_placed_slot() -> None:
+    """A playable copy of a placed recording replaces it by ISRC, whatever its title."""
+    placed = entry("a", "one", 3, "GBAYC2100001")
+    placed.provider_mappings = {
+        ProviderMapping(item_id="one", provider_domain="a", provider_instance="a", available=False)
+    }
+    copy = entry("b", "two", 0, "GBAYC2100001")
+    copy.name = "Allegro (Remastered)"
+    selected = album_tracks.select_album_tracks([], [placed, copy])
+    assert [track.item_id for track in selected] == ["two"]
+    assert selected[0].track_number == 3
+
+
+def test_unplaced_entries_sharing_an_isrc_are_one_entry() -> None:
+    """Two sources' entries without a position but with one ISRC are one recording."""
+    first = entry("a", "one", 0, "GBAYC2100001")
+    second = entry("b", "two", 0, "GBAYC2100001")
+    second.name = "Allegro (Remastered)"
+    selected = album_tracks.select_album_tracks([], [first, second])
+    assert [track.item_id for track in selected] == ["one"]
+    # one source listing the ISRC twice identifies nothing: both of its entries stay
+    same_source = entry("a", "two", 0, "GBAYC2100001")
+    same_source.name = "Allegro (Remastered)"
+    assert len(album_tracks.select_album_tracks([], [first, same_source])) == 2
+
+
 def test_unknown_title_does_not_choose_repeated_position() -> None:
     """One unknown movement cannot be assigned to either of two positions."""
     tracks = [entry("a", "one", 0), entry("b", "two", 1), entry("c", "three", 2)]
