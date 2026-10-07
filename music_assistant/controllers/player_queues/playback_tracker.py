@@ -77,22 +77,21 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         """
         Return whether the player renders the given queue, as far as the server can tell.
 
-        True when the queue is playing with a stream session and the media the player
-        reports does not name another queue; a player that reports no usable media counts
-        as rendering it.
+        True when the queue has a stream session and the media the player reports names
+        it; a player that reports no usable media counts as rendering the queue when the
+        queue is playing.
 
         :param queue_id: The queue to check against.
         :param player: The player whose reported media is checked.
         """
         queue_data = self._queue_data.get(queue_id)
-        if (
-            queue_data is None
-            or queue_data.session_id is None
-            or queue_data.queue.state != PlaybackState.PLAYING
-        ):
+        if queue_data is None or queue_data.session_id is None:
             return False
-        reported = self._reported_queue_id(player)
-        return reported is None or reported == queue_id
+        if (reported := self._reported_queue_id(player)) is not None:
+            # the player's own report is fresher than the queue state, which follows the
+            # player with a delay and can still read idle on the first playing update
+            return reported == queue_id
+        return queue_data.queue.state == PlaybackState.PLAYING
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """

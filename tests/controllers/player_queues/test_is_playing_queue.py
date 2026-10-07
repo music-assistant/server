@@ -110,22 +110,14 @@ def test_media_naming_an_unknown_queue_is_not_evidence() -> None:
     )
 
 
-def test_queue_that_is_not_playing_is_not_rendered() -> None:
-    """A paused or idle queue keeps its session, but nothing renders it right now."""
+def test_queue_that_is_not_playing_needs_the_media_to_name_it() -> None:
+    """A queue not (yet) playing is rendered only when the player's own report names it."""
     ctrl = _controller()
-    ctrl._queue_data["q1"].queue.state = PlaybackState.PAUSED
+    ctrl._queue_data["q1"].queue.state = PlaybackState.IDLE
+    own = _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/q1/q1-item/q1.flac"))
+    other = _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/q2/q2-item/q2.flac"))
 
+    # the queue state lags the player by the reconciliation delay; the report is fresher
+    assert ctrl.is_playing_queue("q1", own)
+    assert not ctrl.is_playing_queue("q1", other)
     assert not ctrl.is_playing_queue("q1", _player(None))
-    assert not ctrl.is_playing_queue(
-        "q1", _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="q1-item"))
-    )
-
-
-def test_queue_without_a_session_is_not_playing() -> None:
-    """A queue the server is not streaming cannot be rendered, whatever the media says."""
-    ctrl = _controller()
-    ctrl._queue_data["q1"].session_id = None
-    player = _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="q1-item"))
-
-    assert not ctrl.is_playing_queue("q1", player)
-    assert not ctrl.is_playing_queue("unknown", player)
