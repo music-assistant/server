@@ -48,9 +48,13 @@ IMAGE_PATH_PREFIX: Final = "album/"
 # the media type and the instance id
 TRACK_ID_PREFIX: Final = "track-"
 ALBUM_ID_PREFIX: Final = "album-"
+# artists are keyed by their MusicBrainz id, so same-named artists stay apart, or by name
+# when beets has no valid id for them
+ARTIST_MBID_ID_PREFIX: Final = "artist-mbid-"
+ARTIST_NAME_ID_PREFIX: Final = "artist-name-"
 SQLITE_BUSY_TIMEOUT: Final = 30.0
 ITEM_BATCH_SIZE: Final = 500
 SYNC_CONCURRENCY: Final = 8
 # part of every item checksum: raise it whenever parsing changes, so the next sync re-imports
 # the items that were parsed by the previous version
-PARSER_VERSION: Final = 1
+PARSER_VERSION: Final = 2

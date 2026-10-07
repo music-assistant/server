@@ -27,10 +27,13 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
 )
 from music_assistant.helpers.compare import compare_track
+from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    ARTIST_MBID_ID_PREFIX,
+    ARTIST_NAME_ID_PREFIX,
     CONF_BEETS_DIRECTORY,
     CONF_LIBRARY_DB,
     CONF_MUSIC_DIRECTORY,
@@ -181,15 +184,15 @@ class BeetsProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        if prov_artist_id == VARIOUS_ARTISTS_NAME:
+        name, mbid = _parse_artist_id(prov_artist_id)
+        if mbid == VARIOUS_ARTISTS_MBID:
             # compilations get this artist from beets' comp flag, whatever albumartist says
-            return parse_artist(prov_artist_id, self._ctx, mbid=VARIOUS_ARTISTS_MBID)
-        details = await self.library.get_artist_details(prov_artist_id)
-        if details is None:
+            return parse_artist(VARIOUS_ARTISTS_NAME, self._ctx, mbid=VARIOUS_ARTISTS_MBID)
+        artist = await self.library.find_artist(name=name, mbid=mbid)
+        if artist is None:
             msg = f"Artist not found: {prov_artist_id}"
             raise MediaNotFoundError(msg)
-        sort_name, mbid = details
-        return parse_artist(prov_artist_id, self._ctx, sort_name, mbid)
+        return parse_artist(artist.name, self._ctx, artist.sort_name, artist.mbid)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -376,17 +379,28 @@ class BeetsProvider(MusicProvider):
         """Unmap the tracks beets no longer has; the orphan pass cleans up their albums and artists."""
         assert self.mass.music.database
         tracks = self.mass.music.tracks
+        ordered_ids = sorted(deleted_ids)
         async with self.mass.music.database.deferred_commit():
-            for item_id in deleted_ids:
-                library_item = await tracks.get_library_item_by_prov_id(item_id, self.instance_id)
-                if library_item is None:
-                    continue
-                # the library track may also hold another mapping (a re-imported beets item
-                # merged into it, or another provider), which keeps it together with its
-                # favorite and history
-                await tracks.remove_provider_mapping(
-                    library_item.item_id, self.instance_id, item_id
+            for start in range(0, len(ordered_ids), ITEM_BATCH_SIZE):
+                chunk = ordered_ids[start : start + ITEM_BATCH_SIZE]
+                chunk_ids = set(chunk)
+                library_items = await tracks.get_library_items_by_prov_id(
+                    provider_instance=self.instance_id,
+                    provider_item_ids=chunk,
+                    limit=len(chunk),
                 )
+                for library_item in library_items:
+                    # the library track may also hold another mapping (a re-imported beets
+                    # item merged into it, or another provider), which keeps it together with
+                    # its favorite and history
+                    for mapping in library_item.provider_mappings:
+                        if (
+                            mapping.provider_instance == self.instance_id
+                            and mapping.item_id in chunk_ids
+                        ):
+                            await tracks.remove_provider_mapping(
+                                library_item.item_id, self.instance_id, mapping.item_id
+                            )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Unmap this instance from albums and artists that no longer hold any of its tracks."""
@@ -458,6 +472,26 @@ def _is_same_recording(library_track: Track, track: Track) -> bool:
     reference = copy(library_track)
     reference.provider_mappings = set()
     return compare_track(reference, track, strict=True)
+
+
+def _parse_artist_id(prov_artist_id: str) -> tuple[str | None, str | None]:
+    """
+    Return the name or the MusicBrainz id an artist provider item id is keyed by.
+
+    :param prov_artist_id: The provider artist id.
+    :raises MediaNotFoundError: If the id is neither a canonical MusicBrainz id nor a
+        name without surrounding whitespace, behind its prefix.
+    """
+    if prov_artist_id.startswith(ARTIST_MBID_ID_PREFIX):
+        mbid = prov_artist_id.removeprefix(ARTIST_MBID_ID_PREFIX)
+        if mbid and clean_mbid(mbid) == mbid:
+            return None, mbid
+    elif prov_artist_id.startswith(ARTIST_NAME_ID_PREFIX):
+        name = prov_artist_id.removeprefix(ARTIST_NAME_ID_PREFIX)
+        if name and name == name.strip():
+            return name, None
+    msg = f"Invalid beets artist id: {prov_artist_id}"
+    raise MediaNotFoundError(msg)
 
 
 def _parse_id(prov_item_id: str, prefix: str) -> int:

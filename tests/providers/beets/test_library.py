@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from music_assistant.providers.beets.library import BeetsLibrary, BeetsLibraryError
+from music_assistant.providers.beets.library import BeetsArtist, BeetsLibrary, BeetsLibraryError
 from tests.providers.beets.beets_db import (
+    ALBUM_MBID,
     ARTIST_MBID,
     GUEST_MBID,
     MULTI_VALUE_DELIMITER,
@@ -46,6 +48,18 @@ async def test_open_fails_without_items_table(tmp_path: Path) -> None:
     connection.close()
     library = BeetsLibrary(str(db_path))
     with pytest.raises(BeetsLibraryError, match="items"):
+        await library.open()
+
+
+async def test_open_fails_for_items_table_without_beets_columns(tmp_path: Path) -> None:
+    """An items table that lacks the columns beets always has is not a beets library."""
+    db_path = tmp_path / "other.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE items (id INTEGER, name TEXT)")
+    connection.commit()
+    connection.close()
+    library = BeetsLibrary(str(db_path))
+    with pytest.raises(BeetsLibraryError, match="path"):
         await library.open()
 
 
@@ -96,9 +110,7 @@ async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
     album_id = beets_db.add_album(**album_fields())
     second = beets_db.add_item(**item_fields(album_id=album_id, track=2, title="Second"))
     first = beets_db.add_item(**item_fields(album_id=album_id, track=1, title="First"))
-    beets_db.add_item(
-        **item_fields(title="Loose", artist="Solo", artist_sort="Solo, The", mb_artistid=GUEST_MBID)
-    )
+    beets_db.add_item(**item_fields(title="Loose", **_single_artist("Solo", "Solo, The")))
     library = BeetsLibrary(str(beets_db.path))
     await library.open()
     try:
@@ -106,58 +118,120 @@ async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
         assert await library.get_item(9999) is None
         assert await library.get_album(9999) is None
         assert [row.id for row in await library.get_album_items(album_id)] == [first, second]
-        assert await library.get_artist_details("Artist") == ("Artist", ARTIST_MBID)
-        assert await library.get_artist_details("Solo") == ("Solo, The", GUEST_MBID)
-        assert await library.get_artist_details("Nobody") is None
+        assert await library.find_artist(mbid=ARTIST_MBID) == BeetsArtist(
+            "Artist", "Artist", ARTIST_MBID
+        )
+        assert await library.find_artist(name="Solo") == BeetsArtist("Solo", "Solo, The", None)
+        assert await library.find_artist(name="Nobody") is None
+        assert await library.find_artist(mbid=ALBUM_MBID) is None
     finally:
         await library.close()
 
 
-async def test_get_artist_details_finds_featured_artist_in_list_column(
+async def test_find_artist_by_name_skips_artists_with_a_musicbrainz_id(
     beets_db: BeetsDb,
 ) -> None:
-    """A name that only appears inside the multi-valued artists list is still found."""
-    beets_db.add_item(**item_fields())
+    """A name lookup only finds the artist of that name that beets has no MusicBrainz id for."""
+    beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, MB", ARTIST_MBID)))
+    beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, Plain")))
+    beets_db.add_item(**item_fields(**_single_artist("Tagged", "Tagged", GUEST_MBID)))
     library = BeetsLibrary(str(beets_db.path))
     await library.open()
     try:
-        assert await library.get_artist_details("Guest") == ("Guest", GUEST_MBID)
+        assert await library.find_artist(name="Twin") == BeetsArtist("Twin", "Twin, Plain", None)
+        assert await library.find_artist(name="Tagged") is None
     finally:
         await library.close()
 
 
-async def test_get_artist_details_ignores_surrounding_whitespace(beets_db: BeetsDb) -> None:
-    """A single-valued name stored with stray spaces is found by the name the parsers read."""
-    beets_db.add_item(
-        **item_fields(
-            artist=" Padded ",
-            artist_sort=" Padded, The ",
-            mb_artistid=GUEST_MBID,
-            artists=None,
-            artists_sort=None,
-            mb_artistids=None,
+async def test_find_artist_keeps_same_named_artists_apart_by_musicbrainz_id(
+    beets_db: BeetsDb,
+) -> None:
+    """Two artists sharing a name are found separately by their MusicBrainz ids."""
+    beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, One", ARTIST_MBID)))
+    beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, Two", GUEST_MBID)))
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.find_artist(mbid=ARTIST_MBID) == BeetsArtist(
+            "Twin", "Twin, One", ARTIST_MBID
         )
-    )
-    library = BeetsLibrary(str(beets_db.path))
-    await library.open()
-    try:
-        assert await library.get_artist_details("Padded") == ("Padded, The", GUEST_MBID)
+        assert await library.find_artist(mbid=GUEST_MBID) == BeetsArtist(
+            "Twin", "Twin, Two", GUEST_MBID
+        )
     finally:
         await library.close()
 
 
-async def test_get_artist_details_requires_an_exact_element_match(beets_db: BeetsDb) -> None:
-    """A substring of a list element, or a name using LIKE wildcard characters, is not a match."""
+async def test_find_artist_matches_non_canonical_musicbrainz_ids(beets_db: BeetsDb) -> None:
+    """An id beets stores in upper case or padded is matched by its canonical form."""
+    beets_db.add_item(**item_fields(**_single_artist("Loud", "Loud", f" {GUEST_MBID.upper()} ")))
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.find_artist(mbid=GUEST_MBID) == BeetsArtist("Loud", "Loud", GUEST_MBID)
+    finally:
+        await library.close()
+
+
+async def test_find_artist_finds_featured_artist_in_list_column(beets_db: BeetsDb) -> None:
+    """An artist that only appears inside the multi-valued artists list is still found."""
     beets_db.add_item(**item_fields())
     library = BeetsLibrary(str(beets_db.path))
     await library.open()
     try:
-        assert await library.get_artist_details("Gue") is None
-        assert await library.get_artist_details("Gu_st") is None
-        assert await library.get_artist_details("%") is None
-        assert await library.get_artist_details("_") is None
+        assert await library.find_artist(mbid=GUEST_MBID) == BeetsArtist(
+            "Guest", "Guest", GUEST_MBID
+        )
     finally:
         await library.close()
+
+
+async def test_find_artist_ignores_surrounding_whitespace(beets_db: BeetsDb) -> None:
+    """A single-valued name stored with stray spaces is found by the name the parsers read."""
+    beets_db.add_item(**item_fields(**_single_artist(" Padded ", " Padded, The ")))
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.find_artist(name="Padded") == BeetsArtist(
+            "Padded", "Padded, The", None
+        )
+    finally:
+        await library.close()
+
+
+async def test_find_artist_requires_an_exact_element_match(beets_db: BeetsDb) -> None:
+    """A substring of a list element, or a name using LIKE wildcard characters, is not a match."""
+    beets_db.add_item(**item_fields(mb_artistid=None, mb_artistids=None))
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.find_artist(name="Guest") == BeetsArtist("Guest", "Guest", None)
+        assert await library.find_artist(name="Gue") is None
+        assert await library.find_artist(name="Gu_st") is None
+        assert await library.find_artist(name="%") is None
+        assert await library.find_artist(name="_") is None
+        assert await library.find_artist(name="") is None
+    finally:
+        await library.close()
+
+
+def _single_artist(name: str, sort_name: str, mbid: str | None = None) -> dict[str, Any]:
+    """
+    Return item fields that credit only one artist, in the single-valued columns.
+
+    :param name: The artist name.
+    :param sort_name: The artist sort name.
+    :param mbid: The artist's MusicBrainz id, if any.
+    """
+    return {
+        "artist": name,
+        "artist_sort": sort_name,
+        "mb_artistid": mbid,
+        "artists": None,
+        "artists_sort": None,
+        "mb_artistids": None,
+    }
 
 
 def _add_substring_decoys(beets_db: BeetsDb, count: int) -> None:
@@ -175,17 +249,17 @@ def _add_substring_decoys(beets_db: BeetsDb, count: int) -> None:
                 artist_sort="Moby feat. Lemon Demon",
                 artists=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
                 artists_sort=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
-                mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{ARTIST_MBID}",
+                mb_artistids=MULTI_VALUE_DELIMITER,
             )
         )
 
 
-def _add_featuring_mo(beets_db: BeetsDb, mbid: str, sort_name: str) -> int:
+def _add_featuring_mo(beets_db: BeetsDb, mbid: str | None, sort_name: str) -> int:
     """
     Add an item that features exactly "Mo" in its artists list.
 
     :param beets_db: The beets test database.
-    :param mbid: The MusicBrainz id given to "Mo".
+    :param mbid: The MusicBrainz id given to "Mo", if any.
     :param sort_name: The sort name given to "Mo".
     """
     return beets_db.add_item(
@@ -195,42 +269,43 @@ def _add_featuring_mo(beets_db: BeetsDb, mbid: str, sort_name: str) -> int:
             artist_sort="Headliner feat. Mo",
             artists=f"Headliner{MULTI_VALUE_DELIMITER}Mo",
             artists_sort=f"Headliner{MULTI_VALUE_DELIMITER}{sort_name}",
-            mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{mbid}",
+            mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{mbid or ''}",
         )
     )
 
 
-async def test_get_artist_details_finds_featured_artist_after_many_substring_matches(
+async def test_find_artist_finds_featured_artist_after_many_substring_matches(
     beets_db: BeetsDb,
 ) -> None:
     """A featured artist whose name is a substring of many earlier rows is still found."""
     _add_substring_decoys(beets_db, 25)
-    _add_featuring_mo(beets_db, GUEST_MBID, "Mo, The")
+    _add_featuring_mo(beets_db, None, "Mo, The")
     library = BeetsLibrary(str(beets_db.path))
     await library.open()
     try:
-        assert await library.get_artist_details("Mo") == ("Mo, The", GUEST_MBID)
+        assert await library.find_artist(name="Mo") == BeetsArtist("Mo", "Mo, The", None)
     finally:
         await library.close()
 
 
-async def test_get_artist_details_pages_through_candidates_and_picks_the_first_by_id(
+async def test_find_artist_pages_through_candidates_and_picks_the_first_by_id(
     beets_db: BeetsDb,
 ) -> None:
     """Candidates spanning several pages are all checked, and the lowest-id match wins."""
     _add_substring_decoys(beets_db, 25)
-    _add_featuring_mo(beets_db, GUEST_MBID, "Mo, The")
-    _add_featuring_mo(beets_db, ARTIST_MBID, "Mo, Other")
+    _add_featuring_mo(beets_db, GUEST_MBID, "Mo, Tagged")
+    _add_featuring_mo(beets_db, None, "Mo, The")
+    _add_featuring_mo(beets_db, None, "Mo, Other")
     library = BeetsLibrary(str(beets_db.path))
     await library.open()
     try:
         with patch("music_assistant.providers.beets.library.ITEM_BATCH_SIZE", 10):
-            assert await library.get_artist_details("Mo") == ("Mo, The", GUEST_MBID)
+            assert await library.find_artist(name="Mo") == BeetsArtist("Mo", "Mo, The", None)
     finally:
         await library.close()
 
 
-async def test_get_artist_details_from_list_column_skips_legacy_database(
+async def test_find_artist_from_list_column_skips_legacy_database(
     legacy_beets_db: BeetsDb,
 ) -> None:
     """A legacy database without the list columns returns None instead of raising."""
@@ -240,7 +315,8 @@ async def test_get_artist_details_from_list_column_skips_legacy_database(
     library = BeetsLibrary(str(legacy_beets_db.path))
     await library.open()
     try:
-        assert await library.get_artist_details("Guest") is None
+        assert await library.find_artist(name="Guest") is None
+        assert await library.find_artist(mbid=GUEST_MBID) is None
     finally:
         await library.close()
 
@@ -255,7 +331,7 @@ async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
     with pytest.raises(BeetsLibraryError):
         await library.get_album(1)
     with pytest.raises(BeetsLibraryError):
-        await library.get_artist_details("Artist")
+        await library.find_artist(name="Artist")
 
     await library.open()
     await library.close()
@@ -266,7 +342,7 @@ async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
     with pytest.raises(BeetsLibraryError):
         await library.get_album(1)
     with pytest.raises(BeetsLibraryError):
-        await library.get_artist_details("Artist")
+        await library.find_artist(name="Artist")
 
 
 async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:

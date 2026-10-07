@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import aiosqlite
 
+from music_assistant.helpers.tags import clean_mbid
+
 from .constants import (
     BEETS_LIST_DELIMITER,
     BEETS_MULTI_VALUE_DELIMITER,
@@ -18,6 +20,8 @@ from .constants import (
 )
 
 _TABLES = ("items", "albums", "item_attributes", "album_attributes")
+# the columns sync and playback read unconditionally; any other column may be missing
+_REQUIRED_ITEM_COLUMNS = frozenset({"id", "path"})
 # album artists are looked up before track artists and, like the parsers read them, the
 # multi-valued lists before the single-valued columns: (table, list columns, single columns)
 _ARTIST_LOOKUPS = (
@@ -53,6 +57,15 @@ def value_at(values: list[str], index: int) -> str | None:
     if index >= len(values):
         return None
     return values[index].strip() or None
+
+
+@dataclass(frozen=True)
+class BeetsArtist:
+    """An artist as beets records it on an album or item."""
+
+    name: str
+    sort_name: str | None
+    mbid: str | None
 
 
 class BeetsLibraryError(Exception):
@@ -91,7 +104,8 @@ class BeetsLibrary:
         """
         Open the database read-only.
 
-        :raises BeetsLibraryError: If the file cannot be opened or holds no beets items table.
+        :raises BeetsLibraryError: If the file cannot be opened or holds no beets items table
+            with the columns beets always has.
         """
         await self.close()
         try:
@@ -111,6 +125,10 @@ class BeetsLibrary:
         if not columns["items"]:
             await self.close()
             msg = f"{self.db_path} has no beets items table"
+            raise BeetsLibraryError(msg)
+        if missing := _REQUIRED_ITEM_COLUMNS - columns["items"]:
+            await self.close()
+            msg = f"{self.db_path} items table lacks beets columns: {', '.join(sorted(missing))}"
             raise BeetsLibraryError(msg)
         self._columns = columns
 
@@ -184,22 +202,29 @@ class BeetsLibrary:
         )
         return await self._with_flex(rows, "item_attributes")
 
-    async def get_artist_details(self, name: str) -> tuple[str | None, str | None] | None:
+    async def find_artist(
+        self, name: str | None = None, mbid: str | None = None
+    ) -> BeetsArtist | None:
         """
-        Return the sort name and MusicBrainz id beets holds for an artist name.
+        Return the first artist beets records with a MusicBrainz id, or with a name and no id.
 
-        Names are compared the way the parsers read them, without surrounding whitespace.
-        Returns None when no album or item carries this artist name.
+        Album artists are searched before track artists. Names are compared the way the
+        parsers read them, without surrounding whitespace, and an invalid MusicBrainz id
+        counts as none. Returns None when no album or item carries such an artist.
 
-        :param name: The artist name.
+        :param name: The artist name, used when mbid is not given.
+        :param mbid: The artist's MusicBrainz id in canonical form.
         """
         self._require_open()
+        if mbid is None and not name:
+            return None
         for table, list_columns, single_columns in _ARTIST_LOOKUPS:
             columns = self._columns.get(table, frozenset())
-            if (details := await self._list_artist_details(table, columns, list_columns, name)) or (
-                details := await self._single_artist_details(table, columns, single_columns, name)
-            ):
-                return details
+            for lookup, multi_valued in ((list_columns, True), (single_columns, False)):
+                if artist := await self._find_artist_in(
+                    table, columns, lookup, multi_valued, name, mbid
+                ):
+                    return artist
         return None
 
     def _require_open(self) -> aiosqlite.Connection:
@@ -213,58 +238,42 @@ class BeetsLibrary:
             raise BeetsLibraryError(msg)
         return self._db
 
-    async def _list_artist_details(
+    async def _find_artist_in(
         self,
         table: str,
         columns: frozenset[str],
         lookup: tuple[str, str, str],
-        name: str,
-    ) -> tuple[str | None, str | None] | None:
-        """Return the details of the first row whose artist list holds name as an element."""
-        list_column, sort_column, mbid_column = lookup
-        if list_column not in columns:
+        multi_valued: bool,
+        name: str | None,
+        mbid: str | None,
+    ) -> BeetsArtist | None:
+        """Return the first matching artist in one set of artist columns of a table."""
+        name_column, sort_column, mbid_column = lookup
+        key_column = mbid_column if mbid else name_column
+        if name_column not in columns or key_column not in columns:
             return None
         sort_expr = sort_column if sort_column in columns else "NULL"
         mbid_expr = mbid_column if mbid_column in columns else "NULL"
-        # LIKE only prefilters substrings, so page through every candidate in id order
-        # until one holds the name as an exact list element
+        if mbid or multi_valued:
+            # LIKE only prefilters substrings (case-insensitively), so every candidate is
+            # checked for an exact element match below
+            condition = f"{key_column} LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+            value = _like_pattern(mbid or name or "")
+        else:
+            condition = f"TRIM({name_column}) = ?"
+            value = name or ""
         last_id = 0
         while rows := await self._fetch_all(
-            f"SELECT id, {list_column} AS names, {sort_expr} AS sort_names, "
-            f"{mbid_expr} AS mbids FROM {table} WHERE {list_column} LIKE ? "
-            f"ESCAPE '{_LIKE_ESCAPE_CHAR}' AND id > ? ORDER BY id LIMIT ?",
-            (_like_pattern(name), last_id, ITEM_BATCH_SIZE),
+            f"SELECT id, {name_column} AS names, {sort_expr} AS sort_names, "
+            f"{mbid_expr} AS mbids FROM {table} WHERE {condition} AND id > ? "
+            "ORDER BY id LIMIT ?",
+            (value, last_id, ITEM_BATCH_SIZE),
         ):
             for row in rows:
-                if (index := _index_of(split_multi_value(row["names"]), name)) is None:
-                    continue
-                sort_name = value_at(split_multi_value(row["sort_names"]), index)
-                mbid = value_at(split_multi_value(row["mbids"]), index)
-                return (sort_name, mbid)
+                if artist := _matching_artist(row, multi_valued, name, mbid):
+                    return artist
             last_id = int(rows[-1]["id"])
         return None
-
-    async def _single_artist_details(
-        self,
-        table: str,
-        columns: frozenset[str],
-        lookup: tuple[str, str, str],
-        name: str,
-    ) -> tuple[str | None, str | None] | None:
-        """Return the details of the first row whose single-valued artist column is name."""
-        name_column, sort_column, mbid_column = lookup
-        if name_column not in columns:
-            return None
-        sort_expr = sort_column if sort_column in columns else "NULL"
-        mbid_expr = mbid_column if mbid_column in columns else "NULL"
-        rows = await self._fetch_all(
-            f"SELECT {sort_expr} AS sort_name, {mbid_expr} AS mbid "
-            f"FROM {table} WHERE TRIM({name_column}) = ? LIMIT 1",
-            (name,),
-        )
-        if not rows:
-            return None
-        return (_stripped(rows[0]["sort_name"]), _stripped(rows[0]["mbid"]))
 
     async def _table_columns(self, table: str) -> frozenset[str]:
         rows = await self._fetch_all(f"PRAGMA table_info({table})")
@@ -307,16 +316,25 @@ def _like_pattern(name: str) -> str:
     return f"%{escaped}%"
 
 
-def _stripped(value: object) -> str | None:
-    """Return a stripped non-empty string, or None."""
-    if value is None:
-        return None
-    return str(value).strip() or None
-
-
-def _index_of(values: list[str], name: str) -> int | None:
-    """Return the index of the element that strips to an exact match of name, or None."""
-    for index, value in enumerate(values):
-        if value.strip() == name:
-            return index
+def _matching_artist(
+    row: sqlite3.Row, multi_valued: bool, name: str | None, mbid: str | None
+) -> BeetsArtist | None:
+    """Return the artist of a row with this MusicBrainz id, or with this name and no id."""
+    names = _column_values(row["names"], multi_valued)
+    sort_names = _column_values(row["sort_names"], multi_valued)
+    mbids = _column_values(row["mbids"], multi_valued)
+    for index, raw_name in enumerate(names):
+        artist_name = raw_name.strip()
+        if not artist_name or (mbid is None and artist_name != name):
+            continue
+        artist_mbid = clean_mbid(value_at(mbids, index))
+        if artist_mbid == mbid:
+            return BeetsArtist(artist_name, value_at(sort_names, index), artist_mbid)
     return None
+
+
+def _column_values(value: object, multi_valued: bool) -> list[str]:
+    """Return the values of a multi-valued column, or a single-valued column as a list."""
+    if multi_valued:
+        return split_multi_value(value)
+    return [value] if isinstance(value, str) else []

@@ -12,6 +12,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album, Artist
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.providers.beets.constants import PARSER_VERSION
 from music_assistant.providers.beets.library import BeetsRow
 from music_assistant.providers.beets.parsers import (
     ParseContext,
@@ -84,15 +85,26 @@ def test_track_and_album_ids_start_with_their_shared_prefix() -> None:
         ("Artist/01.mp3", None, "/media/music/Artist/01.mp3"),
         (b"/home/kate/Music/Artist/01.flac", "/home/kate/Music", "/media/music/Artist/01.flac"),
         (b"/home/kate/Music/Artist/01.flac", "/home/kate/Music/", "/media/music/Artist/01.flac"),
-        (b"/home/kate/MusicExtra/01.flac", "/home/kate/Music", "/home/kate/MusicExtra/01.flac"),
-        (b"/srv/other/01.flac", "/home/kate/Music", "/srv/other/01.flac"),
-        (b"/srv/other/01.flac", None, "/srv/other/01.flac"),
+        (b"/media/music/Artist/01.flac", None, "/media/music/Artist/01.flac"),
+        (b"/home/kate/MusicExtra/01.flac", "/home/kate/Music", None),
+        (b"/srv/other/01.flac", "/home/kate/Music", None),
+        (b"/srv/other/01.flac", None, None),
+        (b"/media/musicextra/01.flac", None, None),
+        ("../../etc/passwd", None, None),
+        ("Artist/../../secret.jpg", None, None),
+        (b"/home/kate/Music/../secret.jpg", "/home/kate/Music", None),
+        (b"/media/music/Artist/../../secret.jpg", None, None),
+        ("Artist/./01.mp3", None, "/media/music/Artist/01.mp3"),
         (b"", "/home/kate/Music", None),
         (None, "/home/kate/Music", None),
     ],
 )
 def test_expand_path(value: object, beets_directory: str | None, expected: str | None) -> None:
-    """Relative paths join the music directory and the beets prefix is swapped on a boundary."""
+    """
+    Relative paths join the music directory and the beets prefix is swapped on a boundary.
+
+    Paths that end up outside the music directory are rejected.
+    """
     assert expand_path(value, "/media/music", beets_directory) == expected
 
 
@@ -179,14 +191,27 @@ def test_item_checksum_follows_parser_version(monkeypatch: pytest.MonkeyPatch) -
     """Raising the parser version changes every checksum, so the next sync re-imports."""
     item = _row(1, item_fields())
     before = item_checksum(item, None)
-    monkeypatch.setattr("music_assistant.providers.beets.parsers.PARSER_VERSION", 2)
+    monkeypatch.setattr(
+        "music_assistant.providers.beets.parsers.PARSER_VERSION", PARSER_VERSION + 1
+    )
     assert item_checksum(item, None) != before
 
 
+def test_parse_artist_is_keyed_by_musicbrainz_id() -> None:
+    """Artists with a MusicBrainz id are keyed by it, so same-named artists stay apart."""
+    artist = parse_artist("Artist", CTX, mbid=f" {ARTIST_MBID.upper()} ")
+    namesake = parse_artist("Artist", CTX, mbid=GUEST_MBID)
+    assert artist.item_id == f"artist-mbid-{ARTIST_MBID}"
+    assert [mapping.item_id for mapping in artist.provider_mappings] == [artist.item_id]
+    assert artist.mbid == ARTIST_MBID
+    assert namesake.item_id != artist.item_id
+
+
 def test_parse_artist_uses_name_as_id_and_drops_invalid_mbid() -> None:
-    """Artists are keyed by name and only a valid MusicBrainz id is kept."""
+    """Artists without a valid MusicBrainz id are keyed by name and keep no id."""
     artist = parse_artist("Artist", CTX, sort_name="Artist, The", mbid="not-an-mbid")
-    assert artist.item_id == "Artist"
+    assert artist.item_id == "artist-name-Artist"
+    assert [mapping.item_id for mapping in artist.provider_mappings] == [artist.item_id]
     assert artist.sort_name == "Artist, The"
     assert artist.mbid is None
     mapping = next(iter(artist.provider_mappings))

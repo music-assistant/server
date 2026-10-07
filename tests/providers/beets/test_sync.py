@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Album
+from music_assistant_models.media_items import Album, ProviderMapping
 
 from music_assistant.controllers.tasks.context import calculate_progress
 from music_assistant.providers.beets import BeetsProvider
@@ -36,6 +36,11 @@ async def _stored_checksums(provider: BeetsProvider) -> list[dict[str, str]]:
                 }
             )
     return rows
+
+
+def _mapping(item_id: str, instance_id: str) -> ProviderMapping:
+    """Return a track provider mapping of a provider instance."""
+    return ProviderMapping(item_id=item_id, provider_domain="beets", provider_instance=instance_id)
 
 
 def _stub_cleanup(provider: BeetsProvider) -> None:
@@ -300,9 +305,16 @@ async def test_process_deletions_only_unmaps_tracks(make_provider: MakeProvider)
     """Deleted tracks lose their beets mapping; albums and artists are left to the orphan pass."""
     provider = await make_provider()
     music = provider.mass.music
-    library_tracks = {track_prov_id(5): MagicMock(item_id=10), track_prov_id(6): None}
-    music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda item_id, _instance: library_tracks[item_id]
+    library_track = MagicMock(
+        item_id=10,
+        provider_mappings={
+            _mapping(track_prov_id(5), INSTANCE_ID),
+            _mapping(track_prov_id(7), INSTANCE_ID),
+            _mapping(track_prov_id(5), "other_instance"),
+        },
+    )
+    music.tracks.get_library_items_by_prov_id = AsyncMock(  # type: ignore[method-assign,misc]
+        return_value=[library_track]
     )
     music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
@@ -312,9 +324,35 @@ async def test_process_deletions_only_unmaps_tracks(make_provider: MakeProvider)
     music.tracks.remove_provider_mapping.assert_awaited_once_with(  # type: ignore[attr-defined]
         10, INSTANCE_ID, track_prov_id(5)
     )
+    music.tracks.get_library_items_by_prov_id.assert_awaited_once_with(
+        provider_instance=INSTANCE_ID,
+        provider_item_ids=sorted([track_prov_id(5), track_prov_id(6)]),
+        limit=2,
+    )
     music.tracks.remove_item_from_library.assert_not_awaited()  # type: ignore[attr-defined]
     music.albums.remove_item_from_library.assert_not_awaited()
     music.artists.remove_item_from_library.assert_not_awaited()
+
+
+async def test_process_deletions_looks_up_library_tracks_in_batches(
+    make_provider: MakeProvider,
+) -> None:
+    """Deleted ids are resolved to library tracks a batch at a time, not one by one."""
+    provider = await make_provider()
+    tracks = provider.mass.music.tracks
+    tracks.get_library_items_by_prov_id = AsyncMock(return_value=[])  # type: ignore[method-assign,misc]
+
+    with patch("music_assistant.providers.beets.ITEM_BATCH_SIZE", 2):
+        await provider._process_deletions({track_prov_id(n) for n in range(5)})
+
+    batches = [
+        call.kwargs["provider_item_ids"]
+        for call in tracks.get_library_items_by_prov_id.await_args_list
+    ]
+    assert [len(batch) for batch in batches] == [2, 2, 1]
+    assert {item_id for batch in batches for item_id in batch} == {
+        track_prov_id(n) for n in range(5)
+    }
 
 
 async def test_orphaned_albums_and_artists_lose_this_instances_mappings(

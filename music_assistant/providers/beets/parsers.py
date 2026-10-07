@@ -27,12 +27,15 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
 from .constants import (
     ALBUM_ID_PREFIX,
     ALBUM_TYPE_PRIORITY,
+    ARTIST_MBID_ID_PREFIX,
+    ARTIST_NAME_ID_PREFIX,
     IMAGE_PATH_PREFIX,
     PARSER_VERSION,
     TRACK_ID_PREFIX,
@@ -89,6 +92,18 @@ def album_item_id(ctx: ParseContext, beets_id: int) -> str:
     return f"{album_id_prefix(ctx.instance_id)}{beets_id}"
 
 
+def artist_item_id(name: str, mbid: str | None) -> str:
+    """
+    Return the provider item id of an artist.
+
+    :param name: The artist name.
+    :param mbid: The artist's MusicBrainz id in canonical form, if beets has a valid one.
+    """
+    if mbid:
+        return f"{ARTIST_MBID_ID_PREFIX}{mbid}"
+    return f"{ARTIST_NAME_ID_PREFIX}{name}"
+
+
 def decode_path(value: object) -> str | None:
     """
     Return a beets path column as text, or None when it is empty.
@@ -106,6 +121,9 @@ def expand_path(value: object, music_directory: str, beets_directory: str | None
     """
     Return the absolute path, as seen by Music Assistant, of a path stored by beets.
 
+    Returns None for a path that does not lie inside music_directory, so the database
+    can never point Music Assistant at files outside the library.
+
     :param value: The raw path value from beets.
     :param music_directory: Where beets' music directory is mounted for Music Assistant.
     :param beets_directory: beets' own music directory, whose prefix is swapped for
@@ -115,11 +133,14 @@ def expand_path(value: object, music_directory: str, beets_directory: str | None
     if path is None:
         return None
     if not posixpath.isabs(path):
-        return posixpath.join(music_directory, path)
-    if beets_directory:
+        path = posixpath.join(music_directory, path)
+    elif beets_directory:
         prefix = beets_directory.rstrip("/")
         if path == prefix or path.startswith(f"{prefix}/"):
-            return f"{music_directory.rstrip('/')}{path[len(prefix) :]}"
+            path = f"{music_directory.rstrip('/')}{path[len(prefix) :]}"
+    path = posixpath.normpath(path)
+    if not is_safe_path(path, music_directory):
+        return None
     return path
 
 
@@ -216,28 +237,30 @@ def parse_artist(
     name: str, ctx: ParseContext, sort_name: str | None = None, mbid: str | None = None
 ) -> Artist:
     """
-    Return an artist keyed by name.
+    Return an artist keyed by its MusicBrainz id, or by name when it has no valid one.
 
     :param name: The artist name.
     :param ctx: The provider parse context.
     :param sort_name: The artist sort name, if beets has one.
     :param mbid: The artist's MusicBrainz id, if beets has one.
     """
+    cleaned_mbid = clean_mbid(mbid, f"beets artist {name}")
+    item_id = artist_item_id(name, cleaned_mbid)
     artist = Artist(
-        item_id=name,
+        item_id=item_id,
         provider=ctx.instance_id,
         name=name,
         sort_name=sort_name or None,
         provider_mappings={
             ProviderMapping(
-                item_id=name,
+                item_id=item_id,
                 provider_domain=ctx.domain,
                 provider_instance=ctx.instance_id,
                 in_library=True,
             )
         },
     )
-    if cleaned_mbid := clean_mbid(mbid, f"beets artist {name}"):
+    if cleaned_mbid:
         artist.mbid = cleaned_mbid
     return artist
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -25,6 +26,7 @@ from tests.providers.beets.beets_db import (
     ARTIST_MBID,
     GUEST_MBID,
     MULTI_VALUE_DELIMITER,
+    TRACK_MBID,
     BeetsDb,
     album_fields,
     item_fields,
@@ -88,7 +90,7 @@ def test_only_track_sync_is_offered() -> None:
 async def test_get_various_artists_without_beets_row(make_provider: MakeProvider) -> None:
     """Compilations get Various Artists from the comp flag, so it resolves without a beets row."""
     provider = await make_provider()
-    artist = await provider.get_artist(VARIOUS_ARTISTS_NAME)
+    artist = await provider.get_artist(f"artist-mbid-{VARIOUS_ARTISTS_MBID}")
     assert (artist.name, artist.mbid) == (VARIOUS_ARTISTS_NAME, VARIOUS_ARTISTS_MBID)
 
 
@@ -119,16 +121,41 @@ async def test_getters_read_beets(make_provider: MakeProvider, beets_db: BeetsDb
         track_prov_id(first),
         track_prov_id(second),
     ]
-    assert (await provider.get_artist("Artist")).mbid == ARTIST_MBID
+    artist = await provider.get_artist(f"artist-mbid-{ARTIST_MBID}")
+    assert (artist.name, artist.mbid) == ("Artist", ARTIST_MBID)
 
 
 async def test_get_artist_finds_featured_artist(
     make_provider: MakeProvider, beets_db: BeetsDb
 ) -> None:
-    """A name that only appears in the multi-valued artists list still resolves."""
+    """An artist that only appears in the multi-valued artists list still resolves."""
     beets_db.add_item(**item_fields())
     provider = await make_provider()
-    assert (await provider.get_artist("Guest")).mbid == GUEST_MBID
+    artist = await provider.get_artist(f"artist-mbid-{GUEST_MBID}")
+    assert (artist.name, artist.mbid) == ("Guest", GUEST_MBID)
+
+
+async def test_get_artist_resolves_the_ids_of_parsed_artists(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """Every artist id a parsed track carries resolves, and same-named artists stay apart."""
+    twins = beets_db.add_item(**item_fields(artists=f"Twin{MULTI_VALUE_DELIMITER}Twin"))
+    untagged = beets_db.add_item(
+        **item_fields(
+            title="Untagged",
+            artists=f"Twin{MULTI_VALUE_DELIMITER}Plain",
+            mb_artistids=MULTI_VALUE_DELIMITER,
+        )
+    )
+    provider = await make_provider()
+
+    for item_id in (twins, untagged):
+        track = await provider.get_track(track_prov_id(item_id))
+        for track_artist in track.artists:
+            artist = await provider.get_artist(track_artist.item_id)
+            assert (artist.item_id, artist.name) == (track_artist.item_id, track_artist.name)
+    twin_artists = (await provider.get_track(track_prov_id(twins))).artists
+    assert len({artist.item_id for artist in twin_artists}) == 2
 
 
 async def test_get_artist_finds_featured_artist_after_many_substring_matches(
@@ -150,10 +177,12 @@ async def test_get_artist_finds_featured_artist_after_many_substring_matches(
             artist="Artist feat. Mo",
             artists=f"Artist{MULTI_VALUE_DELIMITER}Mo",
             artists_sort=f"Artist{MULTI_VALUE_DELIMITER}Mo",
+            mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}",
         )
     )
     provider = await make_provider()
-    assert (await provider.get_artist("Mo")).mbid == GUEST_MBID
+    artist = await provider.get_artist("artist-name-Mo")
+    assert (artist.name, artist.mbid) == ("Mo", None)
 
 
 @pytest.mark.parametrize(
@@ -172,7 +201,30 @@ async def test_unknown_ids_raise_media_not_found(
     with pytest.raises(MediaNotFoundError):
         await provider.get_album_tracks(prov_album_id)
     with pytest.raises(MediaNotFoundError):
-        await provider.get_artist("Nobody")
+        await provider.get_artist("artist-name-Nobody")
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_artist(f"artist-mbid-{TRACK_MBID}")
+
+
+@pytest.mark.parametrize(
+    "prov_artist_id",
+    [
+        "Artist",
+        "artist-name-",
+        "artist-name- Artist",
+        "artist-mbid-",
+        "artist-mbid-not-an-mbid",
+        f"artist-mbid-{ARTIST_MBID.upper()}",
+    ],
+)
+async def test_get_artist_rejects_malformed_ids(
+    make_provider: MakeProvider, beets_db: BeetsDb, prov_artist_id: str
+) -> None:
+    """Artist ids without a known prefix, or with a non-canonical name or id, are not found."""
+    beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_artist(prov_artist_id)
 
 
 @pytest.mark.parametrize(
@@ -286,6 +338,21 @@ async def test_resolve_image_with_missing_art_file(
         await provider.resolve_image(f"album/{album_id}")
 
 
+async def test_files_outside_the_music_directory_are_never_served(
+    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path
+) -> None:
+    """Existing files that beets paths point at outside the music directory are not found."""
+    secret = music_dir.parent / "secret.jpg"
+    secret.write_bytes(b"secret")
+    album_id = beets_db.add_album(**album_fields(artpath=b"../secret.jpg"))
+    item_id = beets_db.add_item(**item_fields(path=os.fsencode(secret)))
+    provider = await make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.resolve_image(f"album/{album_id}")
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
+
+
 @pytest.mark.parametrize("path", ["album/9999", "album/nope", "/etc/passwd", "Artist/cover.jpg"])
 async def test_resolve_image_rejects_other_paths(make_provider: MakeProvider, path: str) -> None:
     """Only album ids resolve; file paths are never served directly."""
@@ -295,7 +362,7 @@ async def test_resolve_image_rejects_other_paths(make_provider: MakeProvider, pa
 
 
 async def test_setup_flow_reprompts_with_error_then_finishes() -> None:
-    """A failed finish shows its translation key on the form and the next submit finishes."""
+    """A failed finish passes its error to the form and the next submit finishes."""
     session = MagicMock()
     session.context.setup_data = {}
     good = {
@@ -304,17 +371,13 @@ async def test_setup_flow_reprompts_with_error_then_finishes() -> None:
         "beets_directory": "/home/kate/Music",
     }
     session.form = AsyncMock(side_effect=[{**good, "library_db": "/bad.db"}, good])
-    session.finish = AsyncMock(
-        side_effect=[
-            SetupFlowError("missing", translation_key="library_db_not_found"),
-            {"instance_id": INSTANCE_ID},
-        ]
-    )
+    error = SetupFlowError("missing", translation_key="library_db_not_found")
+    session.finish = AsyncMock(side_effect=[error, {"instance_id": INSTANCE_ID}])
 
     await run_setup(session)
 
     assert session.form.await_args_list[0].kwargs["errors"] is None
-    assert session.form.await_args_list[1].kwargs["errors"] == {"base": "library_db_not_found"}
+    assert session.form.await_args_list[1].kwargs["errors"] == {"base": error}
     assert session.finish.await_args_list[1].args[0] == good
 
 
