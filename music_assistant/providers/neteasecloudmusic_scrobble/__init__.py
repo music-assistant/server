@@ -78,6 +78,11 @@ class NeteaseScrobbleProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async setup."""
+        # this plugin reuses a configured NetEase Cloud Music source rather than a
+        # second login: it reads that provider's client and credential through the
+        # read-only api_client/cookie properties it exposes for companion plugins, so
+        # it never reaches into the source's private state - the scrobbler counterpart
+        # of how subsonic_scrobble rides the OpenSubsonic source.
         self._ncm_provider = self._resolve_ncm_provider()
         if self._ncm_provider is None:
             self.logger.warning(
