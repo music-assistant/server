@@ -59,6 +59,7 @@ def build_cifs_mount_cmd(
     :param version: The SMB protocol version, None to let the client negotiate it.
     :param read_only: Whether to mount the share read-only.
     :raises UnsupportedSystemError: When the system can not mount a CIFS share.
+    :raises SetupFailedError: When the user or the share would alter the Linux mount options.
     """
     is_guest = not username or username.lower() == "guest"
     if system == "Darwin":
@@ -76,6 +77,11 @@ def build_cifs_mount_cmd(
     if system != "Linux":
         msg = f"Mounting a CIFS share is not supported on {system}"
         raise UnsupportedSystemError(msg)
+    # the username becomes part of the comma separated option string of mount.cifs
+    if not is_guest and any(char in str(username) for char in ",="):
+        raise SetupFailedError("The username must not contain ',' or '='")
+    if "," in share:
+        raise SetupFailedError("The share name must not contain ','")
     env_vars: dict[str, str] = {}
     options = ["ro" if read_only else "rw"]
     if not is_guest:
