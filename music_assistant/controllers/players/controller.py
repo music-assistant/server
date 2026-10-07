@@ -2517,8 +2517,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # a group change the provider reported can hand this player a queue it is not
             # rendering (a Sonos that becomes coordinator of a group playing another
             # player's queue falls back to its own, idle queue); resuming that would
-            # replace the music with the wrong queue. Only checked after a group change:
-            # not every provider reports media that can be matched against the queue.
+            # replace the music with the wrong queue. Only checked after a group change;
+            # an edit of the DSP settings needs no such evidence.
             if after_group_change and not self.mass.player_queues.is_playing_queue(
                 active_queue.queue_id, player
             ):

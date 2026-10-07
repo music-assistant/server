@@ -75,25 +75,24 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def is_playing_queue(self, queue_id: str, player: Player) -> bool:
         """
-        Return whether the media the player reports belongs to the given queue.
+        Return whether the player renders the given queue, as far as the server can tell.
+
+        True when the queue is playing with a stream session and the media the player
+        reports does not name another queue; a player that reports no usable media counts
+        as rendering it.
 
         :param queue_id: The queue to check against.
         :param player: The player whose reported media is checked.
         """
-        if self._parse_player_current_item_id(queue_id, player) is not None:
-            return True
-        # a flow stream names only its first item, which may have left the queue
-        # since; the stream url still names the queue it is generated from
-        protocol_player = player
-        if player.active_output_protocol and player.active_output_protocol != "native":
-            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
-        base_url = self.mass.streams.base_url
-        uri = protocol_player.current_media.uri if protocol_player.current_media else None
-        if not uri or not base_url or not uri.startswith(base_url):
+        queue_data = self._queue_data.get(queue_id)
+        if (
+            queue_data is None
+            or queue_data.session_id is None
+            or queue_data.queue.state != PlaybackState.PLAYING
+        ):
             return False
-        path_parts = uri[len(base_url) :].strip("/").split("/")
-        # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
-        return len(path_parts) >= 5 and path_parts[2] == queue_id
+        reported = self._reported_queue_id(player)
+        return reported is None or reported == queue_id
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
@@ -455,6 +454,27 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     return current_item_id
 
         return None
+
+    def _reported_queue_id(self, player: Player) -> str | None:
+        """Return the known queue the player's reported media names, if it names one."""
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        if not (current_media := protocol_player.current_media):
+            return None
+        candidates: list[str | None] = [current_media.source_id]
+        uri = current_media.uri or ""
+        if uri.startswith("mass:"):
+            # the sonos container id: mass:{queue_id}[:{queue_item_id}]
+            candidates.append(uri.split(":")[1])
+        base_url = self.mass.streams.base_url
+        if base_url and uri.startswith(base_url):
+            path_parts = uri[len(base_url) :].strip("/").split("/")
+            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            if len(path_parts) >= 5:
+                candidates.append(path_parts[2])
+        # only a queue this server has can be evidence; anything else is unknown media
+        return next((x for x in candidates if x and x in self._queue_data), None)
 
     def _handle_end_of_queue(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState

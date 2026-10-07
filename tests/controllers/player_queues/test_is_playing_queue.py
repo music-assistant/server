@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, Mock
 
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -15,7 +16,7 @@ BASE_URL = "http://ma.local:8097"
 
 
 def _controller() -> PlayerQueuesController:
-    """Create a bare controller holding queues q1 and q2 with one item each."""
+    """Create a bare controller holding streaming queues q1 and q2 with one item each."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
@@ -23,7 +24,12 @@ def _controller() -> PlayerQueuesController:
     ctrl._queue_data = {}
     for queue_id in ("q1", "q2"):
         queue = PlayerQueue(
-            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=1
+            queue_id=queue_id,
+            active=True,
+            display_name=queue_id,
+            available=True,
+            items=1,
+            state=PlaybackState.PLAYING,
         )
         ctrl._queue_data[queue_id] = PlayerQueueData(
             queue=queue,
@@ -32,6 +38,7 @@ def _controller() -> PlayerQueuesController:
                     queue_id=queue_id, queue_item_id=f"{queue_id}-item", name="x", duration=60
                 )
             ],
+            session_id=f"{queue_id}-session",
         )
     return ctrl
 
@@ -45,7 +52,7 @@ def _player(media: PlayerMedia | None) -> MagicMock:
 
 
 def test_item_of_the_queue_reported_by_id() -> None:
-    """Media carrying the queue id and one of its item ids counts as playing the queue."""
+    """Media carrying the queue id counts for that queue and against another."""
     ctrl = _controller()
     player = _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="q1-item"))
 
@@ -53,41 +60,72 @@ def test_item_of_the_queue_reported_by_id() -> None:
     assert not ctrl.is_playing_queue("q2", player)
 
 
-def test_item_of_the_queue_reported_by_stream_url() -> None:
-    """A stream URL of one of the queue's items counts, as a Sonos reports it."""
+def test_stream_url_names_the_queue() -> None:
+    """A stream URL of the queue counts, as a Sonos reports it; another queue's does not."""
     ctrl = _controller()
     player = _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/q1/q1-item/q1.flac"))
-
-    assert ctrl.is_playing_queue("q1", player)
-
-
-def test_flow_stream_of_the_queue_counts_even_when_its_item_is_gone() -> None:
-    """A flow stream names only its first item; the queue in its path is what counts."""
-    ctrl = _controller()
-    player = _player(PlayerMedia(uri=f"{BASE_URL}/flow/sess/q1/gone/q1.flac"))
 
     assert ctrl.is_playing_queue("q1", player)
     assert not ctrl.is_playing_queue("q2", player)
 
 
-def test_another_queues_stream_does_not_count() -> None:
-    """A player rendering another queue's stream is not playing this queue."""
+def test_stream_of_the_queue_with_a_removed_item_still_counts() -> None:
+    """A removed item (after a replace, or a flow stream's first item) is not another queue."""
     ctrl = _controller()
-    player = _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/q1/q1-item/q1.flac"))
+    single = _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/q1/gone/q1.flac"))
+    flow = _player(PlayerMedia(uri=f"{BASE_URL}/flow/sess/q1/gone/q1.flac"))
 
+    assert ctrl.is_playing_queue("q1", single)
+    assert ctrl.is_playing_queue("q1", flow)
+    assert not ctrl.is_playing_queue("q2", flow)
+
+
+def test_mass_uri_names_the_queue() -> None:
+    """The Sonos container uri `mass:<queue>` names the queue."""
+    ctrl = _controller()
+    player = _player(PlayerMedia(uri="mass:q1:q1-item"))
+
+    assert ctrl.is_playing_queue("q1", player)
     assert not ctrl.is_playing_queue("q2", player)
 
 
-def test_item_no_longer_in_the_queue_does_not_count() -> None:
-    """An item id the queue no longer holds (after a replace) does not count."""
+def test_no_reported_media_counts_as_playing_the_streamed_queue() -> None:
+    """A provider that reports no media gives no reason to doubt the queue it is streamed."""
     ctrl = _controller()
-    player = _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="gone"))
 
-    assert not ctrl.is_playing_queue("q1", player)
+    assert ctrl.is_playing_queue("q1", _player(None))
+    assert ctrl.is_playing_queue("q1", _player(PlayerMedia(uri="http://elsewhere/radio")))
 
 
-def test_no_media_does_not_count() -> None:
-    """A player without reported media is not playing any queue."""
+def test_media_naming_an_unknown_queue_is_not_evidence() -> None:
+    """Only a queue this server has can veto: `mass:unknown` or a foreign id is unknown media."""
     ctrl = _controller()
+
+    assert ctrl.is_playing_queue("q1", _player(PlayerMedia(uri="mass:unknown")))
+    assert ctrl.is_playing_queue(
+        "q1", _player(PlayerMedia(uri="x", source_id="other-server-queue", queue_item_id="i"))
+    )
+    assert ctrl.is_playing_queue(
+        "q1", _player(PlayerMedia(uri=f"{BASE_URL}/single/sess/not-a-queue/item/p.flac"))
+    )
+
+
+def test_queue_that_is_not_playing_is_not_rendered() -> None:
+    """A paused or idle queue keeps its session, but nothing renders it right now."""
+    ctrl = _controller()
+    ctrl._queue_data["q1"].queue.state = PlaybackState.PAUSED
 
     assert not ctrl.is_playing_queue("q1", _player(None))
+    assert not ctrl.is_playing_queue(
+        "q1", _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="q1-item"))
+    )
+
+
+def test_queue_without_a_session_is_not_playing() -> None:
+    """A queue the server is not streaming cannot be rendered, whatever the media says."""
+    ctrl = _controller()
+    ctrl._queue_data["q1"].session_id = None
+    player = _player(PlayerMedia(uri="x", source_id="q1", queue_item_id="q1-item"))
+
+    assert not ctrl.is_playing_queue("q1", player)
+    assert not ctrl.is_playing_queue("unknown", player)
