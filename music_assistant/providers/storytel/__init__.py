@@ -65,6 +65,8 @@ if TYPE_CHECKING:
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+CACHE_EXPIRATION = 3600  # 1 hour
+
 
 def _unwrap_single_exception(err: ExceptionGroup[Exception]) -> BaseException:
     """
@@ -326,6 +328,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_AUDIOBOOK,
             data=media_item.to_dict(),
+            expiration=CACHE_EXPIRATION,
         )
         return cast("Audiobook", media_item)
 
@@ -442,6 +445,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST,
             data=podcast.to_dict(),
+            expiration=CACHE_EXPIRATION,
         )
         return podcast
 
@@ -476,6 +480,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_EPISODE,
             data=podcast_episode.to_dict(),
+            expiration=CACHE_EXPIRATION,
         )
         return cast("PodcastEpisode", podcast_episode)
 
@@ -547,6 +552,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     provider=self.instance_id,
                     category=CACHE_CATEGORY_PODCAST_EPISODES,
                     data=podcast_episodes,
+                    expiration=CACHE_EXPIRATION,
                 )
             async with TaskGroup() as tg:
                 live_tasks: list[Task[PodcastEpisode | None]] = []
