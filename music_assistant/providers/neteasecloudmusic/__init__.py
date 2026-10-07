@@ -1727,29 +1727,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
         )
         return filter_tracks(self._parse_heart_mode_tracks(payload))
 
-    def _parse_heart_mode_tracks(self, payload: dict[str, Any]) -> list[Track]:
-        """Parse heart mode tracks from a playmode/intelligence/list payload."""
-        data = _extract_data(payload)
-        rows = data.get("data")
-        if not isinstance(rows, list):
-            return []
-        result: list[Track] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            song_obj = None
-            for key in ("songInfo", "song", "songData", "trackData"):
-                if isinstance(row.get(key), dict):
-                    song_obj = row[key]
-                    break
-            if song_obj is None and isinstance(row.get("id"), (int, str)):
-                song_obj = row
-            if not isinstance(song_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                result.append(self._parse_track(song_obj))
-        return result
-
     def _quality_candidates(self) -> list[str]:
         """Return ordered quality levels based on config."""
         raw_quality = str(self.config.get_value(CONF_QUALITY) or QUALITY_EXHIGH).lower()
@@ -2157,3 +2134,26 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if not isinstance(playlist_obj, dict):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return self._parse_playlist(playlist_obj)
+
+    def _parse_heart_mode_tracks(self, payload: dict[str, Any]) -> list[Track]:
+        """Parse heart mode tracks from a playmode/intelligence/list payload."""
+        data = _extract_data(payload)
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            return []
+        result: list[Track] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            song_obj = None
+            for key in ("songInfo", "song", "songData", "trackData"):
+                if isinstance(row.get(key), dict):
+                    song_obj = row[key]
+                    break
+            if song_obj is None and isinstance(row.get("id"), (int, str)):
+                song_obj = row
+            if not isinstance(song_obj, dict):
+                continue
+            with suppress(InvalidDataError):
+                result.append(self._parse_track(song_obj))
+        return result
