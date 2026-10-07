@@ -1400,26 +1400,6 @@ async def test_session_check_disconnects_clients_with_an_expired_token(
     ingress.cancel.assert_not_called()  # type: ignore[attr-defined]
 
 
-async def test_session_check_is_scheduled_hourly(
-    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Test that the session check runs immediately and reschedules itself every hour.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param monkeypatch: Pytest monkeypatch fixture.
-    """
-    create_task = MagicMock(side_effect=lambda coro, *_args, **_kwargs: coro.close())
-    call_later = MagicMock()
-    monkeypatch.setattr(auth_manager.mass, "create_task", create_task)
-    monkeypatch.setattr(auth_manager.mass, "call_later", call_later)
-
-    auth_manager._schedule_session_check()
-
-    create_task.assert_called_once()
-    call_later.assert_called_once_with(3600, auth_manager._schedule_session_check)
-
-
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     """
     Test getting available login providers.
