@@ -1241,6 +1241,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 if target_player.state.synced_to and not target_player.state.active_group
                 else group_id
             )
+            # dissolving a group touches every member, so the group itself must be permitted
+            self._check_player_permission(ungroup_target)
             async with self.mass.players.wait_for_player_update(
                 target_queue_id,
                 attribute_name=(
