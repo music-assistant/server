@@ -103,7 +103,7 @@ def _install_cache_mocks(provider: NeteaseCloudMusicProvider) -> None:
 async def test_get_recommendations_static_rows_without_backend_calls(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
-    """get_recommendations returns all five row descriptors without any backend call."""
+    """get_recommendations returns all three row descriptors without any backend call."""
     client_mock = _stub_client_get(provider)
 
     result = await provider.get_recommendations()

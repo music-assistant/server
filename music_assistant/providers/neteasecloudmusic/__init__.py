@@ -1600,15 +1600,17 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Fetch a recommendation payload from the backend and persist it to the MA cache."""
         try:
             payload = await self._client.get(path, params=params, cookie=self._cookie)
+            await self.mass.cache.set(
+                key=cache_key,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_RECOMMENDATIONS,
+                data=payload,
+                expiration=ttl,
+            )
         finally:
+            # keep the single-flight entry until the payload is committed to the
+            # cache, so a caller arriving in between cannot re-fetch the request
             self.__dict__.get("_inflight_recommend_fetches", {}).pop(cache_key, None)
-        await self.mass.cache.set(
-            key=cache_key,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_RECOMMENDATIONS,
-            data=payload,
-            expiration=ttl,
-        )
         return payload
 
     async def _pick_personal_fm_tracks(
