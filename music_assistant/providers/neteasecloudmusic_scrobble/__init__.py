@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -29,6 +30,8 @@ NETEASE_DOMAIN: Final[str] = "neteasecloudmusic"
 # a track's album (the scrobble source id) is stable catalog data
 _SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 _CACHE_CATEGORY_SCROBBLE: Final[int] = 1
+# queue items are scanned page by page so oversized (synced) queues are covered too
+QUEUE_PAGE_SIZE: Final[int] = 500
 
 
 async def setup(
@@ -75,19 +78,16 @@ class NeteaseScrobbleProvider(PluginProvider):
                 "plays will be scrobbled once one becomes available"
             )
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-        if self._ncm_provider is not None:
-            self._handler = NeteaseScrobbleHandler(self)
-
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
         """Forward a playback progress report to NetEase once a source is available."""
-        if self._handler is None:
-            # the selected NetEase provider may have (re)loaded after this plugin
-            self._ncm_provider = self._ncm_provider or self._resolve_ncm_provider()
-            if self._ncm_provider is None:
-                return
+        ncm = self._resolve_ncm_provider()
+        if ncm is None:
+            return
+        if self._handler is None or ncm is not self._ncm_provider:
+            # the selected provider instance became available or was (re)loaded since
+            # the handler was built (e.g. a fresh login): rebuild it so check-ins use
+            # the current instance and cookie instead of a stale one
+            self._ncm_provider = ncm
             self._handler = NeteaseScrobbleHandler(self)
         await self._handler.on_media_item_played(report)
 
@@ -224,15 +224,26 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         """Return the NetEase track id when the reported queue item streamed from NetEase."""
         if not report.player_id:
             return None
-        for queue_item in self._plugin.mass.player_queues.items(report.player_id, limit=500):
-            if queue_item.uri != report.uri:
-                continue
-            streamdetails = queue_item.streamdetails
-            if streamdetails is None:
-                return None
-            if streamdetails.provider != self._ncm.instance_id:
-                return None
-            return str(streamdetails.item_id)
+        # page through the whole queue: a large synced playlist holds more items
+        # than a single page, and any of them may be the reported track
+        for offset in count(0, QUEUE_PAGE_SIZE):
+            queue_items = self._plugin.mass.player_queues.items(
+                report.player_id, limit=QUEUE_PAGE_SIZE, offset=offset
+            )
+            if not queue_items:
+                break
+            for queue_item in queue_items:
+                if queue_item.uri != report.uri:
+                    continue
+                streamdetails = queue_item.streamdetails
+                if streamdetails is None:
+                    self.logger.debug(
+                        "Skipping scrobble: queue item %s has no streamdetails yet", report.uri
+                    )
+                    return None
+                if streamdetails.provider != self._ncm.instance_id:
+                    return None
+                return str(streamdetails.item_id)
         self.logger.debug("Skipping scrobble: queue item %s no longer present", report.uri)
         return None
 

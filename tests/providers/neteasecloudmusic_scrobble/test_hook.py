@@ -9,6 +9,7 @@ from music_assistant_models.playback_progress_report import MediaItemPlaybackPro
 
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
 from music_assistant.providers.neteasecloudmusic_scrobble import (
+    QUEUE_PAGE_SIZE,
     SUPPORTED_FEATURES,
     NeteaseScrobbleHandler,
     NeteaseScrobbleProvider,
@@ -183,6 +184,83 @@ async def test_library_track_not_streamed_from_netease_is_skipped() -> None:
     await handler._scrobble(_report(uri="library://track/1", seconds_played=42))
 
     ncm.api_client.get.assert_not_awaited()
+
+
+async def test_handler_is_created_once_a_provider_loads() -> None:
+    """A provider that loads after the plugin still gets its plays checked in."""
+    mass = _mass()
+    provider = _provider(mass)
+    await provider.handle_async_init()
+    initially = provider._ncm_provider
+    assert initially is None
+
+    ncm = _ncm_provider()
+    ncm.api_client = _album_detail_client()
+    mass.providers = [ncm]
+
+    await provider.on_media_item_played(_report(seconds_played=200, fully_played=True))
+
+    assert provider._ncm_provider is ncm
+    handler = provider._handler
+    assert handler is not None
+    assert "/scrobble" in {call.args[0] for call in ncm.api_client.get.await_args_list}
+
+
+async def test_handler_follows_a_reloaded_provider_instance() -> None:
+    """A (re)loaded provider instance replaces the handler's stale reference."""
+    inst_a = _ncm_provider(INSTANCE_A)
+    mass = _mass(inst_a)
+    provider = _provider(mass)
+    await provider.handle_async_init()
+    await provider.on_media_item_played(_report(seconds_played=200, fully_played=True))
+    assert provider._ncm_provider is inst_a
+
+    inst_b = _ncm_provider(INSTANCE_B)
+    mass.providers = [inst_b]
+
+    await provider.on_media_item_played(_report(seconds_played=200, fully_played=True))
+
+    assert provider._ncm_provider is inst_b
+    assert provider._handler is not None
+    assert provider._handler._ncm is inst_b
+    # the check-in must go out through the new instance (fresh cookie)
+    assert "/song/detail" in {call.args[0] for call in inst_b.api_client.get.await_args_list}
+
+
+async def test_queue_lookup_scans_beyond_the_first_page() -> None:
+    """A queue item past the first page is still found and checked in."""
+    ncm = _ncm_provider()
+    ncm.api_client = _album_detail_client()
+    mass = _mass(ncm)
+    first_page = [
+        Mock(uri=f"library://track/{i}", streamdetails=Mock(provider="other", item_id=str(i)))
+        for i in range(QUEUE_PAGE_SIZE)
+    ]
+    second_page = [
+        Mock(uri="library://track/999", streamdetails=Mock(provider=ncm.instance_id, item_id="123"))
+    ]
+    mass.player_queues.items.side_effect = [first_page, second_page, []]
+    handler = NeteaseScrobbleHandler(_handler_provider(ncm, mass=mass))
+
+    await handler._scrobble(_report(uri="library://track/999", seconds_played=42))
+
+    pages = [call.kwargs["offset"] for call in mass.player_queues.items.call_args_list]
+    assert pages == [0, QUEUE_PAGE_SIZE]
+    scrobble_call = next(
+        call for call in ncm.api_client.get.await_args_list if call.args[0] == "/scrobble"
+    )
+    assert scrobble_call.kwargs["params"]["id"] == "123"
+
+
+def _album_detail_client() -> Mock:
+    """Build an NCM api client mock that resolves track 123 to album 456."""
+    return Mock(
+        get=AsyncMock(
+            side_effect=lambda path, **_kwargs: (
+                {"songs": [{"al": {"id": 456}}]} if path == "/song/detail" else {"code": 200}
+            )
+        )
+    )
 
 
 def _handler_provider(ncm: Mock | None = None, *, mass: Mock | None = None) -> Mock:
