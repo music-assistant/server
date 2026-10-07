@@ -86,20 +86,18 @@ async def _post_setup(webserver: WebserverController, body: dict[str, Any]) -> w
     return await webserver._handle_setup(request)
 
 
-@pytest.mark.parametrize("password", [None, "", TOO_SHORT], ids=["none", "empty", "too_short"])
-def test_validate_password_rejects_short_passwords(password: str | None) -> None:
-    """
-    A missing or too short password is refused with the policy message.
-
-    :param password: The password to validate.
-    """
+@pytest.mark.parametrize(
+    ("password", "accepted"),
+    [(None, False), ("", False), (TOO_SHORT, False), (LONG_ENOUGH, True)],
+    ids=["none", "empty", "too_short", "minimum"],
+)
+def test_validate_password(password: str | None, accepted: bool) -> None:
+    """A password is refused with the policy message unless it meets the minimum length."""
+    if accepted:
+        validate_password(password)
+        return
     with pytest.raises(InvalidDataError, match=POLICY_ERROR):
         validate_password(password)
-
-
-def test_validate_password_accepts_the_minimum_length() -> None:
-    """A password of exactly the minimum length is accepted."""
-    validate_password(LONG_ENOUGH)
 
 
 async def test_create_user_enforces_the_policy(auth_manager: AuthenticationManager) -> None:
@@ -140,14 +138,3 @@ async def test_setup_refuses_a_too_short_password(webserver: WebserverController
     assert response.status == 400
     assert json.loads(response.text or "") == {"success": False, "error": POLICY_ERROR}
     assert not webserver.auth.has_users
-
-
-async def test_setup_accepts_a_password_of_the_minimum_length(
-    webserver: WebserverController,
-) -> None:
-    """The first admin account is created with a password of exactly the minimum length."""
-    response = await _post_setup(webserver, {"username": "marcel", "password": LONG_ENOUGH})
-
-    assert response.status == 200
-    assert json.loads(response.text or "")["success"] is True
-    assert webserver.auth.has_users
