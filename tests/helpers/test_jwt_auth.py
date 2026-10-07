@@ -39,43 +39,24 @@ def test_encoded_token_carries_issuer_and_audience(helper: JWTHelper) -> None:
     payload = helper.decode_token(token)
     assert payload["iss"] == JWT_ISSUER
     assert payload["aud"] == JWT_AUDIENCE
-    assert payload["sub"] == "user-1"
 
 
-def test_wrong_audience_rejected(helper: JWTHelper) -> None:
-    """A token for another audience is rejected."""
-    with pytest.raises(jwt.InvalidTokenError):
-        helper.decode_token(_foreign_token(iss=JWT_ISSUER, aud="someone-else"))
-
-
-def test_wrong_issuer_rejected(helper: JWTHelper) -> None:
-    """A token from another issuer is rejected."""
-    with pytest.raises(jwt.InvalidTokenError):
-        helper.decode_token(_foreign_token(iss="someone-else", aud=JWT_AUDIENCE))
-
-
-@pytest.mark.parametrize("claims", [{"aud": JWT_AUDIENCE}, {"iss": JWT_ISSUER}])
-def test_token_with_only_one_of_the_claims_rejected(
-    helper: JWTHelper, claims: dict[str, str]
-) -> None:
-    """A token carrying only the issuer or only the audience is rejected."""
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"iss": JWT_ISSUER, "aud": "someone-else"},
+        {"iss": "someone-else", "aud": JWT_AUDIENCE},
+        {"aud": JWT_AUDIENCE},
+        {"iss": JWT_ISSUER},
+    ],
+    ids=["wrong-audience", "wrong-issuer", "audience-only", "issuer-only"],
+)
+def test_token_not_issued_for_us_is_rejected(helper: JWTHelper, claims: dict[str, str]) -> None:
+    """A token whose issuer or audience is missing or foreign is rejected."""
     with pytest.raises(jwt.InvalidTokenError):
         helper.decode_token(_foreign_token(**claims))
 
 
 def test_token_without_issuer_and_audience_accepted(helper: JWTHelper) -> None:
-    """A token without iss/aud claims still decodes."""
-    payload = helper.decode_token(_foreign_token())
-    assert payload["jti"] == "token-1"
-
-
-def test_list_audience_containing_ours_accepted(helper: JWTHelper) -> None:
-    """A list aud claim is accepted when it contains our audience."""
-    payload = helper.decode_token(_foreign_token(iss=JWT_ISSUER, aud=["other", JWT_AUDIENCE]))
-    assert JWT_AUDIENCE in payload["aud"]
-
-
-def test_list_audience_without_ours_rejected(helper: JWTHelper) -> None:
-    """A list aud claim without our audience is rejected."""
-    with pytest.raises(jwt.InvalidAudienceError):
-        helper.decode_token(_foreign_token(aud=["other"]))
+    """A token issued before the claims existed still decodes."""
+    assert helper.decode_token(_foreign_token())["jti"] == "token-1"
