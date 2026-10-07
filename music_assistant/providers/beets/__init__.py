@@ -349,6 +349,15 @@ class BeetsProvider(MusicProvider):
         """Add or update one beets item in the Music Assistant library."""
         try:
             track = parse_track(item, album, self._ctx, checksum)
+            # the library write stores the new checksum, so the loudness goes first: when it
+            # fails, the item keeps its previous checksum and the next sync retries both
+            if (loudness := loudness_from_gains(item.fields, "track", self._ctx)) is not None:
+                await self.mass.streams.audio_analysis.set_track_loudness(
+                    track.item_id,
+                    self.instance_id,
+                    loudness,
+                    loudness_from_gains(item.fields, "album", self._ctx),
+                )
             # every library write of the sync holds this lock: an overwrite reads the mappings
             # of the library track before replacing them, and a concurrent add merging another
             # beets item into that track in between would have its mapping dropped
@@ -359,13 +368,6 @@ class BeetsProvider(MusicProvider):
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=False
                     )
-            if (loudness := loudness_from_gains(item.fields, "track", self._ctx)) is not None:
-                await self.mass.streams.audio_analysis.set_track_loudness(
-                    track.item_id,
-                    self.instance_id,
-                    loudness,
-                    loudness_from_gains(item.fields, "album", self._ctx),
-                )
         except Exception as err:
             # one broken item must not abort the sync; it keeps its previous checksum, so the
             # next sync retries it, and it stays out of the deletion pass

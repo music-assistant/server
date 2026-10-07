@@ -301,6 +301,22 @@ async def test_sync_sets_loudness(make_provider: MakeProvider, beets_db: BeetsDb
     )
 
 
+async def test_failed_loudness_write_leaves_the_checksum_for_a_retry(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """When storing loudness fails, the track is not written, so its checksum stays old."""
+    beets_db.add_item(**item_fields(rg_track_gain=-5.0))
+    provider = await make_provider()
+    _stub_cleanup(provider)
+    provider.mass.streams.audio_analysis.set_track_loudness.side_effect = OSError("disk full")  # type: ignore[attr-defined]
+
+    with patch(REPORT_FAILURE) as report:
+        await provider.sync_library(MediaType.TRACK)
+
+    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # type: ignore[attr-defined]
+    assert report.call_count == 1
+
+
 async def test_process_deletions_only_unmaps_tracks(make_provider: MakeProvider) -> None:
     """Deleted tracks lose their beets mapping; albums and artists are left to the orphan pass."""
     provider = await make_provider()
