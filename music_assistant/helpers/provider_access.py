@@ -66,6 +66,20 @@ def visible_music_sources(mass: MusicAssistant, user: User | None) -> list[str] 
     return _visible_sources(_music_sources(mass), user)
 
 
+def hidden_music_sources(mass: MusicAssistant, user: User | None) -> set[str]:
+    """
+    Return the instance ids of the music sources the given user may not see.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user to resolve the music sources for; None for anonymous playback.
+    """
+    return {
+        source.instance_id
+        for source in _music_sources(mass)
+        if not access_allows(source.access, user)
+    }
+
+
 def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
     """
     Return the instance ids of the music sources the given playback user may use.
@@ -148,6 +162,17 @@ def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     """
     access = source_access(mass, instance_id)
     return access.owner if access else None
+
+
+def music_sources_access(mass: MusicAssistant) -> dict[str, ProviderAccess | None]:
+    """
+    Return the access record of every configured music source, by instance id.
+
+    None means a source of the whole home.
+
+    :param mass: The MusicAssistant instance.
+    """
+    return {source.instance_id: source.access for source in _music_sources(mass)}
 
 
 def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:

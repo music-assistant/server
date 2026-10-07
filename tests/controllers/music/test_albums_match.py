@@ -6,12 +6,16 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
 import pytest
-from music_assistant_models.enums import ExternalID
-from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -22,6 +26,11 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.helpers.compare import AlbumMatchEvidence
+from music_assistant.providers.musicbrainz.models import (
+    MusicBrainzRelation,
+    MusicBrainzRelease,
+    MusicBrainzUrl,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -29,9 +38,11 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 MB_ALBUM_ID = "11111111-1111-1111-1111-111111111111"
+SPOTIFY_ALBUM_URL = "https://open.spotify.com/album/7eyQXxuf2nGj9d2367Gi5f"
 BASE_BARCODE = "888072439412"
 OTHER_BARCODE = "075678643224"
 THIRD_BARCODE = "093624912514"
+FOURTH_BARCODE = "123456789012"
 # the base library album is linked to one existing (already-loaded) provider
 BASE_MAPPING = ProviderMapping(
     item_id="base-prov", provider_domain="tidal", provider_instance="tidal_1"
@@ -148,12 +159,26 @@ def _mb_release(release_id: str, release_group_id: str) -> SimpleNamespace:
     return SimpleNamespace(id=release_id, release_group=SimpleNamespace(id=release_group_id))
 
 
-def _provider() -> Mock:
+def _provider(*, barcode_lookup: bool = False) -> Mock:
     """Return a mock streaming MusicProvider for matching."""
     provider = Mock()
     provider.name = "Spotify"
     provider.instance_id = "spotify_1"
     provider.domain = "spotify"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    if barcode_lookup:
+        provider.supported_features.add(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+    return provider
+
+
+def _streaming_provider(instance_id: str) -> Mock:
+    """Return a mock streaming provider instance eligible for album matching."""
+    provider = Mock()
+    provider.instance_id = instance_id
+    provider.domain = instance_id.rsplit("_", 1)[0]
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.ALBUM}
+    provider.is_streaming_provider = True
     return provider
 
 
@@ -202,6 +227,8 @@ def _harness(
     musicbrainz: Mock | None = None,
     loaded_instances: Sequence[str] = ("tidal_1",),
     provider_registry: dict[str, Mock] | None = None,
+    barcode_lookups: dict[str, Album | Exception] | None = None,
+    providers: Sequence[Mock] = (),
 ) -> Iterator[_Harness]:
     """
     Yield an AlbumsController with every IO boundary mocked.
@@ -213,6 +240,9 @@ def _harness(
     :param musicbrainz: Optional mock MusicBrainz provider.
     :param loaded_instances: Provider instance ids considered currently loaded and available.
     :param provider_registry: Explicit instance-id -> provider mock overrides.
+    :param barcode_lookups: Full provider albums (or an error to raise) keyed by barcode;
+        when given, the provider supports barcode lookups and answers them from here.
+    :param providers: Loaded music provider instances that match_providers iterates.
     """
     album_tracks = provider_album_tracks or {}
     registry = {instance: _loaded_provider(instance) for instance in loaded_instances}
@@ -227,7 +257,9 @@ def _harness(
         return provider if (return_unavailable or provider.available) else None
 
     mass = Mock()
+    mass.metadata.link_providers_via_musicbrainz = True
     mass.get_provider = Mock(side_effect=_get_provider)
+    mass.music.providers = list(providers)
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.albums.match")
     ctrl.mass = mass
@@ -245,8 +277,17 @@ def _harness(
     # a single recorder backs both the base mapping lookup (_get_provider_album_tracks)
     # and the candidate lookup (provider.get_album_tracks), so their calls stay ordered
     get_provider_album_tracks = AsyncMock(side_effect=_album_tracks)
-    provider = _provider()
+    provider = _provider(barcode_lookup=barcode_lookups is not None)
     provider.get_album_tracks = get_provider_album_tracks
+    if barcode_lookups is not None:
+
+        async def _album_by_barcode(barcode: str, _external_id_type: ExternalID) -> Album | None:
+            result = barcode_lookups.get(barcode)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        provider.get_album_by_external_id = AsyncMock(side_effect=_album_by_barcode)
     with patch.multiple(
         ctrl,
         search=search,
@@ -318,6 +359,351 @@ async def test_full_item_match_uses_no_track_or_musicbrainz_calls() -> None:
     assert [mapping.item_id for mapping in matches] == ["s1"]
     harness.get_provider_album_tracks.assert_not_awaited()
     musicbrainz.get_releases_by_barcode.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# barcode lookup
+# ---------------------------------------------------------------------------
+
+
+async def test_barcode_hit_skips_the_search() -> None:
+    """A barcode hit that agrees on the album's own metadata is mapped without any search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    full = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[], provider_items={"s1": full}, barcode_lookups={BASE_BARCODE: full}
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    harness.provider.get_album_by_external_id.assert_awaited_once_with(
+        BASE_BARCODE, ExternalID.BARCODE
+    )
+    harness.get_provider_album_tracks.assert_not_awaited()
+    harness.search.assert_not_awaited()
+
+
+async def test_barcode_hit_is_fetched_in_full_before_scoring() -> None:
+    """A barcode hit is scored on the full provider album, not on the lookup's sparse result."""
+    release_id = {(ExternalID.MB_ALBUM, MB_ALBUM_ID)}
+    base = _library_album(barcodes=[BASE_BARCODE], external_ids=release_id)
+    sparse = _album("s1", "spotify_1", version="Deluxe Edition", barcodes=[BASE_BARCODE])
+    full = _album("s1", "spotify_1", barcodes=[BASE_BARCODE], external_ids=release_id)
+    with _harness(
+        search_results=[], provider_items={"s1": full}, barcode_lookups={BASE_BARCODE: sparse}
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    harness.get_provider_item.assert_awaited_once_with("s1", "spotify_1", fallback=sparse)
+    harness.get_provider_album_tracks.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("candidate_isrc_prefix", "expected"), [("USRC17607", ["s1"]), ("USRC28718", [])]
+)
+async def test_queried_barcode_does_not_confirm_its_own_hit(
+    candidate_isrc_prefix: str, expected: list[str]
+) -> None:
+    """A hit that only agrees on the queried barcode is decided by its tracklist."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    hit = _album("s1", "spotify_1", version="Deluxe Edition", year=2019, barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[],
+        provider_items={"s1": hit},
+        provider_album_tracks={
+            "base-prov": _tracklist(14),
+            "s1": _tracklist(14, isrc_prefix=candidate_isrc_prefix),
+        },
+        barcode_lookups={BASE_BARCODE: hit},
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == expected
+    # the shared barcode alone never settles it: the tracklists are always compared
+    assert harness.album_track_calls() == ["base-prov", "s1"]
+    assert harness.search.await_count == (0 if expected else 1)
+
+
+async def test_barcode_hit_without_match_evidence_falls_back_to_search() -> None:
+    """A barcode hit the album evidence rejects still runs the regular search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    other = _album("s1", "spotify_1", name="Takk...")
+    with _harness(
+        search_results=[], provider_items={"s1": other}, barcode_lookups={BASE_BARCODE: other}
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+
+
+async def test_unavailable_barcode_hit_falls_back_to_search() -> None:
+    """A barcode hit whose full provider album is not available is skipped for the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    sparse_hit = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
+    unavailable = _album(
+        "s1",
+        "spotify_1",
+        barcodes=[BASE_BARCODE],
+        mappings=[
+            ProviderMapping(
+                item_id="s1",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                available=False,
+            )
+        ],
+    )
+    with _harness(
+        search_results=[],
+        provider_items={"s1": unavailable},
+        barcode_lookups={BASE_BARCODE: sparse_hit},
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.get_provider_item.assert_awaited_once()
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_hit_fetch_failure_falls_back_to_search() -> None:
+    """A provider that cannot deliver the full album right now is left to the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    sparse_hit = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: sparse_hit}
+    ) as harness:
+        harness.get_provider_item.side_effect = RetriesExhausted("rate limited")
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_uses_the_canonical_upc() -> None:
+    """A stored zero-padded EAN reaches the provider as its canonical 12-digit UPC."""
+    base = _library_album(barcodes=[f"0{BASE_BARCODE}"])
+    with _harness(search_results=[], provider_items={}, barcode_lookups={}) as harness:
+        await harness.match(base)
+
+    harness.provider.get_album_by_external_id.assert_awaited_once_with(
+        BASE_BARCODE, ExternalID.BARCODE
+    )
+
+
+async def test_barcode_lookup_failures_fall_back_to_search() -> None:
+    """A failing or empty barcode lookup is skipped for the next one and then the search."""
+    base = _library_album(barcodes=[BASE_BARCODE, OTHER_BARCODE])
+    with _harness(
+        search_results=[],
+        provider_items={},
+        barcode_lookups={
+            OTHER_BARCODE: RetriesExhausted("rate limited"),
+            BASE_BARCODE: MediaNotFoundError("gone"),
+        },
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    assert harness.provider.get_album_by_external_id.await_count == 2
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_transport_failure_falls_back_to_search() -> None:
+    """A barcode lookup that fails on the connection is skipped for the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[],
+        provider_items={},
+        barcode_lookups={BASE_BARCODE: aiohttp.ClientConnectionError("connection reset")},
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_status_error_is_not_skipped() -> None:
+    """An HTTP status error the provider did not translate is not a lookup failure to skip."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    error = aiohttp.ClientResponseError(Mock(), (), status=500, message="Internal Server Error")
+    with (
+        _harness(
+            search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: error}
+        ) as harness,
+        pytest.raises(aiohttp.ClientResponseError),
+    ):
+        await harness.match(base)
+
+
+async def test_barcode_lookups_are_capped_per_provider() -> None:
+    """At most three barcodes are looked up on a provider, in a deterministic order."""
+    barcodes = [BASE_BARCODE, OTHER_BARCODE, THIRD_BARCODE, FOURTH_BARCODE]
+    base = _library_album(barcodes=barcodes)
+    with _harness(search_results=[], provider_items={}, barcode_lookups={}) as harness:
+        await harness.match(base)
+
+    looked_up = [call.args[0] for call in harness.provider.get_album_by_external_id.await_args_list]
+    assert looked_up == sorted(barcodes)[:3]
+
+
+async def test_provider_without_barcode_lookup_goes_straight_to_search() -> None:
+    """A provider that does not support barcode lookups is only searched."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    with _harness(search_results=[], provider_items={}) as harness:
+        harness.provider.get_album_by_external_id = AsyncMock(
+            return_value=_album("s1", "spotify_1", barcodes=[BASE_BARCODE])
+        )
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.provider.get_album_by_external_id.assert_not_awaited()
+    harness.search.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# match_providers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mapping_available", "expected"),
+    [(True, ["spotify_1"]), (False, ["tidal_1", "spotify_1"])],
+)
+async def test_match_providers_only_visits_domains_without_an_available_mapping(
+    mapping_available: bool, expected: list[str]
+) -> None:
+    """A domain the album is already available on is skipped; an unavailable one is retried."""
+    base = _library_album(
+        mappings=[
+            ProviderMapping(
+                item_id="base-prov",
+                provider_domain="tidal",
+                provider_instance="tidal_1",
+                available=mapping_available,
+            )
+        ]
+    )
+    providers = [_streaming_provider("tidal_1"), _streaming_provider("spotify_1")]
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(search_results=[], provider_items={}, providers=providers) as harness,
+        patch.multiple(harness.ctrl, _match_provider=match_provider),
+    ):
+        await harness.ctrl.match_providers(base)
+
+    assert [call.args[1].instance_id for call in match_provider.await_args_list] == expected
+
+
+async def test_match_providers_visits_a_matched_domain_once() -> None:
+    """Once an instance matched, sibling instances of that domain are not tried again."""
+    base = _library_album()
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("spotify_2")]
+    match = [
+        ProviderMapping(item_id="s1", provider_domain="spotify", provider_instance="spotify_1")
+    ]
+    match_provider = AsyncMock(return_value=match)
+    add_provider_mappings = AsyncMock()
+    with (
+        _harness(search_results=[], provider_items={}, providers=providers) as harness,
+        patch.multiple(
+            harness.ctrl,
+            _match_provider=match_provider,
+            add_provider_mappings=add_provider_mappings,
+        ),
+    ):
+        await harness.ctrl.match_providers(base)
+
+    assert [call.args[1].instance_id for call in match_provider.await_args_list] == ["spotify_1"]
+    add_provider_mappings.assert_awaited_once_with("lib1", match)
+
+
+def _musicbrainz_release(*urls: str) -> Mock:
+    """Return a mock MusicBrainz provider resolving every album to a release linked to the URLs."""
+    musicbrainz = Mock()
+    musicbrainz.resolve_release = AsyncMock(
+        return_value=MusicBrainzRelease(
+            id=MB_ALBUM_ID,
+            title="( )",
+            relations=[
+                MusicBrainzRelation(type="free streaming", url=MusicBrainzUrl(resource=url))
+                for url in urls
+            ],
+        )
+    )
+    return musicbrainz
+
+
+async def test_match_providers_links_musicbrainz_providers_before_searching() -> None:
+    """The providers MusicBrainz links the album to are linked first and not searched."""
+    base = _library_album()
+    musicbrainz = _musicbrainz_release(SPOTIFY_ALBUM_URL)
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(
+        return_value=[
+            ProviderMapping(item_id="s1", provider_domain="spotify", provider_instance="spotify_1")
+        ]
+    )
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(
+            search_results=[], provider_items={}, musicbrainz=musicbrainz, providers=providers
+        ) as harness,
+        patch.multiple(
+            harness.ctrl, link_musicbrainz_mappings=link, _match_provider=match_provider
+        ),
+    ):
+        await harness.ctrl.match_providers(base)
+
+    musicbrainz.resolve_release.assert_awaited_once_with(base)
+    link.assert_awaited_once_with(base, [SPOTIFY_ALBUM_URL])
+    assert [call.args[1].instance_id for call in match_provider.await_args_list] == ["deezer_1"]
+
+
+async def test_match_providers_searches_every_provider_with_linking_disabled() -> None:
+    """With the linking toggle off MusicBrainz is not consulted at all."""
+    musicbrainz = _musicbrainz_release(SPOTIFY_ALBUM_URL)
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(return_value=[])
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(
+            search_results=[], provider_items={}, musicbrainz=musicbrainz, providers=providers
+        ) as harness,
+        patch.multiple(
+            harness.ctrl, link_musicbrainz_mappings=link, _match_provider=match_provider
+        ),
+    ):
+        cast("Mock", harness.ctrl.mass).metadata.link_providers_via_musicbrainz = False
+        await harness.ctrl.match_providers(_library_album())
+
+    musicbrainz.resolve_release.assert_not_awaited()
+    link.assert_not_awaited()
+    assert [call.args[1].instance_id for call in match_provider.await_args_list] == [
+        "spotify_1",
+        "deezer_1",
+    ]
+
+
+async def test_match_providers_searches_every_provider_without_musicbrainz() -> None:
+    """Without a MusicBrainz provider the search leg behaves as before."""
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(return_value=[])
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(search_results=[], provider_items={}, providers=providers) as harness,
+        patch.multiple(
+            harness.ctrl, link_musicbrainz_mappings=link, _match_provider=match_provider
+        ),
+    ):
+        await harness.ctrl.match_providers(_library_album())
+
+    link.assert_not_awaited()
+    assert [call.args[1].instance_id for call in match_provider.await_args_list] == [
+        "spotify_1",
+        "deezer_1",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -678,10 +1064,20 @@ async def test_musicbrainz_unresolved_barcode_abstains() -> None:
         assert await harness.match(base) == []
 
 
-async def test_musicbrainz_transport_error_abstains() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        aiohttp.ClientConnectionError("connection reset"),
+        # MusicBrainz has no account to fail, so even an untranslated HTTP status error
+        # only costs the optional evidence
+        aiohttp.ClientResponseError(Mock(), (), status=500, message="Internal Server Error"),
+    ],
+)
+async def test_musicbrainz_transport_error_abstains(error: Exception) -> None:
     """A MusicBrainz outage abstains rather than aborting the whole match."""
     musicbrainz = Mock()
-    musicbrainz.get_releases_by_barcode = AsyncMock(side_effect=TimeoutError())
+    musicbrainz.get_releases_by_barcode = AsyncMock(side_effect=error)
     with _mb_harness(musicbrainz) as (harness, base):
         assert await harness.match(base) == []
 

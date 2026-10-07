@@ -7,6 +7,11 @@ from typing import Final
 
 from music_assistant_models.enums import VolumeNormalizationMode
 
+from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_SETTINGS,
+)
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 # What the volume normalization preference falls back to.
@@ -82,6 +87,8 @@ class PacingProfile(StrEnum):
     # radio and a Spotify music provider track on its Soloist backend, not Spotify
     # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
     # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
+    # A pace close to playback speed leaves most of that on the server. The burst is
+    # the least a player holds when a fade waits for the next track's source to start.
     NEAR_REALTIME = "near_realtime"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
@@ -90,9 +97,21 @@ class PacingProfile(StrEnum):
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.03", "3"),
+    PacingProfile.NEAR_REALTIME: ("1.01", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
+
+
+# A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
+# at playback pace and holds that slot until the item ends, so the next item's session only
+# starts once this one is over. A session that begins on such an item with little left to
+# play reaches that boundary with almost nothing buffered, and the player can drop out in
+# the ~1.5 s the restart leaves silent: a Sonos Era 100 dies with 25 s left, survives with
+# 45 s, and a banked 5 s lead played nine 30 s tracks in a row cleanly. So bank this many
+# seconds before serving the first item of a session when it has less than
+# REALTIME_COLD_START_MAX_REMAINING seconds left.
+REALTIME_COLD_START_BANK: Final[int] = 5
+REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 
 
 def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
@@ -175,3 +194,10 @@ STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
 # stream title after an opted-in provider takes ownership of stream_metadata
 # (StreamDetails.stream_title is a derived view whose setter would overwrite it).
 STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"
+
+# The analysis tables live in their own SQLite file, on a connection of their own.
+AA_DB_FILENAME: Final[str] = "audio_analysis.db"
+AA_DB_SCHEMA_VERSION: Final[int] = 1
+AA_TABLE_ANALYSIS: Final[str] = DB_TABLE_AUDIO_ANALYSIS
+AA_TABLE_FAILURES: Final[str] = DB_TABLE_AUDIO_ANALYSIS_FAILURES
+AA_TABLE_SETTINGS: Final[str] = DB_TABLE_SETTINGS

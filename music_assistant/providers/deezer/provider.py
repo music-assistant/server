@@ -67,6 +67,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_METADATA,
@@ -88,6 +90,7 @@ SUPPORTED_FEATURES = {
 }
 
 CONF_ARL_TOKEN = "arl_token"
+CONF_FAMILY_PROFILE = "family_profile"
 
 
 class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
@@ -112,16 +115,20 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
+        # a Family profile has no ARL of its own, it is reached through the admin's ARL
+        family_profile = str(self.get_setup_value(CONF_FAMILY_PROFILE) or "")
 
         try:
-            self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            self.gql_client = DeezerGQLClient(
+                arl=arl_token, session=self.mass.http_session, account_id=family_profile
+            )
             logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)
             self.user_id = me.id
-            self.gw_client = GWClient(self.mass.http_session, arl_token)
+            self.gw_client = GWClient(self.mass.http_session, arl_token, family_profile)
             await self.gw_client.setup()
         except DeezerGWNoSubscriptionError as err:
             self.logger.error("Deezer account has no streamable subscription: %s", err)
@@ -294,6 +301,12 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
         return await self.media_manager.library_remove(prov_item_id, media_type)
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """Ban or unban a track or artist from the user's Deezer recommendations."""
+        await self.media_manager.set_favorite(prov_item_id, media_type, favorite)
 
     # -- Playlist CRUD --
 

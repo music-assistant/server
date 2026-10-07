@@ -53,9 +53,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Build FFmpeg 9.0.1 from source with comprehensive audio codec support
+# The pinned SHA256 is verified before extraction; bump both when changing the version.
 ARG FFMPEG_VERSION=9.0.1
+ARG FFMPEG_SHA256=cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
 RUN set -x \
     && wget -q "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -O /tmp/ffmpeg.tar.xz \
+    && echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
     && cd /tmp/ffmpeg-${FFMPEG_VERSION} \
     && ./configure \
@@ -193,7 +196,7 @@ RUN set -x \
         libjemalloc2 \
         tzdata \
         wget \
-        # cifs utils and libnfs are needed for smb and nfs support (file provider)
+        # cifs utils and libnfs are needed to mount smb and nfs network shares
         cifs-utils \
         libnfs14 \
         nfs-common \
@@ -264,16 +267,23 @@ RUN set -x \
         /usr/bin/pacmd
 
 # Install Snapcast 0.34.0 from GitHub releases (requires at least 0.27)
+# The pinned SHA256s per arch are verified before install; bump them when changing the version.
 ARG SNAPCAST_VERSION=0.34.0
 ARG TARGETARCH
 RUN set -x \
     && if [ "$TARGETARCH" = "arm64" ]; then \
         SNAPCAST_ARCH="arm64"; \
+        SNAPSERVER_SHA256="67b7053077b7d2a8a8cd855acb53e2d66a1de48c106205269c1d32a1a46853a0"; \
+        SNAPCLIENT_SHA256="d83466b35102fb07a18df69026f7f1e78add15d07e3d8457c93af291e9b96ac1"; \
     else \
         SNAPCAST_ARCH="amd64"; \
+        SNAPSERVER_SHA256="c20ade4373f486b77ec20026c88f08b35a820ab9a6548120a7886bdaa09476fb"; \
+        SNAPCLIENT_SHA256="3992289ab90484494db0032d0e85b49ad59c37f86b5e5af8a6a86307c399812b"; \
     fi \
     && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapserver_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapserver.deb \
     && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapclient.deb \
+    && echo "${SNAPSERVER_SHA256}  /tmp/snapserver.deb" | sha256sum -c - \
+    && echo "${SNAPCLIENT_SHA256}  /tmp/snapclient.deb" | sha256sum -c - \
     # install via apt so any missing dependencies of the debs are resolved as well
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/snapserver.deb /tmp/snapclient.deb \

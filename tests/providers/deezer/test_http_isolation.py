@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
-from aiohttp import ClientSession, CookieJar, web
+from aiohttp import ClientSession, ClientTimeout, CookieJar, web
 from aiohttp.test_utils import TestServer
 from deezer_python_gql import DeezerGQLClient
 
@@ -130,3 +130,28 @@ async def test_shared_session_isolates_accounts(
         assert me is not None
         assert me.id == account_ids[1]
         assert not session.closed
+
+
+async def test_stream_url_request_times_out(
+    monkeypatch: pytest.MonkeyPatch, deezer_server: TestServer
+) -> None:
+    """A stuck request for the stream url gives up instead of hanging the playback start."""
+    reached = asyncio.Event()
+
+    async def stuck(_request: web.Request) -> web.Response:
+        reached.set()
+        await asyncio.sleep(5)
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_post("/media", stuck)
+    async with TestServer(app) as slow, ClientSession(cookie_jar=CookieJar(unsafe=True)) as session:
+        monkeypatch.setattr(gw_client, "GW_LIGHT_URL", str(deezer_server.make_url("/gw")))
+        monkeypatch.setattr(gw_client, "MEDIA_GET_URL", str(slow.make_url("/media")))
+        client = gw_client.GWClient(session, "123")
+        await client.setup()
+        monkeypatch.setattr(gw_client, "GW_TIMEOUT", ClientTimeout(total=0.2))
+
+        with pytest.raises(TimeoutError):
+            await client.get_deezer_track_urls("1")
+        assert reached.is_set()

@@ -25,6 +25,9 @@ class _Constants:
     # The latest news playlist has a varying suffix on it
     LATEST_NEWS_PLAYLIST_SUFFIX = "latest_playables_for_curation"
 
+    # Schedule dates are UK broadcast days
+    SCHEDULE_TIMEZONE = "Europe/London"
+
 
 class ValidMenuIDs(StrEnum):
     """Expected main menu IDs from the API / library."""

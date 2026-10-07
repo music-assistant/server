@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
+import aiohttp
 import plexapi.exceptions
 import plexapi.utils
 import requests
@@ -26,6 +27,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -68,6 +70,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     UNKNOWN_ARTIST,
 )
@@ -93,18 +96,21 @@ from music_assistant.providers.plex.constants import (
     CONF_PLEX_LIKE_RATING,
     CONF_PLEX_UNLIKE_RATING,
     CONF_STREAM_QUALITY,
+    CONF_SYNC_ON_LIBRARY_CHANGE,
     ERR_ARTIST_INVALID_ID,
     ERR_ARTIST_NOT_FOUND,
     ERR_AUTH_FAILED,
     ERR_INVALID_CREDENTIALS,
     ERR_ITEM_NOT_FOUND,
     ERR_NO_ARTIST_FOR_TRACK,
+    ERR_SERVER_ACCESS_DENIED,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
     MAX_TOP_TRACKS,
     METADATA_BATCH_SIZE,
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
+    NOTIFICATION_RECONNECT_DELAY,
     RECOMMENDATIONS_HUB_PARAMS,
     STREAM_QUALITY_96,
     STREAM_QUALITY_128,
@@ -121,12 +127,16 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_TO_MEDIA_TYPES,
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
+    PlexServerAccessError,
+    configure_plex_identity,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
     get_musicbrainz_id,
     get_thumbnail_images,
+    is_library_scan_finished,
     parse_plex_lyrics_payload,
+    resolve_server_auth_token,
 )
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
@@ -141,6 +151,7 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import LibraryMediaTag as PlexCollection
     from plexapi.library import MusicSection as PlexMusicSection
@@ -170,6 +181,7 @@ async def setup(
     if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -189,6 +201,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
     _baseurl: str
+    _notification_task: asyncio.Task[None] | None = None
+    _unsubscribe_sync_completed: Callable[[], None] | None = None
+    _content_changed_at: str | None = None
+    _recheck_after_sync: bool = False
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -277,6 +293,16 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             )
         )
 
+        # library sync configuration
+        entries.append(
+            ConfigEntry(
+                key=CONF_SYNC_ON_LIBRARY_CHANGE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+            )
+        )
+
         # Recommendation settings (advanced)
         entries.append(
             ConfigEntry(
@@ -314,15 +340,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                     if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
-                # Add Music Assistant client identification headers
-                session.headers.update(
-                    {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
-                        "X-Plex-Version": self.mass.version,
-                    }
-                )
                 local_server_protocol = (
                     "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
@@ -342,14 +359,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         # Doing local connection, not via plex.tv.
                         plex_server = PlexServer(plex_url, session=session)
                     else:
+                        # the account token only authenticates against servers this account
+                        # owns; a server shared via Plex Home needs its own access token
+                        server_token = resolve_server_auth_token(
+                            str(token),
+                            plex_url,
+                            session,
+                            myplex_account=self._myplex_account,
+                        )
                         plex_server = PlexServer(
                             plex_url,
-                            token,
+                            server_token,
                             session=session,
                         )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
+            except PlexServerAccessError as err:
+                raise LoginFailed(ERR_SERVER_ACCESS_DENIED.format(reason=err)) from err
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # the stored token is invalid; surface an auth failure so the user is
@@ -372,6 +399,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         # arrives via a full reload rather than update_config; clean up any mappings left
         # behind by a previous type on load (idempotent - a no-op once nothing is stale)
         await self._cleanup_stale_library_mappings()
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        if self.config.get_value(CONF_SYNC_ON_LIBRARY_CHANGE):
+            self._content_changed_at = await self._get_content_changed_at()
+            self._notification_task = self.mass.create_task(self._watch_library_changes())
+            self._unsubscribe_sync_completed = self.mass.subscribe(
+                self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED
+            )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if self._notification_task:
+            self._notification_task.cancel()
+        if self._unsubscribe_sync_completed:
+            self._unsubscribe_sync_completed()
+        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -1076,13 +1121,21 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
         return await asyncio.to_thread(_refresh_plex_token)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set favorite status by setting rating in Plex."""
-        if favorite:
-            # Set like rating
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set favorite status by setting rating in Plex.
+
+        :param prov_item_id: The Plex item id to rate.
+        :param media_type: Media type of the item.
+        :param favorite: True for the like rating, False for the unlike rating, None to
+            clear the rating altogether.
+        """
+        rating: float | None = None
+        if favorite is True:
             rating = cast("float", self.config.get_value(CONF_PLEX_LIKE_RATING))
-        else:
-            # Set unlike rating
+        elif favorite is False:
             rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
 
         if media_type == MediaType.TRACK:
@@ -1091,6 +1144,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             plex_item = await self._get_data(prov_item_id, PlexAlbum)
         else:
             return
+        # plexapi resets the item's rating when it is given none
         await self._run_async(plex_item.rate, rating)
         self.logger.debug(
             "Set Plex rating to %s for %s with ID %s (ratingKey: %s)",
@@ -1202,6 +1256,66 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             if best is None or plex_track.ratingCount > best.ratingCount:
                 best_per_title[title] = plex_track
         return sorted(best_per_title.values(), key=lambda track: track.ratingCount, reverse=True)
+
+    async def _watch_library_changes(self) -> None:
+        """Start a sync whenever Plex reports that the content of this library changed."""
+        url = f"{self._baseurl.replace('http', 'ws', 1)}/:/websockets/notifications"
+        while True:
+            try:
+                async with self.mass.http_session.ws_connect(
+                    url,
+                    headers=self._plex_server._headers(),
+                    ssl=bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT)),
+                    heartbeat=30,
+                ) as socket:
+                    async for message in socket:
+                        if message.type == aiohttp.WSMsgType.TEXT and is_library_scan_finished(
+                            message.json()
+                        ):
+                            await self._sync_if_library_changed()
+            except (aiohttp.ClientError, OSError, TimeoutError, ValueError) as err:
+                self.logger.debug(
+                    "Plex notifications unavailable: %s. Reconnecting in %ss",
+                    err,
+                    NOTIFICATION_RECONNECT_DELAY,
+                )
+            await asyncio.sleep(NOTIFICATION_RECONNECT_DELAY)
+
+    async def _sync_if_library_changed(self) -> None:
+        """Start a sync if the content of this library changed since the last check."""
+        # the notification does not say which library was scanned, and every scan bumps
+        # scannedAt even when it finds nothing, so compare contentChangedAt instead
+        changed_at = await self._get_content_changed_at()
+        if changed_at is not None and changed_at == self._content_changed_at:
+            return
+        if any(
+            task.metadata.get("provider_instance") == self.instance_id
+            for task in self.mass.music.active_sync_tasks
+        ):
+            # a sync that is already queued or running ignores the request and may have read
+            # this library before the scan finished, so check again once it is done
+            self._recheck_after_sync = True
+            return
+        self._content_changed_at = changed_at
+        await self.mass.music.start_sync(providers=[self.instance_id])
+
+    async def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Check the library again if it changed while it was being synced."""
+        if self._recheck_after_sync:
+            self._recheck_after_sync = False
+            await self._sync_if_library_changed()
+
+    async def _get_content_changed_at(self) -> str | None:
+        """Return when Plex last saw the content of this library change, if available."""
+        try:
+            sections = await self._run_async(self._plex_server.query, "/library/sections")
+        except (plexapi.exceptions.PlexApiException, requests.RequestException) as err:
+            self.logger.debug("Could not read the Plex library content version: %s", err)
+            return None
+        for directory in sections.findall("Directory"):
+            if directory.get("key") == str(self._plex_library.key):
+                return cast("str | None", directory.get("contentChangedAt"))
+        return None
 
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
@@ -1408,7 +1522,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if album rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_album, favorite_threshold, unlike_rating)
+        ) is not None:
             album.favorite = favorite
 
         if plex_album.year:
@@ -1642,7 +1759,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if track rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_track, favorite_threshold, unlike_rating)
+        ) is not None:
             track.favorite = favorite
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
@@ -1808,6 +1928,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images
+        podcast.metadata.genres = {genre.tag for genre in plex_album.genres or [] if genre.tag} or {
+            DEFAULT_AUDIOBOOK_PODCAST_GENRE
+        }
         if include_episodes:
             podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast

@@ -34,7 +34,7 @@ async def run_setup(session: SetupSession) -> None:
 
     prefill_url = session.context.setup_data.get(CONF_URL)
     prefill_ssl = session.context.setup_data.get(CONF_VERIFY_SSL, True)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -69,7 +69,7 @@ async def run_setup(session: SetupSession) -> None:
         try:
             token = manual_token if manual_token else await _authenticate(session, hass_url)
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
             continue
 
         try:
@@ -78,7 +78,7 @@ async def run_setup(session: SetupSession) -> None:
             )
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _authenticate(session: SetupSession, hass_url: str) -> str:

@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -58,6 +58,7 @@ CORE_CONTROLLER_ATTRS = (
     "music",
     "player_queues",
     "players",
+    "storage",
     "streams",
     "tasks",
     "translations",
@@ -308,9 +309,9 @@ class DiagnosticsController(CoreController):
         for provider in sorted(self.mass.providers, key=lambda prov: prov.instance_id):
             if type(provider).get_diagnostics is Provider.get_diagnostics:
                 continue
-            producers.append(
-                (f"provider.{provider.instance_id}", provider.get_diagnostics, SECTION_TIMEOUT)
-            )
+            # the domain makes a source readable whose id comes from another provider
+            name = f"provider.{provider.domain}.{provider.instance_id}"
+            producers.append((name, provider.get_diagnostics, SECTION_TIMEOUT))
         producers.extend(
             (name, callback, SECTION_TIMEOUT if timeout is None else timeout)
             for name, (callback, timeout) in self._sections.items()

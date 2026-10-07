@@ -27,16 +27,12 @@ from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
 )
 from aioaudiobookshelf.schema.author import AuthorExpanded
-from aioaudiobookshelf.schema.calls_authors import (
-    AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
-)
 from aioaudiobookshelf.schema.calls_items import (
     PlaybackSessionParameters as AbsPlaybackSessionParameters,
 )
 from aioaudiobookshelf.schema.calls_playlists import (
     CreatePlaylistParameters as AbsCreatePlaylistParameters,
 )
-from aioaudiobookshelf.schema.calls_series import SeriesWithProgress as AbsSeriesWithProgress
 from aioaudiobookshelf.schema.calls_session import SyncOpenSessionParameters
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpanded,
@@ -97,6 +93,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
+    MediaCollection,
     MediaItemType,
     Playlist,
     Podcast,
@@ -175,6 +172,7 @@ P = ParamSpec("P")
 class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     """Audiobookshelf MusicProvider."""
 
+    recommendation_payload_version = "2"  # series as collections, authors as artists
     _on_unload_callbacks: list[Callable[[], None]]
 
     def __init__(
@@ -187,6 +185,8 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         """Initialize the Audiobookshelf provider."""
         super().__init__(mass, manifest, config, supported_features)
         self.libraries = LibrariesHelper()
+        # library_id -> {narrator name: ABS narrator id}, refreshed on each audiobook sync
+        self._narrator_ids: dict[str, dict[str, str]] = {}
 
     @staticmethod
     def handle_refresh_token(
@@ -425,7 +425,7 @@ for more details.
         """Obtain audiobook library ids and podcast library ids."""
         if media_type == MediaType.AUDIOBOOK:
             self.libraries.audiobooks.clear()
-            self.libraries.audiobook_narrators.clear()
+            self._narrator_ids.clear()
         elif media_type == MediaType.PODCAST:
             self.libraries.podcasts.clear()
         elif media_type == MediaType.PLAYLIST:
@@ -441,7 +441,6 @@ for more details.
         for library in libraries:
             if library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.AUDIOBOOK:
                 self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
-                await self._update_book_narrators(library.id_)
             elif (
                 library.media_type == AbsLibraryMediaType.PODCAST
                 and media_type == MediaType.PODCAST
@@ -1080,8 +1079,8 @@ for more details.
     async def _recommendations_iter_shelves(
         self,
         shelves: list[ShelfBook | ShelfPodcast | ShelfAuthors | ShelfEpisode | ShelfSeries],
-        library_id: str,
-        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]],
+        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]],
+        series_collections: dict[str, MediaCollection[Audiobook]],
     ) -> None:
         # ruff: noqa: PLR0915
         for shelf in shelves:
@@ -1093,10 +1092,12 @@ for more details.
                     media_type = MediaType.PODCAST_EPISODE
                 case AbsShelfType.BOOK:
                     media_type = MediaType.AUDIOBOOK
-                case AbsShelfType.SERIES | AbsShelfType.AUTHORS:
-                    media_type = MediaType.FOLDER
+                case AbsShelfType.SERIES:
+                    media_type = MediaType.COLLECTION
+                case AbsShelfType.AUTHORS:
+                    media_type = MediaType.ARTIST
 
-            items: list[MediaItemType | BrowseFolder] = []
+            items: list[MediaItemType] = []
             # Recently added is the _only_ case, where we get a full podcast
             # We have a podcast object with only the episodes matching the
             # shelf.id_ otherwise.
@@ -1143,26 +1144,12 @@ for more details.
                         if item is not None:
                             items.append(item)
                 case AbsShelfId.RECENT_SERIES | AbsShelfId.CONTINUE_SERIES:
-                    # We jump into a browse folder here if we have SeriesShelf, set path up as if
-                    # browse function used.
                     if isinstance(shelf, ShelfSeries):
-                        for entity in shelf.entities:
-                            assert isinstance(entity, SeriesShelf)
-                            if len(entity.books) == 0:
-                                continue
-                            path = (
-                                f"{self.instance_id}://"
-                                f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
-                                f"{AbsBrowsePaths.SERIES}/{entity.id_}"
-                            )
-                            items.append(
-                                BrowseFolder(
-                                    item_id=entity.id_,
-                                    name=entity.name,
-                                    provider=self.instance_id,
-                                    path=path,
-                                )
-                            )
+                        items.extend(
+                            series_collections[x.name]
+                            for x in shelf.entities
+                            if isinstance(x, SeriesShelf) and x.name in series_collections
+                        )
                     elif isinstance(shelf, ShelfBook) and media_type == MediaType.AUDIOBOOK:
                         # Single books, must be audiobooks
                         for entity in shelf.entities:
@@ -1174,24 +1161,22 @@ for more details.
                             if item is not None:
                                 items.append(item)
                 case AbsShelfId.NEWEST_AUTHORS:
-                    # same as for series, use a folder
-                    for entity in shelf.entities:
-                        assert isinstance(entity, AuthorExpanded)
-                        if entity.num_books == 0:
-                            continue
-                        path = (
-                            f"{self.instance_id}://"
-                            f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
-                            f"{AbsBrowsePaths.AUTHORS}/{entity.id_}"
+                    author_ids = [
+                        x.id_
+                        for x in shelf.entities
+                        if isinstance(x, AuthorExpanded) and x.num_books > 0
+                    ]
+                    artists = {
+                        mapping.item_id: artist
+                        for artist in await self.mass.music.artists.get_library_items_by_prov_id(
+                            provider_instance=self.instance_id,
+                            provider_item_ids=author_ids,
+                            limit=0,
                         )
-                        items.append(
-                            BrowseFolder(
-                                item_id=entity.id_,
-                                name=entity.name,
-                                provider=self.instance_id,
-                                path=path,
-                            )
-                        )
+                        for mapping in artist.provider_mappings
+                        if mapping.provider_instance == self.instance_id
+                    }
+                    items.extend(artists[x] for x in author_ids if x in artists)
             if not items:
                 continue
 
@@ -1347,12 +1332,8 @@ for more details.
                 Audiobook_1
                 Audiobook_2
             Series
-                Series_1
-                    Audiobook_1
-                    Audiobook_2
-                Series_2
-                    Audiobook_3
-                    Audiobook_4
+                Series_1 (collection)
+                Series_2 (collection)
             Collections
                 Collection_1
                     Audiobook_1
@@ -1361,17 +1342,14 @@ for more details.
                     Audiobook_3
                     Audiobook_4
             Authors
-                Author_1
-                    Series_1
-                    Audiobook_1
-                    Audiobook_2
-                Author_2
-                    Audiobook_3
+                Author_1 (artist)
+                Author_2 (artist)
+            Narrators
+                Narrator_1 (artist)
         Library_Name_B (Podcasts)
             Podcast_1
             Podcast_2
         """
-        # ruff: noqa: PLR0911 # to many return
         item_path = path.split("://", 1)[1]
         if not item_path:
             return self._browse_root()
@@ -1385,11 +1363,13 @@ for more details.
             item_key = sub_path[1]
             match item_key:
                 case AbsBrowsePaths.AUTHORS:
-                    return await self._browse_authors(current_path=path, library_id=lib_id)
+                    authors = await self._client.get_library_authors(library_id=lib_id)
+                    return await self._browse_artists([x.id_ for x in authors])
                 case AbsBrowsePaths.NARRATORS:
-                    return await self._browse_narrators(current_path=path, library_id=lib_id)
+                    narrators = await self._client.get_library_narrators(library_id=lib_id)
+                    return await self._browse_artists([x.id_ for x in narrators])
                 case AbsBrowsePaths.SERIES:
-                    return await self._browse_series(current_path=path, library_id=lib_id)
+                    return await self._browse_series(library_id=lib_id)
                 case AbsBrowsePaths.COLLECTIONS:
                     return await self._browse_collections(current_path=path, library_id=lib_id)
                 case AbsBrowsePaths.AUDIOBOOKS:
@@ -1398,23 +1378,8 @@ for more details.
                     return await self._browse_podcasts(library_id=lib_id)
                 case AbsBrowsePaths.PLAYLISTS:
                     return await self._browse_playlists(library_id=lib_id, browse_path=lib_key)
-        elif len(sub_path) == 3:
-            item_key, item_id = sub_path[1:3]
-            match item_key:
-                case AbsBrowsePaths.AUTHORS:
-                    return await self._browse_author_books(current_path=path, author_id=item_id)
-                case AbsBrowsePaths.NARRATORS:
-                    return await self._browse_narrator_books(
-                        library_id=lib_id, narrator_filter_str=item_id
-                    )
-                case AbsBrowsePaths.SERIES:
-                    return await self._browse_series_books(series_id=item_id)
-                case AbsBrowsePaths.COLLECTIONS:
-                    return await self._browse_collection_books(collection_id=item_id)
-        elif len(sub_path) == 4:
-            # series within author
-            series_id = sub_path[3]
-            return await self._browse_series_books(series_id=series_id)
+        elif len(sub_path) == 3 and sub_path[1] == AbsBrowsePaths.COLLECTIONS:
+            return await self._browse_collection_books(collection_id=sub_path[2])
         return []
 
     def _browse_root(self, append_mediatype_suffix: bool = True) -> Sequence[BrowseFolder]:
@@ -1490,7 +1455,7 @@ for more details.
     def _browse_lib_audiobooks(self, current_path: str) -> Sequence[BrowseFolder]:
         items = []
         for translation_key in AbsBrowseItemsBookTranslationKey:
-            if "library" in translation_key or "entry" in translation_key:
+            if "library" in translation_key:
                 continue
             path = current_path + "/" + ABS_BROWSE_ITEMS_BOOK_TO_PATH[translation_key]
             items.append(
@@ -1504,55 +1469,20 @@ for more details.
             )
         return items
 
-    async def _browse_authors(self, current_path: str, library_id: str) -> Sequence[BrowseFolder]:
-        abs_authors = await self._client.get_library_authors(library_id=library_id)
-        items = []
-        for author in abs_authors:
-            path = f"{current_path}/{author.id_}"
-            items.append(
-                BrowseFolder(
-                    item_id=author.id_,
-                    name=author.name,
-                    provider=self.instance_id,
-                    path=path,
-                )
-            )
+    async def _browse_artists(self, prov_artist_ids: list[str]) -> Sequence[Artist]:
+        artists = await self.mass.music.artists.get_library_items_by_prov_id(
+            provider_instance=self.instance_id, provider_item_ids=prov_artist_ids, limit=0
+        )
+        return sorted(artists, key=lambda x: x.name)
 
-        return sorted(items, key=lambda x: x.name)
-
-    async def _browse_narrators(self, current_path: str, library_id: str) -> Sequence[BrowseFolder]:
-        abs_narrators = await self._client.get_library_narrators(library_id=library_id)
-        items = []
-        for narrator in abs_narrators:
-            path = f"{current_path}/{narrator.id_}"
-            items.append(
-                BrowseFolder(
-                    item_id=narrator.id_,
-                    name=narrator.name,
-                    provider=self.instance_id,
-                    path=path,
-                )
-            )
-
-        return sorted(items, key=lambda x: x.name)
-
-    async def _browse_series(self, current_path: str, library_id: str) -> Sequence[BrowseFolder]:
-        items = []
+    async def _browse_series(self, library_id: str) -> Sequence[MediaCollection[Audiobook]]:
+        series_names: list[str] = []
         async for response in self._client.get_library_series(library_id=library_id):
             if not response.results:
                 break
-            for abs_series in response.results:
-                path = f"{current_path}/{abs_series.id_}"
-                items.append(
-                    BrowseFolder(
-                        item_id=abs_series.id_,
-                        name=abs_series.name,
-                        provider=self.instance_id,
-                        path=path,
-                    )
-                )
-
-        return sorted(items, key=lambda x: x.name)
+            series_names.extend(x.name for x in response.results)
+        collections = await self._get_series_collections()
+        return [collections[x] for x in sorted(set(series_names)) if x in collections]
 
     async def _browse_collections(
         self, current_path: str, library_id: str
@@ -1610,85 +1540,6 @@ for more details.
                 items.append(mass_item)
         return sorted(items, key=lambda x: x.name)
 
-    async def _browse_author_books(
-        self, current_path: str, author_id: str
-    ) -> Sequence[MediaItemType | BrowseFolder]:
-        items: list[MediaItemType | BrowseFolder] = []
-
-        abs_author = await self._client.get_author(
-            author_id=author_id, include_items=True, include_series=True
-        )
-        if not isinstance(abs_author, AbsAuthorWithItemsAndSeries):
-            raise TypeError("Unexpected type of author.")
-
-        book_ids = {x.id_ for x in abs_author.library_items}
-        series_book_ids = set()
-
-        for series in abs_author.series:
-            series_book_ids.update([x.id_ for x in series.items])
-            path = f"{current_path}/{series.id_}"
-            items.append(
-                BrowseFolder(
-                    item_id=series.id_,
-                    name=series.name,
-                    translation_key="series_entry",
-                    translation_params=[series.name],
-                    provider=self.instance_id,
-                    path=path,
-                )
-            )
-        book_ids = book_ids.difference(series_book_ids)
-        for book_id in book_ids:
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.AUDIOBOOK,
-                item_id=book_id,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                items.append(mass_item)
-
-        return items
-
-    async def _browse_narrator_books(
-        self, library_id: str, narrator_filter_str: str
-    ) -> Sequence[Audiobook]:
-        items: list[Audiobook] = []
-        async for response in self._client.get_library_items(
-            library_id=library_id, filter_str=f"narrators.{narrator_filter_str}"
-        ):
-            if not response.results:
-                break
-            for item in response.results:
-                mass_item = await self.mass.music.get_library_item_by_prov_id(
-                    media_type=MediaType.AUDIOBOOK,
-                    item_id=item.id_,
-                    provider_instance_id_or_domain=self.instance_id,
-                )
-                if mass_item is not None:
-                    mass_item = cast("Audiobook", mass_item)
-                    items.append(mass_item)
-
-        return sorted(items, key=lambda x: x.name)
-
-    async def _browse_series_books(self, series_id: str) -> Sequence[MediaItemType]:
-        items = []
-
-        abs_series = await self._client.get_series(series_id=series_id, include_progress=True)
-        if not isinstance(abs_series, AbsSeriesWithProgress):
-            raise TypeError("Unexpected series type.")
-
-        for book_id in abs_series.progress.library_item_ids:
-            # these are sorted in abs by sequence
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.AUDIOBOOK,
-                item_id=book_id,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                items.append(mass_item)
-
-        return items
-
     async def _browse_collection_books(self, collection_id: str) -> Sequence[MediaItemType]:
         items = []
         abs_collection = await self._client.get_collection(collection_id=collection_id)
@@ -1701,6 +1552,16 @@ for more details.
             if mass_item is not None:
                 items.append(mass_item)
         return items
+
+    async def _get_series_collections(self) -> dict[str, MediaCollection[Audiobook]]:
+        """Get the library collections of this provider's series by name."""
+        return {
+            item.name: item
+            for item in await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, collapse_collections=True, limit=0
+            )
+            if isinstance(item, MediaCollection)
+        }
 
     async def _socket_abs_item_changed(
         self, items: LibraryItemExpanded | list[LibraryItemExpanded]
@@ -1997,14 +1858,18 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self.mass.music.mark_item_unplayed(
+                        discarded_item, provider_instance_id=self.instance_id
+                    )
             else:
                 with suppress(MediaNotFoundError):
                     discarded_item = await self.get_podcast_episode(
                         prov_episode_id=discarded_progress_id, add_progress=False
                     )
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self.mass.music.mark_item_unplayed(
+                        discarded_item, provider_instance_id=self.instance_id
+                    )
             self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
@@ -2021,13 +1886,16 @@ for more details.
         if mass_audiobook is None:
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            await self.mass.music.mark_item_unplayed(mass_audiobook)
+            await self.mass.music.mark_item_unplayed(
+                mass_audiobook, provider_instance_id=self.instance_id
+            )
         else:
             await self.mass.music.mark_item_played(
                 mass_audiobook,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
+                provider_instance_id=self.instance_id,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -2043,42 +1911,38 @@ for more details.
         except MediaNotFoundError:
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            await self.mass.music.mark_item_unplayed(mass_episode)
+            await self.mass.music.mark_item_unplayed(
+                mass_episode, provider_instance_id=self.instance_id
+            )
         else:
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
+                provider_instance_id=self.instance_id,
             )
-
-    async def _update_book_narrators(self, library_id: str) -> None:
-        # narrators are not expanded in ABS' response, so acquire them here
-        narrators = await self._client.get_library_narrators(library_id=library_id)
-        audiobook_narrators: dict[str, set[NarratorHelper]] = {}
-        for narrator in narrators:
-            async for response in self._client.get_library_items(
-                library_id=library_id, filter_str=f"narrators.{narrator.id_}"
-            ):
-                if not response.results:
-                    break
-                for item in response.results:
-                    narrator_set = audiobook_narrators.get(item.id_, set())
-                    narrator_set.add(NarratorHelper(id_=narrator.id_, name=narrator.name))
-                    audiobook_narrators[item.id_] = narrator_set
-        self.libraries.audiobook_narrators = {
-            **self.libraries.audiobook_narrators,
-            **audiobook_narrators,
-        }
 
     async def _get_audiobook_narrators(
         self, book: AbsLibraryItemExpandedBook
     ) -> set[NarratorHelper]:
-        """Get narrators of an audiobook, either from cache or API calls."""
-        if cached_narrators := self.libraries.audiobook_narrators.get(book.id_):
-            return cached_narrators
-        await self._update_book_narrators(book.library_id)
-        return self.libraries.audiobook_narrators.get(book.id_, set())
+        """Get narrators of an audiobook from its own metadata."""
+        narrator_names = book.media.metadata.narrators
+        if not narrator_names:
+            return set()
+        name_to_id = self._narrator_ids.get(book.library_id)
+        # a book carries narrator names only, so take their ABS ids from the library. An
+        # unknown name means the library gained a narrator since we last looked, which is
+        # what a book reaching us over the socket does.
+        if name_to_id is None or not all(name in name_to_id for name in narrator_names):
+            narrators = await self._client.get_library_narrators(library_id=book.library_id)
+            name_to_id = {x.name: x.id_ for x in narrators}
+            self._narrator_ids[book.library_id] = name_to_id
+        return {
+            NarratorHelper(id_=narrator_id, name=name)
+            for name in narrator_names
+            if (narrator_id := name_to_id.get(name))
+        }
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
@@ -2122,7 +1986,7 @@ for more details.
         # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
         # roughly the same amount of items per row, no matter the amount of libraries
         # List of list (one list per lib) here, such that we can pick the items per lib later.
-        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]] = {}
+        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]] = {}
 
         all_libraries = {**self.libraries.audiobooks, **self.libraries.podcasts}
         max_items_per_row = 20
@@ -2135,11 +1999,12 @@ for more details.
         limit_items_per_lib = max_items_per_row // num_libraries
         limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
 
+        series_collections = await self._get_series_collections()
         for library_id in all_libraries:
             shelves = await self._client.get_library_personalized_view(
                 library_id=library_id, limit=limit_items_per_lib
             )
-            await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
+            await self._recommendations_iter_shelves(shelves, items_by_shelf_id, series_collections)
 
         folders: list[RecommendationFolder] = []
         for shelf_id, item_lists in items_by_shelf_id.items():
@@ -2171,14 +2036,12 @@ for more details.
 
     def _browse_recommendation_row(self) -> RecommendationFolder:
         """Build the static browse row descriptor, without items."""
-        translation_key = "libraries"
-        if len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0:
-            translation_key = "library"
+        single_library = len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0
         return RecommendationFolder(
             item_id="browse",
-            name="Libraries",
+            name="Library" if single_library else "Libraries",
             icon="mdi-bookshelf",
-            translation_key=translation_key,
+            translation_key="library" if single_library else "libraries",
             provider=self.instance_id,
         )
 

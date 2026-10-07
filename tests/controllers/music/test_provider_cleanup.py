@@ -28,6 +28,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
 from music_assistant.mass import MusicAssistant
 
 FS_INSTANCE = "filesystem_local--AbCd"
@@ -184,6 +185,48 @@ async def test_remove_single_provider_mapping_keeps_images_if_instance_remains(
     assert {pm.item_id for pm in updated.provider_mappings} == {"fs2"}
     assert updated.metadata.images is not None
     assert [img.provider for img in updated.metadata.images] == [FS_INSTANCE]
+
+
+async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
+    mass: MusicAssistant,
+) -> None:
+    """A domain-keyed audio analysis is kept while another instance of that domain maps it."""
+    artists = mass.music.artists
+    other_instance = "spotify--IjKl"
+    db_artist = await artists.add_item_to_library(
+        Artist(
+            item_id="sp1",
+            provider=STREAM_INSTANCE,
+            name="Shared Analysis Artist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="sp1", provider_domain="spotify", provider_instance=STREAM_INSTANCE
+                ),
+                ProviderMapping(
+                    item_id="sp1", provider_domain="spotify", provider_instance=other_instance
+                ),
+            },
+        )
+    )
+    for prov_key in ("spotify", STREAM_INSTANCE):
+        await mass.streams.audio_analysis.database.insert(
+            AA_TABLE_ANALYSIS,
+            {
+                "media_type": "artist",
+                "item_id": "sp1",
+                "provider": prov_key,
+                "aa_provider_domain": "test",
+                "header": "{}",
+                "payload": b"",
+            },
+        )
+
+    await artists.remove_provider_mapping(db_artist.item_id, STREAM_INSTANCE, "sp1")
+
+    rows = await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "sp1"}
+    )
+    assert [row["provider"] for row in rows] == ["spotify"]
 
 
 async def test_cleanup_suppresses_media_item_updated_events(mass: MusicAssistant) -> None:

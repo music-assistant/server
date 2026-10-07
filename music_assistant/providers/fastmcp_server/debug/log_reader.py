@@ -510,7 +510,8 @@ class SafeLogTail:
         except ValueError:
             parsed_ts = None
         component = match.group("component_brk") or match.group("component_col")
-        message = self._redact("\n".join([match["msg"], *continuation]))
+        raw_message = "\n".join([match["msg"], *continuation])
+        message = self._redact(raw_message)
         return _Record(
             entry=LogLine(
                 timestamp=parsed_ts,

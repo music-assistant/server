@@ -104,7 +104,7 @@ async def _fetch_playlist_folder_children(
     playlists: list[Playlist] = []
     for playlist_entry in playlist_entries:
         playlist_id = cast("str", playlist_entry.get("id"))
-        is_favourite = ratings.get(playlist_id, False)
+        is_favourite = ratings.get(playlist_id)
         attributes = playlist_entry.get("attributes") or {}
         play_params = attributes.get("playParams") or {}
         global_id = play_params.get("globalId")

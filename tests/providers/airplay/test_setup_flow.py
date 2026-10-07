@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
@@ -21,6 +21,8 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
+    CONF_MRP_CREDENTIALS,
+    CONF_MRP_PAIRING_PIN,
     CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
@@ -191,7 +193,7 @@ def _streaming_player(
 def _control_player(
     *, player_id: str = "apctl", setup_data: dict[str, Any] | None = None
 ) -> AirPlayControlPlayer:
-    """Create a control-capable Apple player requiring streaming PIN + Companion pairing."""
+    """Create a control-capable Apple TV requiring streaming PIN + Companion/MRP pairing."""
     provider = MagicMock()
     provider.instance_id = "airplay"
     provider.dacp_id = "0123456789ABCDEF"
@@ -449,12 +451,12 @@ async def test_pairing_start_failure_aborts_with_reason() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Control player: streaming + optional Companion/MRP ("two codes")
+# Control player: streaming + optional Companion/MRP
 # --------------------------------------------------------------------------------------
 
 
-async def test_two_code_sequence_streaming_then_companion() -> None:
-    """A controlled device pairs the streaming PIN, then the optional Companion PIN."""
+async def test_single_offer_pairs_companion_and_mrp_after_streaming() -> None:
+    """A controlled device pairs the streaming PIN, then Companion and MRP behind one offer."""
     collected: dict[str, Any] = {}
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
@@ -466,40 +468,72 @@ async def test_two_code_sequence_streaming_then_companion() -> None:
     streaming = AsyncMock()
     streaming.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
     companion = _pyatv_pairing("companion-creds")
+    mrp = _pyatv_pairing("mrp-creds")
     responses: dict[str, dict[str, Any]] = {
         "pair_pin": {CONF_PAIRING_PIN: "1234"},
-        "companion_offer": {CONF_PAIR_NOW: True},
+        "control_offer": {CONF_PAIR_NOW: True},
         "pair_companion": {CONF_COMPANION_PAIRING_PIN: "5678"},
-        # MRP is offered for an Apple TV; decline it to keep this a two-code run
-        "mrp_offer": {CONF_PAIR_NOW: False},
+        "pair_mrp": {CONF_MRP_PAIRING_PIN: "9012"},
     }
 
     with (
         patch(_PAIRING_TARGET, return_value=streaming),
-        patch(_PYATV_PAIR_TARGET, return_value=companion) as pyatv_pair,
+        patch(_PYATV_PAIR_TARGET, side_effect=[companion, mrp]) as pyatv_pair,
     ):
         task = asyncio.create_task(player.run_setup_flow(session))
         await _pump(session, task, lambda step: responses[step.step_id])
 
     assert collected[CONF_AIRPLAY_CREDENTIALS] == FAKE_AP2_CREDS
     assert collected[CONF_COMPANION_CREDENTIALS] == "companion-creds"
+    assert collected[CONF_MRP_CREDENTIALS] == "mrp-creds"
     companion.pin.assert_called_once_with(5678)
-    pyatv_pair.assert_called_once()
+    mrp.pin.assert_called_once_with(9012)
+    assert [call.args[1] for call in pyatv_pair.call_args_list] == [
+        Protocol.Companion,
+        Protocol.AirPlay,
+    ]
     step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
-    # streaming PIN comes before the optional control offers
-    assert step_ids.index("pair_pin") < step_ids.index("companion_offer")
-    assert "pair_companion" in step_ids
-    # both PINs render as 4-digit code inputs
+    assert step_ids == ["pair_pin", "control_offer", "pair_companion", "pair_mrp"]
+    # every PIN renders as a 4-digit code input
     pin_entries = [
         entry
         for step in _published_steps(mass)
         if step.type == FlowStepType.FORM
         for entry in step.entries
-        if entry.key in (CONF_PAIRING_PIN, CONF_COMPANION_PAIRING_PIN)
+        if entry.key in (CONF_PAIRING_PIN, CONF_COMPANION_PAIRING_PIN, CONF_MRP_PAIRING_PIN)
     ]
-    assert len(pin_entries) == 2
+    assert len(pin_entries) == 3
     assert all(entry.type is ConfigEntryType.PAIRING_CODE for entry in pin_entries)
     assert all(entry.format == "####" for entry in pin_entries)
+
+
+async def test_control_offer_skipped_without_control_pairing() -> None:
+    """A controlled device without Companion or MRP pairing gets no remote control offer."""
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "apctl"}
+
+    session, mass = _make_session(finish, player_id="apctl")
+    player = _control_player()
+    streaming = AsyncMock()
+    streaming.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
+
+    with (
+        patch(_PAIRING_TARGET, return_value=streaming),
+        patch.object(
+            AirPlayControlPlayer, "companion_pairing_supported", new_callable=PropertyMock
+        ) as companion_supported,
+        patch.object(
+            AirPlayControlPlayer, "mrp_pairing_supported", new_callable=PropertyMock
+        ) as mrp_supported,
+    ):
+        companion_supported.return_value = False
+        mrp_supported.return_value = False
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PIN: "1234"})
+
+    step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert step_ids == ["pair_pin"]
 
 
 async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> None:
@@ -524,8 +558,7 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
     )
     responses: dict[str, dict[str, Any]] = {
         "streaming_repair_offer": {CONF_PAIR_NOW: False},
-        "companion_offer": {CONF_PAIR_NOW: False},
-        "mrp_offer": {CONF_PAIR_NOW: False},
+        "control_offer": {CONF_PAIR_NOW: False},
     }
 
     with (
@@ -539,7 +572,7 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
     pairing_cls.assert_not_called()
     pyatv_pair.assert_not_called()
     step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
-    assert step_ids == ["streaming_repair_offer", "companion_offer", "mrp_offer"]
+    assert step_ids == ["streaming_repair_offer", "control_offer"]
 
 
 async def test_cancelled_pairing_closes_the_session_it_starts() -> None:

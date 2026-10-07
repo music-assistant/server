@@ -56,16 +56,16 @@ Handles all authentication and user management:
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
-- **Built-in Provider** - Username/password authentication with bcrypt hashing
+- **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
 
 **Token Types:**
-- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window (for user sessions)
-- **Long-lived tokens**: No auto-renewal, 10-year expiration (for integrations/API access)
+- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
-- Password hashing with bcrypt and user- and server specific salts
+- Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
 - Secure token generation with secrets.token_urlsafe()
 - WebSocket disconnect on token revocation
 - Session management and cleanup
@@ -155,11 +155,14 @@ Manages individual WebSocket connections:
 ### First-Time Setup Flow
 
 1. **Initial State**: No users exist
-2. **Setup Required**: User is redirected to `/setup`
-3. **Admin Creation**: User creates the first admin account with username/password
-4. **Setup completes** User gets redirected to the frontend
-5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
-4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
+2. **Setup Required**: User is redirected to `/setup`, which serves the frontend; the query string
+   travels along so a client's `return_url` and `device_name` survive a reload
+3. **Admin Creation**: The frontend opens its setup wizard on the "Create your account" step,
+   which posts username, password and display name to `POST /setup`; the server creates the
+   first admin and answers with a token (or, for a trusted `return_url`, where to hand it back)
+4. **Onboarding wizard** The frontend signs in with the token and continues the wizard on the
+   same page; `POST /setup` answers 409 from then on
+5. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
 
 ### First-Time Setup Flow when HA Ingress is used
 
@@ -205,6 +208,7 @@ When running as a Home Assistant add-on:
 - A dedicated webserver TCP site is hosted (on port 8094) bound to the internal HA docker network only
 - Ingress requests include HA user headers (`X-Remote-User-ID`, `X-Remote-User-Name`)
 - Users are auto-created on first access
+- A user whose Music Assistant account is disabled is refused
 - No password required (authentication handled by HA)
 - System user created for HA integration communication
 
@@ -415,9 +419,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Mandatory authentication**: All API access requires authentication (except Ingress)
 - **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: bcrypt with user-specific salts
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding) and long-lived (10 years) tokens supported
+- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
 
 ### Authorization
 
@@ -444,7 +448,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Data Protection
 
 - **Token storage**: Only hashed tokens stored in database
-- **Password storage**: bcrypt with user-specific salts
+- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Session cleanup**: Expired tokens automatically deleted
 - **User disable**: Immediate disconnect of all user sessions
 

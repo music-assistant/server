@@ -81,6 +81,67 @@ def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> N
     )
 
 
+_PCM_OUT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+)
+
+
+def _input_fflags(args: list[str]) -> list[str]:
+    """Return the values of every -fflags option given to the main input."""
+    input_args = args[: args.index("-i")]
+    return [input_args[i + 1] for i, arg in enumerate(input_args) if arg == "-fflags"]
+
+
+@pytest.mark.parametrize("content_type", [ContentType.MP3, ContentType.MPEG])
+def test_get_ffmpeg_args_fastseeks_http_mp3_seek(content_type: ContentType) -> None:
+    """A seek into an http mp3 byte-seeks instead of parsing every frame before the target."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=content_type),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["+fastseek"]
+
+
+def test_get_ffmpeg_args_fastseek_keeps_provider_fflags() -> None:
+    """Fastseek joins the provider's -fflags, since ffmpeg only honours the last one per input."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-fflags", "genpts", "-fflags", "nobuffer", "-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["genpts", "nobuffer+fastseek"]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "input_path", "extra_input_args"),
+    [
+        (ContentType.MP3, "https://example.invalid/book.mp3", []),
+        (ContentType.FLAC, "https://example.invalid/track.flac", ["-ss", "30"]),
+        (ContentType.MP3, "/media/book.mp3", ["-ss", "30"]),
+    ],
+)
+def test_get_ffmpeg_args_no_fastseek_outside_http_mp3_seek(
+    content_type: ContentType, input_path: str, extra_input_args: list[str]
+) -> None:
+    """Sources other than a seeked http mp3 keep ffmpeg's accurate seek."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=content_type),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    assert _input_fflags(args) == []
+
+
 def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
     """Split generated ffmpeg args into the part describing the input and the output."""
     idx = args.index("-i")
@@ -642,20 +703,25 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
     assert err.value.__cause__ is source_error
 
 
+def _limit_error() -> ProviderStreamLimitError:
+    """Build a provider capacity error for a provider with a single stream slot."""
+    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
+    provider.name = "Spotify"
+    return ProviderStreamLimitError(provider, 5.0)
+
+
 async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A provider capacity error from the input generator is not logged as a warning."""
-    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
-    provider.name = "Spotify"
-    limit_error = ProviderStreamLimitError(provider, 5.0)
+    limit_error = _limit_error()
 
     async def busy_input() -> AsyncGenerator[bytes]:
         yield b"\x00" * _BYTES_PER_SECOND
         raise limit_error
 
     caplog.set_level(logging.DEBUG)
-    with pytest.raises(AudioError) as err:
+    with pytest.raises(ProviderStreamLimitError) as err:
         await _collect_chunks(
             get_ffmpeg_stream(
                 audio_input=busy_input(),
@@ -670,12 +736,56 @@ async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
         )
 
     # the typed error still surfaces to the caller
-    assert err.value.__cause__ is limit_error
+    assert err.value is limit_error
     feeder_records = [
         record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
     ]
     assert feeder_records
     assert all(record.levelno == logging.DEBUG for record in feeder_records)
+
+
+async def _busy_input(limit_error: ProviderStreamLimitError) -> AsyncGenerator[bytes]:
+    """Fail with the given capacity error before any audio is produced."""
+    raise limit_error
+    yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+
+async def test_ffmpeg_stream_keeps_provider_stream_limit_through_nested_stages() -> None:
+    """A capacity error that crosses two FFmpeg stages still surfaces as itself."""
+    limit_error = _limit_error()
+    item_stream = get_ffmpeg_stream(
+        audio_input=_busy_input(limit_error),
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        filter_params=["volume=-3dB"],
+    )
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=item_stream,
+                input_format=_PCM_FORMAT,
+                output_format=AudioFormat(content_type=ContentType.FLAC),
+            )
+        )
+
+    assert err.value is limit_error
+
+
+async def test_overlay_stream_keeps_provider_stream_limit(overlay_file: Path) -> None:
+    """A capacity error in the main input surfaces as itself from the overlay mixer."""
+    limit_error = _limit_error()
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_busy_input(limit_error),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value is limit_error
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
@@ -1102,6 +1212,42 @@ async def test_abort_survives_send_signal_racing_process_exit() -> None:
     await asyncio.wait_for(ffmpeg._abort_task, timeout=2)
 
     assert ffmpeg.closed
+
+
+# -- _log_reader_task (concat-demuxer demux-error gating) --
+
+
+async def test_log_reader_ignores_demuxing_error_without_concat_demuxer() -> None:
+    """A demux error from a non-concat input (e.g. HTTP reconnect at EOF) is not fatal."""
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[in#0/mp3 @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is False
+
+
+async def test_log_reader_sets_concat_error_for_concat_demuxer() -> None:
+    """A demux error while the concat demuxer is in use still marks the stream as failed."""
+    ffmpeg = FFMpeg(
+        audio_input="-",
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        extra_input_args=["-safe", "0", "-f", "concat"],
+    )
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[concat @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is True
 
 
 # -- _build_filtergraph_args (DSP chain assembly) --

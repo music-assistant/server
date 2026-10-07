@@ -139,3 +139,11 @@ CLIP_STREAMDETAILS_EXPIRATION = 60
 
 # a cached clip with less life than this left is not worth handing out, so it is re-minted
 MIN_CLIP_MEDIA_LIFETIME = 5
+
+# refetch hints broadcast as PROVIDER_EVENT payloads ({"event": <name>}); they carry no
+# state, so the unfiltered broadcast cannot bypass the per-user filtering of the endpoints
+EVENT_HOSTS_UPDATED = "hosts_updated"
+EVENT_STATIONS_UPDATED = "stations_updated"
+EVENT_SECTIONS_UPDATED = "sections_updated"
+EVENT_QUEUE_DJ_UPDATED = "queue_dj_updated"
+EVENT_SESSIONS_UPDATED = "sessions_updated"

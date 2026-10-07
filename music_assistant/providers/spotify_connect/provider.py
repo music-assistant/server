@@ -208,7 +208,6 @@ class SpotifyConnectProvider(PluginProvider):
         # The backend selection and the soloist secrets are managed by the setup
         # flow (stored in setup_data) and stay hidden; the volume mode is a
         # visible runtime option for soloist configs.
-        is_soloist = self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
         return (
             create_connected_players_entry(
                 self.mass, cast("list[str]", self.get_config_value(CONF_CONNECTED_PLAYERS) or [])
@@ -240,7 +239,7 @@ class SpotifyConnectProvider(PluginProvider):
                 default_value=VOLUME_MODE_PLAYER_ONLY,
                 required=False,
                 options=VOLUME_MODE_OPTIONS,
-                hidden=not is_soloist,
+                hidden=not self._soloist_configured,
             ),
             ConfigEntry(
                 key=CONF_CROSSFADE_DURATION,
@@ -270,7 +269,7 @@ class SpotifyConnectProvider(PluginProvider):
         # model did through its single backend start): the soloist binary is
         # installed/verified once here — the per-daemon starts hit the manager's
         # recently-verified fast path — and go-librespot must be on PATH.
-        if self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST:
+        if self._soloist_configured:
             await SoloistBinaryManager(self.mass).ensure_fresh(
                 bool(self.get_setup_value(CONF_SOLOIST_CONSENT))
             )
@@ -754,7 +753,7 @@ class SpotifyConnectProvider(PluginProvider):
         # into setup_data; a config migrated from before the backend choice
         # existed yields None here, which intentionally selects go-librespot
         # (the equality check must keep treating None as the default).
-        if self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST:
+        if self._soloist_configured:
             return SoloistBackend(
                 self.mass,
                 identity_key=identity_key,
@@ -1247,3 +1246,13 @@ class SpotifyConnectProvider(PluginProvider):
             # restore on failure so a retry of this value isn't wrongly deduped
             daemon.last_volume_sent = previous_volume
             raise
+
+    @property
+    def _soloist_configured(self) -> bool:
+        """
+        Return True if this instance is set up to play through the soloist backend.
+
+        Answers from the stored setup choice, so it is also valid before the
+        backend object exists.
+        """
+        return self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
