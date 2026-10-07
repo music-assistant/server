@@ -1067,14 +1067,16 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
 
 
 @pytest.mark.asyncio
-async def test_get_media_stream_probes_unknown_remote_format(
+@pytest.mark.parametrize("content_type", [ContentType.UNKNOWN, ContentType.MPEG])
+async def test_get_media_stream_probes_other_remote_mp3_types(
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
+    content_type: ContentType,
 ) -> None:
-    """A feed URL without a known extension is probed, and the probe decides."""
+    """A feed URL without a known extension and the MPEG alias are probed too."""
     mp3_probe.result = Mp3SeekHints(True, 100)
     streamdetails = _seekable_streamdetails()
-    streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+    streamdetails.audio_format = AudioFormat(content_type=content_type)
     audio = _make_audio_controller()
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=90))

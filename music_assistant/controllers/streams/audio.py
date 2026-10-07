@@ -5180,10 +5180,11 @@ class StreamsAudio:
         ):
             return []
         audio_format = arriving_audio_format(streamdetails)
-        is_mp3 = audio_format.content_type == ContentType.MP3 or (
+        mp3_types = (ContentType.MP3, ContentType.MPEG)
+        is_mp3 = audio_format.content_type in mp3_types or (
             # the probe itself rejects an unknown format that turns out not to be MPEG audio
             audio_format.content_type == ContentType.UNKNOWN
-            and audio_format.codec_type in (ContentType.MP3, ContentType.UNKNOWN)
+            and audio_format.codec_type in (*mp3_types, ContentType.UNKNOWN)
         )
         if not is_mp3:
             return []
