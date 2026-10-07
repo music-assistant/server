@@ -206,6 +206,11 @@ class QQMusicProvider(MusicProvider):
             )
         if not credential.str_musicid and credential.musicid:
             credential = credential.model_copy(update={"str_musicid": str(credential.musicid)})
+        if not credential.encrypt_uin:
+            raise LoginFailed(
+                "QQ Music credential is missing encryptUin, "
+                "please remove and re-add the integration"
+            )
 
         self._qq_client = QQClient(credential=credential)
         self._qq_search = self._qq_client.search
@@ -819,7 +824,9 @@ class QQMusicProvider(MusicProvider):
         albums: list[Album] = []
         for album in source_albums:
             with suppress(InvalidDataError, TypeError, ValueError):
-                albums.append(self._parse_album(album.model_dump()))
+                album_obj = album.model_dump()
+                album_obj["singers"] = [{"mid": prov_artist_id, "name": album.singer_name}]
+                albums.append(self._parse_album(album_obj))
         return albums
 
     async def _get_artist_song_list(self, prov_artist_id: str) -> list[Track]:

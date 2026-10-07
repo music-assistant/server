@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
     UnplayableMediaError,
@@ -365,6 +366,8 @@ async def test_get_config_entries_exposes_quality_option_without_actions() -> No
 async def test_get_artist_albums_uses_typed_album_tab() -> None:
     """Artist albums are read from the public Homepage AlbumTab response."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.manifest = SimpleNamespace(domain="qqmusic")  # type: ignore[attr-defined]
+    provider.config = SimpleNamespace(instance_id="qqmusic_instance")  # type: ignore[attr-defined]
     provider._qq_singer = SimpleNamespace(  # type: ignore[attr-defined]
         get_tab_detail=AsyncMock(
             return_value=HomepageTabDetailResponse.model_validate(
@@ -381,6 +384,7 @@ async def test_get_artist_albums_uses_typed_album_tab() -> None:
                                 "albumID": 1,
                                 "albumMid": "album_mid",
                                 "albumName": "Album",
+                                "singerName": "Artist",
                             }
                         ],
                     },
@@ -393,11 +397,11 @@ async def test_get_artist_albums_uses_typed_album_tab() -> None:
         return await coro
 
     provider._run_with_session = _run_with_session  # type: ignore[attr-defined]
-    provider._parse_album = lambda item: item["mid"]  # type: ignore[attr-defined]
-
     albums = await QQMusicProvider.get_artist_albums.__wrapped__(provider, "artist")
 
-    assert albums == ["album_mid"]
+    assert albums[0].item_id == "album_mid"
+    assert albums[0].artists[0].item_id == "artist"
+    assert albums[0].artists[0].name == "Artist"
 
 
 @pytest.mark.asyncio
@@ -831,8 +835,8 @@ async def test_create_playlist_uses_typed_id_and_dirid() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_async_init_legacy_credential_has_string_musicid() -> None:
-    """Legacy credentials retain a valid UIN for the 0.8.2 VKey endpoint."""
+async def test_handle_async_init_rejects_legacy_credential_without_encrypt_uin() -> None:
+    """Legacy scalar credentials cannot support library sync without encryptUin."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.logger = Mock(level=INFO)
     provider.get_setup_value = lambda key: {  # type: ignore[attr-defined]
@@ -842,8 +846,5 @@ async def test_handle_async_init_legacy_credential_has_string_musicid() -> None:
     }.get(key)
     provider._update_setup_data = Mock()
 
-    await provider.handle_async_init()
-
-    assert provider._credential.musicid == 123
-    assert provider._credential.str_musicid == "123"
-    await provider._qq_client.close()
+    with pytest.raises(LoginFailed, match="missing encryptUin"):
+        await provider.handle_async_init()
