@@ -97,13 +97,12 @@ class ZvukMusicClient:
         self._token = token
         self._client: ClientAsync | None = None
         self._user_id: str | None = None
+        self.collection_playlist_ids: set[str] = set()
         self._throttler = Throttler(rate_limit=5, period=1.0)
 
     @property
-    def user_id(self) -> str:
-        """Return the user ID."""
-        if self._user_id is None:
-            raise ProviderUnavailableError("Client not initialized, call connect() first")
+    def user_id(self) -> str | None:
+        """Return the user ID, or None when Zvuk does not expose the profile."""
         return self._user_id
 
     async def connect(self) -> None:
@@ -117,7 +116,11 @@ class ZvukMusicClient:
             self._client = await ClientAsync(token=self._token).init()
             if not await self._client.is_authorized():
                 raise LoginFailed("Invalid Zvuk Music token")
-            profile = await self._client.get_profile()
+            try:
+                profile = await self._client.get_profile()
+            except BotDetectedError:
+                LOGGER.warning("Zvuk profile is blocked by anti-bot protection, user ID unknown")
+                profile = None
             if profile and profile.result:
                 self._user_id = str(profile.result.id)
             LOGGER.debug("Connected to Zvuk Music as user %s", self._user_id)
@@ -355,7 +358,9 @@ class ZvukMusicClient:
         :return: List of CollectionItem objects with playlist IDs.
         """
         client = await self._get_client()
-        return await client.get_user_playlists()
+        items = await client.get_user_playlists()
+        self.collection_playlist_ids = {str(item.id) for item in items if item.id}
+        return items
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_short_playlists(

@@ -723,49 +723,46 @@ class ZvukMusicProvider(MusicProvider):
             if getattr(track, "has_flac", None) is not None:
                 has_flac = bool(track.has_flac)
 
-        # Build quality fallback chain using /api/tiny/track/stream (plain, non-DRM URLs).
-        # This endpoint returns {"result": {"stream": "https://..."}} for FLAC/MP3 qualities.
-        # zvuk-dl-rs uses the same endpoint to download lossless FLAC.
+        # FLAC is only offered by /api/tiny/track/stream (plain, non-DRM URL),
+        # which Zvuk's anti-bot protection may block. MP3 URLs come from the
+        # GraphQL stream query, which returns both qualities in one request.
         self.logger.debug(
             "Stream request for track %s: quality_pref=%s has_flac=%s (diagnostic only)",
             item_id,
             quality_str,
             has_flac,
         )
-        if quality_str == QUALITY_LOSSLESS:
-            quality_chain = [
-                ("flac", ContentType.FLAC, 0),
-                ("high", ContentType.MP3, 320),
-                ("mid", ContentType.MP3, 128),
-            ]
-        else:
-            quality_chain = [("high", ContentType.MP3, 320), ("mid", ContentType.MP3, 128)]
-
         url: str | None = None
         content_type = ContentType.UNKNOWN
         bitrate = 0
 
-        for q_str, q_content_type, q_bitrate in quality_chain:
+        if quality_str == QUALITY_LOSSLESS:
             try:
-                url = await self.client.get_direct_stream_url(item_id, q_str)
+                url = await self.client.get_direct_stream_url(item_id, "flac")
             except (ResourceTemporarilyUnavailable, ProviderUnavailableError) as err:
-                self.logger.warning(
-                    "Error getting stream URL for track %s quality=%s: %s",
-                    item_id,
-                    q_str,
-                    err,
-                )
-                continue
-            self.logger.debug(
-                "Stream URL for track %s quality=%s: %s",
-                item_id,
-                q_str,
-                "OK" if url else "None",
-            )
+                self.logger.warning("Error getting FLAC stream URL for track %s: %s", item_id, err)
             if url:
-                content_type = q_content_type
-                bitrate = q_bitrate
-                break
+                content_type = ContentType.FLAC
+
+        if not url:
+            streams = await self.client.get_stream_urls(item_id)
+            stream = streams[0] if streams else None
+            for q_url, q_bitrate in (
+                (getattr(stream, "high", None), 320),
+                (getattr(stream, "mid", None), 128),
+            ):
+                if q_url:
+                    url = q_url
+                    content_type = ContentType.MP3
+                    bitrate = q_bitrate
+                    break
+        self.logger.debug(
+            "Stream URL for track %s: %s (%s %s)",
+            item_id,
+            "OK" if url else "None",
+            content_type,
+            bitrate,
+        )
 
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
@@ -832,7 +829,11 @@ class ZvukMusicProvider(MusicProvider):
 
     async def _get_editorial_playlists(self) -> list[Playlist]:
         """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
-        editorial_ids = await self.client.get_editorial_playlist_ids()
+        try:
+            editorial_ids = await self.client.get_editorial_playlist_ids()
+        except ProviderUnavailableError as err:
+            self.logger.debug("Editorial playlists unavailable: %s", err)
+            return []
         if not editorial_ids:
             return []
         full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])

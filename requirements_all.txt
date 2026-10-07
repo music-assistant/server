@@ -114,4 +114,4 @@ yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b59
 yoto-api==4.5.0
 ytmusicapi==1.12.3
 zeroconf==0.151.5
-zvuk-music[async]==0.6.1
+zvuk-music[async]==0.6.2

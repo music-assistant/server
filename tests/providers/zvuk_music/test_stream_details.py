@@ -151,12 +151,10 @@ class TestGetStreamDetailsFlac:
         mock_client = MagicMock(spec=ZvukMusicClient)
         mock_client.get_track = AsyncMock(return_value=_make_mock_track(has_flac=True))
 
-        def stream_url_side_effect(_track_id: str, quality: str) -> str | None:
-            if quality == "flac":
-                return None  # FLAC unavailable for this track
-            return "https://cdn.zvuk.com/track.mp3"
-
-        mock_client.get_direct_stream_url = AsyncMock(side_effect=stream_url_side_effect)
+        mock_client.get_direct_stream_url = AsyncMock(return_value=None)  # FLAC unavailable
+        mock_client.get_stream_urls = AsyncMock(
+            return_value=[MagicMock(high="https://cdn.zvuk.com/track.mp3", mid=None)]
+        )
         provider.client = mock_client
         provider.logger = MagicMock()
 
@@ -175,15 +173,17 @@ class TestGetStreamDetailsFlac:
 
         mock_client = MagicMock(spec=ZvukMusicClient)
         mock_client.get_track = AsyncMock(return_value=_make_mock_track(has_flac=True))
-        mock_client.get_direct_stream_url = AsyncMock(return_value="https://cdn.zvuk.com/track.mp3")
+        mock_client.get_direct_stream_url = AsyncMock(return_value="https://cdn.zvuk.com/a.flac")
+        mock_client.get_stream_urls = AsyncMock(
+            return_value=[MagicMock(high="https://cdn.zvuk.com/track.mp3", mid=None)]
+        )
         provider.client = mock_client
         provider.logger = MagicMock()
 
         result = await ZvukMusicProvider.get_stream_details(provider, "12345")
 
         assert result.audio_format.content_type == ContentType.MP3
-        calls = [c.args[1] for c in mock_client.get_direct_stream_url.call_args_list]
-        assert "flac" not in calls
+        mock_client.get_direct_stream_url.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stream_path_is_url(self) -> None:
@@ -216,7 +216,9 @@ class TestGetStreamDetailsFlac:
         mock_client.get_track = AsyncMock(
             return_value=_make_mock_track(has_flac=False, duration=333)
         )
-        mock_client.get_direct_stream_url = AsyncMock(return_value="https://cdn.zvuk.com/track.mp3")
+        mock_client.get_stream_urls = AsyncMock(
+            return_value=[MagicMock(high="https://cdn.zvuk.com/track.mp3", mid=None)]
+        )
         provider.client = mock_client
         provider.logger = MagicMock()
 
@@ -235,6 +237,7 @@ class TestGetStreamDetailsFlac:
         mock_client = MagicMock(spec=ZvukMusicClient)
         mock_client.get_track = AsyncMock(return_value=_make_mock_track(has_flac=False))
         mock_client.get_direct_stream_url = AsyncMock(return_value=None)
+        mock_client.get_stream_urls = AsyncMock(return_value=[])
         provider.client = mock_client
         provider.logger = MagicMock()
 
