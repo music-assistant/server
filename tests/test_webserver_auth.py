@@ -3123,6 +3123,29 @@ async def test_resolve_command_impersonation_provider_link(
         )
 
 
+async def test_resolve_command_impersonation_checks_the_target_scope(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """The impersonated user must hold the command's scope, as impersonation grants nothing."""
+    service_user = await auth_manager.create_user(username="ha_service", role=UserRole.SERVICE)
+    guest_user = await auth_manager.create_user(username="guest", role=UserRole.GUEST)
+    set_current_user(service_user)
+    set_impersonated_user(None)
+    mass = auth_manager.mass
+
+    # a guest holds library.read, and one scope of a tuple suffices like for the caller
+    assert await resolve_command_impersonation(mass, {"user": "guest"}, Scope.LIBRARY_READ)
+    assert await resolve_command_impersonation(
+        mass, {"user": "guest"}, (Scope.LIBRARY_WRITE, Scope.LIBRARY_READ)
+    )
+    # a command without a required scope checks nothing
+    assert await resolve_command_impersonation(mass, {"user": "guest"}) == guest_user
+
+    # the service caller holds library.write, the guest it acts for does not
+    with pytest.raises(InsufficientPermissions, match="impersonated user lacks"):
+        await resolve_command_impersonation(mass, {"user": "guest"}, Scope.LIBRARY_WRITE)
+
+
 def test_has_scope() -> None:
     """Test the scope check for each of the builtin user roles."""
 

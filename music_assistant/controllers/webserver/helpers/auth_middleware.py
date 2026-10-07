@@ -305,7 +305,11 @@ async def resolve_impersonated_user(
     return target_user
 
 
-async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, Any]) -> User | None:
+async def resolve_command_impersonation(
+    mass: MusicAssistant,
+    args: dict[str, Any],
+    required_scope: Scope | tuple[Scope, ...] | None = None,
+) -> User | None:
     """
     Pop and resolve the optional impersonation argument for an API command invocation.
 
@@ -317,6 +321,8 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
 
     :param mass: The MusicAssistant instance.
     :param args: The (mutable) arguments dict of the incoming command.
+    :param required_scope: The scope(s) the command requires; the impersonated user
+        must hold it as well, so impersonation never grants more than its own role.
     """
     user_arg = args.pop("user", None)
     # username is accepted as (deprecated) alias for user
@@ -327,8 +333,15 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     if not target:
         return None
     if isinstance(target, Mapping):
-        return await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
-    return await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
+        target_user = await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
+    else:
+        target_user = await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
+    if target_user and required_scope and not has_scope(target_user, required_scope):
+        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
+        raise InsufficientPermissions(
+            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        )
+    return target_user
 
 
 def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:

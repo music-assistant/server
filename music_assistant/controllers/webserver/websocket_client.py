@@ -310,7 +310,9 @@ class WebsocketClientHandler:
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and msg.args:
-                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, msg.args, handler.required_scope
+                ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
