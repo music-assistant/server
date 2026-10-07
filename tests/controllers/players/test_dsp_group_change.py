@@ -140,6 +140,35 @@ class TestDspChangeRestart:
         stop.assert_awaited_once_with("player_1")
         play.assert_awaited_once_with("player_1")
 
+    async def test_group_change_leaves_an_external_source_alone(self, mock_mass: MagicMock) -> None:
+        """A leader playing a tv input or connect session has no stream of ours to rebuild."""
+        player = _player()
+        player.state.active_source = "tv"
+        controller = _controller(mock_mass, player)
+        controller.is_live_audio_source = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
+
+        mock_mass.call_later.assert_not_called()
+        stop, play = _stop_and_play(controller)
+        stop.assert_not_awaited()
+        play.assert_not_awaited()
+
+    async def test_group_change_restarts_a_live_audio_source(self, mock_mass: MagicMock) -> None:
+        """A live audio source is streamed by the server, so its DSP is rebuilt as before."""
+        player = _player()
+        player.state.active_source = "audiosource-1"
+        controller = _controller(mock_mass, player)
+        controller.is_live_audio_source = MagicMock(return_value=True)  # type: ignore[method-assign]
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
+
+        stop, play = _stop_and_play(controller)
+        stop.assert_awaited_once_with("player_1")
+        play.assert_awaited_once_with("player_1")
+
     async def test_resumes_the_leader_queue_for_a_synced_player(self, mock_mass: MagicMock) -> None:
         """A synced player's DSP change restarts the queue it renders: its leader's."""
         leader = _player("leader")

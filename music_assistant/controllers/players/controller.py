@@ -2532,6 +2532,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # this will restart the queue stream/playback
             self.mass.call_later(0, self.mass.player_queues.resume, active_queue.queue_id, False)
             return
+        if after_group_change and not self._is_ma_managed_source(
+            player, player.state.active_source
+        ):
+            # an external source (a tv input, a connect session) has no stream of ours
+            # to rebuild; stopping and starting it would only interrupt it
+            self.logger.debug(
+                "Not restarting %s after DSP change: it is playing external source %s",
+                player.display_name,
+                player.state.active_source,
+            )
+            return
         self.logger.info("Restarting playback of Player %s after DSP change", player_id)
         # if the player is not using a queue, we need to stop and start playback
         await self.cmd_stop(player_id)
