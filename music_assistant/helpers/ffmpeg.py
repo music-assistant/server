@@ -565,6 +565,10 @@ def get_ffmpeg_args(
                 "-reconnect_on_http_error",
                 "5xx,429",
             ]
+            if input_path.startswith("https") and "-tls_verify" not in extra_input_args:
+                # FFmpeg 8+ verifies certificates by default, which breaks self-signed hosts
+                # such as Home Assistant TTS (plain http rejects the option)
+                input_args += ["-tls_verify", "0"]
             if "-post_data" in extra_input_args:
                 # ffmpeg does not include Range headers on POST reconnects, so byte-range
                 # seeking via reconnect is not available. Mark the stream non-seekable so
