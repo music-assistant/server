@@ -2021,6 +2021,25 @@ def test_construct_media_item_drops_image_of_foreign_provider() -> None:
     assert not result.metadata.images
 
 
+def test_construct_media_item_does_not_trust_a_mapping_without_a_loaded_provider() -> None:
+    """A mapping the file declares for a provider that is not loaded does not vouch for images."""
+    item = PlaylistItem(
+        path="tidal://track/42",
+        title="Song",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[ProviderMappingInfo(domain="tidal", item_id="42", instance_id="tidal_9")],
+        images=[
+            ImageInfo(type="thumb", path="/data/cover.jpg", provider="tidal_9"),
+            ImageInfo(type="fanart", path="/data/fanart.jpg", provider=""),
+        ],
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
 def test_construct_media_item_drops_builtin_image_with_local_path() -> None:
     """A builtin image is only imported when it points at a remote URL or inline data."""
     item = _spotify_item([ImageInfo(type="thumb", path="/etc/passwd", provider="builtin")])

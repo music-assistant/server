@@ -1,5 +1,6 @@
 """Tests that the filesystem provider writes playlists only to regular files inside its root."""
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -87,6 +88,15 @@ async def test_create_playlist_refuses_unsafe_name(base: Path, name: str) -> Non
         await provider.create_playlist(name, {MediaType.TRACK})
 
     assert not (base.parent / "escape.m3u").exists()
+
+
+async def test_create_playlist_refuses_a_non_regular_file(base: Path) -> None:
+    """A special file where the playlist should be is left alone."""
+    os.mkfifo(base / "pipe.m3u")
+    provider = _make_provider(base)
+
+    with pytest.raises(InvalidDataError):
+        await provider.create_playlist("pipe", {MediaType.TRACK})
 
 
 async def test_create_playlist_writes_regular_file(base: Path) -> None:

@@ -8,6 +8,7 @@ import logging
 import os
 import os.path
 import posixpath
+import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
@@ -3899,20 +3900,34 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _write_playlist_file(self, file_path: str, data: str) -> None:
         """Write playlist data to a regular (non-symlink) file inside the library root."""
-        absolute_path = self.get_absolute_path(file_path)
+        relative_path = os.path.relpath(self.get_absolute_path(file_path), self.base_path)
+        parts = [part for part in Path(relative_path).parts if part != "."]
+        msg = f"Playlist is not a regular file inside the library: {file_path}"
+        if not parts or ".." in parts:
+            raise InvalidDataError(msg)
 
         def _write() -> None:
-            # get_absolute_path is lexical only: a symlink could still lead the write elsewhere
-            real_base = os.path.realpath(self.base_path)
-            real_path = os.path.realpath(absolute_path)
-            if (
-                os.path.commonpath([real_base, real_path]) != real_base
-                or Path(absolute_path).is_symlink()
-            ):
-                msg = f"Playlist is not a regular file inside the library: {file_path}"
+            # every component is opened relative to the previous directory without following
+            # symlinks, so what was checked is what gets written, even if the tree changes
+            dir_fd = os.open(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                    )
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                # O_NONBLOCK makes opening a FIFO fail instead of waiting for a reader
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+                file_fd = os.open(parts[-1], flags, 0o644, dir_fd=dir_fd)
+            except OSError as err:
+                raise InvalidDataError(msg) from err
+            finally:
+                os.close(dir_fd)
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                os.close(file_fd)
                 raise InvalidDataError(msg)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-            with os.fdopen(os.open(absolute_path, flags, 0o644), "w", encoding="utf-8") as _file:
+            with os.fdopen(file_fd, "w", encoding="utf-8") as _file:
                 _file.write(data)
 
         await asyncio.to_thread(_write)

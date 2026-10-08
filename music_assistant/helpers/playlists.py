@@ -603,8 +603,13 @@ def construct_media_item_from_playlist_item(
             mass,
         )
 
-    trusted_providers = {pm.provider_instance for pm in provider_mappings} | {
-        pm.provider_domain for pm in provider_mappings
+    # the mappings come from the file as well, so only those backed by a loaded provider count
+    trusted_providers = {
+        name
+        for pm in provider_mappings
+        if pm.available
+        for name in (pm.provider_instance, pm.provider_domain)
+        if name
     }
     for img in item.images:
         try:
