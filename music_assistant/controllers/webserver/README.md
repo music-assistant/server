@@ -66,8 +66,9 @@ Handles all authentication and user management:
 - **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 Tokens are HS256-signed JWTs ([helpers/jwt_auth.py](../../helpers/jwt_auth.py)), each backed by
-a row in `auth_tokens`. That row, not the JWT payload, is the source of truth for expiration
-and revocation. Older non-JWT tokens are still accepted through their hash.
+a row in `auth_tokens`. That row decides expiration and revocation; the JWT's own `exp` only
+carries the hard limit (the 90-day cap for short-lived tokens). Older non-JWT tokens are still
+accepted through their hash.
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
@@ -405,8 +406,8 @@ HTTP Request → Webserver → Command Handler → Response
 ```
 WebSocket Connect → WebsocketClientHandler
                            |
-                           ├─ First command: auth → Validate token → Set user context
-                           └─ Subsequent commands → Check auth/role → Execute → Respond
+                           ├─ auth command → Validate token → Set user context
+                           └─ Other commands → Check auth/scope → Execute → Respond
 ```
 
 ### Remote WebRTC Request Flow
