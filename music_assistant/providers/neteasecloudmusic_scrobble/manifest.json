@@ -8,6 +8,5 @@
   "documentation": "https://music-assistant.io/plugins/neteasecloudmusic_scrobble/",
   "multi_instance": false,
   "builtin": false,
-  "depends_on": "neteasecloudmusic",
   "requirements": []
 }
