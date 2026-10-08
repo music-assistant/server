@@ -1519,16 +1519,16 @@ class BuiltinProvider(MusicProvider):
         """
         Guard against a manual item image that points at a local filesystem path.
 
-        A manually added track or radio image must be a remote URL or data URI. A local
+        A manually added track or radio image must be an http(s) URL or data URI. A local
         path would let the image route read an arbitrary server file.
 
         :param image_url: The image reference supplied for a manual item.
-        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
+        :raises MediaNotFoundError: If image_url is not an http(s) URL or data URI.
         """
         if not image_url.startswith(REMOTE_IMAGE_PREFIXES):
             raise MediaNotFoundError(
-                "The builtin provider only supports remote image URLs or data URIs "
-                "for manual items, not local file paths"
+                "The builtin provider only supports http(s) image URLs or data URIs "
+                "for manual items"
             )
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
