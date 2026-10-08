@@ -710,6 +710,10 @@ class TasksController(CoreController):
             if priority:
                 self._remove_from_pending(managed.task_info.id)
                 self._pending_task_ids.appendleft(managed.task_info.id)
+                managed.task_info.last_run_user_id = run_user_id
+                managed.task_info.updated_at = utcnow()
+                self._persist_scheduled_task_state(managed)
+                self._schedule_task_update(force=True)
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
         managed.run_token = uuid4().hex
