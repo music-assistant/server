@@ -21,18 +21,30 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
+from yarl import URL
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import (
+    ensure_safe_outbound_url,
+    is_safe_path,
+    provider_configured_endpoints,
+    url_endpoint,
+)
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.uri import BUILTIN_SCHEME_NAMES
 from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageClass
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.provider import Provider
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +87,8 @@ _SOURCE_MEMORY_MAX_BYTES = 32 * 1024 * 1024
 _SOURCE_MEMORY_ENTRY_MAX_BYTES = 8 * 1024 * 1024
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
+_MAX_GUARDED_REDIRECTS = 3
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 # Leading magic bytes used to sniff raster image formats from their content.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -85,11 +99,21 @@ def is_svg_data(data: bytes) -> bool:
     """Return True when the given bytes appear to be an SVG image."""
     if not data:
         return False
-    # the root <svg> may be preceded by an xml declaration, doctype or comment
-    sample = data[:1024].lstrip()
-    if not sample[:64].lower().startswith((b"<?xml", b"<svg", b"<!--", b"<!doctype")):
-        return False
-    return b"<svg" in sample.lower()
+    # the root <svg> may be preceded by an xml declaration, doctype or comments
+    sample = data[:1024].lower().lstrip()
+    while True:
+        if sample.startswith(b"<?"):
+            end = sample.find(b"?>")
+        elif sample.startswith(b"<!--"):
+            end = sample.find(b"-->")
+        elif sample.startswith(b"<!doctype"):
+            end = _doctype_end(sample)
+        else:
+            break
+        if end == -1:
+            return False
+        sample = sample[sample.find(b">", end) + 1 :].lstrip()
+    return sample.startswith(b"<svg") and sample[4:5] in (b" ", b">", b"/", b"\t", b"\n", b"\r")
 
 
 def detect_image_content_format(data: bytes) -> str | None:
@@ -441,7 +465,14 @@ async def _fetch_source_image(
     :param provider: The provider ID that can resolve the image.
     :param depth: Recursion depth of the originating get_image_data call.
     """
-    if prov := mass.get_provider(provider):
+    prov = mass.get_provider(provider)
+    if prov:
+        if path_or_url.startswith("http") and not _is_provider_endpoint(
+            prov, provider, path_or_url
+        ):
+            # some providers fetch an http path themselves (podcast feeds), so an untrusted
+            # URL is checked before they get the chance
+            await _ensure_safe_image_url(mass, path_or_url)
         resolved_image = await prov.resolve_image(path_or_url)
         if resolved_image is None:
             # the provider looked and has nothing at this path: a miss, not a failed fetch
@@ -468,6 +499,9 @@ async def _fetch_source_image(
         # unknown provider does fall through - it is gone for good, so missing is honest.
         msg = f"{provider} is not available to resolve image {path_or_url}"
         raise ProviderUnavailableError(msg)
+    # trusted: the provider named by the image is configured with the URL's host and port;
+    # any other URL may be client-supplied (library edits, queue items) and is guarded
+    trusted_origin = _is_provider_endpoint(prov, provider, path_or_url)
     # handle HTTP location
     if path_or_url.startswith("http"):
         # handle imageproxy URLs pointing to our own server
@@ -480,8 +514,8 @@ async def _fetch_source_image(
                 False,
             )
         try:
-            return await _fetch_remote_image(mass, path_or_url), True
-        except ClientError as err:
+            return await _fetch_remote_image(mass, path_or_url, guard=not trusted_origin), True
+        except (ClientError, InvalidDataError) as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
@@ -494,6 +528,9 @@ async def _fetch_source_image(
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read()), True
+    if not trusted_origin and _has_url_scheme(path_or_url):
+        # ffmpeg would open a stream URL (rtsp, rtmp) on the client's behalf
+        await _ensure_safe_image_url(mass, path_or_url, BUILTIN_SCHEME_NAMES)
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
@@ -501,22 +538,39 @@ async def _fetch_source_image(
     raise FileNotFoundError(msg)
 
 
-async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
+async def _fetch_remote_image(mass: MusicAssistant, url: str, *, guard: bool = False) -> bytes:
     """
     Fetch raw image bytes over HTTP.
 
     :param mass: The MusicAssistant instance.
     :param url: The (http/https) image URL to fetch.
+    :param guard: Refuse the URL, and every redirect target, that points at a blocked address.
+    :raises InvalidDataError: If guard is set and a URL points at a blocked address.
     """
     # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
     # and even regular browser User-Agents, while still serving well-known fetch tools.
     # We keep identifying as Music Assistant but carry a Wget compatibility token, which
     # such CDNs allowlist, so artwork is served on the first (and only) request.
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
-    async with mass.http_session_no_ssl.get(
-        url, raise_for_status=True, headers={"User-Agent": user_agent}
-    ) as resp:
-        return await resp.read()
+    if not guard:
+        async with mass.http_session_no_ssl.get(
+            url, raise_for_status=True, headers={"User-Agent": user_agent}
+        ) as resp:
+            return await resp.read()
+    await ensure_safe_outbound_url(mass, url)
+    for _ in range(_MAX_GUARDED_REDIRECTS + 1):
+        async with mass.http_session_no_ssl.get(
+            url, allow_redirects=False, headers={"User-Agent": user_agent}
+        ) as resp:
+            location = resp.headers.get("Location")
+            if resp.status in _REDIRECT_STATUSES and location:
+                url = str(resp.url.join(URL(location)))
+                await ensure_safe_outbound_url(mass, url)
+                continue
+            resp.raise_for_status()
+            return await resp.read()
+    msg = f"Too many redirects fetching image: {url}"
+    raise FileNotFoundError(msg)
 
 
 async def get_image_thumb(
@@ -900,3 +954,64 @@ async def _write_thumb_to_disk(
     finally:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(Path(temp_filepath).unlink)
+
+
+def _doctype_end(sample: bytes) -> int:
+    """Return the index of the closing '>' of the doctype at the start of sample, or -1."""
+    subset_start = sample.find(b"[")
+    first_close = sample.find(b">")
+    if subset_start == -1 or (first_close != -1 and first_close < subset_start):
+        return first_close
+    # the internal subset may hold ']>' inside comments and quoted values
+    pos = subset_start + 1
+    quote = b""
+    while pos < len(sample):
+        char = sample[pos : pos + 1]
+        if quote:
+            if char == quote:
+                quote = b""
+            pos += 1
+        elif sample.startswith(b"<!--", pos):
+            comment_end = sample.find(b"-->", pos)
+            if comment_end == -1:
+                return -1
+            pos = comment_end + 3
+        elif char in (b'"', b"'"):
+            quote = char
+            pos += 1
+        elif char == b"]":
+            return sample.find(b">", pos)
+        else:
+            pos += 1
+    return -1
+
+
+def _is_provider_endpoint(prov: Provider | None, provider: str, url: str) -> bool:
+    """Return True if prov is the non-builtin provider named by the image and serves url."""
+    return (
+        prov is not None
+        and prov.domain != "builtin"
+        and provider in (prov.instance_id, prov.domain)
+        and (endpoint := url_endpoint(url)) is not None
+        and endpoint in provider_configured_endpoints(prov)
+    )
+
+
+async def _ensure_safe_image_url(
+    mass: MusicAssistant, url: str, allowed_schemes: tuple[str, ...] = ("http", "https")
+) -> None:
+    """Raise FileNotFoundError if url points at a blocked address."""
+    try:
+        await ensure_safe_outbound_url(mass, url, allowed_schemes)
+    except InvalidDataError as err:
+        msg = f"Failed to fetch image from {url}: {err}"
+        raise FileNotFoundError(msg) from err
+
+
+def _has_url_scheme(path_or_url: str) -> bool:
+    """Return True if path_or_url is a scheme://host URL rather than a local path."""
+    try:
+        parsed = urllib.parse.urlsplit(path_or_url)
+    except ValueError:
+        return False
+    return bool(parsed.scheme and parsed.netloc)

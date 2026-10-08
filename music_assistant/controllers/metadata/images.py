@@ -36,6 +36,7 @@ from music_assistant.helpers.images import (
     get_image_data,
     get_image_thumb,
     invalidate_cached_image,
+    is_svg_data,
 )
 
 from .constants import (
@@ -375,7 +376,14 @@ class ImageProxyMixin:
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
         if image_format == "svg":
-            return await get_image_data(self.mass, path, provider), "svg"
+            data = await get_image_data(self.mass, path, provider)
+            if is_svg_data(data):
+                return data, "svg"
+            # never pass through a body that is not an image
+            if (content_format := detect_image_content_format(data)) in ("png", "jpg"):
+                return data, content_format
+            msg = f"Image is not a supported format: {path}"
+            raise FileNotFoundError(msg)
         thumbnail_bytes = await get_image_thumb(
             self.mass,
             path,

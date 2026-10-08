@@ -186,7 +186,7 @@ async def test_get_palette_tolerates_unavailable_image(
     await mass_minimal.cache.setup(cache_config)
     remote_url = "http://sonos.example.com:1400/getaa?u=gone.flac"
 
-    async def failing_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+    async def failing_remote_fetch(_mass: MusicAssistant, _url: str, **_kwargs: Any) -> bytes:
         raise ClientError("404, message='Not Found'")
 
     monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
@@ -197,7 +197,7 @@ async def test_get_palette_tolerates_unavailable_image(
 
         # nothing was cached for the failure, so once the artwork is reachable
         # again the real palette is extracted
-        async def ok_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        async def ok_remote_fetch(_mass: MusicAssistant, _url: str, **_kwargs: Any) -> bytes:
             return _make_image_bytes([(200, 30, 30), (30, 30, 200)])
 
         monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)

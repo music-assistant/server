@@ -8,18 +8,25 @@ import os
 import subprocess
 import time
 from base64 import b64encode
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
-from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+from music_assistant_models.enums import ConfigEntryType, ProviderIconVariant
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from PIL import Image
+from yarl import URL
 
 from music_assistant.helpers import images
 from music_assistant.helpers.images import (
@@ -38,9 +45,11 @@ from music_assistant.models.player_provider import PlayerProvider
 from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
     from music_assistant.mass import MusicAssistant
+
+RESOLVER = "music_assistant.helpers.security.resolve_hostname"
 
 
 @pytest.fixture(autouse=True)
@@ -330,7 +339,7 @@ async def test_remote_disk_entry_expires_after_ttl(
     mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
     remote_url = "http://cdn.example.com/artwork.jpg"
 
-    async def fake_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+    async def fake_remote_fetch(_mass: MusicAssistant, _url: str, **_kwargs: Any) -> bytes:
         return b"remote-image-bytes"
 
     monkeypatch.setattr(images, "_fetch_remote_image", fake_remote_fetch)
@@ -363,7 +372,7 @@ async def test_failing_source_fails_fast_with_single_warning(
     mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
     remote_url = "http://sonos.example.com:1400/getaa?u=missing.flac"
 
-    async def failing_remote_fetch(_mass: MusicAssistant, url: str) -> bytes:
+    async def failing_remote_fetch(_mass: MusicAssistant, url: str, **_kwargs: Any) -> bytes:
         raise ClientError(f"404, message='Not Found', url='{url}'")
 
     monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
@@ -471,7 +480,7 @@ async def test_failed_source_retried_after_ttl_or_invalidation(
     remote_url = "http://cdn.example.com/broken.jpg"
     cache_key = create_thumb_hash("builtin", remote_url)
 
-    async def failing_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+    async def failing_remote_fetch(_mass: MusicAssistant, _url: str, **_kwargs: Any) -> bytes:
         raise ClientError("503, message='Service Unavailable'")
 
     monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
@@ -490,7 +499,7 @@ async def test_failed_source_retried_after_ttl_or_invalidation(
     await invalidate_cached_image(mass_minimal, "builtin", remote_url)
     assert cache_key not in images._failed_sources
 
-    async def ok_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+    async def ok_remote_fetch(_mass: MusicAssistant, _url: str, **_kwargs: Any) -> bytes:
         return b"remote-image-bytes"
 
     monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
@@ -498,8 +507,14 @@ async def test_failed_source_retried_after_ttl_or_invalidation(
     assert len(fetch_calls) == 3
 
 
-async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistant) -> None:
+async def test_remote_http_404_yields_file_not_found(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A real HTTP 404 response converts into FileNotFoundError with one origin hit."""
+    # the provider is configured with the loopback test server, so its URL there is fetched
+    fake_provider = MagicMock(spec=MusicProvider, domain="sonos", instance_id="sonos--1")
+    fake_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: fake_provider)
     hits = 0
 
     async def handler(_request: web.Request) -> web.Response:
@@ -516,16 +531,191 @@ async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistan
         mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
         mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
         mass_minimal._http_session_no_ssl = session
+        fake_provider.config = _provider_config({"url": str(server.make_url("/"))})
         url = str(server.make_url("/getaa")) + "?u=track.flac"
         with pytest.raises(FileNotFoundError, match="404"):
-            await get_image_data(mass_minimal, url, "builtin")
+            await get_image_data(mass_minimal, url, "sonos--1")
         # the negative cache prevents a second hit on the origin
         with pytest.raises(FileNotFoundError, match="404"):
-            await get_image_data(mass_minimal, url, "builtin")
+            await get_image_data(mass_minimal, url, "sonos--1")
         assert hits == 1
     finally:
         await session.close()
         await server.close()
+
+
+async def test_guarded_fetch_refuses_redirect_to_loopback(mass_minimal: MusicAssistant) -> None:
+    """A guarded fetch does not follow a redirect from a public host to a loopback address."""
+    requested = _fake_http_session(
+        mass_minimal, {"http://cdn.example.com/a.jpg": (302, "http://127.0.0.1/secret", b"")}
+    )
+    with (
+        patch(RESOLVER, AsyncMock(return_value=["93.184.215.14"])),
+        pytest.raises(InvalidDataError, match="blocked address"),
+    ):
+        await images._fetch_remote_image(mass_minimal, "http://cdn.example.com/a.jpg", guard=True)
+    assert requested == ["http://cdn.example.com/a.jpg"]
+
+
+async def test_guarded_fetch_follows_public_redirect(mass_minimal: MusicAssistant) -> None:
+    """A guarded fetch follows a redirect between public hosts."""
+    requested = _fake_http_session(
+        mass_minimal,
+        {
+            "http://cdn.example.com/a.jpg": (301, "https://img.example.org/b.jpg", b""),
+            "https://img.example.org/b.jpg": (200, None, b"image-bytes"),
+        },
+    )
+    with patch(RESOLVER, AsyncMock(return_value=["93.184.215.14"])):
+        data = await images._fetch_remote_image(
+            mass_minimal, "http://cdn.example.com/a.jpg", guard=True
+        )
+    assert data == b"image-bytes"
+    assert requested == ["http://cdn.example.com/a.jpg", "https://img.example.org/b.jpg"]
+
+
+async def test_unknown_provider_image_on_loopback_is_refused(mass_minimal: MusicAssistant) -> None:
+    """An image of an unknown provider pointing at a loopback host is not fetched."""
+    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
+    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
+    requested = _fake_http_session(
+        mass_minimal, {"http://localhost/art.jpg": (200, None, b"internal")}
+    )
+    with (
+        patch(RESOLVER, AsyncMock(return_value=["127.0.0.1"])),
+        pytest.raises(FileNotFoundError, match="blocked address"),
+    ):
+        await images._fetch_source_image(mass_minimal, "http://localhost/art.jpg", "gone--1", 0)
+    assert requested == []
+
+
+async def test_loaded_provider_image_is_not_guarded(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image URL on a server the named provider is configured with is fetched as is."""
+    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
+    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
+    fake_provider = MagicMock(spec=MusicProvider, domain="sonos", instance_id="sonos--1")
+    fake_provider.config = _provider_config({"url": "http://localhost"})
+    fake_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: fake_provider)
+    _fake_http_session(mass_minimal, {"http://localhost/art.jpg": (200, None, b"provider-art")})
+    resolver = AsyncMock(return_value=["127.0.0.1"])
+    with patch(RESOLVER, resolver):
+        data, _ = await images._fetch_source_image(
+            mass_minimal, "http://localhost/art.jpg", "sonos--1", 0
+        )
+    assert data == b"provider-art"
+    resolver.assert_not_called()
+
+
+async def test_untrusted_url_is_refused_before_the_provider_fetches_it(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that fetches http paths itself never sees a URL on a blocked address."""
+    podcast = MagicMock(spec=MusicProvider, domain="podcastfeed", instance_id="podcastfeed--1")
+    podcast.config = _provider_config({"feed_url": "https://feeds.example.com/show.xml"})
+    podcast.resolve_image = AsyncMock(return_value=b"fetched-by-provider")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: podcast)
+    with pytest.raises(FileNotFoundError, match="blocked address"):
+        await images._fetch_source_image(
+            mass_minimal, "http://127.0.0.1:8095/x", "podcastfeed--1", 0
+        )
+    podcast.resolve_image.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "configured_url",
+    ["http://192.168.1.10:8096", "http://127.0.0.1:8096"],
+    ids=["other-host", "other-port"],
+)
+async def test_provider_image_off_configured_endpoint_is_guarded(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch, configured_url: str
+) -> None:
+    """An image of the named provider on a host or port it is not configured with is guarded."""
+    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
+    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
+    jellyfin = MagicMock(spec=MusicProvider, domain="jellyfin", instance_id="jellyfin--1")
+    jellyfin.config = _provider_config({"url": configured_url})
+    jellyfin.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: jellyfin)
+    requested = _fake_http_session(
+        mass_minimal, {"http://127.0.0.1:8095/x": (200, None, b"internal")}
+    )
+    with pytest.raises(FileNotFoundError, match="blocked address"):
+        await images._fetch_source_image(mass_minimal, "http://127.0.0.1:8095/x", "jellyfin--1", 0)
+    assert requested == []
+
+
+@pytest.mark.parametrize(
+    ("setup", "endpoint"),
+    [
+        ({"url": "http://localhost:8096"}, "http://localhost:8096"),
+        ({"ip_address": "127.0.0.1", "port": 4533}, "http://127.0.0.1:4533"),
+        (
+            {"local_server_ip": "127.0.0.1", "local_server_port": "32400"},
+            "http://127.0.0.1:32400",
+        ),
+    ],
+    ids=["url", "ip-and-port", "local-server-ip-and-port"],
+)
+async def test_provider_image_on_setup_endpoint_is_not_guarded(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    setup: dict[str, Any],
+    endpoint: str,
+) -> None:
+    """An image on the server from the provider's setup data is fetched as is, others not."""
+    mass_minimal.webserver = MagicMock(base_url="http://192.168.1.2:8095")
+    mass_minimal.streams = MagicMock(base_url="http://192.168.1.2:8097")
+    stored = {key: f"_encrypted_{key}" for key in setup}
+    fake_provider = MagicMock(spec=MusicProvider, domain="jellyfin", instance_id="jellyfin--1")
+    fake_provider.config = _provider_config({}, setup_data=stored)
+    fake_provider.get_setup_value = MagicMock(side_effect=setup.get)
+    fake_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: fake_provider)
+    other_port = endpoint.rsplit(":", 1)[0] + ":8095"
+    requested = _fake_http_session(
+        mass_minimal,
+        {
+            f"{endpoint}/art.jpg": (200, None, b"provider-art"),
+            f"{other_port}/art.jpg": (200, None, b""),
+        },
+    )
+    with patch(RESOLVER, AsyncMock(return_value=["127.0.0.1"])):
+        data, _ = await images._fetch_source_image(
+            mass_minimal, f"{endpoint}/art.jpg", "jellyfin--1", 0
+        )
+        with pytest.raises(FileNotFoundError, match="blocked address"):
+            await images._fetch_source_image(
+                mass_minimal, f"{other_port}/art.jpg", "jellyfin--1", 0
+            )
+    assert data == b"provider-art"
+    assert requested == [f"{endpoint}/art.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("url", "refused"),
+    [("rtsp://127.0.0.1:8554/cam", True), ("rtsp://cam.example.com/stream", False)],
+    ids=["loopback", "public"],
+)
+async def test_builtin_stream_scheme_image_is_guarded(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch, url: str, refused: bool
+) -> None:
+    """A builtin rtsp image reaches ffmpeg only when its host passes the address guard."""
+    builtin = MagicMock(spec=MusicProvider, domain="builtin", instance_id="builtin")
+    builtin.resolve_image = AsyncMock(side_effect=lambda path: path)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda *_args, **_kwargs: builtin)
+    embedded = AsyncMock(return_value=b"frame")
+    monkeypatch.setattr(images, "get_embedded_image", embedded)
+    if refused:
+        with pytest.raises(FileNotFoundError, match="blocked address"):
+            await images._fetch_source_image(mass_minimal, url, "builtin", 0)
+        embedded.assert_not_called()
+    else:
+        data, _ = await images._fetch_source_image(mass_minimal, url, "builtin", 0)
+        assert data == b"frame"
+        embedded.assert_called_once_with(url)
 
 
 async def test_own_imageproxy_url_cached_under_resolved_key_only(
@@ -740,3 +930,37 @@ async def test_detect_provider_icons_png_and_variants(tmp_path: Path) -> None:
 async def test_detect_provider_icons_none(tmp_path: Path) -> None:
     """Test detecting icons in an empty directory returns empty dict."""
     assert await detect_provider_icons(str(tmp_path)) == {}
+
+
+def _fake_http_session(
+    mass: MusicAssistant, responses: dict[str, tuple[int, str | None, bytes]]
+) -> list[str]:
+    """Serve (status, location, body) per URL from the no-ssl session; return requested URLs."""
+    requested: list[str] = []
+
+    @asynccontextmanager
+    async def _get(url: str, **_kwargs: Any) -> AsyncIterator[MagicMock]:
+        requested.append(str(url))
+        status, location, body = responses[str(url)]
+        resp = MagicMock(status=status, headers={"Location": location} if location else {})
+        resp.url = URL(str(url))
+        resp.read = AsyncMock(return_value=body)
+        yield resp
+
+    mass._http_session_no_ssl = MagicMock(get=_get)
+    return requested
+
+
+def _provider_config(
+    values: dict[str, str], setup_data: dict[str, Any] | None = None
+) -> ProviderConfig:
+    """Return a provider config holding the given string values and stored setup data."""
+    entries = [ConfigEntry(key=key, type=ConfigEntryType.STRING, label=key) for key in values]
+    raw = {
+        "type": "music",
+        "domain": "fake",
+        "instance_id": "fake--1",
+        "values": values,
+        "setup_data": setup_data or {},
+    }
+    return cast("ProviderConfig", ProviderConfig.parse(entries, raw))

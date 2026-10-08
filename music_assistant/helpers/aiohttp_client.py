@@ -104,6 +104,21 @@ async def async_aiohttp_proxy_stream(
     return response
 
 
+async def resolve_hostname(mass: MusicAssistant, host: str, port: int = 0) -> list[str]:
+    """
+    Resolve a hostname to its IP addresses, the same way the shared http sessions do.
+
+    Names in the .local domain are resolved through mDNS as well as regular DNS.
+
+    :param mass: The MusicAssistant instance.
+    :param host: The hostname to resolve.
+    :param port: The port the addresses are resolved for.
+    :raises OSError: If the hostname could not be resolved.
+    """
+    resolved = await _get_resolver(mass).resolve(host, port, family=socket.AF_UNSPEC)
+    return [entry["host"] for entry in resolved]
+
+
 class MassAsyncDNSResolver(AsyncDualMDNSResolver):
     """
     Music Assistant AsyncDNSResolver.
