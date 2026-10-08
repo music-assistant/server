@@ -829,6 +829,58 @@ async def test_music_source_visibility_comes_from_ma_provider_access(
     assert [row["name"] for row in result["data"]["tracks"]] == ["mine"]
 
 
+async def test_member_tool_call_sees_only_playlists_shared_with_them() -> None:
+    """MA's playlist access check sees the member, not an internal caller."""
+    from music_assistant_models.access import PlaylistAccess  # noqa: PLC0415
+    from music_assistant_models.auth import User, UserRole  # noqa: PLC0415
+    from music_assistant_models.enums import ProviderSharing  # noqa: PLC0415
+
+    from music_assistant.controllers.music.media.playlists import (  # noqa: PLC0415
+        PlaylistController,
+    )
+
+    playlists = {
+        "own": PlaylistAccess(owner="u1"),
+        "household": None,
+        "members": PlaylistAccess(owner="u2", sharing=ProviderSharing.MEMBERS),
+        "shared with me": PlaylistAccess(
+            owner="u2", sharing=ProviderSharing.SELECTED, shared_users=["u1"]
+        ),
+        "private": PlaylistAccess(owner="u2"),
+        "shared with others": PlaylistAccess(
+            owner="u2", sharing=ProviderSharing.SELECTED, shared_users=["u3"]
+        ),
+    }
+
+    async def library_items() -> list[dict[str, str]]:
+        return [
+            {"name": name, "provider": "library"}
+            for name, access in playlists.items()
+            if PlaylistController.visible_to_caller(
+                cast("Any", None), cast("Any", SimpleNamespace(access=access))
+            )
+        ]
+
+    member = User(user_id="u1", username="member", role=UserRole.USER, enabled=True)
+    adapter = _real_adapter(_handler("music/playlists/library_items", library_items), user=member)
+
+    result = await adapter.call(
+        "ma_api:music/playlists/library_items",
+        {},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=MagicMock(),
+    )
+
+    assert [row["name"] for row in result["data"]] == [
+        "own",
+        "household",
+        "members",
+        "shared with me",
+    ]
+
+
 async def test_adapter_discovers_handler_and_compiles_schema() -> None:
     """The runtime registry becomes a canonical ma_api catalog entry."""
 

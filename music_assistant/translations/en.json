@@ -899,6 +899,7 @@
   "core.storage.errors.share_changed": "This network share was changed in Home Assistant, so Music Assistant leaves it alone. Change it back or remove it in Home Assistant.",
   "core.storage.errors.share_mounted_already": "This network share is mounted already, and available as the storage location {0}.",
   "core.storage.errors.share_name_invalid": "Enter the name of the share without slashes or commas.",
+  "core.storage.errors.share_no_answer": "The server of the network share did not answer in time. Check that it is online and try again.",
   "core.storage.errors.share_not_found": "There is no network share named {0}.",
   "core.storage.errors.share_not_mounted": "The network share did not become available. Check that its server is online and try again.",
   "core.storage.errors.share_password_missing": "Enter the password of the user, or leave the user empty to connect as a guest.",

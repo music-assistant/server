@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from signal import SIGINT
+from signal import SIGINT, SIGKILL
 from types import TracebackType
 from typing import Any, Self
 
@@ -667,21 +667,26 @@ async def check_output(
 
     :param env: Optional environment overrides for the subprocess.
     :param timeout: Maximum seconds to wait for the process to exit. On expiry the
-        process is killed and TimeoutError is raised; None (default) waits forever.
+        process and everything it started are killed and TimeoutError is raised;
+        None (default) waits forever.
     """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stderr=asyncio.subprocess.STDOUT,
         stdout=asyncio.subprocess.PIPE,
         env=get_subprocess_env(env),
+        start_new_session=timeout is not None,
     )
     try:
         async with asyncio.timeout(timeout):
             stdout, _ = await proc.communicate()
     except TimeoutError:
-        proc.kill()
         with suppress(ProcessLookupError):
-            await proc.wait()
+            os.killpg(proc.pid, SIGKILL)
+        # a process stuck in I/O (e.g. on an unresponsive network share) is reaped later
+        with suppress(TimeoutError):
+            async with asyncio.timeout(PIPE_DRAIN_TIMEOUT):
+                await proc.wait()
         raise
     assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout)
