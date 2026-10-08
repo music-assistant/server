@@ -222,6 +222,24 @@ async def test_album_source_id_is_cached(
     assert len(detail_calls) == 1
 
 
+async def test_album_source_id_accepts_the_album_field(
+    handler: NeteaseScrobbleHandler, providers: dict[str, Mock]
+) -> None:
+    """Compatible backends return the album under "album" instead of "al"."""
+    providers[INSTANCE_A].api_client.get.side_effect = lambda path, **_kwargs: (
+        {"songs": [{"album": {"id": 789}}]} if path == "/song/detail" else {"code": 200}
+    )
+
+    await handler._scrobble(_report(uri=f"{INSTANCE_A}://track/42"))
+
+    scrobble = next(
+        call
+        for call in providers[INSTANCE_A].api_client.get.await_args_list
+        if call.args[0] == "/scrobble"
+    )
+    assert scrobble.kwargs["params"]["sourceid"] == "789"
+
+
 async def test_hook_reports_to_the_account_of_the_playing_user(
     mass: Mock, providers: dict[str, Mock]
 ) -> None:

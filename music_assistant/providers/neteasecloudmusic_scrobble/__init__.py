@@ -207,7 +207,8 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             songs = payload["data"].get("songs")
         source_id: str | None = None
         if isinstance(songs, list) and songs and isinstance(songs[0], dict):
-            album = songs[0].get("al")
+            # compatible NetEase API backends return the album as "album" instead of "al"
+            album = songs[0].get("al") or songs[0].get("album")
             if isinstance(album, dict) and album.get("id"):
                 source_id = str(album["id"])
         if source_id is not None:
