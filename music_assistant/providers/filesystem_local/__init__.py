@@ -3935,13 +3935,13 @@ class LocalFileSystemProvider(MusicProvider):
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 temp_fd = os.open(temp_name, flags, 0o644, dir_fd=dir_fd)
                 try:
-                    if existing is not None:
-                        # keep owner and mode of the file being replaced; a non-root server
-                        # cannot change the owner, which is no worse than before
-                        with contextlib.suppress(PermissionError):
-                            os.fchown(temp_fd, existing.st_uid, existing.st_gid)
-                        os.fchmod(temp_fd, stat.S_IMODE(existing.st_mode))
                     with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                        if existing is not None:
+                            # keep owner and mode of the file being replaced; a non-root
+                            # server cannot change the owner, which is no worse than before
+                            with contextlib.suppress(PermissionError):
+                                os.fchown(_file.fileno(), existing.st_uid, existing.st_gid)
+                            os.fchmod(_file.fileno(), stat.S_IMODE(existing.st_mode))
                         _file.write(data)
                     os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
                 except BaseException:
