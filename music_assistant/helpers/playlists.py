@@ -53,8 +53,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
-# mirrors builtin's REMOTE_IMAGE_PREFIXES, which cannot be imported here (builtin imports us)
-_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
+# the only image references a playlist file may contribute: fetched over http(s) or inline
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
