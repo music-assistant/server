@@ -146,6 +146,15 @@ async def test_info_measures_directories_for_admins_only(
     assert request_dir_sizes.called is measures
 
 
+@pytest.mark.usefixtures("mount_table")
+async def test_setup_does_not_measure_directories(storage: StorageController) -> None:
+    """The data and cache directories are measured on request, not at start."""
+    with patch.object(storage, "_request_dir_sizes") as request_dir_sizes:
+        await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+
+    request_dir_sizes.assert_not_called()
+
+
 def test_info_serializes_to_the_contract() -> None:
     """The info is sent with every field of the contract, null where there is no value."""
     location = make_location("/media/nas", kind=StorageKind.NETWORK_SHARE)

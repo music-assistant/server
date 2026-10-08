@@ -168,7 +168,7 @@ class StorageController(CoreController):
         await self._resolve_server_folders()
         # the mount table only: a location is probed once a caller needs its state
         await self._periodic_refresh()
-        self._request_dir_sizes()
+        # the directories are measured once the Storage page asks, as they still fill up at start
         self.mass.create_task(self._setup_network_shares(), task_id=SHARES_SETUP_TASK_ID)
 
     async def close(self) -> None:
