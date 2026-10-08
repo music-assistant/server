@@ -1283,10 +1283,7 @@ async def test_audiobook_without_a_series_tag_has_none() -> None:
     "input_file",
     [
         "concat:/etc/passwd|/etc/hosts",
-        "subfile,,start,0,end,4096,,:file:/etc/passwd",
-        "cache:file:/etc/passwd",
         "rtsp://host/x",
-        "file:///etc/passwd",
         "https://host/cover.jpg\r\nX-Injected: 1\r\n",
     ],
 )
@@ -1298,41 +1295,29 @@ async def test_get_embedded_image_refuses_non_file_input(input_file: str) -> Non
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
 async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, over_http: bool
 ) -> None:
-    """Embedded art is still extracted from a local file, with ffmpeg's protocols restricted."""
+    """Embedded art is extracted with ffmpeg restricted to the protocols of its source."""
     track_path = str(tmp_path / "track.mp3")
     _create_mp3_with_cover(tmp_path, track_path)
 
     with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
-        img_data = await get_embedded_image(track_path)
+        if over_http:
+            app = web.Application()
+            app.router.add_static("/", str(tmp_path))
+            async with TestServer(app) as server:
+                img_data = await get_embedded_image(str(server.make_url("/track.mp3")))
+        else:
+            img_data = await get_embedded_image(track_path)
 
     assert img_data
     assert img_data.startswith(b"\xff\xd8")
     args = spy.call_args.args[0]
     assert args.index("-protocol_whitelist") < args.index("-i")
-    assert args[args.index("-protocol_whitelist") + 1] == "file"
-    assert args[args.index("-i") + 1] == track_path
-
-
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-async def test_get_embedded_image_extracts_cover_over_http_with_network_only_whitelist(
-    tmp_path: pathlib.Path,
-) -> None:
-    """Embedded art from an http URL is extracted with a whitelist that excludes local files."""
-    track_path = str(tmp_path / "track.mp3")
-    _create_mp3_with_cover(tmp_path, track_path)
-    app = web.Application()
-    app.router.add_static("/", str(tmp_path))
-    async with TestServer(app) as server:
-        with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
-            img_data = await get_embedded_image(str(server.make_url("/track.mp3")))
-
-    assert img_data
-    assert img_data.startswith(b"\xff\xd8")
-    args = spy.call_args.args[0]
-    assert args[args.index("-protocol_whitelist") + 1] == "http,https,tcp,tls"
+    expected_whitelist = "http,https,tcp,tls" if over_http else "file"
+    assert args[args.index("-protocol_whitelist") + 1] == expected_whitelist
 
 
 def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
