@@ -173,3 +173,19 @@ async def test_resolve_image_is_none_without_a_cover(
     _answer(provider, 404)
 
     assert await provider.resolve_image("mbid") is None
+
+
+async def test_resolve_image_passes_the_album_metadata_cover_url_through(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """The cover URL album metadata stores as the image path resolves to itself, unasked."""
+    head = _answer(provider, 307, IMAGE_URL)
+    album = MagicMock()
+    album.get_external_id.return_value = "mbid"
+    metadata = await provider.get_album_metadata(album)
+    assert metadata is not None
+    assert metadata.images is not None
+    head.reset_mock()
+
+    assert await provider.resolve_image(metadata.images[0].path) == IMAGE_URL
+    head.assert_not_called()

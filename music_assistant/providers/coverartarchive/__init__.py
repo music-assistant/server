@@ -87,9 +87,12 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         """
         Resolve the image of a release group, given as the image path, to its front cover URL.
 
-        :param path: MusicBrainz release group ID.
+        :param path: MusicBrainz release group ID, or a cover URL that was already resolved.
         :return: The cover URL, or None when the archive has no cover for the release group.
         """
+        # album metadata stores the cover URL itself as the path, it needs no lookup
+        if path.startswith(("http://", "https://")):
+            return path
         return await self.get_release_group_cover_url(path)
 
     @use_cache(86400 * 30)
