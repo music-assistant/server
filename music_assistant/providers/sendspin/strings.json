@@ -9,9 +9,9 @@
     },
     "preferred_sendspin_format": {
       "label": "Preferred audio format",
-      "description": "Select the audio format to use for playback on this player.",
+      "description": "Select the audio format to use for playback on this player. Automatic uses the player's preferred codec, at the rate set by \"Sample rate selection\".",
       "options": {
-        "automatic": "Automatic (let client decide)"
+        "automatic": "Automatic (player's preferred codec)"
       }
     },
     "flow_mode_sample_rate": {
