@@ -387,9 +387,9 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked albums: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
 
-        if result is None:
+        if not result:
             return []
-        album_ids = [
+        album_ids: list[str | int] = [
             str(like.album.id) for like in result if like.album is not None and like.album.id
         ]
         if not album_ids:
@@ -421,7 +421,7 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_likes_artists())
-            if result is None:
+            if not result:
                 return []
             return [like.artist for like in result if like.artist is not None]
         except BadRequestError as err:
@@ -439,7 +439,7 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_playlists_list())
-            if result is None:
+            if not result:
                 return []
             return list(result)
         except BadRequestError as err:
@@ -457,7 +457,7 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_likes_playlists())
-            if result is None:
+            if not result:
                 return []
             playlists = []
             for like in result:
@@ -874,7 +874,8 @@ class KionMusicClient:
 
         async def _do_request(c: ClientAsync) -> dict[str, Any] | None:
             url, params = _build_signed_params(c)
-            return await c._request.get(url, params=params)  # type: ignore[no-any-return]
+            result = await c._request.get(url, params=params)
+            return result if isinstance(result, dict) else None
 
         try:
             result = await self._call_with_retry(_do_request)
@@ -971,7 +972,7 @@ class KionMusicClient:
         :return: List of album objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.albums(album_ids))
+            result = await self._call_with_retry(lambda c: c.albums(list(album_ids)))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching albums: %s", err)
@@ -985,7 +986,7 @@ class KionMusicClient:
         :return: List of playlist objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.playlists_list(playlist_ids))
+            result = await self._call_with_retry(lambda c: c.playlists_list(list(playlist_ids)))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching playlists: %s", err)
@@ -1088,7 +1089,8 @@ class KionMusicClient:
 
         async def _get(c: ClientAsync) -> dict[str, Any]:
             url = f"{c.base_url}/landing-blocks/{block}"
-            return await c._request.get(url)  # type: ignore[no-any-return]
+            result = await c._request.get(url)
+            return result if isinstance(result, dict) else {}
 
         try:
             result = await self._call_with_retry(_get)
