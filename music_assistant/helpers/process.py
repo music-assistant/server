@@ -33,9 +33,10 @@ PIPE_DRAIN_TIMEOUT = 5
 
 
 def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
+    """Get environment for subprocess, without LD_PRELOAD or the Supervisor tokens."""
     result = dict(os.environ)
-    result.pop("LD_PRELOAD", None)
+    for key in ("LD_PRELOAD", "SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        result.pop(key, None)
     if env:
         result.update(env)
     return result

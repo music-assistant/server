@@ -33,3 +33,8 @@ def is_safe_path(path: str, base_path: str | None = None) -> bool:
 def is_safe_name(name: str) -> bool:
     """Check if name is safe for use (no path separators or traversal components)."""
     return not ("/" in name or "\\" in name or ".." in name)
+
+
+def has_control_chars(value: str) -> bool:
+    """Check if value contains a CR, LF, NUL or any other C0 control character."""
+    return any(ord(char) < 0x20 for char in value)

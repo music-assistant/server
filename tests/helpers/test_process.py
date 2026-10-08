@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from music_assistant.helpers import process as process_module
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.process import AsyncProcess, get_subprocess_env
 
 # Comfortably beyond the OS pipe capacity plus asyncio's default high-water mark,
 # so the bytes are guaranteed to still be queued in our own write buffer.
@@ -359,3 +359,18 @@ async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
             await proc.close()
 
     assert proc.returncode is not None
+
+
+def test_get_subprocess_env_drops_supervisor_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child processes do not inherit the Supervisor tokens but keep everything else."""
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
+    monkeypatch.setenv("MA_TEST_KEEP", "kept")
+
+    env = get_subprocess_env({"MA_TEST_OVERRIDE": "1", "MA_TEST_KEEP": "overridden"})
+
+    assert "SUPERVISOR_TOKEN" not in env
+    assert "HASSIO_TOKEN" not in env
+    assert env["MA_TEST_KEEP"] == "overridden"
+    assert env["MA_TEST_OVERRIDE"] == "1"
+    assert get_subprocess_env()["MA_TEST_KEEP"] == "kept"
