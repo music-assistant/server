@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from aiohttp import web
 from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
@@ -36,6 +40,10 @@ CACHE_TTL = 86400.0
 # Signals whose weight may be tuned per call; clap joins them once the
 # audio-analysis pipeline carries the embedding (models/audio_analysis.py).
 CLAP_SIGNAL = "clap"
+
+# Route the injected UI script is served from, and the tag spliced into index.html.
+UI_ROUTE = "/smart-dj-ui.js"
+UI_SCRIPT_TAG = '<script src="/smart-dj-ui.js" defer></script>'
 
 
 def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
@@ -143,7 +151,7 @@ class SmartDJProvider(PluginProvider):
             genre=signal("genre"),
             artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
             momentum=signal("momentum"),
-            clap=signal("clap"),
+            clap=signal(CLAP_SIGNAL),
             bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
             bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
             max_bpm_jump=float(raw["max_bpm_jump"])
@@ -291,6 +299,10 @@ class SmartDJProvider(PluginProvider):
         self._session: aiohttp.ClientSession | None = None
         self._handles: list[Any] = []
         self._cache_file = Path(self.mass.storage_path) / "smart_dj" / "analysis_cache.json"
+        # UI injection state: the patched index.html and the restored original.
+        self._tmp_index_path: str | None = None
+        self._orig_index_path: str | None = None
+        self._unregister_ui_route: Any = None
 
     async def loaded_in_mass(self) -> None:
         """Register the Smart DJ API commands and load the persistent cache."""
@@ -310,9 +322,75 @@ class SmartDJProvider(PluginProvider):
             self._handles.append(
                 self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Serve the UI script and inject its tag into the served index.html."""
+        ui_js_path = os.path.join(os.path.dirname(__file__), "ui.js")
+        if not os.path.exists(ui_js_path):
+            return
+        # Read the script once; serve it from memory on every request.
+        try:
+            with open(ui_js_path, encoding="utf-8") as ui_file:
+                js_content = ui_file.read()
+        except OSError:
+            return
+
+        async def _serve_js(_request: web.Request) -> web.Response:
+            return web.Response(
+                text=js_content,
+                content_type="application/javascript",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+        with suppress(RuntimeError):  # already registered on provider reload
+            self._unregister_ui_route = self.mass.webserver.register_dynamic_route(
+                UI_ROUTE, _serve_js, "GET"
+            )
+
+        # Inject the script tag by serving a patched copy of index.html.
+        orig = getattr(self.mass.webserver, "_index_path", None)
+        if not orig or not os.path.exists(orig):
+            return
+        self._orig_index_path = orig
+        try:
+            with open(orig, encoding="utf-8") as index_file:
+                html = index_file.read()
+        except OSError:
+            return
+        if UI_ROUTE in html:
+            return  # already injected
+        html = html.replace("</body>", f"{UI_SCRIPT_TAG}</body>")
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix=".html",
+                delete=False,
+                prefix="ma_smart_dj_",
+            ) as tmp:
+                tmp.write(html)
+                self._tmp_index_path = tmp.name
+            self.mass.webserver._index_path = self._tmp_index_path
+        except OSError as err:
+            self.logger.warning("Could not create patched index.html: %s", err)
+
+    def _teardown_ui(self) -> None:
+        """Restore the original index.html and drop the dynamic route."""
+        if self._orig_index_path:
+            self.mass.webserver._index_path = self._orig_index_path
+            self._orig_index_path = None
+        if self._tmp_index_path:
+            with suppress(OSError):
+                Path(self._tmp_index_path).unlink(missing_ok=True)
+            self._tmp_index_path = None
+        if callable(self._unregister_ui_route):
+            self._unregister_ui_route()
+            self._unregister_ui_route = None
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Close the HTTP client and unregister commands."""
+        """Close the HTTP client, drop the UI, and unregister commands."""
+        self._teardown_ui()
         for handle in self._handles:
             handle()
         self._handles.clear()
