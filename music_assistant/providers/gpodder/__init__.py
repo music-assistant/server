@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from itertools import islice
@@ -96,8 +95,9 @@ CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 # category 0 holds the individual parsed podcasts, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_OTHER = 1
-# tuple of two ints, timestamp_subscriptions and timestamp_actions; the actions timestamp marks
-# what the sync wrote to the playlog, the previous key ("timestamp") was also moved by listings
+# list of ints: timestamp_subscriptions, timestamp_actions and the episode limit of that sync;
+# the actions timestamp marks what the sync wrote to the playlog, the previous key ("timestamp")
+# was also moved by listings
 CACHE_KEY_TIMESTAMP = "sync_timestamps"
 CACHE_KEY_FEEDS = "feeds"  # list[str] : rss feed urls of the last completed sync
 
@@ -181,7 +181,10 @@ class GPodder(MusicProvider):
             self.timestamp_subscriptions: int = 0
             self.timestamp_actions: int = 0
         else:
-            self.timestamp_subscriptions, self.timestamp_actions = timestamps
+            self.timestamp_subscriptions, self.timestamp_actions = timestamps[:2]
+        # a changed episode limit can expose episodes whose actions the sync skipped
+        if timestamps is None or len(timestamps) < 3 or timestamps[2] != self.max_episodes:
+            self.timestamp_actions = 0
 
         self.logger.debug(
             "Our timestamps are (subscriptions, actions)  (%s, %s)",
@@ -438,11 +441,11 @@ class GPodder(MusicProvider):
     async def _refresh_feeds(
         self, feed_urls: list[str]
     ) -> AsyncGenerator[tuple[str, dict[str, Any]]]:
-        """Refresh the cached feeds a few at a time, yielding them in the given order."""
+        """Refresh the cached feeds a few at a time, yielding each as soon as it is refreshed."""
 
-        def refresh(feed_url: str) -> tuple[str, asyncio.Task[dict[str, Any]]]:
+        def refresh(feed_url: str) -> asyncio.Task[dict[str, Any]]:
             # tracked by mass, so a shutdown cancels it; its errors are handled below
-            return feed_url, self.mass.create_task(
+            return self.mass.create_task(
                 refresh_cached_podcast(
                     mass=self.mass,
                     provider_instance_id=self.instance_id,
@@ -455,21 +458,22 @@ class GPodder(MusicProvider):
 
         # only a few refreshed feeds are held at a time, however large the library
         pending = iter(feed_urls)
-        refreshing = deque(refresh(x) for x in islice(pending, FEED_REFRESH_CONCURRENCY))
+        refreshing = {refresh(x): x for x in islice(pending, FEED_REFRESH_CONCURRENCY)}
         try:
             while refreshing:
-                feed_url, task = refreshing.popleft()
-                parsed_podcast: dict[str, Any] | None = None
-                try:
-                    parsed_podcast = await task
-                except MediaNotFoundError as err:
-                    self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
-                if (next_feed_url := next(pending, None)) is not None:
-                    refreshing.append(refresh(next_feed_url))
-                if parsed_podcast is not None:
+                done, _ = await asyncio.wait(refreshing, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    feed_url = refreshing.pop(task)
+                    if (next_feed_url := next(pending, None)) is not None:
+                        refreshing[refresh(next_feed_url)] = next_feed_url
+                    try:
+                        parsed_podcast = task.result()
+                    except MediaNotFoundError as err:
+                        self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
+                        continue
                     yield feed_url, parsed_podcast
         finally:
-            for _, task in refreshing:
+            for task in refreshing:
                 task.cancel()
 
     async def _get_unsynced_actions(self, podcast_id: str) -> ActionIndex:
@@ -518,7 +522,7 @@ class GPodder(MusicProvider):
             key=CACHE_KEY_TIMESTAMP,
             provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
-            data=[self.timestamp_subscriptions, self.timestamp_actions],
+            data=[self.timestamp_subscriptions, self.timestamp_actions, self.max_episodes],
         )
 
     async def _cache_set_feeds(self) -> None:

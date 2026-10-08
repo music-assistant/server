@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -151,25 +151,88 @@ async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) ->
     ]
 
 
+@pytest.mark.parametrize(
+    ("stored", "full_sync"),
+    [
+        (None, True),
+        # stored before the episode limit was kept with the timestamps
+        ([5, 999], True),
+        ([5, 999, 2], False),
+    ],
+)
+async def test_a_changed_episode_limit_brings_in_the_skipped_history(
+    provider: GPodder, stored: list[int] | None, full_sync: bool
+) -> None:
+    """Raising the limit exposes episodes whose actions an earlier sync skipped."""
+    cache: dict[str, Any] = {"sync_timestamps": stored, "feeds": [FEED]}
+    mass = cast("Mock", provider.mass)
+    mass.cache.get = AsyncMock(side_effect=lambda key, **_kwargs: cache.get(key))
+    mass.cache.set = AsyncMock(side_effect=lambda key, data, **_kwargs: cache.update({key: data}))
+    config = {"url_nc": "https://nc.example.com", "token": "token", "max_num_episodes": 2}
+    cast("Mock", provider.config).get_value.side_effect = lambda key, default=None: config.get(
+        key, default
+    )
+    history = [
+        EpisodeActionPlay(
+            podcast=FEED,
+            episode="https://example.com/ep3.mp3",
+            position=60,
+            total=1200,
+            timestamp="2024-01-05T10:00:00",
+        )
+    ]
+
+    async def refresh(*, max_episodes: int, **_kwargs: Any) -> dict[str, Any]:
+        return {**PODCAST, "episodes": PODCAST["episodes"][: max_episodes or None]}
+
+    async def sync() -> AsyncMock:
+        await provider.handle_async_init()
+        _subscribe(provider, [FEED])
+        get_actions = AsyncMock(side_effect=lambda since=0: (history if since == 0 else [], 999))
+        cast("Mock", provider._client).get_episode_actions = get_actions
+        with patch("music_assistant.providers.gpodder.refresh_cached_podcast", side_effect=refresh):
+            _ = [podcast async for podcast in provider.get_library_podcasts()]
+        return get_actions
+
+    get_actions = await sync()
+    assert get_actions.call_args_list == [call(since=0 if full_sync else 999)]
+    played = cast("Mock", provider.mass.music).mark_item_played
+    assert played.call_count == 0
+
+    config["max_num_episodes"] = 0
+    await sync()
+    assert [c.args[0].item_id for c in played.call_args_list] == [f"{FEED} guid-3"]
+    assert cache["sync_timestamps"] == [5, 999, 0]
+
+
 async def test_sync_refreshes_several_feeds_at_once(provider: GPodder) -> None:
-    """Feeds are refreshed concurrently up to the limit, and a broken one is skipped."""
+    """Up to the limit refresh at once, a slow feed holds up no other, a broken one is skipped."""
     _serve(provider)
     feeds = [f"https://example.com/{number}.xml" for number in range(7)]
     _subscribe(provider, feeds)
-    running = peak = 0
+    running = peak = started = finished = 0
+    others_finished = asyncio.Event()
 
     async def refresh(*, feed_url: str, **_kwargs: Any) -> dict[str, Any]:
-        nonlocal running, peak
+        nonlocal running, peak, started, finished
         running += 1
+        started += 1
         peak = max(peak, running)
-        await asyncio.sleep(0.01)
+        if started == 1:
+            await others_finished.wait()
+        else:
+            await asyncio.sleep(0.01)
+            finished += 1
+            if finished == len(feeds) - 1:
+                others_finished.set()
         running -= 1
         if feed_url == feeds[3]:
             raise MediaNotFoundError("gone")
         return PODCAST
 
     with patch("music_assistant.providers.gpodder.refresh_cached_podcast", side_effect=refresh):
-        podcasts = [podcast async for podcast in provider.get_library_podcasts()]
+        async with asyncio.timeout(1):
+            podcasts = [podcast async for podcast in provider.get_library_podcasts()]
 
     assert sorted(podcast.item_id for podcast in podcasts) == sorted(set(feeds) - {feeds[3]})
     assert peak == FEED_REFRESH_CONCURRENCY
