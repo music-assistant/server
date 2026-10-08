@@ -140,7 +140,7 @@ async def test_info_measures_directories_for_admins_only(
     """Only a caller that sees the data and cache rows makes the server measure them."""
     set_current_user(User(user_id="someone", username="someone", role=role))
 
-    with patch.object(storage, "_request_dir_sizes", return_value=None) as request_dir_sizes:
+    with patch.object(storage, "_request_dir_sizes") as request_dir_sizes:
         await storage.get_info()
 
     assert request_dir_sizes.called is measures
@@ -148,18 +148,32 @@ async def test_info_measures_directories_for_admins_only(
 
 @pytest.mark.usefixtures("mount_table", "probes")
 async def test_first_info_waits_for_the_directory_sizes(storage: StorageController) -> None:
-    """The first answer to an admin already holds the measured sizes."""
+    """Every first answer to an admin, also one asked at the same time, holds the sizes."""
     set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
 
-    async def slow_size(_path: str, _exclude: tuple[str, ...] = ()) -> float:
-        await asyncio.sleep(0.1)
-        return 1.5
+    with patch.object(controller_module, "get_folder_size", _slow_size):
+        answers = await asyncio.gather(storage.get_info(), storage.get_info())
 
-    with patch.object(controller_module, "get_folder_size", slow_size):
-        info = await storage.get_info()
+    for info in answers:
+        data = next(loc for loc in info.locations if loc.usage == StorageUsage.DATA)
+        assert data.used_space_gb == 1.5
 
-    data = next(loc for loc in info.locations if loc.usage == StorageUsage.DATA)
-    assert data.used_space_gb == 1.5
+
+@pytest.mark.usefixtures("mount_table", "probes")
+async def test_cancelled_first_info_keeps_measuring(storage: StorageController) -> None:
+    """A first caller that goes away does not stop the measurement."""
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+
+    with patch.object(controller_module, "get_folder_size", _slow_size):
+        request = asyncio.create_task(storage.get_info())
+        await asyncio.sleep(0.05)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert storage._dir_sizes_task is not None
+        await storage._dir_sizes_task
+
+    assert storage._dir_sizes[StorageUsage.DATA] == 1.5
 
 
 @pytest.mark.usefixtures("mount_table")
@@ -459,3 +473,9 @@ async def test_sizes_measured_during_a_probe_are_kept(
     await info
 
     assert [loc.used_space_gb for loc in storage.get_locations()] == [2.0, 2.0]
+
+
+async def _slow_size(_path: str, _exclude: tuple[str, ...] = ()) -> float:
+    """Return a fixed folder size after a short delay."""
+    await asyncio.sleep(0.1)
+    return 1.5
