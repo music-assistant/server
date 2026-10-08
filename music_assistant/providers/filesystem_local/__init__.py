@@ -2361,6 +2361,7 @@ class LocalFileSystemProvider(MusicProvider):
         # process deleted tracks/playlists
         album_ids = set()
         artist_ids = set()
+        surviving_track_ids: set[str] = set()
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
@@ -2408,11 +2409,15 @@ class LocalFileSystemProvider(MusicProvider):
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
+                elif is_track(library_item):
+                    surviving_track_ids.add(library_item.item_id)
                 # the library item may also be mapped to other providers,
                 # so only drop this file's mapping
                 await controller.remove_provider_mapping(
                     library_item.item_id, self.instance_id, file_path
                 )
+        for track_id in surviving_track_ids:
+            await self._reread_renamed_track(track_id)
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2423,6 +2428,31 @@ class LocalFileSystemProvider(MusicProvider):
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
+
+    async def _reread_renamed_track(self, track_id: str) -> None:
+        """
+        Read a renamed or moved track's file again, so the old file's tags are dropped.
+
+        Applies to a library track that is left with a single file of this provider after
+        another of its files was removed. The remaining file then replaces the stored artists
+        and album, the same as when a file is retagged in place.
+
+        :param track_id: The library id of the track.
+        """
+        try:
+            library_item = await self.mass.music.tracks.get_library_item(track_id)
+        except MediaNotFoundError:
+            return
+        mappings = list(library_item.provider_mappings)
+        if len(mappings) != 1 or mappings[0].provider_instance != self.instance_id:
+            return
+        try:
+            track = await self.get_track(mappings[0].item_id)
+        except MusicAssistantError as err:
+            # the file was read earlier in this sync, so a failure here leaves it as stored
+            self.logger.warning("Could not read %s again: %s", mappings[0].item_id, err)
+            return
+        await self.mass.music.tracks.add_item_to_library(track, overwrite_existing=True)
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""

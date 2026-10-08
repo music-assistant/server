@@ -174,29 +174,6 @@ def provider_mappings_for_update(
     }
 
 
-def update_moves_single_source_item(
-    stored: Iterable[ProviderMapping], update: Iterable[ProviderMapping]
-) -> bool:
-    """
-    Return True when an update gives a library item a new id on the only provider it is from.
-
-    This is what a renamed or moved file looks like: the stored data came from that one
-    provider alone, so the update may replace what the provider reports (such as the
-    artists) instead of being merged with it.
-
-    :param stored: Provider mappings currently stored for the library item.
-    :param update: Provider mappings of the item as delivered by the provider.
-    """
-    stored = list(stored)
-    update = list(update)
-    if not stored or not update:
-        return False
-    if len({mapping.provider_instance for mapping in (*stored, *update)}) != 1:
-        return False
-    stored_ids = {mapping.item_id for mapping in stored}
-    return any(mapping.item_id not in stored_ids for mapping in update)
-
-
 def preferred_thumb(
     images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
 ) -> dict[str, Any] | None:

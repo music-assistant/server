@@ -47,7 +47,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     search_name_match_clause,
-    update_moves_single_source_item,
 )
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
@@ -1583,11 +1582,8 @@ class TracksController(MediaControllerBase[Track]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set track artist(s)
-        replace_artists = overwrite or update_moves_single_source_item(
-            cur_item.provider_mappings, update.provider_mappings
-        )
-        artists = update.artists if replace_artists else cur_item.artists + update.artists
-        await self._set_track_artists(db_id, artists, overwrite=overwrite, replace=replace_artists)
+        artists = update.artists if overwrite else cur_item.artists + update.artists
+        await self._set_track_artists(db_id, artists, overwrite=overwrite)
         # update/set track album
         if update.album and set_album:
             await self._set_track_album(
@@ -1653,18 +1649,12 @@ class TracksController(MediaControllerBase[Track]):
         db_id: int,
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
-        replace: bool = False,
     ) -> None:
         """
         Store Track Artists.
 
         An empty set of artists never clears the stored rows: a track without any
         artist can not be played or resolved.
-
-        :param db_id: The library id of the track.
-        :param artists: The artists to link to the track.
-        :param overwrite: Replace the track's artist links and overwrite the artists themselves.
-        :param replace: Replace the track's artist links, but keep the stored artists as they are.
         """
         all_artists = list(artists)
         if not all_artists:
@@ -1673,8 +1663,8 @@ class TracksController(MediaControllerBase[Track]):
                 # so keep the stored rows and make the attempt visible
                 self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
             return
-        if overwrite or replace:
-            # clear the track_artists table first
+        if overwrite:
+            # on overwrite, clear the track_artists table first
             await self.mass.music.database.delete(
                 DB_TABLE_TRACK_ARTISTS,
                 {
