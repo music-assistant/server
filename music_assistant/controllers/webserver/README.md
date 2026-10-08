@@ -53,6 +53,7 @@ Handles all authentication and user management:
 - `roles` - Custom user roles (the builtin roles are defined in code and never stored)
 - `user_auth_providers` - Links users to authentication providers (many-to-many)
 - `auth_tokens` - Access tokens with expiration tracking
+- `join_codes` - Short codes (QR code or link sign-in) that are exchanged for an access token
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
@@ -61,12 +62,17 @@ Handles all authentication and user management:
 
 **Token Types:**
 - **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Guest tokens**: Short-lived tokens of guest users get a fixed 1-day expiration instead, without renewal
 - **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
+
+Tokens are HS256-signed JWTs ([helpers/jwt_auth.py](../../helpers/jwt_auth.py)), each backed by
+a row in `auth_tokens`. That row, not the JWT payload, is the source of truth for expiration
+and revocation.
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
 - Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
-- Secure token generation with secrets.token_urlsafe()
+- Tokens signed with a random per-server secret
 - WebSocket disconnect on token revocation
 - Session management and cleanup
 
@@ -140,7 +146,7 @@ Manages individual WebSocket connections:
 
 **Helpers ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
 - Request authentication for HTTP endpoints, called per handler (there is no aiohttp middleware)
-- User context management (thread-local storage)
+- User context management (contextvars)
 - Ingress detection (Home Assistant add-on)
 - Token extraction from Authorization header
 
@@ -182,25 +188,19 @@ Manages individual WebSocket connections:
 
 ### Login Flow (Home Assistant OAuth)
 
-1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...`
-2. **Redirect to HA**: User is redirected to Home Assistant OAuth consent page
+1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...` (or the
+   `auth/authorization_url` command) answers with the Home Assistant `authorization_url`
+2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant
 3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
-6. **Token Generation**: MA token created and returned via redirect with `code` parameter
-7. **Client Handling**: Client extracts token from URL and stores it
-
-### Remote Client OAuth Flow
-
-For remote clients (PWA over WebRTC), OAuth requires special handling since redirect URLs can't point to localhost:
-
-1. **Request Session**: Remote client calls `auth/authorization_url` with `for_remote_client=true`
-2. **Session Created**: Server creates a pending OAuth session and returns session_id and auth URL
-3. **User Opens Browser**: Client opens auth URL in system browser
-4. **OAuth Flow**: User completes OAuth in browser
-5. **Token Stored**: Server stores token in pending session (using special return URL format)
-6. **Polling**: Client polls `auth/oauth_status` with session_id
-7. **Token Retrieved**: Once complete, client receives token and can authenticate
+6. **Token Generation**: A short-lived MA token is created and the callback answers with
+   [oauth_callback.html](../../helpers/resources/oauth_callback.html), which carries the token and
+   the `return_url` with the token appended as `code` parameter
+7. **Client Handling**: The page asks for consent first when `return_url` is on an external
+   domain. A popup returning to the server's own origin posts the token to its opener (an
+   `oauth_success` message) and closes; otherwise the page navigates to `return_url`, where the
+   client reads the token from the `code` parameter
 
 ### Ingress Authentication (Home Assistant Add-on)
 
@@ -418,10 +418,10 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Authentication
 
 - **Mandatory authentication**: All API access requires authentication (except Ingress)
-- **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
+- **Signed tokens**: HS256 JWTs signed with a random per-server secret, each backed by an `auth_tokens` row so it can be revoked
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
+- **Token expiration**: Short-lived (30 days sliding, 90 days max), guest (1 day) and long-lived (1 year) tokens supported
 
 ### Authorization
 
@@ -447,8 +447,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 ### Data Protection
 
-- **Token storage**: Only hashed tokens stored in database
-- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
+- **Token storage**: `auth_tokens` stores only a SHA-256 hash of each token; the Home Assistant
+  integration token is kept in plain text in `settings`, so it can be announced again
+- **Password storage**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
 - **Session cleanup**: Expired tokens automatically deleted
 - **User disable**: Immediate disconnect of all user sessions
 
@@ -457,9 +458,15 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Adding New Authentication Providers
 
 1. Create provider class inheriting from `LoginProvider` in [helpers/auth_providers.py](helpers/auth_providers.py)
-2. Implement required methods: `authenticate()`, `get_authorization_url()` (if OAuth), `handle_oauth_callback()` (if OAuth)
-3. Register provider in `AuthenticationManager._setup_login_providers()`
-4. Add provider configuration to webserver config entries if needed
+2. Implement the abstract members: the `provider_type` property (its `AuthProviderType`), the
+   `requires_redirect` property and `authenticate(credentials)`, which returns an `AuthResult`
+3. Override the optional members where needed: `get_authorization_url(redirect_uri, return_url)`
+   and `handle_oauth_callback(code, state, redirect_uri)` for a redirect (OAuth) provider, and
+   `allow_self_registration` (default `False`) for one that may create an account for a user
+   signing in for the first time
+4. Register provider in `AuthenticationManager._setup_login_providers()`, passing its
+   configuration as a `LoginProviderConfig` (subclass it for provider-specific keys, see
+   `HomeAssistantProviderConfig`)
 
 ### Adding New API Endpoints
 
