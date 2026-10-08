@@ -17,6 +17,7 @@ from music_assistant.helpers.process import (
     AsyncProcess,
     check_output,
     collect_child_process_counts,
+    get_subprocess_env,
     parse_child_process_name,
 )
 
@@ -424,6 +425,21 @@ async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> Non
             return
         await asyncio.sleep(0.05)
     pytest.fail("the child process outlived the timeout")
+
+
+def test_get_subprocess_env_drops_supervisor_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child processes do not inherit the Supervisor tokens but keep everything else."""
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
+    monkeypatch.setenv("MA_TEST_KEEP", "kept")
+
+    env = get_subprocess_env({"MA_TEST_OVERRIDE": "1", "MA_TEST_KEEP": "overridden"})
+
+    assert "SUPERVISOR_TOKEN" not in env
+    assert "HASSIO_TOKEN" not in env
+    assert env["MA_TEST_KEEP"] == "overridden"
+    assert env["MA_TEST_OVERRIDE"] == "1"
+    assert get_subprocess_env()["MA_TEST_KEEP"] == "kept"
 
 
 def _is_running(pid: int) -> bool:
