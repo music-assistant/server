@@ -1895,6 +1895,7 @@ def _flow_handler(
     mass.player_queues.queue_data.return_value = SimpleNamespace(
         session_id="session-1", flow_mode_stream_log=[]
     )
+    mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_raw_player_config_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
