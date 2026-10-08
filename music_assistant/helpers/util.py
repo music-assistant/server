@@ -46,7 +46,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
-from music_assistant.helpers.process import check_output
+from music_assistant.helpers.process import check_output, get_subprocess_env
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -480,6 +480,7 @@ async def _run_ml_inference_probe() -> int | None:
             _ml_inference_probe.__name__,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=get_subprocess_env(),
         )
     except OSError as err:
         LOGGER.warning("Could not start the ML inference capability probe: %s", err)

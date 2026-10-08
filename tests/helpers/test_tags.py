@@ -3,21 +3,26 @@
 import pathlib
 import shutil
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mutagen
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from music_assistant_models.errors import InvalidDataError
 from mutagen.id3 import ID3, UFID
+from PIL import Image
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.tags import (
     _parse_apev2_tags,
     _parse_id3_tags,
     _parse_mp4_tags,
     _parse_vorbis_tags,
     clean_mbid,
+    get_embedded_image,
     parse_tags_mutagen,
     split_artists,
     write_replaygain_track_gain,
@@ -56,12 +61,17 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     )
     check_output = MagicMock(side_effect=process_error)
     monkeypatch.setattr(subprocess, "check_output", check_output)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
 
     with pytest.raises(InvalidDataError) as err:
         tags.parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    kwargs = check_output.call_args.kwargs
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert "SUPERVISOR_TOKEN" not in kwargs["env"]
+    assert "HASSIO_TOKEN" not in kwargs["env"]
     args = check_output.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
 
@@ -928,3 +938,80 @@ async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> No
 
     _tags = await tags.async_parse_tags(str(dest))
     assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID
+
+
+@pytest.mark.parametrize(
+    "input_file",
+    [
+        "concat:/etc/passwd|/etc/hosts",
+        "rtsp://host/x",
+        "https://host/cover.jpg\r\nX-Injected: 1\r\n",
+    ],
+)
+async def test_get_embedded_image_refuses_non_file_input(input_file: str) -> None:
+    """Anything other than an existing local file or a clean http(s) URL never reaches ffmpeg."""
+    with patch("music_assistant.helpers.tags.AsyncProcess") as mock_process:
+        assert await get_embedded_image(input_file) is None
+    mock_process.assert_not_called()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
+    tmp_path: pathlib.Path, over_http: bool
+) -> None:
+    """Embedded art is extracted with ffmpeg restricted to the protocols of its source."""
+    track_path = str(tmp_path / "track.mp3")
+    _create_mp3_with_cover(tmp_path, track_path)
+
+    with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
+        if over_http:
+            app = web.Application()
+            app.router.add_static("/", str(tmp_path))
+            async with TestServer(app) as server:
+                img_data = await get_embedded_image(str(server.make_url("/track.mp3")))
+        else:
+            img_data = await get_embedded_image(track_path)
+
+    assert img_data
+    assert img_data.startswith(b"\xff\xd8")
+    args = spy.call_args.args[0]
+    assert args.index("-protocol_whitelist") < args.index("-i")
+    expected_whitelist = "http,https,tcp,tls" if over_http else "file"
+    assert args[args.index("-protocol_whitelist") + 1] == expected_whitelist
+
+
+def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
+    """Create a short mp3 file with a generated cover image embedded."""
+    cover_path = str(tmp_path / "cover.png")
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(cover_path, "PNG")
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-t",
+            "0.1",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-i",
+            cover_path,
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "libmp3lame",
+            "-c:v",
+            "mjpeg",
+            "-id3v2_version",
+            "3",
+            track_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
