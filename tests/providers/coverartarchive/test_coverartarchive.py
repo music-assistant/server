@@ -15,7 +15,6 @@ from tests.common import use_real_create_task
 
 COVER_URL = "https://coverartarchive.org/release-group/mbid/front-1200"
 IMAGE_URL = "https://archive.org/download/mbid-release/mbid-release-1_thumb1200.jpg"
-SMALL_IMAGE_URL = "https://archive.org/download/mbid-release/mbid-release-1_thumb500.jpg"
 
 
 @pytest.fixture
@@ -130,19 +129,6 @@ async def test_release_group_cover_url_retries_a_redirect_without_location(
     cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
 
 
-async def test_release_group_cover_url_falls_back_to_the_small_cover(
-    provider: CoverArtArchiveMetadataProvider,
-) -> None:
-    """Without a large cover, the small cover's redirect location is returned."""
-    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda url, **_kwargs: _response_cm(
-            _response(404) if url.endswith("front-1200") else _response(307, SMALL_IMAGE_URL)
-        )
-    )
-
-    assert await provider.get_release_group_cover_url("mbid") == SMALL_IMAGE_URL
-
-
 async def test_release_group_cover_url_takes_a_slot_of_the_shared_throttler(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
@@ -157,20 +143,17 @@ async def test_release_group_cover_url_takes_a_slot_of_the_shared_throttler(
     acquire.assert_called_once()
 
 
-async def test_release_group_cover_url_fallback_takes_a_slot_per_request(
+async def test_release_group_cover_url_without_a_cover_is_one_request(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
-    """Falling back from the large to the small cover is two archive requests, two slots."""
-    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda url, **_kwargs: _response_cm(
-            _response(404) if url.endswith("front-1200") else _response(200)
-        )
-    )
+    """A release group without a cover costs a single archive request, not one per size."""
+    head = _answer(provider, 404)
 
     with patch.object(provider.throttler, "acquire", wraps=provider.throttler.acquire) as acquire:
-        assert await provider.get_release_group_cover_url("mbid") == COVER_URL
+        assert await provider.get_release_group_cover_url("mbid") is None
 
-    assert acquire.call_count == 2
+    head.assert_called_once_with(COVER_URL, allow_redirects=False)
+    acquire.assert_called_once()
 
 
 async def test_resolve_image_is_the_release_groups_cover_url(

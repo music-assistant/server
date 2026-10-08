@@ -100,16 +100,9 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         :param release_group_id: MusicBrainz release group ID.
         :raises RetriesExhausted: The archive could not be asked, even after retrying.
         """
-        # Try 1200px first, fall back to 500px; each request takes its own throttler slot.
-        # The archive redirects to a thumbnail of the front cover without checking the file
-        # on archive.org exists, so the 1200px redirect is trusted as the cover.
-        for size in ("front-1200", "front-500"):
-            if url := await self._head_cover(
-                f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
-            ):
-                return url
-        # a 404 for both sizes means this release group genuinely has no cover art
-        return None
+        # the archive answers 404 only when the release group has no front cover at all, for
+        # every size alike, so one request for the 1200px size is enough
+        return await self._head_cover(f"{CAA_BASE_URL}/release-group/{release_group_id}/front-1200")
 
     @throttle_with_retries
     async def _head_cover(self, url: str) -> str | None:
