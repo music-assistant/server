@@ -49,32 +49,46 @@ The main orchestrator that manages:
 Handles all authentication and user management:
 
 **Database Schema:**
-- `users` - User accounts with roles (admin/user)
+- `users` - User accounts, each holding the id of a (builtin or custom) role
+- `roles` - Custom user roles (the builtin roles are defined in code and never stored)
 - `user_auth_providers` - Links users to authentication providers (many-to-many)
 - `auth_tokens` - Access tokens with expiration tracking
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
-- **Built-in Provider** - Username/password authentication with bcrypt hashing
+- **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
 
 **Token Types:**
-- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window (for user sessions)
-- **Long-lived tokens**: No auto-renewal, 10-year expiration (for integrations/API access)
+- **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
-- Password hashing with bcrypt and user- and server specific salts
+- Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
 - Secure token generation with secrets.token_urlsafe()
 - WebSocket disconnect on token revocation
 - Session management and cleanup
 
 **User Roles:**
+
+A role is a named set of scopes. The builtin roles are defined in code (`ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py)) and can not be changed:
 - `ADMIN` - Full access to all commands and settings
-- `USER` - Standard access (configurable via player/provider filters)
+- `USER` - Standard access, including adding and managing their own music sources
 - `GUEST` - Read-only library access plus player/queue control
-- `SERVICE` - Standard access plus player config, reading user accounts and impersonation
-  (used by the Home Assistant integration)
+- `SERVICE` - Standard access plus player config, reading user accounts and impersonation,
+  but no music sources of its own (used by the Home Assistant integration)
+
+Admins can add custom roles (`auth/role/create`, `auth/role/update`, `auth/role/delete`),
+which are stored in the `roles` table and kept in memory for the scope checks. A custom role
+is a household member: it always holds the guest scopes and the scopes its granted scopes are
+of no use without. The scopes that reach into accounts, the private things of other members or
+the server itself (`users.manage`, `users.impersonate`, `library.manage`,
+`config.providers.write`, `config.core.write` and `system.manage`) stay with the builtin admin
+role. The live sessions of a user are closed when its role, or the
+scopes of its custom role, change, so its clients reconnect with the new scopes. The last
+enabled admin can not lose the admin role.
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 
@@ -141,11 +155,14 @@ Manages individual WebSocket connections:
 ### First-Time Setup Flow
 
 1. **Initial State**: No users exist
-2. **Setup Required**: User is redirected to `/setup`
-3. **Admin Creation**: User creates the first admin account with username/password
-4. **Setup completes** User gets redirected to the frontend
-5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
-4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
+2. **Setup Required**: User is redirected to `/setup`, which serves the frontend; the query string
+   travels along so a client's `return_url` and `device_name` survive a reload
+3. **Admin Creation**: The frontend opens its setup wizard on the "Create your account" step,
+   which posts username, password and display name to `POST /setup`; the server creates the
+   first admin and answers with a token (or, for a trusted `return_url`, where to hand it back)
+4. **Onboarding wizard** The frontend signs in with the token and continues the wizard on the
+   same page; `POST /setup` answers 409 from then on
+5. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
 
 ### First-Time Setup Flow when HA Ingress is used
 
@@ -191,6 +208,7 @@ When running as a Home Assistant add-on:
 - A dedicated webserver TCP site is hosted (on port 8094) bound to the internal HA docker network only
 - Ingress requests include HA user headers (`X-Remote-User-ID`, `X-Remote-User-Name`)
 - Users are auto-created on first access
+- A user whose Music Assistant account is disabled is refused
 - No password required (authentication handled by HA)
 - System user created for HA integration communication
 
@@ -401,15 +419,17 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Mandatory authentication**: All API access requires authentication (except Ingress)
 - **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: bcrypt with user-specific salts
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding) and long-lived (10 years) tokens supported
+- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
 
 ### Authorization
 
-- **Role-based access**: Admin vs User roles
-- **Command-level enforcement**: API commands can require specific roles
-- **Player/Provider filtering**: Users can be restricted to specific players/providers
+- **Role-based access**: Each user holds one (builtin or custom) role, which grants its scopes
+- **Command-level enforcement**: API commands can require a specific scope
+- **Player filtering**: Users can be restricted to specific players. Which music sources a
+  user may see is not set on the user: it follows from the owner and sharing on each source
+  (`config/providers/set_access`)
 - **Token revocation**: Immediate WebSocket disconnect on token revocation
 
 ### Network Security
@@ -428,7 +448,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Data Protection
 
 - **Token storage**: Only hashed tokens stored in database
-- **Password storage**: bcrypt with user-specific salts
+- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
 - **Session cleanup**: Expired tokens automatically deleted
 - **User disable**: Immediate disconnect of all user sessions
 
@@ -445,7 +465,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 1. Define route handler in [controller.py](controller.py) (for HTTP endpoints)
 2. Use `@api_command()` decorator for WebSocket commands (in respective controllers)
-3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>`
+3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>` (or a tuple of scopes, one of which the caller needs)
 4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
    another user via the injected `user` argument (requires the `users.impersonate` scope
    when targeting another user)
@@ -493,6 +513,9 @@ async def admin_command():
     # Only users whose role grants the config.core.write scope can call this
     pass
 ```
+
+A tuple of scopes (`required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)`) means the
+caller needs one of them.
 
 Scopes are granted to users through their role, see `ROLE_SCOPES` in
 [helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.

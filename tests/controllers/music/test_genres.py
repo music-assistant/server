@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_safe_string
@@ -46,6 +47,10 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.mass import MusicAssistant
 
+GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
+# the user whose likes the favorite tests below check
+FAVORITE_USER = User(user_id="genre-fan", username="genre-fan", role=UserRole.USER)
+
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
@@ -57,20 +62,21 @@ def mass_fixture(music_mass_class: MusicAssistant) -> MusicAssistant:
     return music_mass_class
 
 
-@pytest.fixture(scope="class")
-async def genre_ctrl(mass: MusicAssistant) -> GenreController:
+@pytest.fixture
+async def genre_ctrl(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch) -> GenreController:
     """Get the genre controller from a running MusicAssistant instance."""
+    # the database-only server runs no cache database
+    monkeypatch.setattr(mass.cache, "delete", AsyncMock())
     return mass.music.genres
 
 
-def _make_genre(name: str, favorite: bool = False) -> Genre:
+def _make_genre(name: str) -> Genre:
     """Create a Genre object for adding to the library."""
     return Genre(
         item_id="0",
         provider="library",
         name=name,
         provider_mappings=set(),
-        favorite=favorite,
     )
 
 
@@ -242,9 +248,9 @@ class TestGenreCRUD:
         """Update with metadata merges without overwrite flag."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Reggae"))
         update = _make_genre("Reggae")
-        update.favorite = True
+        update.metadata.description = "From Jamaica"
         updated = await genre_ctrl.update_item_in_library(genre.item_id, update, overwrite=False)
-        assert updated.favorite is True
+        assert updated.metadata.description == "From Jamaica"
         assert updated.name == "Reggae"
 
     async def test_update_overwrite(self, genre_ctrl: GenreController) -> None:
@@ -459,12 +465,14 @@ class TestGenreCRUD:
         assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
-        """Returns correct count; favorite_only=True filters."""
+        """Returns correct count; favorite_only=True counts the user's own likes."""
         await genre_ctrl.add_item_to_library(_make_genre("CountA"))
-        await genre_ctrl.add_item_to_library(_make_genre("CountB", favorite=True))
+        liked = await genre_ctrl.add_item_to_library(_make_genre("CountB"))
+        await genre_ctrl.set_favorite(liked.item_id, True, [FAVORITE_USER.user_id])
         total = await genre_ctrl.library_count()
         assert total >= 2
-        fav = await genre_ctrl.library_count(favorite_only=True)
+        with patch(GET_CURRENT_USER, return_value=FAVORITE_USER):
+            fav = await genre_ctrl.library_count(favorite_only=True)
         assert fav >= 1
         assert fav <= total
 
@@ -912,6 +920,41 @@ class TestSyncMediaItemGenres:
             limit=0,
         )
         assert {int(r["genre_id"]) for r in rows} == {int(new_genre.item_id)}
+
+    async def test_sync_keeps_manual_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manually linked genre survives a sync that doesn't report it."""
+        track = await _add_test_track(mass, "Sync Track Manual")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncManual"))
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+    async def test_sync_keeps_manual_flag_when_provider_reports_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manual mapping the provider also reports stays manual and survives its removal."""
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncBoth"))
+        track = await _add_test_track(mass, "Sync Track Both")
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncBoth"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
 
 
 # ===================================================================
@@ -1554,12 +1597,14 @@ class TestBaseClassIntegration:
         assert ids1.isdisjoint(ids2)
 
     async def test_favorite_filter(self, genre_ctrl: GenreController) -> None:
-        """favorite=True filters correctly."""
-        await genre_ctrl.add_item_to_library(_make_genre("FavYes", favorite=True))
-        await genre_ctrl.add_item_to_library(_make_genre("FavNo", favorite=False))
-        favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
+        """favorite=True filters on the current user's likes."""
+        liked = await genre_ctrl.add_item_to_library(_make_genre("FavYes"))
+        await genre_ctrl.add_item_to_library(_make_genre("FavNo"))
+        await genre_ctrl.set_favorite(liked.item_id, True, [FAVORITE_USER.user_id])
+        with patch(GET_CURRENT_USER, return_value=FAVORITE_USER):
+            favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
         assert all(g.favorite for g in favs)
-        assert any(g.name == "FavYes" for g in favs)
+        assert [g.name for g in favs] == ["FavYes"]
 
 
 # ===================================================================

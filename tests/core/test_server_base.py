@@ -3,14 +3,21 @@
 import asyncio
 import logging
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.controllers.storage import StorageController
 from music_assistant.mass import MusicAssistant
+from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
+    from aiohttp import ClientSession
+    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.event import MassEvent
 
 
@@ -30,6 +37,22 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
         )
     )
     assert domains.issuperset(core_providers)
+
+
+async def test_core_controller_setup_can_use_the_http_sessions(tmp_path: Path) -> None:
+    """The core controllers can use the shared http sessions in their setup."""
+    sessions: list[ClientSession] = []
+    setup = StorageController.setup
+
+    async def setup_using_the_sessions(self: StorageController, config: CoreConfig) -> None:
+        sessions.extend((self.mass.http_session, self.mass.http_session_no_ssl))
+        await setup(self, config)
+
+    with patch.object(StorageController, "setup", setup_using_the_sessions):
+        async with full_mass_context(tmp_path) as mass:
+            assert len(sessions) == 2
+            assert sessions[0] is mass.http_session
+            assert sessions[1] is mass.http_session_no_ssl
 
 
 async def test_server_info(mass: MusicAssistant) -> None:
@@ -94,6 +117,22 @@ async def test_create_task_failure_logged(
         for record in caplog.records
         if record.levelno == logging.WARNING
     )
+
+
+async def test_create_task_names_only_on_request(mass_minimal: MusicAssistant) -> None:
+    """Test that a task is named only by an explicit name, never by its task_id."""
+
+    async def _work() -> None:
+        return
+
+    named = mass_minimal.create_task(_work(), task_name="provider_loaded_some_provider")
+    assert named.get_name() == "provider_loaded_some_provider"
+
+    # task ids key on arguments such as image urls, so they must stay out of the name
+    keyed = mass_minimal.create_task(_work(), task_id="palette_fetch_p1_current_https://x/y?sig=1")
+    assert "https://x/y?sig=1" not in keyed.get_name()
+
+    await asyncio.gather(named, keyed)
 
 
 async def test_create_task_replacement_stays_tracked(mass_minimal: MusicAssistant) -> None:

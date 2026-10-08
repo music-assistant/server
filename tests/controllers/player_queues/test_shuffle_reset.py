@@ -149,7 +149,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
@@ -334,6 +334,19 @@ async def test_an_unresolvable_first_item_leaves_the_decision_to_the_next_one() 
     ctrl.mass.music.get_item_by_uri = AsyncMock(side_effect=[MediaNotFoundError("gone"), _album()])
 
     await ctrl.play_media("q1", ["test://track/gone", "test://album/al1"], QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+async def test_an_item_that_fails_unexpectedly_is_skipped_as_well() -> None:
+    """Any error while resolving one item skips that item instead of failing the request."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl.mass.music.get_item_by_uri = AsyncMock(
+        side_effect=[ZeroDivisionError("division by zero"), _album()]
+    )
+
+    await ctrl.play_media("q1", ["test://track/broken", "test://album/al1"], QueueOption.REPLACE)
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS

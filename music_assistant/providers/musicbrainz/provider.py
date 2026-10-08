@@ -4,46 +4,74 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistEntityType,
+    ConfigEntryType,
+    ExternalID,
+    LinkType,
+    MediaType,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
 from music_assistant_models.media_items.metadata import LifeSpan
 
-from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.helpers.compare import compare_album_name, compare_strings
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
     is_valid_barcode,
     is_valid_isrc,
     normalize_external_id,
 )
+from music_assistant.helpers.uri import apple_storefront_from_url, canonical_provider_url
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
 from .api_client import MusicBrainzAPIClient
 from .constants import (
+    DISCOGRAPHY_MAX_PAGES,
+    DISCOGRAPHY_PRIMARY_TYPES,
     LUCENE_SPECIAL,
+    MAX_BARCODE_DETAIL_FETCHES,
+    MAX_NAME_SEARCH_DETAIL_FETCHES,
+    MAX_REF_ITEMS,
+    MAX_REVERSE_URL_LOOKUPS,
     MIN_FIRST_RELEASE_CORRECTION_YEARS,
+    PRIMARY_TYPE_MAPPING,
+    RECORDING_LENGTH_TOLERANCE_MS,
+    RELEASE_BROWSE_MAX_PAGES,
+    RELEASE_GROUP_BROWSE_LIMIT,
+    REVERSE_URL_DOMAINS,
+    REVERSE_URL_HOSTS,
+    SECONDARY_TYPE_MAPPING,
     SOCIAL_HOST_MAPPING,
     SUPPORTED_FEATURES,
+    URL_RELATION_ENTITY,
     URL_RELATION_TYPE_MAPPING,
 )
 from .models import (
     MusicBrainzArtist,
+    MusicBrainzArtistCredit,
     MusicBrainzBarcodeRelease,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
     MusicBrainzReleaseGroup,
+    MusicBrainzTag,
+    release_year,
 )
 from .recommendations import MusicBrainzRecommendationManager
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import (
         Album,
@@ -102,6 +130,11 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle unload/close of the provider."""
         self._recommendations.cancel()
 
+    @property
+    def rate_limited(self) -> bool:
+        """Whether MusicBrainz is currently holding requests back with a rate limit."""
+        return self._api_client.throttler.cooldown_remaining > 0
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Return MusicBrainz recommendation folders (artist birthdays/memorials and group founded/disbanded)."""
         return await self._recommendations.get_recommendations()
@@ -111,6 +144,106 @@ class MusicbrainzProvider(MetadataProvider):
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """Get items for a MusicBrainz recommendation folder."""
         return await self._recommendations.get_recommendation_items(item_id)
+
+    async def resolve_artist(
+        self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
+    ) -> MusicBrainzArtist | None:
+        """
+        Identify an artist on MusicBrainz.
+
+        The artist's own MusicBrainz id wins outright. Otherwise its streaming service
+        links, the reference items' MusicBrainz ids, barcodes and ISRCs and finally a name
+        search are tried, in that order, each bounded to a few requests.
+
+        :param artist: The artist to identify.
+        :param ref_albums: Albums of the artist to identify it through.
+        :param ref_tracks: Tracks of the artist to identify it through.
+        :return: The artist with aliases, tags, genres and URL relations, or None if not found.
+        """
+        if not (mbid := await self._find_artist_mbid(artist, ref_albums, ref_tracks)):
+            return None
+        with suppress(InvalidDataError):
+            return await self.get_artist_details(mbid)
+        return None
+
+    async def resolve_release(
+        self, album: Album, library_track_count: int | None = None
+    ) -> MusicBrainzRelease | None:
+        """
+        Identify the exact MusicBrainz release (edition) of an album.
+
+        The album's MusicBrainz release id wins outright. Otherwise its streaming service
+        links, its barcodes and finally its release group are tried, in that order; a
+        release group only identifies the album when it holds a single official digital
+        edition (of the given track count). An album without a release group that none of
+        these identify is searched by title and primary artist, and only taken when its
+        track count matches too.
+
+        :param album: The album to identify.
+        :param library_track_count: Number of tracks the album has in the library, to tell
+            the editions of a release group apart. Without it an album is never searched
+            by name.
+        :return: The release with tracklist, labels and URL relations, or None if no single
+            release could be identified.
+        """
+        if mbid := album.get_external_id(ExternalID.MB_ALBUM):
+            with suppress(InvalidDataError):
+                return await self.get_release_details(mbid)
+        for url in self._reverse_lookup_urls(album):
+            if mbid := await self.get_mbid_by_url(url, MediaType.ALBUM):
+                with suppress(InvalidDataError):
+                    return await self.get_release_details(mbid)
+        for barcode in _external_ids(album, ExternalID.BARCODE, is_valid_barcode)[:MAX_REF_ITEMS]:
+            if release := await self._release_by_barcode(barcode, album):
+                return release
+        if release_group_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
+            return await self._release_by_release_group(release_group_id, library_track_count)
+        if library_track_count:
+            return await self._release_by_name(album, library_track_count)
+        return None
+
+    async def resolve_recording(self, track: Track) -> MusicBrainzRecording | None:
+        """
+        Identify the MusicBrainz recording of a track.
+
+        The track's own MusicBrainz recording id wins outright. Otherwise its streaming
+        service links, its ISRCs and finally a name search are tried, in that order.
+
+        :param track: The track to identify.
+        :return: The recording with ISRCs, artist credits, genres and URL relations, or
+            None if not found.
+        """
+        if mbid := track.mbid:
+            with suppress(InvalidDataError):
+                return await self.get_recording_details(mbid)
+        for url in self._reverse_lookup_urls(track):
+            if mbid := await self.get_mbid_by_url(url, MediaType.TRACK):
+                with suppress(InvalidDataError):
+                    return await self.get_recording_details(mbid)
+        for isrc in _external_ids(track, ExternalID.ISRC, is_valid_isrc)[:MAX_REF_ITEMS]:
+            if recording := await self._recording_by_isrc(isrc, track):
+                return recording
+        if track.album and track.artists:
+            result = await self.search(
+                track.artists[0].name, track.album.name, track.name, track.version
+            )
+            if result:
+                with suppress(InvalidDataError):
+                    return await self.get_recording_details(result[2].id)
+        return None
+
+    @staticmethod
+    def album_type_from_release_group(release_group: MusicBrainzReleaseGroup) -> AlbumType:
+        """
+        Return the album type a MusicBrainz release group describes.
+
+        :param release_group: The release group, with its primary and secondary types.
+        """
+        secondary_types = release_group.secondary_types or []
+        for mb_type, album_type in SECONDARY_TYPE_MAPPING.items():
+            if mb_type in secondary_types:
+                return album_type
+        return PRIMARY_TYPE_MAPPING.get(release_group.primary_type or "", AlbumType.UNKNOWN)
 
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None
@@ -179,9 +312,7 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def get_artist_details(self, artist_id: str) -> MusicBrainzArtist:
         """Get (full) Artist details by providing a MusicBrainz artist id."""
-        endpoint = (
-            f"artist/{artist_id}?inc=aliases+annotation+tags+ratings+genres+url-rels+work-rels"
-        )
+        endpoint = f"artist/{artist_id}?inc=aliases+tags+genres+url-rels"
         if result := await self._api_client.get_data(endpoint):
             if "id" not in result:
                 result["id"] = artist_id
@@ -237,25 +368,53 @@ class MusicbrainzProvider(MetadataProvider):
                 end=details.life_span.end,
                 ended=details.life_span.ended,
             )
-        links: set[MediaItemLink] = set()
-        if details.relations:
-            for relation in details.relations:
-                if not relation.url:
-                    continue
-                if link_type := self._link_type_for_relation(relation):
-                    links.add(MediaItemLink(type=link_type, url=relation.url.resource))
-        if not artist_entity_type and not life_span and not links:
+        links = self._links_from_relations(details.relations)
+        genres = _genre_names(details.genres)
+        if not artist_entity_type and not life_span and not links and not genres:
             return None
         return MediaItemMetadata(
             links=links,
+            genres=genres,
             artist_entity_type=artist_entity_type,
             life_span=life_span,
         )
 
+    async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
+        """Surface MusicBrainz genres, label, release date and links of an album's release."""
+        if not album.mbid:
+            return None
+        try:
+            release = await self.get_release_details(album.mbid)
+        except InvalidDataError:
+            return None
+        genres = _genre_names(
+            release.release_group.genres if release.release_group else None, release.genres
+        )
+        label = next((info.label.name for info in release.label_info or () if info.label), None)
+        release_date = _release_datetime(release.date)
+        links = self._links_from_relations(release.relations)
+        if not genres and not label and not release_date and not links:
+            return None
+        return MediaItemMetadata(
+            genres=genres, label=label, release_date=release_date, links=links or None
+        )
+
+    async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
+        """Surface MusicBrainz genres of a track's recording."""
+        if not track.mbid:
+            return None
+        try:
+            recording = await self.get_recording_details(track.mbid)
+        except InvalidDataError:
+            return None
+        if not (genres := _genre_names(recording.genres)):
+            return None
+        return MediaItemMetadata(genres=genres)
+
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
         if result := await self._api_client.get_data(
-            f"recording/{recording_id}?inc=artists+releases+isrcs"
+            f"recording/{recording_id}?inc=artists+releases+isrcs+url-rels+genres"
         ):
             if "id" not in result:
                 result["id"] = recording_id
@@ -266,35 +425,9 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
-    @use_cache(86400 * 30)
-    async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
-        """
-        Get ISRCs for a MusicBrainz Recording ID.
-
-        :param recording_id: MusicBrainz recording ID, or a track ID as
-            handed out by e.g. Last.fm.
-        :return: List of ISRCs, or empty list if not found.
-        """
-        # the search response includes the ISRCs, so either ID kind costs one call
-        safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
-        query = f"rid:{safe_id} OR tid:{safe_id}"
-        if (result := await self._api_client.get_data("recording", query=query)) and (
-            recordings := result.get("recordings")
-        ):
-            return recordings[0].get("isrcs") or []
-        # merged (redirected) recording MBIDs are absent from the search
-        # index but still resolve via direct lookup
-        with suppress(InvalidDataError):
-            recording = await self.get_recording_details(recording_id)
-            return recording.isrcs or []
-        return []
-
     async def get_recordings_by_isrc(self, isrc: str) -> list[MusicBrainzRecording]:
         """
         Get the recordings MusicBrainz has on file for an ISRC.
-
-        Inverse of :meth:`get_isrcs_for_recording`: that one goes from a
-        recording to its ISRCs, this one goes from an ISRC back to recordings.
 
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
@@ -302,8 +435,9 @@ class MusicbrainzProvider(MetadataProvider):
         if not is_valid_isrc(isrc):
             return []
         safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
-        # the isrc resource rejects inc= parameters and already carries the release dates
-        result = await self._api_client.get_data(f"isrc/{safe_isrc}")
+        result = await self._api_client.get_data(
+            f"isrc/{safe_isrc}?inc=isrcs+artist-credits+url-rels"
+        )
         if not result or not (recordings := result.get("recordings")):
             return []
         parsed: list[MusicBrainzRecording] = []
@@ -320,18 +454,31 @@ class MusicbrainzProvider(MetadataProvider):
         :param isrc: ISRC of the recording, with or without separators.
         :return: The earliest known release year, or None if MusicBrainz does not know it.
         """
-        recordings = await self.get_recordings_by_isrc(isrc)
+        if not is_valid_isrc(isrc):
+            return None
+        # the isrc resource omits the first release date, a recording search carries it
+        safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
+        result = await self._api_client.get_data(
+            "recording", query=f"isrc:{safe_isrc}", limit="100"
+        )
+        recordings = (result or {}).get("recordings") or []
+        # a truncated result may miss the oldest recording, so it cannot date the song
+        if result and result.get("count", len(recordings)) > len(recordings):
+            return None
         # one ISRC can cover several recordings, the oldest one dates the song
         years = [
             year
             for recording in recordings
-            if (year := _release_year(recording.first_release_date or "")) is not None
+            if (year := release_year(recording.get("first-release-date"))) is not None
         ]
         return min(years, default=None)
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
         """Get Release/Album details by providing a MusicBrainz Album id."""
-        endpoint = f"release/{album_id}?inc=artist-credits+aliases+labels"
+        endpoint = (
+            f"release/{album_id}?inc=artist-credits+aliases+labels+release-groups"
+            "+recordings+isrcs+url-rels+genres"
+        )
         if result := await self._api_client.get_data(endpoint):
             if "id" not in result:
                 result["id"] = album_id
@@ -382,6 +529,90 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError(msg) from err
         return parsed
 
+    async def browse_releases_by_release_group(
+        self, release_group_id: str, complete: bool = True
+    ) -> list[MusicBrainzBarcodeRelease]:
+        """
+        Get the releases (editions) of a MusicBrainz release group.
+
+        :param release_group_id: MusicBrainz release group id.
+        :param complete: Whether only the whole set of releases is of use: a group with more
+            releases than fit on one page then yields none at all. Otherwise the first few
+            pages of a heavily reissued group are returned.
+        :return: The group's releases with their status, media and URL relations, or an
+            empty list when the group is unknown.
+        """
+        listing: list[dict[str, Any]] = []
+        release_count = 0
+        for page in range(1 if complete else RELEASE_BROWSE_MAX_PAGES):
+            params = {
+                "release-group": release_group_id,
+                "inc": "url-rels+media+release-groups",
+                "limit": str(RELEASE_GROUP_BROWSE_LIMIT),
+            }
+            # the first page is requested as a complete browse requests it, so both share
+            # one cache entry
+            if page:
+                params["offset"] = str(page * RELEASE_GROUP_BROWSE_LIMIT)
+            result = await self._api_client.get_data("release", **params)
+            if not result or not (releases := result.get("releases")):
+                break
+            listing.extend(releases)
+            release_count = result.get("release-count", len(listing))
+            if len(listing) >= release_count:
+                break
+        # a partial listing cannot tell a group's editions apart, so it is no answer at all
+        if complete and release_count > len(listing):
+            return []
+        editions: list[MusicBrainzBarcodeRelease] = []
+        for entry in listing:
+            try:
+                editions.append(MusicBrainzBarcodeRelease.from_raw(entry))
+            except (MissingField, InvalidFieldValue) as err:
+                # a complete listing with a hole in it is a partial one
+                if complete:
+                    return []
+                self.logger.debug("Skipping malformed release %s: %s", entry.get("id"), err)
+        return editions
+
+    async def browse_release_groups_by_artist(
+        self, artist_mbid: str
+    ) -> list[MusicBrainzReleaseGroup]:
+        """
+        Get the discography of a MusicBrainz artist: the albums, EPs and singles credited to it.
+
+        :param artist_mbid: MusicBrainz artist id.
+        :return: The artist's release groups, the most recently released first and undated
+            ones last. A catalog-sized discography is cut off after a thousand groups.
+        """
+        release_groups: list[MusicBrainzReleaseGroup] = []
+        for page in range(DISCOGRAPHY_MAX_PAGES):
+            result = await self._api_client.get_browse_data(
+                "release-group",
+                artist=artist_mbid,
+                limit=str(RELEASE_GROUP_BROWSE_LIMIT),
+                offset=str(page * RELEASE_GROUP_BROWSE_LIMIT),
+            )
+            if not result or not (listing := result.get("release-groups")):
+                break
+            for entry in listing:
+                try:
+                    release_group = MusicBrainzReleaseGroup.from_raw(entry)
+                except (MissingField, InvalidFieldValue) as err:
+                    # a single malformed entry should not sink the rest of the discography
+                    self.logger.debug(
+                        "Skipping malformed release group %s: %s", entry.get("id"), err
+                    )
+                    continue
+                if release_group.primary_type in DISCOGRAPHY_PRIMARY_TYPES:
+                    release_groups.append(release_group)
+            offset = result.get("release-group-offset", page * RELEASE_GROUP_BROWSE_LIMIT)
+            if offset + len(listing) >= result.get("release-group-count", 0):
+                break
+        # a date sorts after the empty string, so undated groups end up last
+        release_groups.sort(key=lambda group: group.first_release_date or "", reverse=True)
+        return release_groups
+
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
@@ -414,14 +645,7 @@ class MusicbrainzProvider(MetadataProvider):
             return None
         if not (result and result.artist_credit):
             return None
-        for strict in (True, False):
-            for artist_credit in result.artist_credit:
-                if compare_strings(artist_credit.artist.name, artistname, strict):
-                    return artist_credit.artist
-                for alias in artist_credit.artist.aliases or []:
-                    if compare_strings(alias.name, artistname, strict):
-                        return artist_credit.artist
-        return None
+        return _matching_artist_credit(result.artist_credit, artistname)
 
     async def get_artist_details_by_track(
         self, artistname: str, ref_track: Track
@@ -438,31 +662,29 @@ class MusicbrainzProvider(MetadataProvider):
             result = await self.get_recording_details(ref_track.mbid)
         if not (result and result.artist_credit):
             return None
-        for strict in (True, False):
-            for artist_credit in result.artist_credit:
-                if compare_strings(artist_credit.artist.name, artistname, strict):
-                    return artist_credit.artist
-                for alias in artist_credit.artist.aliases or []:
-                    if compare_strings(alias.name, artistname, strict):
-                        return artist_credit.artist
-        return None
+        return _matching_artist_credit(result.artist_credit, artistname)
 
-    async def get_artist_details_by_resource_url(
-        self, resource_url: str
-    ) -> MusicBrainzArtist | None:
+    async def get_mbid_by_url(self, resource_url: str, media_type: MediaType) -> str | None:
         """
-        Get musicbrainz artist details by providing a resource URL (e.g. Spotify share URL).
+        Get the MusicBrainz id of the artist, release or recording a URL is linked to.
 
-        MusicBrainzArtist object that is returned does not contain the optional data.
+        :param resource_url: Public URL of the item on a streaming service, in the exact
+            form MusicBrainz stores it (see :func:`canonical_provider_url`).
+        :param media_type: Kind of entity to look for: ARTIST, ALBUM or TRACK.
+        :return: The MusicBrainz id, or None when the URL is unknown or linked to several
+            entities of that kind.
         """
-        if result := await self._api_client.get_data(
-            "url", resource=resource_url, inc="artist-rels"
-        ):
-            for relation in result.get("relations", []):
-                if not (artist := relation.get("artist")):
-                    continue
-                return MusicBrainzArtist.from_raw(artist)
-        return None
+        entity = URL_RELATION_ENTITY[media_type]
+        result = await self._api_client.get_data("url", resource=resource_url, inc=f"{entity}-rels")
+        if not result:
+            return None
+        ids = {
+            target["id"]
+            for relation in result.get("relations", [])
+            if not relation.get("ended") and (target := relation.get(entity)) and target.get("id")
+        }
+        # a URL linked to several entities identifies none of them
+        return ids.pop() if len(ids) == 1 else None
 
     async def get_release_group_by_track_name(
         self, artist_name: str, track_name: str
@@ -500,7 +722,7 @@ class MusicbrainzProvider(MetadataProvider):
         if not result or not (release_groups := result[1]):
             return None
         # the release groups are sorted oldest first, and undated ones sort last
-        release_year = _release_year(release_groups[0][1])
+        searched_year = release_year(release_groups[0][1])
         # the release found already dates the song, so a lookup that fails costs this song
         # precision rather than the year the search already supplied
         first_release_year: int | None = None
@@ -509,12 +731,12 @@ class MusicbrainzProvider(MetadataProvider):
                 [release_group.id for release_group, _ in release_groups]
             )
         if first_release_year is None:
-            return release_year
-        if release_year is None:
+            return searched_year
+        if searched_year is None:
             return first_release_year
-        if release_year - first_release_year > MIN_FIRST_RELEASE_CORRECTION_YEARS:
+        if searched_year - first_release_year > MIN_FIRST_RELEASE_CORRECTION_YEARS:
             return first_release_year
-        return release_year
+        return searched_year
 
     @staticmethod
     def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
@@ -526,6 +748,20 @@ class MusicbrainzProvider(MetadataProvider):
                 if host in url_lower:
                     return link_type
         return None
+
+    def _links_from_relations(
+        self, relations: Iterable[MusicBrainzRelation] | None
+    ) -> set[MediaItemLink]:
+        """Return the links among an entity's current URL relations that have a known type."""
+        links: set[MediaItemLink] = set()
+        for relation in relations or ():
+            if (
+                relation.url
+                and not relation.ended
+                and (link_type := self._link_type_for_relation(relation))
+            ):
+                links.add(MediaItemLink(type=link_type, url=relation.url.resource))
+        return links
 
     async def _search_release_groups_by_track_name(
         self, artist_name: str, track_name: str
@@ -697,9 +933,322 @@ class MusicbrainzProvider(MetadataProvider):
         years = [
             year
             for release_group in result.get("release-groups", [])
-            if (year := _release_year(release_group.get("first-release-date") or "")) is not None
+            if (year := release_year(release_group.get("first-release-date"))) is not None
         ]
         return min(years, default=None)
+
+    async def _find_artist_mbid(
+        self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
+    ) -> str | None:
+        """Find the MusicBrainz id of an artist, the cheapest evidence first."""
+        if artist.mbid:
+            return artist.mbid
+        if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
+            return VARIOUS_ARTISTS_MBID
+        for url in self._reverse_lookup_urls(artist):
+            if mbid := await self.get_mbid_by_url(url, MediaType.ARTIST):
+                return mbid
+        # the artist credits of reference items MusicBrainz knows by id
+        for ref_album in _first(ref_albums, _has_mb_release_id):
+            if mb_artist := await self.get_artist_details_by_album(artist.name, ref_album):
+                return mb_artist.id
+        for ref_track in _first(ref_tracks, lambda track: bool(track.mbid)):
+            if mb_artist := await self.get_artist_details_by_track(artist.name, ref_track):
+                return mb_artist.id
+        # the artist credits of reference items MusicBrainz knows by barcode or ISRC
+        for ref_album in _first(ref_albums, _has_barcode):
+            barcode = _external_ids(ref_album, ExternalID.BARCODE, is_valid_barcode)[0]
+            releases: list[MusicBrainzBarcodeRelease] = []
+            with suppress(InvalidDataError):
+                releases = await self.get_releases_by_barcode(barcode)
+            for release in releases:
+                if mb_artist := _matching_artist_credit(release.artist_credit or [], artist.name):
+                    return mb_artist.id
+        for ref_track in _first(ref_tracks, _has_isrc):
+            isrc = _external_ids(ref_track, ExternalID.ISRC, is_valid_isrc)[0]
+            for recording in await self.get_recordings_by_isrc(isrc):
+                if mb_artist := _matching_artist_credit(recording.artist_credit, artist.name):
+                    return mb_artist.id
+        # last resort: a name search on a reference track
+        for ref_track in _first(ref_tracks, lambda track: track.album is not None):
+            if ref_track.album and (
+                result := await self.search(
+                    artist.name, ref_track.album.name, ref_track.name, ref_track.version
+                )
+            ):
+                return result[0].id
+        return None
+
+    async def _release_by_barcode(self, barcode: str, album: Album) -> MusicBrainzRelease | None:
+        """Return the release carrying a barcode that is the given album, if any."""
+        try:
+            candidates = await self.get_releases_by_barcode(barcode)
+        except InvalidDataError:
+            return None
+        # regional variants of one product share its barcode; the official worldwide
+        # digital one is the edition the streaming services carry
+        candidates.sort(key=_edition_rank)
+        for candidate in candidates[:MAX_BARCODE_DETAIL_FETCHES]:
+            with suppress(InvalidDataError):
+                release = await self.get_release_details(candidate.id)
+                if release_matches_album(release, album):
+                    return release
+        return None
+
+    async def _release_by_release_group(
+        self, release_group_id: str, library_track_count: int | None
+    ) -> MusicBrainzRelease | None:
+        """Return the official digital edition of a release group, if it has exactly one."""
+        editions = [
+            release
+            for release in await self.browse_releases_by_release_group(release_group_id)
+            if release.status == "Official"
+            and is_digital_release(release)
+            and (library_track_count is None or _track_count(release) == library_track_count)
+        ]
+        if len(editions) != 1:
+            return None
+        with suppress(InvalidDataError):
+            return await self.get_release_details(editions[0].id)
+        return None
+
+    async def _release_by_name(self, album: Album, track_count: int) -> MusicBrainzRelease | None:
+        """Return the release a name search finds as the given album, if it is unambiguous."""
+        if not album.artists:
+            return None
+        artist_name = album.artists[0].name
+        search_album = re.sub(LUCENE_SPECIAL, r"\\\1", album.name)
+        search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
+        result = await self._api_client.get_data(
+            "release",
+            query=f'release:"{search_album}" AND artist:"{search_artist}"',
+            limit="100",
+        )
+        releases = (result or {}).get("releases") or []
+        # the hits are only known to be unambiguous when every one of them is seen
+        if result and result.get("count", len(releases)) > len(releases):
+            return None
+        candidates: list[MusicBrainzBarcodeRelease] = []
+        for raw_release in releases:
+            try:
+                candidate = MusicBrainzBarcodeRelease.from_raw(raw_release)
+            except MissingField, InvalidFieldValue:
+                return None
+            if (
+                compare_album_name(candidate.title or "", album.name)
+                and _track_count(candidate) == track_count
+                and _credits_primary_artist(candidate.artist_credit, artist_name)
+            ):
+                candidates.append(candidate)
+        # editions of one album share its release group; hits in several groups are
+        # different albums by the same name, which a name alone cannot tell apart
+        if len({candidate.release_group.id for candidate in candidates}) != 1:
+            return None
+        candidates.sort(key=_edition_rank)
+        for candidate in candidates[:MAX_NAME_SEARCH_DETAIL_FETCHES]:
+            with suppress(InvalidDataError):
+                release = await self.get_release_details(candidate.id)
+                if (
+                    compare_album_name(release.title, album.name)
+                    and _credits_primary_artist(release.artist_credit, artist_name)
+                    and sum(medium.track_count for medium in release.media) == track_count
+                ):
+                    return release
+        return None
+
+    async def _recording_by_isrc(self, isrc: str, track: Track) -> MusicBrainzRecording | None:
+        """Return the recording carrying an ISRC that is the given track, if any."""
+        # an ISRC is occasionally reused, so the recording must also match the track's
+        # title and length
+        candidates = [
+            recording
+            for recording in await self.get_recordings_by_isrc(isrc)
+            if compare_strings(recording.title, track.name, strict=False)
+            and _length_matches(recording, track)
+        ]
+        if not candidates:
+            return None
+        # a reused or misassigned ISRC is told apart by the credited artist, so a track that
+        # names its artists only takes a recording crediting one of them
+        chosen = (
+            candidates[0]
+            if not track.artists
+            else next(
+                (
+                    recording
+                    for recording in candidates
+                    if any(
+                        _matching_artist_credit(recording.artist_credit, artist.name)
+                        for artist in track.artists
+                    )
+                ),
+                None,
+            )
+        )
+        if chosen is None:
+            return None
+        with suppress(InvalidDataError):
+            return await self.get_recording_details(chosen.id)
+        return None
+
+    @staticmethod
+    def _reverse_lookup_urls(item: Artist | Album | Track) -> list[str]:
+        """
+        Return the streaming service URLs to reverse-look up an item by, a few at most.
+
+        The canonical URL of one mapping per provider comes first (so no single provider
+        crowds out the others), then the remaining mappings' own URLs.
+        """
+        mappings = sorted(
+            item.provider_mappings, key=lambda mapping: (mapping.provider_domain, mapping.item_id)
+        )
+        urls: list[str] = []
+        for domain in REVERSE_URL_DOMAINS:
+            if not (mapping := next((m for m in mappings if m.provider_domain == domain), None)):
+                continue
+            storefront = None
+            if domain == "apple_music" and mapping.url:
+                storefront = apple_storefront_from_url(mapping.url)
+            if url := canonical_provider_url(domain, item.media_type, mapping.item_id, storefront):
+                urls.append(url)
+                # the mapping's own URL is the same item in a form MusicBrainz may not store
+                mappings.remove(mapping)
+        for mapping in mappings:
+            url = mapping.url or ""
+            if is_public_catalog_url(url) and url not in urls:
+                urls.append(url)
+        return urls[:MAX_REVERSE_URL_LOOKUPS]
+
+
+def relation_urls(relations: Iterable[MusicBrainzRelation] | None) -> list[str]:
+    """
+    Return the URLs of the current URL relations of a MusicBrainz entity, without duplicates.
+
+    :param relations: URL relations as carried by an artist, release or recording.
+    """
+    urls: list[str] = []
+    for relation in relations or ():
+        if relation.url and not relation.ended and relation.url.resource not in urls:
+            urls.append(relation.url.resource)
+    return urls
+
+
+def is_digital_release(release: MusicBrainzBarcodeRelease) -> bool:
+    """
+    Return whether a MusicBrainz release has a digital medium.
+
+    :param release: The release as a barcode search or a release group browse lists it.
+    """
+    return any(medium.format == "Digital Media" for medium in release.media)
+
+
+def is_public_catalog_url(url: str) -> bool:
+    """
+    Return whether a URL points at a public catalog host MusicBrainz links to as given.
+
+    :param url: The URL of a MusicBrainz URL relation or of a provider mapping.
+    """
+    if not url.startswith(("http://", "https://")):
+        return False
+    host = urlsplit(url).netloc.lower()
+    return any(host == public or host.endswith(f".{public}") for public in REVERSE_URL_HOSTS)
+
+
+def release_matches_album(release: MusicBrainzRelease, album: Album) -> bool:
+    """
+    Return whether a MusicBrainz release is the given album, by title and primary artist.
+
+    :param release: The release, with its artist credits.
+    :param album: The album as a music provider or the library has it.
+    """
+    if not compare_album_name(release.title, album.name):
+        return False
+    if not album.artists:
+        return True
+    if not release.artist_credit:
+        return False
+    # MusicBrainz credits a compilation to Various Artists whatever the provider says
+    primary_credit = release.artist_credit[0]
+    return primary_credit.artist.id == VARIOUS_ARTISTS_MBID or bool(
+        _matching_artist_credit([primary_credit], album.artists[0].name)
+    )
+
+
+def _matching_artist_credit(
+    artist_credits: Sequence[MusicBrainzArtistCredit], artist_name: str
+) -> MusicBrainzArtist | None:
+    """Return the credited artist whose name or alias matches, an exact match preferred."""
+    for strict in (True, False):
+        for artist_credit in artist_credits:
+            if compare_strings(artist_credit.artist.name, artist_name, strict):
+                return artist_credit.artist
+            for alias in artist_credit.artist.aliases or []:
+                if compare_strings(alias.name, artist_name, strict):
+                    return artist_credit.artist
+    return None
+
+
+def _credits_primary_artist(
+    artist_credits: Sequence[MusicBrainzArtistCredit] | None, artist_name: str
+) -> bool:
+    """Return whether the first artist credit of a release is the given artist."""
+    if not artist_credits:
+        return False
+    return bool(_matching_artist_credit(artist_credits[:1], artist_name))
+
+
+def _edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool, str]:
+    """Return the sort key ranking a barcode's releases, the likeliest edition first."""
+    return (
+        release.status != "Official",
+        not is_digital_release(release),
+        release.country not in ("XW", "XE"),
+        release.date or "9999",
+    )
+
+
+def _track_count(release: MusicBrainzBarcodeRelease) -> int:
+    """Return the number of tracks over all media of a release."""
+    return sum(medium.track_count for medium in release.media)
+
+
+def _length_matches(recording: MusicBrainzRecording, track: Track) -> bool:
+    """Return whether a recording's length is close enough to the track's duration."""
+    if recording.length is None or not track.duration:
+        return True
+    return abs(recording.length - track.duration * 1000) <= RECORDING_LENGTH_TOLERANCE_MS
+
+
+def _external_ids(
+    item: Artist | Album | Track, id_type: ExternalID, is_valid: Callable[[str], bool]
+) -> list[str]:
+    """Return the valid external ids of a type an item carries, in a stable order."""
+    return sorted(
+        {value for kind, value in item.external_ids if kind == id_type and is_valid(value)}
+    )
+
+
+def _has_mb_release_id(album: Album) -> bool:
+    """Return whether an album carries a MusicBrainz release or release group id."""
+    return bool(
+        album.get_external_id(ExternalID.MB_RELEASEGROUP)
+        or album.get_external_id(ExternalID.MB_ALBUM)
+    )
+
+
+def _has_barcode(album: Album) -> bool:
+    """Return whether an album carries a valid barcode."""
+    return bool(_external_ids(album, ExternalID.BARCODE, is_valid_barcode))
+
+
+def _has_isrc(track: Track) -> bool:
+    """Return whether a track carries a valid ISRC."""
+    return bool(_external_ids(track, ExternalID.ISRC, is_valid_isrc))
+
+
+def _first[ItemT](items: Sequence[ItemT], predicate: Callable[[ItemT], bool]) -> list[ItemT]:
+    """Return the first few items that satisfy the predicate, as many as one lookup leg spends."""
+    return [item for item in items if predicate(item)][:MAX_REF_ITEMS]
 
 
 def _is_various_artists_release(release: dict[str, Any]) -> bool:
@@ -716,11 +1265,25 @@ def _is_various_artists_release(release: dict[str, Any]) -> bool:
     )
 
 
-def _release_year(release_date: str) -> int | None:
+def _release_datetime(release_date: str | None) -> datetime | None:
     """
-    Read the year off a MusicBrainz date of any precision.
+    Return a MusicBrainz date as a datetime, when it is a full date.
 
     :param release_date: MusicBrainz date, as a year, year-month or full date.
-    :return: The year, or None if the date is absent or unparsable.
+    :return: The date, or None if it is absent or not precise to the day.
     """
-    return int(year) if (year := release_date[:4]).isdigit() else None
+    if not release_date or len(release_date) != len("YYYY-MM-DD"):
+        return None
+    try:
+        return datetime.fromisoformat(release_date).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _genre_names(*genre_lists: Sequence[MusicBrainzTag] | None) -> set[str] | None:
+    """
+    Return the names of MusicBrainz genres, or None when there are none.
+
+    :param genre_lists: Genres as carried by an artist, release group, release or recording.
+    """
+    return {genre.name for genres in genre_lists for genre in genres or ()} or None

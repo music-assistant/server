@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from pywiim.model_names import is_known_wiim_model
 from wiim.consts import MANUFACTURER_AUDIO_PRO, MANUFACTURER_WIIM
 
 from .constants import PLAYER_ID_PREFIX
@@ -56,6 +57,35 @@ def is_official_manufacturer(manufacturer: str | None) -> bool:
         return False
     manufacturer = manufacturer.lower()
     return any(official.lower() in manufacturer for official in OFFICIAL_MANUFACTURERS)
+
+
+def is_official_device(manufacturer: str | None, model: str | None) -> bool:
+    """
+    Return whether a discovered device should be driven by the official WiiM/Audio Pro SDK.
+
+    :param manufacturer: The manufacturer string from the device's UPnP description.
+    :param model: The model name from the device's UPnP description.
+    """
+    if not manufacturer or not is_official_manufacturer(manufacturer):
+        return False
+    if MANUFACTURER_AUDIO_PRO.lower() in manufacturer.lower():
+        return True
+    # Generic LinkPlay OEM devices advertise the same Linkplay manufacturer as WiiM
+    # products, so the model name is needed to tell them apart.
+    return is_wiim_model(model)
+
+
+def is_wiim_model(model: str | None) -> bool:
+    """
+    Return whether a UPnP model name identifies a WiiM product.
+
+    :param model: The model name from the device's UPnP description.
+    """
+    if not model:
+        return False
+    # pywiim covers the raw firmware aliases such as "Muzo_Mini", the prefix check
+    # covers the marketing names such as "WiiM Pro" and any future model.
+    return is_known_wiim_model(model) or model.strip().lower().startswith("wiim")
 
 
 def linkplay_slave_uuid_to_udn(slave_uuid: str) -> str | None:

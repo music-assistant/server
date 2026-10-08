@@ -71,7 +71,11 @@ from music_assistant.constants import (
     PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
@@ -162,13 +166,13 @@ class PlayerConfigMixin:
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
-        for key, raw_conf in list(self.get(CONF_PLAYERS, {}).items()):
-            # guard against malformed entries that lost their base keys
-            # (can happen via race between delete_player_config and a stale player
-            # update writing back a nested sub-key, which recreates a partial dict).
-            if not isinstance(raw_conf, dict) or "player_id" not in raw_conf:
-                LOGGER.warning("Removing malformed player config entry %s (missing player_id)", key)
-                self.remove(f"{CONF_PLAYERS}/{key}")
+        for key, stored_conf in list(self.get(CONF_PLAYERS, {}).items()):
+            # heal or drop a malformed entry that lost its base keys: a partial dict
+            # resurrected by a nested config-set (a stale write-back racing a delete, or
+            # a leftover from an older version). player_id/provider are recovered when
+            # possible, else the unreconstructable entry is pruned.
+            raw_conf = self._ensure_player_config_base_keys(key, stored_conf)
+            if raw_conf is None:
                 continue
             # optional provider filter
             if provider is not None and raw_conf.get("provider") != provider:
@@ -211,6 +215,16 @@ class PlayerConfigMixin:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
+            player = self.mass.players.get_player(player_id, False)
+            # recover the mandatory base keys (or prune an unreconstructable ghost) up front,
+            # so a partial dict left by an older version cannot crash the value stripping or
+            # PlayerConfig.parse below, and the repair is persisted for both branches
+            recovered = self._ensure_player_config_base_keys(
+                player_id, raw_conf, provider=player.provider.instance_id if player else None
+            )
+            if recovered is None:
+                raise KeyError(f"No config found for player id {player_id}")
+            raw_conf = recovered
             # protocol- and plugin-prefixed entries are virtual mirrors of another config
             # (the linked protocol player resp. the plugin provider is the canonical store).
             # Drop any that linger in this player's persisted values so a stale copy can never
@@ -222,7 +236,7 @@ class PlayerConfigMixin:
                     if CONF_PROTOCOL_KEY_SPLITTER in key or CONF_PLUGIN_KEY_SPLITTER in key
                 ]:
                     del stored_values[key]
-            if player := self.mass.players.get_player(player_id, False):
+            if player:
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
                 config_entries = await self.get_player_config_entries(
@@ -239,13 +253,12 @@ class PlayerConfigMixin:
                         raw_conf["values"] = {}
                     raw_conf["values"].update(plugin_values)
             else:
-                # handle unavailable player and/or provider
+                # handle unavailable player
                 config_entries = []
                 raw_conf["available"] = False
                 raw_conf["default_name"] = (
                     raw_conf.get("default_name") or raw_conf.get("player_id") or player_id
                 )
-                raw_conf.setdefault("player_id", player_id)
 
             conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
             _apply_raw_player_icon_value(conf, raw_conf.get("values", {}))
@@ -434,7 +447,7 @@ class PlayerConfigMixin:
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
             if not unpack_splitted_values:
-                return raw_value
+                return _mask_encrypted(raw_value)
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
             if default is not None:
@@ -442,8 +455,8 @@ class PlayerConfigMixin:
             msg = f"Config key {key} not found for player {player_id}"
             raise KeyError(msg)
         if unpack_splitted_values:
-            return conf.values[key].get_splitted_values()
-        return (
+            return _mask_encrypted(conf.values[key].get_splitted_values())
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -485,11 +498,12 @@ class PlayerConfigMixin:
         This is used to get the base config for a player, without any provider specific values,
         for initialization purposes.
         """
-        if not (raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}")):
-            raw_conf = {
-                "player_id": player_id,
-                "provider": provider,
-            }
+        raw_conf = self.get(f"{CONF_PLAYERS}/{player_id}")
+        raw_conf = dict(raw_conf) if isinstance(raw_conf, dict) else {}
+        # a partial entry left on disk by an older version can miss its base keys; the
+        # caller passes the authoritative values, so recover them instead of crashing parse
+        raw_conf.setdefault("player_id", player_id)
+        raw_conf.setdefault("provider", provider)
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
     @api_command("config/players/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
@@ -497,6 +511,7 @@ class PlayerConfigMixin:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
+        _reject_encrypted_values(values)
         values = await self._update_output_protocol_config(values)
         values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -600,8 +615,16 @@ class PlayerConfigMixin:
         This is meant as helper to create default configs when a player is registered.
         Called by the player manager on player register.
         """
-        # return early if the config already exists
-        if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+        # return early if a usable (mapping) config already exists; a non-mapping root is
+        # corrupt and falls through to be overwritten by the default write below
+        if isinstance(existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"), dict):
+            # heal a partial entry that lost its base keys (a ghost left by an older
+            # version): the root exists so these nested writes cannot resurrect a partial
+            # dict, and persisting here keeps the entry valid for every later read
+            if "player_id" not in existing_conf:
+                self.set(f"{CONF_PLAYERS}/{player_id}/player_id", player_id)
+            if "provider" not in existing_conf:
+                self.set(f"{CONF_PLAYERS}/{player_id}/provider", provider)
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
@@ -650,6 +673,45 @@ class PlayerConfigMixin:
                 entry := player.config.values.get(key)
             ):
                 entry.value = value
+
+    def _ensure_player_config_base_keys(
+        self, player_id: str, raw_conf: Any, provider: str | None = None
+    ) -> dict[str, Any] | None:
+        """
+        Return a copy of a stored raw player config with its base keys ensured, or None.
+
+        A partial entry left on disk by an older version can miss the mandatory
+        player_id/provider keys (a ghost resurrected by a nested config-set), which
+        crashes PlayerConfig.parse. player_id is taken from the lookup key and provider
+        from the passed value or the live player. When the entry is not a mapping, or its
+        provider cannot be recovered, it is an unreconstructable ghost: it is removed and
+        None is returned so the caller treats it as absent.
+        """
+        if not isinstance(raw_conf, dict):
+            LOGGER.warning("Removing malformed player config entry %s (not a mapping)", player_id)
+            self.remove(f"{CONF_PLAYERS}/{player_id}")
+            return None
+        conf = dict(raw_conf)
+        add_player_id = "player_id" not in conf
+        add_provider = "provider" not in conf
+        if add_provider and provider is None:
+            if not (player := self.mass.players.get_player(player_id, False)):
+                LOGGER.warning(
+                    "Removing malformed player config entry %s (missing provider)", player_id
+                )
+                self.remove(f"{CONF_PLAYERS}/{player_id}")
+                return None
+            provider = player.provider.instance_id
+        # recover the missing base keys and persist them so the repair survives (the entry
+        # root exists here, so a nested set cannot resurrect a partial dict) and the stored
+        # values are not lost to a later prune once the player goes offline
+        if add_player_id:
+            conf["player_id"] = player_id
+            self.set(f"{CONF_PLAYERS}/{player_id}/player_id", player_id)
+        if add_provider:
+            conf["provider"] = provider
+            self.set(f"{CONF_PLAYERS}/{player_id}/provider", provider)
+        return conf
 
     async def _get_player_config_entries(
         self,
@@ -853,20 +915,24 @@ class PlayerConfigMixin:
         if player.supports_feature(PlayerFeature.VOLUME_SET) or auto_option in volume_options:
             mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
+        power_entry = ConfigEntry(
+            key=CONF_POWER_CONTROL,
+            type=ConfigEntryType.STRING,
+            default_value=_first_enabled_control_value(power_options),
+            required=False,
+            options=[
+                *power_options,
+                *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
+            ],
+            category="player_controls",
+        )
+        if is_group:
+            # group volume and mute are always fanned out to the members and use each
+            # member's own control, so a group only gets the (opt-in) power control
+            return [power_entry]
         # return final config entries for all options
         return [
-            # Power control config entry
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                default_value=_first_enabled_control_value(power_options),
-                required=False,
-                options=[
-                    *power_options,
-                    *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
-                ],
-                category="player_controls",
-            ),
+            power_entry,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
@@ -898,7 +964,7 @@ class PlayerConfigMixin:
             # For group players, power on/off is purely a "capture members"
             # toggle (Fake control) and auto-starting playback there causes
             # surprise playback when the user just wanted to pin the group.
-            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
+            CONF_ENTRY_AUTO_PLAY,
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

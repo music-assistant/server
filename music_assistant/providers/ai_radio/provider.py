@@ -1,4 +1,19 @@
-"""AI Radio Plugin Provider for Music Assistant."""
+"""
+AI Radio Plugin Provider for Music Assistant.
+
+State changes are announced to connected clients as PROVIDER_EVENT events with
+``object_id`` set to this provider's instance_id (``ai_radio``; the plugin is single
+instance). Every payload is a refetch hint without state::
+
+    {"event": "hosts_updated"}      -> refetch ai_radio/hosts/list
+    {"event": "stations_updated"}   -> refetch ai_radio/stations/list
+    {"event": "sections_updated"}   -> refetch ai_radio/sections/list
+    {"event": "queue_dj_updated"}   -> refetch ai_radio/queue_dj/status
+    {"event": "sessions_updated"}   -> refetch ai_radio/status
+
+The status endpoints apply the caller's player access, which is why the events themselves
+carry nothing.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +26,10 @@ from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    SetupFailedError,
+)
 
 from music_assistant.helpers.plugin_engines import (
     get_tts_engines,
@@ -27,11 +45,12 @@ from .constants import (
     ENGINE_DISCOVERY_TIMEOUT,
     ENGINE_RECHECK_GRACE,
     ENGINE_RETRY_DELAY,
+    EVENT_SESSIONS_UPDATED,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
 )
-from .helpers import utc_now_iso
+from .helpers import check_player_access, has_player_access, utc_now_iso
 from .hosts import AIRadioHostsMixin
 from .models import DJQueueState, SessionState
 from .queue_dj import AIRadioQueueDJMixin
@@ -142,15 +161,28 @@ class AIRadioProvider(
             ("ai_radio/queue_dj/set", self.set_queue_dj),
             ("ai_radio/queue_dj/status", self.get_queue_dj_status),
         )
+        # playing a station takes what playing anything takes, and the stations are part of
+        # what everyone browses; creating and editing them configures the plugin
+        playback_scopes = {
+            "ai_radio/stations/list": Scope.LIBRARY_READ,
+            "ai_radio/stations/get": Scope.LIBRARY_READ,
+            "ai_radio/sections/list": Scope.LIBRARY_READ,
+            "ai_radio/sections/get": Scope.LIBRARY_READ,
+            "ai_radio/start": Scope.QUEUES_CONTROL,
+            "ai_radio/stop": Scope.QUEUES_CONTROL,
+            "ai_radio/status": Scope.QUEUES_READ,
+        }
         for command, handler in api_handlers:
             # the queue DJ menu is queue state, not provider config: a client allowed to
             # arm it must also be allowed to read back what is armed
             if command.startswith("ai_radio/queue_dj/"):
                 required_scope = Scope.QUEUES_CONTROL
+            elif command in playback_scopes:
+                required_scope = playback_scopes[command]
             else:
                 required_scope = (
                     Scope.CONFIG_PROVIDERS_READ
-                    if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
+                    if command.endswith(("/list", "/get", "/template", "/validate"))
                     else Scope.CONFIG_PROVIDERS_WRITE
                 )
             self._unregister_handles.append(
@@ -382,6 +414,7 @@ class AIRadioProvider(
         player_id = str(station.get("default_player_id") or "").strip()
         if not player_id:
             raise InvalidDataError("AI Radio requires a target player")
+        check_player_access(player_id)
         player = self.mass.players.get_player(player_id)
         if player is None:
             raise InvalidDataError(f"Unknown target player: {player_id}")
@@ -417,6 +450,7 @@ class AIRadioProvider(
             session = SessionState(
                 session_id=session_id,
                 station_id=station_id,
+                player_id=player_id,
             )
             self._sessions[session_id] = session
             self._prune_finished_sessions()
@@ -424,6 +458,7 @@ class AIRadioProvider(
                 self._run_session(session_id, program),
                 task_id=f"ai_radio_session_{session_id}",
             )
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         self.logger.debug(
             "AI Radio session started: session=%s station=%s",
             session_id,
@@ -438,12 +473,14 @@ class AIRadioProvider(
     ) -> dict[str, Any]:
         """Stop an active run."""
         selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
+        check_player_access(selected.player_id, selected.queue_id)
 
         # cancel first so the run cannot queue another batch after playback stopped
         if selected.task and not selected.task.done():
             selected.task.cancel()
         selected.status = "stopped"
         selected.ended_at = utc_now_iso()
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         await self._stop_session_queue(selected)
         self.logger.info(
             "AI Radio session stopped: session=%s station=%s",
@@ -453,12 +490,17 @@ class AIRadioProvider(
         return selected.as_dict()
 
     async def get_status(self, session_id: str | None = None) -> dict[str, Any]:
-        """Return run status information."""
+        """Return the status of the runs on the players the calling user may use."""
+        visible = {
+            key: session
+            for key, session in self._sessions.items()
+            if has_player_access(session.player_id, session.queue_id)
+        }
         if session_id:
-            if session_id not in self._sessions:
+            if session_id not in visible:
                 raise KeyError(f"Unknown session id: {session_id}")
-            return {"sessions": [self._sessions[session_id].as_dict()]}
-        sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
+            return {"sessions": [visible[session_id].as_dict()]}
+        sessions = sorted(visible.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
 
     async def _wait_for_engines(self, timeout: float | None = None) -> None:

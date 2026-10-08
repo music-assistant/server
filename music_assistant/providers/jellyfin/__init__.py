@@ -7,6 +7,7 @@ import socket
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import NotFound, authenticate_by_name
@@ -132,6 +133,14 @@ class JellyfinProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Return an accessible Jellyfin artwork URL.
+
+        :param path: Artwork URL or provider path to resolve.
+        """
+        return _normalize_jellyfin_media_url(path)
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
         resultset = (
@@ -399,9 +408,10 @@ class JellyfinProvider(MusicProvider):
             jellyfin_track = await self._client.get_track(item_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {item_id} not found")
-        url = self._client.audio_url(
+        audio_url = self._client.audio_url(
             jellyfin_track[ITEM_KEY_ID], container=SUPPORTED_CONTAINER_FORMATS
         )
+        url = _normalize_jellyfin_media_url(audio_url)
         runtime_ticks = jellyfin_track.get(ITEM_KEY_RUNTIME_TICKS)
         return StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
@@ -448,3 +458,14 @@ class JellyfinProvider(MusicProvider):
             if library.get(ITEM_KEY_COLLECTION_TYPE) == COLLECTION_TYPE_PLAYLISTS:
                 result.append(library)
         return result
+
+
+def _normalize_jellyfin_media_url(url: str) -> str:
+    """Return a media URL using Jellyfin's supported auth parameter."""
+    parsed = urlsplit(url)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    if not any(key.lower() == "api_key" for key, _ in query):
+        return url
+
+    query = [("apiKey" if key.lower() == "api_key" else key, value) for key, value in query]
+    return urlunsplit(parsed._replace(query=urlencode(query)))

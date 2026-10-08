@@ -55,7 +55,7 @@ class TestPeriodicRefresh:
         """No row count delta → no rebuild calls and counter stays put."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 42
-        mock_mass.music.database.get_count_from_query = AsyncMock(return_value=42)
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=42)
         plugin._rebuild_search_index = AsyncMock()
         plugin._rebuild_clap_index_from_database = AsyncMock()
 
@@ -72,7 +72,7 @@ class TestPeriodicRefresh:
         """Row count grew → both indexes rebuild; the real _rebuild_search_index bumps the counter."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 10
-        mock_mass.music.database.get_count_from_query = AsyncMock(return_value=15)
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=15)
         # Real _rebuild_search_index runs end-to-end (iter_merged is empty) and
         # bumps _last_seen_row_count via its own pre-count snapshot.
         plugin._rebuild_clap_index_from_database = AsyncMock()
@@ -89,7 +89,7 @@ class TestPeriodicRefresh:
         """Defensive: a row-count drop also triggers rebuild (handles future deletes)."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 50
-        mock_mass.music.database.get_count_from_query = AsyncMock(return_value=40)
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=40)
         plugin._rebuild_clap_index_from_database = AsyncMock()
 
         await plugin._periodic_refresh()
@@ -104,7 +104,7 @@ class TestPeriodicRefresh:
         """A failing 18-dim rebuild leaves the counter untouched so the next tick retries."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 10
-        mock_mass.music.database.get_count_from_query = AsyncMock(return_value=15)
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=15)
         # _rebuild_search_index raises → _safe_rebuild swallows into _last_rebuild_error
         # → counter is never advanced because the pre-count bump line is unreached.
         plugin._rebuild_search_index = AsyncMock(side_effect=RuntimeError("disk full"))
@@ -122,7 +122,9 @@ class TestPeriodicRefresh:
         """If the count query itself fails, skip the tick — no rebuild attempted."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 10
-        mock_mass.music.database.get_count_from_query = AsyncMock(side_effect=RuntimeError("oops"))
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(
+            side_effect=RuntimeError("oops")
+        )
         plugin._rebuild_search_index = AsyncMock()
         plugin._rebuild_clap_index_from_database = AsyncMock()
 
@@ -139,7 +141,7 @@ class TestPeriodicRefresh:
         """When CLAP isn't configured, only 18-dim is rebuilt."""
         plugin = make_plugin()  # clap_enabled=False → _clap_index stays None
         plugin._last_seen_row_count = 0
-        mock_mass.music.database.get_count_from_query = AsyncMock(return_value=5)
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=5)
         plugin._rebuild_clap_index_from_database = AsyncMock()
 
         await plugin._periodic_refresh()

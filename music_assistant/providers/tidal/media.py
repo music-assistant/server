@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
 from music_assistant_models.media_items import SearchResults
+
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
 from .parsers import (
@@ -35,10 +43,12 @@ from .parsers_v2 import (
 from .parsers_v2 import (
     parse_track as parse_track_v2,
 )
+from .quality_variants import Variant, album_variant_key, group_quality_variants, track_variant_key
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
+    from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
 
@@ -132,6 +142,36 @@ class TidalMediaManager:
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
+    async def get_track_id_by_isrc(self, isrc: str) -> str | None:
+        """Return the id of the preferred Tidal track carrying the given (canonical) ISRC."""
+        # The filter endpoint returns a page of matches with no page-size control,
+        # so only the id of the first (preferred) match is taken here.
+        doc = await self.api.get_jsonapi("tracks", params={"filter[isrc]": isrc})
+        return str(doc.data_list[0]["id"]) if doc.data_list else None
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        track_id = await self.get_track_id_by_isrc(isrc)
+        return await self.provider.get_track(track_id) if track_id else None
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        doc = await self.api.get_jsonapi(
+            "albums", params={"filter[barcodeId]": barcode_to_upc(external_id)}
+        )
+        if not doc.data_list:
+            return None
+        return await self.provider.get_album(str(doc.data_list[0]["id"]))
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details."""
         try:
@@ -197,25 +237,36 @@ class TidalMediaManager:
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
+        # Tidal lists an album once per quality tier; keep one per album.
+        pages = [
+            doc
+            async for doc in self.api.paginate_jsonapi(
+                f"artists/{prov_artist_id}/relationships/albums",
+                include=["albums.artists", "albums.coverArt"],
+                replace_media="albums",
+            )
+        ]
         albums: list[Album] = []
-        async for doc in self.api.paginate_jsonapi(
-            f"artists/{prov_artist_id}/relationships/albums",
-            include=["albums.artists", "albums.coverArt"],
-            replace_media="albums",
-        ):
-            albums.extend(_parse_items(parse_album_v2, self.provider, doc))
+        for group in group_quality_variants(pages, album_variant_key):
+            if (album := _parse_first_variant(parse_album_v2, self.provider, group)) is not None:
+                albums.append(album)
         return albums
 
     async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get all artist tracks."""
+        pages = [
+            doc
+            async for doc in self.api.paginate_jsonapi(
+                f"artists/{prov_artist_id}/relationships/tracks",
+                params={"collapseBy": "FINGERPRINT"},
+                include=["tracks.artists", "tracks.albums.coverArt"],
+                replace_media="tracks",
+            )
+        ]
         tracks: list[Track] = []
-        async for doc in self.api.paginate_jsonapi(
-            f"artists/{prov_artist_id}/relationships/tracks",
-            params={"collapseBy": "FINGERPRINT"},
-            include=["tracks.artists", "tracks.albums.coverArt"],
-            replace_media="tracks",
-        ):
-            tracks.extend(_parse_items(parse_track_v2, self.provider, doc))
+        for group in group_quality_variants(pages, track_variant_key):
+            if (track := _parse_first_variant(parse_track_v2, self.provider, group)) is not None:
+                tracks.append(track)
         return tracks
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -227,7 +278,11 @@ class TidalMediaManager:
             include=["tracks.artists", "tracks.albums.coverArt"],
             replace_media="tracks",
         )
-        return _parse_items(parse_track_v2, self.provider, doc)
+        tracks: list[Track] = []
+        for group in group_quality_variants([doc], track_variant_key):
+            if (track := _parse_first_variant(parse_track_v2, self.provider, group)) is not None:
+                tracks.append(track)
+        return tracks
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks."""
@@ -387,3 +442,15 @@ class TidalMediaManager:
                 if key in module:
                     return cast("dict[str, Any]", module)
         return None
+
+
+def _parse_first_variant[ItemT](
+    parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+    provider: TidalProvider,
+    group: list[Variant],
+) -> ItemT | None:
+    """Return the first candidate of a variant group that parses, or None."""
+    for doc, resource in group:
+        if (item := _parse_or_skip(parser, provider, doc, resource)) is not None:
+            return item
+    return None

@@ -189,19 +189,10 @@ def is_origin_allowed_for_request(
     if not forwarded_host:
         return False
 
-    try:
-        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
-            is_request_from_ingress,
-        )
-    except ImportError, ModuleNotFoundError:
-        # ``music_assistant`` is a dev-only / test-extras dep here; absent in
-        # the bare provider venv. Fail closed without log noise.
-        return False
-    except Exception:
-        # Anything else (e.g. partial module init breakage upstream) is a real
-        # surprise — log so it's debuggable, then fail closed.
-        LOGGER.exception("Connect Wizard: unexpected error importing ingress helper")
-        return False
+    from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+        is_request_from_ingress,
+    )
+
     try:
         if not is_request_from_ingress(request):
             return False

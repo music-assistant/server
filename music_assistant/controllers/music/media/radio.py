@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -23,7 +24,10 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_radio,
@@ -50,7 +54,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -121,9 +125,7 @@ class RadioController(MediaControllerBase[Radio]):
         )
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
-            item_id
-        )
+        return await cast("MediaCatalogMixin", provider).get_dynamic_radio_tracks(item_id)
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -154,7 +156,9 @@ class RadioController(MediaControllerBase[Radio]):
         user = get_current_user()
         return self.mass.tasks.run_background_task(
             name=f"Import {len(parsed_items)} radio stations",
-            handler=lambda: self._handle_import_radios(parsed_items),
+            handler=lambda: self._handle_import_radios(
+                parsed_items, user.user_id if user else None
+            ),
             translation_key="import_radios",
             translation_owner=self.translation_owner,
             translation_args=[len(parsed_items)],
@@ -271,7 +275,6 @@ class RadioController(MediaControllerBase[Radio]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(
@@ -329,15 +332,24 @@ class RadioController(MediaControllerBase[Radio]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
-        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item = cast("RadioSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.is_dynamic = bool(db_row["is_dynamic"])
         item.metadata.description = db_row["description"]
         return item
 
-    async def _handle_import_radios(self, parsed_items: list[PlaylistItem]) -> None:
+    async def _handle_import_radios(
+        self, parsed_items: list[PlaylistItem], user_id: str | None
+    ) -> None:
         """Add the parsed M3U entries to the library, one station at a time."""
+        if user_id:
+            if (user := await self.mass.webserver.auth.get_user(user_id)) is None:
+                raise InsufficientPermissions("The user that queued this import no longer exists")
+            # the task runs outside the session of the user that queued it
+            set_current_user(user)
         total = len(parsed_items)
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
@@ -405,4 +417,6 @@ class RadioController(MediaControllerBase[Radio]):
         # the refetch also discards anything set on the object passed in, so the exported
         # favorite goes onto the library item
         if (item.metadata or {}).get("favorite") == "true":
-            await self.set_favorite(library_item.item_id, True)
+            await self.set_favorite(
+                library_item.item_id, True, await self.mass.music.acting_user_ids()
+            )

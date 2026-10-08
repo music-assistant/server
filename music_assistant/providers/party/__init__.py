@@ -22,6 +22,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
+from music_assistant.constants import CONF_ENABLED
 from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -464,15 +465,22 @@ class PartyPlugin(PluginProvider):
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
+        # 3. The plugin itself is disabled (its config is saved as disabled before unload)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE stored value, which also covers reloads that are triggered
-        # outside of a config save. The default must match the config entry's default_value:
+        # Note: We read the LIVE stored values, which also covers reloads that are triggered
+        # outside of a config save. The defaults must match the stored config defaults:
         # only values that differ from their default are persisted, so switching guest access
         # off drops the key entirely.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
-        if is_removed or not guest_access_enabled:
+        if (
+            is_removed
+            or not guest_access_enabled
+            or not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_ENABLED, default=True
+            )
+        ):
             self.logger.debug("Revoking guest tokens...")
             await self._revoke_guest_tokens()
 
@@ -1011,7 +1019,7 @@ class PartyPlugin(PluginProvider):
         """
         Revoke all guest access tokens and codes for party.
 
-        This is called when guest access is disabled or the plugin is removed.
+        This is called when guest access or the plugin is disabled, or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,
         revoke tokens so they can't reconnect, and invalidate pending join codes.
         """

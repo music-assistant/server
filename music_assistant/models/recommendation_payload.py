@@ -68,6 +68,9 @@ class RecommendationPayloadMixin(_MixinBase):
     recommendation_payload_ttl: int = 3600
     """Seconds a fetched payload is served as fresh. Subclasses may override."""
 
+    recommendation_payload_version: str | None = None
+    """Bump when the payload shape changes, so a payload persisted by older code is ignored."""
+
     _recommendation_payload_task: asyncio.Task[list[RecommendationFolder]] | None = None
     _recommendation_refresh_task: asyncio.Task[list[RecommendationFolder]] | None = None
     _recommendation_payload_memory: list[RecommendationFolder] | None = None
@@ -170,6 +173,7 @@ class RecommendationPayloadMixin(_MixinBase):
             data, is_fresh, found = await self.mass.cache.get_with_freshness(
                 _PAYLOAD_CACHE_KEY,
                 provider=self.instance_id,
+                checksum=self.recommendation_payload_version,
                 base_class=RecommendationFolder,
                 include_expired=True,
             )
@@ -202,6 +206,7 @@ class RecommendationPayloadMixin(_MixinBase):
                 data=cast("SerializableType", payload),
                 expiration=self.recommendation_payload_ttl,
                 provider=self.instance_id,
+                checksum=self.recommendation_payload_version,
                 persistent=True,
                 allow_expired_cache=True,
             )

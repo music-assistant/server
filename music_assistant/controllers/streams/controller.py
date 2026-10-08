@@ -12,14 +12,18 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
+from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
+from mashumaro import DataClassDictMixin
 from music_assistant_models.audio_processing import AudioQueueProcessing
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -95,6 +99,7 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
@@ -109,6 +114,11 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    request_priority,
+    set_request_priority,
+)
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
@@ -142,7 +152,7 @@ isfile = wrap(os.path.isfile)
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     """Return the normalization modes that can be picked as a preference."""
     return [
-        ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
+        ConfigValueOption(mode.value)
         for mode in VolumeNormalizationMode
         if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     ]
@@ -209,6 +219,22 @@ def _get_publish_addresses(
 
 class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
+
+
+# the probe route answers any origin: a browser on the local network calls it cross-origin
+_INFO_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+@dataclass
+class StreamServerInfo(DataClassDictMixin):
+    """The address players are handed to fetch audio from, as it is in use right now."""
+
+    base_url: str
 
 
 class StreamsController(CoreController):
@@ -282,6 +308,11 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    @api_command("streams/info", required_scope=Scope.CONFIG_CORE_READ)
+    def get_streamserver_info(self) -> StreamServerInfo:
+        """Return the address the streamserver is currently reachable on for players."""
+        return StreamServerInfo(base_url=self.base_url)
 
     async def get_source_ip(self, target_ip: str | None = None) -> str | None:
         """
@@ -445,6 +476,7 @@ class StreamsController(CoreController):
                 category="generic",
                 advanced=True,
                 requires_reload=True,
+                validate=_is_valid_publish_ip,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -498,6 +530,18 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
+        raw_publish_ip = self.mass.config.get_raw_core_config_value(self.domain, CONF_PUBLISH_IP)
+        if not _is_valid_publish_ip(raw_publish_ip):
+            # config parsing already swapped the invalid stored value for auto; reset the
+            # stored value too, so the setting reads back as auto and this warns only once
+            self.logger.warning(
+                "Published IP address %r in the streams settings is not an IP address, "
+                "resetting it to auto",
+                raw_publish_ip,
+            )
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_PUBLISH_IP, CONF_VALUE_AUTO
+            )
         publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
         self._resolve_publish_state(bind_ip, publish_candidates)
@@ -531,6 +575,8 @@ class StreamsController(CoreController):
                     LIVE_ANNOUNCEMENT_STREAM_PATH,
                     self.live_announcements.serve_stream,
                 ),
+                ("GET", "/info", self._handle_info_request),
+                ("OPTIONS", "/info", self._handle_info_preflight),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -555,6 +601,8 @@ class StreamsController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
+        # the music library migrations have moved any legacy analysis rows over by now
+        await self._audio_analysis.setup_database()
         # the inbound half of a live announcement rides on the webserver: it is the only
         # one of the two servers that authenticates (and that browsers reach over https)
         self.live_announcements.setup()
@@ -656,6 +704,8 @@ class StreamsController(CoreController):
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
+        # what a stream request asks of a provider is playback
+        set_request_priority(RequestPriority.HIGH)
         queue_id = request.match_info["queue_id"]
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
@@ -786,8 +836,11 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine
-                    if not isinstance(e, ProviderStreamLimitError):
+                    # a source capacity miss is transient, the item itself is fine.
+                    # neither is a HEAD probe a playback attempt: renderers probe
+                    # speculatively (Sonos at every track boundary), so one transient
+                    # error there must not condemn an item the following GET can play
+                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -826,6 +879,7 @@ class StreamsController(CoreController):
                 content_sample_rate=pcm_format.sample_rate,
                 content_bit_depth=pcm_format.bit_depth,
                 media_type=queue_item.media_type,
+                source_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
@@ -944,12 +998,11 @@ class StreamsController(CoreController):
             else:
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
-                elif player.provider.domain == "musiccast":
-                    # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
+                    pacing = PacingProfile.LOW_LATENCY
+                elif queue_item.streamdetails.is_realtime:
+                    pacing = PacingProfile.NEAR_REALTIME
                 else:
-                    pacing = "default"
+                    pacing = PacingProfile.DEFAULT
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1092,6 +1145,8 @@ class StreamsController(CoreController):
     async def serve_audio_source_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream a live AudioSource playing on a player."""
         self._log_request(request)
+        # what a stream request asks of a provider is playback
+        set_request_priority(RequestPriority.HIGH)
         session, player, prov = self._resolve_audio_source_request(request)
         playback_session_id = session.playback_session_id
         # the session's own player, never the url's: the consuming player differs for
@@ -1201,6 +1256,8 @@ class StreamsController(CoreController):
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
         self._log_request(request)
+        # what a stream request asks of a provider is playback
+        set_request_priority(RequestPriority.HIGH)
         queue_id = request.match_info["queue_id"]
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
@@ -1212,7 +1269,7 @@ class StreamsController(CoreController):
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
-        start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
+        start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
@@ -1236,6 +1293,11 @@ class StreamsController(CoreController):
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
             media_type=start_queue_item.media_type,
+            source_bit_depth=(
+                start_queue_item.streamdetails.audio_format.bit_depth
+                if start_queue_item.streamdetails
+                else 16
+            ),
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
@@ -1305,6 +1367,7 @@ class StreamsController(CoreController):
             pcm_format=flow_pcm_format,
             session_id=session_id,
             protocol_player=player,
+            consumer_connected=lambda: request.transport is not None,
         )
         if overlay_active(queue):
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
@@ -1317,7 +1380,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=output_pacing_args(),
+            # one continuous stream, so the player gains nothing from running far ahead
+            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1399,13 +1463,24 @@ class StreamsController(CoreController):
         if queue_data is None or queue_data.session_id != session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         command = request.match_info["command"]
-        if command == "next":
+        if queue_data.last_served_item_id is None:
+            # the session rotates when a new item starts loading, so a command fetched before
+            # any of its audio went out follows the superseded stream and would skip a track
+            self.logger.debug(
+                "Ignoring %s command for queue %s: session %s has not streamed yet",
+                command,
+                queue_id,
+                session_id,
+            )
+        elif command == "next":
             self.mass.create_task(self.mass.player_queues.next(queue_id))
         return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
 
     async def serve_announcement_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream announcement audio to a player."""
         self._log_request(request)
+        # what a stream request asks of a provider is playback
+        set_request_priority(RequestPriority.HIGH)
         player_id = request.match_info["player_id"]
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -1603,9 +1678,7 @@ class StreamsController(CoreController):
             if flow_mode:
                 # flow stream request
                 assert queue
-                start_queue_item = self.mass.player_queues.get_item(
-                    media.source_id, media.queue_item_id
-                )
+                start_queue_item = self._get_flow_start_item(queue, media.queue_item_id)
                 assert start_queue_item
                 self._update_audio_processing_context(
                     queue=queue,
@@ -1703,7 +1776,8 @@ class StreamsController(CoreController):
             msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
             raise InvalidDataError(msg) from err
 
-        streamdetails = await music_prov.get_stream_details(item_id, media_type)
+        with request_priority(RequestPriority.HIGH):
+            streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
@@ -1935,7 +2009,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args("low_latency"),
+            extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
     async def _get_audio_source_session_stream(
@@ -1981,9 +2055,10 @@ class StreamsController(CoreController):
             ):
                 raise AudioError("AudioSource session was superseded")
             if (streamdetails := session.streamdetails) is None:
-                streamdetails = await prov.get_stream_details(
-                    session.source_id, MediaType.AUDIO_SOURCE
-                )
+                with request_priority(RequestPriority.HIGH):
+                    streamdetails = await prov.get_stream_details(
+                        session.source_id, MediaType.AUDIO_SOURCE
+                    )
                 session.attach_streamdetails(streamdetails)
             self._update_audio_source_processing_context(session, prov)
             serving = True
@@ -2193,6 +2268,20 @@ class StreamsController(CoreController):
             return "default"
         return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
+    def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
+        """
+        Return the item a flow stream of the queue's current session starts at.
+
+        :param queue: The queue to stream.
+        :param queue_item_id: The item the session started at.
+        """
+        queue_data = self.mass.player_queues.queue_data(queue.queue_id)
+        if queue_data.flow_mode_stream_log and queue.current_item:
+            # a stream of this session already played, so this is a player that reconnects
+            # or restarts its stream: it continues at the item that plays now
+            queue_item_id = queue.current_item.queue_item_id
+        return self.mass.player_queues.get_item(queue.queue_id, queue_item_id)
+
     async def _finish_flow_stream(
         self, resp: web.StreamResponse, queue_id: str, session_id: str
     ) -> None:
@@ -2320,10 +2409,35 @@ class StreamsController(CoreController):
         self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
+    async def _handle_info_request(self, request: web.Request) -> web.Response:
+        """Answer a reachability probe with this server's id."""
+        # a browser on the local network checks whether the published address leads to
+        # this server; the id is public already, the webserver's /info reports it too
+        return web.json_response({"server_id": self.mass.server_id}, headers=_INFO_CORS_HEADERS)
+
+    async def _handle_info_preflight(self, request: web.Request) -> web.Response:
+        """Answer the CORS preflight a browser may send ahead of a probe."""
+        return web.Response(status=204, headers=_INFO_CORS_HEADERS)
+
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _is_valid_publish_ip(value: ConfigValueType) -> bool:
+    """Return whether a configured publish IP value is usable: auto, empty or an IP address."""
+    if not value or value == CONF_VALUE_AUTO:
+        return True
+    if not isinstance(value, str):
+        return False
+    # consumers hand the publish IP to APIs that only take IP literals (mDNS, AirPlay),
+    # so a hostname is rejected rather than resolved
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _root_cause(err: BaseException) -> BaseException:

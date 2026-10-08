@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NoReturn
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
@@ -123,6 +123,7 @@ class FFMpeg(AsyncProcess):
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
         self.concat_error = False  # switch to True if concat demuxer fails on MultiPartFiles
+        self._uses_concat_demuxer = "concat" in (extra_input_args or [])
         # Audio format details for the input and output stream as detected from ffmpeg's
         # own stderr probe output. input_stream_info is also mirrored onto self.input_format
         # so callers that share the AudioFormat (e.g. streamdetails) pick up the corrected
@@ -226,9 +227,10 @@ class FFMpeg(AsyncProcess):
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
                 self.logger.debug("FFmpeg: %s", line)
 
-            if "Error during demuxing" in line:
+            if self._uses_concat_demuxer and "Error during demuxing" in line:
                 # this can occur if using the concat demuxer for multipart files
-                # and should raise an exception to prevent false progress logging
+                # and should raise an exception to prevent false progress logging.
+                # Other inputs log it harmlessly, e.g. a chunked HTTP source at EOF.
                 self.concat_error = True
 
             # Track which ffmpeg block we're currently parsing so the next 'Stream #'
@@ -285,6 +287,13 @@ class FFMpeg(AsyncProcess):
                 await self.write(chunk)
         except asyncio.CancelledError:
             status = "cancelled"
+            task = asyncio.current_task()
+            assert task is not None
+            # only cancelling this task skips the EOF below, as it could block on a
+            # pipe nobody drains anymore; a source-raised cancellation is a clean
+            # end that still flushes
+            if task.cancelling():
+                cancelled = True
             raise
         except Exception:
             status = "aborted with error"
@@ -333,13 +342,9 @@ class FFMpeg(AsyncProcess):
 
     def _is_expected_task_error(self, err: BaseException) -> bool:
         """Return whether a helper task error is an expected outcome rather than a failure."""
-        # deferred import: the provider models pull the controller graph in at
-        # import time, which this low-level helper must stay clear of
-        from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
-
         # a provider with no free source-stream slot is a normal outcome of a
         # speculative prefetch: the caller retries once the current stream releases it
-        return isinstance(err, ProviderStreamLimitError)
+        return _is_stream_limit_error(err)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -429,7 +434,7 @@ async def get_ffmpeg_stream(
         log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
         raise AudioError(log_tail)
     if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+        _raise_feeder_error(feeder_exception)
 
 
 async def get_ffmpeg_overlay_stream(
@@ -476,7 +481,7 @@ async def get_ffmpeg_overlay_stream(
         log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
         raise AudioError(log_tail)
     if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+        _raise_feeder_error(feeder_exception)
 
 
 def get_ffmpeg_resample_filter(
@@ -567,6 +572,13 @@ def get_ffmpeg_args(
                 # that would trigger Range-less restarts from byte 0. MA-initiated seeks
                 # still work via -ss decode-and-discard.
                 input_args += ["-seekable", "0"]
+            if "-ss" in input_args and {
+                input_format.content_type,
+                input_format.codec_type,
+            } & {ContentType.MP3, ContentType.MPEG}:
+                # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
+                # jumps there by byte offset via a Range request instead
+                _add_input_fflag(input_args, "+fastseek")
         if input_format.content_type.is_pcm():
             input_args += [
                 *get_ffmpeg_channel_args(input_format),
@@ -586,6 +598,7 @@ def get_ffmpeg_args(
         input_args += ["-i", input_path]
 
     # collect output args
+    # anything below that moves the encoded size needs OUTPUT_ENCODING_REVISION bumped too
     output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
         # devnull stream: nothing is encoded here, so there is no channel count to declare
@@ -628,7 +641,9 @@ def get_ffmpeg_args(
             "wav",
         ]
     elif output_format.content_type == ContentType.FLAC:
-        # use level 0 compression for fastest encoding
+        # level 0 for the fastest encoding, but it sizes the block by time. That gives
+        # 1152 samples at 44.1kHz where libFLAC uses 4096 from -5 up, so 3.5x the frame
+        # headers and CRCs for the same audio: 22% more to encode, 43% more to decode.
         sample_fmt = "s32" if output_format.bit_depth > 16 else "s16"
         output_args += [
             "-sample_fmt",
@@ -639,6 +654,8 @@ def get_ffmpeg_args(
             "flac",
             "-compression_level",
             "0",
+            "-frame_size",
+            "4096",
         ]
     else:
         raise RuntimeError("Invalid/unsupported output format specified")
@@ -926,3 +943,36 @@ def _build_filtergraph_args(
     flush_pending()
 
     return input_args, ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
+
+
+def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
+    """
+    Raise the error that made feeding audio to FFmpeg fail.
+
+    :param feeder_exception: The exception raised by the FFmpeg stdin feeder.
+    :raises ProviderStreamLimitError: When the source had no free stream slot.
+    :raises AudioError: For any other feeder failure, caused by the feeder exception.
+    """
+    # keep the capacity error's type so callers can tell a busy source apart
+    if _is_stream_limit_error(feeder_exception):
+        raise feeder_exception
+    raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+
+
+def _is_stream_limit_error(err: BaseException) -> bool:
+    """Return whether the error means a provider had no free source-stream slot."""
+    # deferred import: the provider models pull the controller graph in at
+    # import time, which this low-level helper must stay clear of
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+    return isinstance(err, ProviderStreamLimitError)
+
+
+def _add_input_fflag(input_args: list[str], flag: str) -> None:
+    """Add a format flag to the input, merging into an existing -fflags option."""
+    if "-fflags" in input_args:
+        # ffmpeg only honours the last -fflags given to an input
+        idx = len(input_args) - input_args[::-1].index("-fflags")
+        input_args[idx] += flag
+    else:
+        input_args += ["-fflags", flag]

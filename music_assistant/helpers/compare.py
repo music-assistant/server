@@ -933,10 +933,11 @@ def compare_external_ids(
     external_id_type: ExternalID,
 ) -> bool | None:
     """Compare external ids and return True if a match was found."""
+    validate_isrc = external_id_type == ExternalID.ISRC
     base_ids = {
         normalize_external_id(external_id_type, value)
         for current_type, value in external_ids_base
-        if current_type == external_id_type
+        if current_type == external_id_type and (not validate_isrc or is_valid_isrc(value))
     }
     if not base_ids:
         # return early if the requested external id type is not present in the base set
@@ -944,7 +945,7 @@ def compare_external_ids(
     compare_ids = {
         normalize_external_id(external_id_type, value)
         for current_type, value in external_ids_compare
-        if current_type == external_id_type
+        if current_type == external_id_type and (not validate_isrc or is_valid_isrc(value))
     }
     if not compare_ids:
         # return early if the requested external id type is not present in the compare set

@@ -7,12 +7,19 @@ import os
 import sys
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from music_assistant.helpers import process as process_module
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.process import (
+    AsyncProcess,
+    check_output,
+    collect_child_process_counts,
+    get_subprocess_env,
+    parse_child_process_name,
+)
 
 # Comfortably beyond the OS pipe capacity plus asyncio's default high-water mark,
 # so the bytes are guaranteed to still be queued in our own write buffer.
@@ -359,3 +366,87 @@ async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
             await proc.close()
 
     assert proc.returncode is not None
+
+
+def test_parse_child_process_name() -> None:
+    """Test that a /proc stat line yields the process name only for a matching parent."""
+    # comm may contain spaces and parentheses; ppid is the field after the state field
+    stat = "4321 (ffmpeg (edit)) S 100 4321 4321 0 -1 4194304\n"
+    assert parse_child_process_name(stat, parent_pid=100) == "ffmpeg (edit)"
+    assert parse_child_process_name(stat, parent_pid=999) is None
+    assert parse_child_process_name("garbage without fields", parent_pid=100) is None
+
+
+def test_collect_child_process_counts(tmp_path: Path) -> None:
+    """Test that children of the given pid are counted by name from a fake /proc."""
+
+    def _write(pid: int, comm: str, ppid: int, state: str = "S") -> None:
+        proc_dir = tmp_path / str(pid)
+        proc_dir.mkdir()
+        (proc_dir / "stat").write_text(f"{pid} ({comm}) {state} {ppid} {pid} {pid} 0 -1\n")
+
+    _write(11, "ffmpeg", ppid=100)
+    _write(12, "ffmpeg", ppid=100)
+    _write(13, "librespot", ppid=100)
+    _write(14, "ffmpeg", ppid=999)  # child of another process, not counted
+    _write(15, "ffmpeg", ppid=100, state="Z")  # a defunct child is the leak signal, still counted
+    (tmp_path / "self").mkdir()  # non-numeric entries are skipped
+    (tmp_path / "42").mkdir()  # a process that exits mid-walk leaves no stat file
+    assert collect_child_process_counts(tmp_path, parent_pid=100) == {"ffmpeg": 3, "librespot": 1}
+    # no children of this pid
+    assert collect_child_process_counts(tmp_path, parent_pid=555) == {}
+    # /proc absent, for example on non-Linux platforms
+    assert collect_child_process_counts(tmp_path / "nowhere", parent_pid=100) is None
+
+
+def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) -> None:
+    """Test that a child whose name holds non-UTF-8 bytes is counted, not raised on."""
+    proc_dir = tmp_path / "16"
+    proc_dir.mkdir()
+    (proc_dir / "stat").write_bytes(b"16 (odd\xff name) S 100 16 16 0 -1\n")
+    counts = collect_child_process_counts(tmp_path, parent_pid=100)
+    assert counts is not None
+    assert sum(counts.values()) == 1
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> None:
+    """A command that does not finish in time is killed with everything it started."""
+    pid_file = tmp_path / "child.pid"
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await check_output("sh", "-c", f"sleep 30 & echo $! > {pid_file}; wait", timeout=0.5)
+    assert time.monotonic() - start < 10
+
+    child_pid = int(pid_file.read_text())
+    for _ in range(50):
+        if not _is_running(child_pid):
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail("the child process outlived the timeout")
+
+
+def test_get_subprocess_env_drops_supervisor_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child processes do not inherit the Supervisor tokens but keep everything else."""
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
+    monkeypatch.setenv("MA_TEST_KEEP", "kept")
+
+    env = get_subprocess_env({"MA_TEST_OVERRIDE": "1", "MA_TEST_KEEP": "overridden"})
+
+    assert "SUPERVISOR_TOKEN" not in env
+    assert "HASSIO_TOKEN" not in env
+    assert env["MA_TEST_KEEP"] == "overridden"
+    assert env["MA_TEST_OVERRIDE"] == "1"
+    assert get_subprocess_env()["MA_TEST_KEEP"] == "kept"
+
+
+def _is_running(pid: int) -> bool:
+    """Return whether a process runs; a killed one nobody reaped yet (a zombie) does not."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    # the state follows the command name, which is wrapped in parentheses
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"

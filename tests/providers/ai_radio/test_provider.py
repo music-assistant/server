@@ -13,6 +13,7 @@ import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
     SetupFailedError,
@@ -21,9 +22,11 @@ from music_assistant_models.errors import (
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio import provider as ai_radio_provider
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_SESSION_ID,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
     ENGINE_RETRY_DELAY,
+    EVENT_SESSIONS_UPDATED,
     MAX_FINISHED_SESSIONS,
 )
 from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
@@ -49,6 +52,7 @@ def _make_provider() -> AIRadioProvider:
     provider = AIRadioProvider.__new__(AIRadioProvider)
     provider._sessions = {}
     provider._session_lock = asyncio.Lock()
+    provider.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     return provider
 
 
@@ -84,6 +88,7 @@ def provider(tmp_path: Path) -> AIRadioProvider:
     instance._dj_queues = {}
     instance._hosts_file = tmp_path / "hosts.json"
     instance._sections = {item["id"]: item for item in instance._default_sections_template()}
+    instance.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     return instance
 
 
@@ -840,7 +845,6 @@ async def test_queue_dj_commands_are_registered_as_queue_control() -> None:
     }
     assert scopes["ai_radio/queue_dj/set"] == Scope.QUEUES_CONTROL
     assert scopes["ai_radio/queue_dj/status"] == Scope.QUEUES_CONTROL
-    assert scopes["ai_radio/status"] == Scope.CONFIG_PROVIDERS_READ
 
 
 async def test_unload_cancels_an_in_flight_engine_recheck() -> None:
@@ -944,3 +948,258 @@ async def test_engine_watchdog_arms_a_reload_after_unloading(
     retry = cast("Any", provider.mass).call_later.call_args
     assert retry.args == (ENGINE_RETRY_DELAY, provider.mass.load_provider, "ai_radio")
     assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_ai_radio"}
+
+
+async def test_stations_are_played_by_everyone_and_edited_by_admins() -> None:
+    """Listing and playing a station takes what playing anything takes; editing configures it."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+
+    await provider.loaded_in_mass()
+
+    scopes = {
+        call.args[0]: call.kwargs["required_scope"]
+        for call in cast("Any", provider.mass).register_api_command.call_args_list
+    }
+    for command in (
+        "ai_radio/stations/list",
+        "ai_radio/stations/get",
+        "ai_radio/sections/list",
+        "ai_radio/sections/get",
+    ):
+        assert scopes[command] == Scope.LIBRARY_READ
+    assert scopes["ai_radio/start"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/stop"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/status"] == Scope.QUEUES_READ
+    for command in (
+        "ai_radio/hosts/list",
+        "ai_radio/hosts/get",
+        "ai_radio/hosts/template",
+        "ai_radio/hosts/presets/list",
+        "ai_radio/engines/tts/list",
+        "ai_radio/stations/template",
+        "ai_radio/stations/validate",
+        "ai_radio/sections/template",
+    ):
+        assert scopes[command] == Scope.CONFIG_PROVIDERS_READ
+    for command in (
+        "ai_radio/stations/save",
+        "ai_radio/stations/delete",
+        "ai_radio/sections/save",
+        "ai_radio/sections/delete",
+        "ai_radio/hosts/save",
+        "ai_radio/hosts/delete",
+    ):
+        assert scopes[command] == Scope.CONFIG_PROVIDERS_WRITE
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+@pytest.mark.parametrize(
+    "player_obj",
+    [SimpleNamespace(player_id="living_room", available=True, enabled=True), None],
+    ids=["existing", "unknown"],
+)
+async def test_start_run_refuses_a_player_the_user_has_no_access_to(player_obj: object) -> None:
+    """A member restricted to some players is refused another one, whether it exists or not."""
+    provider = _make_dynamic_provider(player_obj=player_obj, default_player_id="living_room")
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await provider.start_run(station_id="station_a")
+
+    assert provider._sessions == {}
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_start_run_lets_a_member_play_on_a_player_it_has_access_to() -> None:
+    """A member starts a station on a player it may use and sees that run in the status."""
+    player = SimpleNamespace(player_id="kitchen", available=True, enabled=True)
+    provider = _make_dynamic_provider(player_obj=player, default_player_id="kitchen")
+    provider.logger = logging.getLogger("tests.ai_radio.provider")
+    provider._stations["station_a"]["host_id"] = "host_a"
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            players=SimpleNamespace(get_player=lambda _player_id: player),
+            create_task=lambda coro, **_kw: _close(coro),
+        ),
+    )
+
+    started = await provider.start_run(station_id="station_a")
+
+    assert provider._sessions[started["session_id"]].player_id == "kitchen"
+    status = await provider.get_status()
+    assert [session["session_id"] for session in status["sessions"]] == [started["session_id"]]
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+@pytest.mark.parametrize(
+    ("player_id", "queue_id"),
+    [("living_room", None), ("kitchen", "living_room")],
+    ids=["starting", "grouped"],
+)
+async def test_stop_run_refuses_a_run_on_a_player_the_user_has_no_access_to(
+    player_id: str, queue_id: str | None
+) -> None:
+    """A member restricted to some players can not stop a run that plays or will play elsewhere."""
+    provider = _make_provider()
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any", SimpleNamespace(player_queues=SimpleNamespace(stop=_recording_stop(stopped)))
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run",
+        station_id="st",
+        player_id=player_id,
+        status="running",
+        queue_id=queue_id,
+    )
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await provider.stop_run(session_id="s_run")
+
+    assert provider._sessions["s_run"].status == "running"
+    assert stopped == []
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_stop_run_lets_a_member_stop_a_run_on_a_player_it_has_access_to() -> None:
+    """A member stops a station playing on a player it may use."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_recording_stop(stopped),
+            )
+        ),
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run",
+        station_id="st",
+        player_id="kitchen",
+        status="running",
+        queue_id="kitchen",
+    )
+
+    result = await provider.stop_run(session_id="s_run")
+
+    assert result["status"] == "stopped"
+    assert stopped == ["kitchen"]
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_status_only_shows_the_runs_on_players_the_user_has_access_to() -> None:
+    """A member restricted to some players does not see the runs on the other ones."""
+    provider = _make_provider()
+    for session_id, player_id, queue_id in (
+        ("s_kitchen", "kitchen", "kitchen"),
+        ("s_living", "living_room", None),
+        ("s_group", "kitchen", "living_room"),
+    ):
+        provider._sessions[session_id] = SessionState(
+            session_id=session_id, station_id="st", player_id=player_id, queue_id=queue_id
+        )
+
+    status = await provider.get_status()
+    single = await provider.get_status(session_id="s_kitchen")
+
+    assert [session["session_id"] for session in status["sessions"]] == ["s_kitchen"]
+    assert [session["session_id"] for session in single["sessions"]] == ["s_kitchen"]
+    for hidden in ("s_living", "s_group"):
+        with pytest.raises(KeyError):
+            await provider.get_status(session_id=hidden)
+
+
+async def test_stop_run_emits_a_sessions_hint() -> None:
+    """Stopping a run announces a hint before the queue is stopped."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    hinted_before_stop: list[bool] = []
+
+    async def _stop(_queue_id: str) -> None:
+        hinted_before_stop.append(cast("MagicMock", provider.signal_provider_event).called)
+
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_stop,
+            )
+        ),
+    )
+    session = SessionState(
+        session_id="s1", station_id="station_a", status="running", queue_id="living_room"
+    )
+    provider._sessions[session.session_id] = session
+
+    await provider.stop_run(session_id="s1")
+
+    assert session.status == "stopped"
+    assert hinted_before_stop == [True]
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )
+
+
+def test_record_skip_emits_a_sessions_hint() -> None:
+    """A skipped clip bumps the session counters and announces a hint."""
+    provider = _make_provider()
+    session = SessionState(session_id="s1", station_id="station_a")
+    provider._sessions[session.session_id] = session
+    queue_item = SimpleNamespace(extra_attributes={ATTR_SESSION_ID: "s1"})
+
+    provider._record_skip(cast("Any", queue_item), "tts down")
+
+    assert session.skipped_sections == 1
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )
+
+
+async def test_start_run_emits_a_sessions_hint() -> None:
+    """Creating a run announces a hint once the session is registered."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
+    provider._stations = {
+        "station_a": {
+            "id": "station_a",
+            "name": "Station A",
+            "source_playlist_id": "1",
+            "source_playlist_provider": "library",
+            "default_player_id": "living_room",
+            "host_id": "host_a",
+        }
+    }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            players=SimpleNamespace(get_player=lambda _player_id: player),
+            create_task=lambda coro, **_kw: coro.close(),
+        ),
+    )
+
+    await provider.start_run(station_id="station_a")
+
+    cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
+        {"event": EVENT_SESSIONS_UPDATED}
+    )

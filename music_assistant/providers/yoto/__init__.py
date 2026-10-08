@@ -39,8 +39,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 from yoto_api import Card as YotoCard
 from yoto_api import Chapter as YotoChapter
+from yoto_api import Token as YotoToken
 from yoto_api import YotoAPIError, YotoClient, YotoError
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.models.music_provider import MusicProvider
 
 from .setup_flow import CONF_CLIENT_ID, CONF_REFRESH_TOKEN
@@ -85,12 +87,12 @@ class YotoProvider(MusicProvider):
         if not client_id or not refresh_token:
             raise LoginFailed("Missing Yoto credentials")
 
-        self.client = YotoClient(client_id=client_id, session=self.mass.http_session)
+        self.client = YotoClient(
+            client_id=client_id, session=self.mass.http_session, refresh_hook=self._refresh_hook
+        )
         self.client.set_refresh_token(refresh_token)
         try:
-            token = await self.client.check_and_refresh_token()
-            if token.refresh_token and token.refresh_token != refresh_token:
-                self._update_setup_data(CONF_REFRESH_TOKEN, token.refresh_token)
+            await self.client.check_and_refresh_token()
         except YotoError as err:
             raise LoginFailed(f"Yoto login via refresh token failed: {err}") from err
         await self._handle_yoto_api_call(self.client.update_library())
@@ -330,8 +332,6 @@ class YotoProvider(MusicProvider):
 
     async def _handle_yoto_api_call(self, api_call: Awaitable[None]) -> None:
         """Handle Yoto API calls and wrap errors in appropriate exceptions."""
-        assert self.client.token
-        refresh_token = self.client.token.refresh_token
         try:
             await api_call
         except YotoAPIError as err:
@@ -361,9 +361,6 @@ class YotoProvider(MusicProvider):
             raise ResourceTemporarilyUnavailable(f"Error returned from Yoto API: {err}") from err
         except TimeoutError:
             raise ResourceTemporarilyUnavailable("Error returned from Yoto API: Timeout")
-        finally:
-            if refresh_token != self.client.token.refresh_token:
-                self._update_setup_data(CONF_REFRESH_TOKEN, self.client.token.refresh_token)
 
     def _parse_album(self, card: YotoCard) -> Album:
         """
@@ -569,6 +566,7 @@ class YotoProvider(MusicProvider):
                 )
                 if card.cover_image_large
                 else None,
+                genres={DEFAULT_AUDIOBOOK_PODCAST_GENRE},
             ),
         )
 
@@ -660,3 +658,8 @@ class YotoProvider(MusicProvider):
                 )
             else:
                 self.logger.warning(f"No tracks found for radio station {station.key}")
+
+    async def _refresh_hook(self, token: YotoToken) -> None:
+        """Store updated refresh token."""
+        if token.refresh_token:
+            self._update_setup_data(CONF_REFRESH_TOKEN, token.refresh_token)

@@ -12,18 +12,25 @@ from typing import Any, cast
 
 import pytest
 from music_assistant_models.enums import EventType, MediaType
-from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    MusicAssistantError,
+)
 
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
     ATTR_HOST_ID,
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
+    EVENT_QUEUE_DJ_UPDATED,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState
 from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
+
+from .events import ProviderEventRecorder
 
 
 class FakeQueue:
@@ -133,7 +140,7 @@ class StubConfig:
         return default
 
 
-class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
+class DummyQueueDJ(ProviderEventRecorder, AIRadioQueueDJMixin, AIRadioStorageMixin):
     """Minimal harness for queue DJ state tests."""
 
     instance_id = "ai_radio_test"
@@ -161,7 +168,9 @@ class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
         self.replanned.append(queue_id)
 
 
-class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixin):
+class ReplanQueueDJ(
+    ProviderEventRecorder, AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixin
+):
     """Harness combining the queue DJ mixin with the real planner and clip builder."""
 
     instance_id = "ai_radio_test"
@@ -360,6 +369,32 @@ async def test_status_returns_mapping(tmp_path: Path) -> None:
     dummy = DummyQueueDJ(tmp_path)
     await dummy.set_queue_dj("queue-1", "rick")
     assert await dummy.get_queue_dj_status() == {"queue-1": "rick"}
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_set_queue_dj_refuses_a_queue_the_user_has_no_access_to(tmp_path: Path) -> None:
+    """A member restricted to some players can not arm or clear the DJ of another queue."""
+    dummy = DummyQueueDJ(tmp_path)
+    dummy._arm_dj_state("living_room", "rick")
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await dummy.set_queue_dj("living_room", None)
+    with pytest.raises(InsufficientPermissions, match="garage"):
+        await dummy.set_queue_dj("garage", "rick")
+
+    assert set(dummy._dj_queues) == {"living_room"}
+    assert not dummy._dj_file.exists()
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_status_only_shows_the_queues_the_user_has_access_to(tmp_path: Path) -> None:
+    """A member restricted to some players does not see the DJs of the other queues."""
+    dummy = DummyQueueDJ(tmp_path)
+    dummy._arm_dj_state("living_room", "rick")
+
+    assert await dummy.set_queue_dj("kitchen", "rick") == {"kitchen": "rick"}
+    assert await dummy.get_queue_dj_status() == {"kitchen": "rick"}
+    assert set(dummy._dj_queues) == {"kitchen", "living_room"}
 
 
 async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> None:
@@ -1354,3 +1389,51 @@ async def test_dj_clip_is_sound_effect_media_type(tmp_path: Path) -> None:
     clip = dummy._section_to_clip_item("queue-1", "sess", {"id": "", "host_id": "rick"}, section)
     assert clip.media_item is not None
     assert clip.media_item.media_type == MediaType.SOUND_EFFECT
+
+
+async def test_set_queue_dj_emits_a_queue_dj_hint_on_enable_and_disable(tmp_path: Path) -> None:
+    """Arming and disarming a queue DJ each announce one refetch hint."""
+    dummy = DummyQueueDJ(tmp_path)
+
+    await dummy.set_queue_dj("queue-1", "rick")
+    await dummy.set_queue_dj("queue-1", None)
+
+    assert dummy.provider_events == [
+        {"event": EVENT_QUEUE_DJ_UPDATED},
+        {"event": EVENT_QUEUE_DJ_UPDATED},
+    ]
+
+
+async def test_set_queue_dj_announces_the_rollback(tmp_path: Path) -> None:
+    """A failed arm rolls the state back, and clients are told to refetch that too."""
+
+    class FailingCleanupQueueDJ(DummyQueueDJ):
+        def _remove_pending_dj_clips(self, queue_id: str) -> None:
+            """Fail the clip cleanup that follows the persisted arm."""
+            raise RuntimeError("cleanup failed")
+
+    dummy = FailingCleanupQueueDJ(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        await dummy.set_queue_dj("queue-1", "rick")
+
+    assert "queue-1" not in dummy._dj_queues
+    # one hint for the persisted arm, one for the rollback that undid it in memory
+    assert dummy.provider_events == [
+        {"event": EVENT_QUEUE_DJ_UPDATED},
+        {"event": EVENT_QUEUE_DJ_UPDATED},
+    ]
+
+
+async def test_player_removed_emits_a_queue_dj_hint(tmp_path: Path) -> None:
+    """Dropping the DJ of a removed player announces a refetch hint."""
+    dummy = DummyQueueDJ(tmp_path)
+    await dummy.set_queue_dj("queue-1", "rick")
+    dummy.provider_events.clear()
+
+    await dummy._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="queue-1"))
+    )
+
+    assert "queue-1" not in dummy._dj_queues
+    assert dummy.provider_events == [{"event": EVENT_QUEUE_DJ_UPDATED}]

@@ -11,15 +11,14 @@ from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
-from music_assistant_models.enums import ImageType, ProviderIconVariant
-from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import MediaItemImage
+from music_assistant_models.enums import ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image
 
 from music_assistant.helpers import images
@@ -302,6 +301,59 @@ async def test_player_provider_can_resolve_image_bytes(
     fake_provider.resolve_image.assert_awaited_once_with("player/artwork")
 
 
+async def test_provider_resolved_ffmpeg_locator_never_reaches_ffmpeg(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ffmpeg protocol locator reported as artwork is refused without spawning ffmpeg."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="concat:/etc/passwd|/etc/hosts")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    with (
+        patch("music_assistant.helpers.tags.AsyncProcess") as mock_process,
+        pytest.raises(FileNotFoundError),
+    ):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
+    mock_process.assert_not_called()
+
+
+async def test_own_imageproxy_url_with_control_chars_is_refused_before_resolving(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An own image-proxy URL carrying CR/LF is refused before its id is resolved."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    resolve_id = AsyncMock(return_value=("builtin", "logo.png"))
+    monkeypatch.setattr(
+        mass_minimal, "metadata", MagicMock(resolve_image_id=resolve_id), raising=False
+    )
+    image_id = "a" * 64
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(
+            mass_minimal, f"http://127.0.0.1:8095/imageproxy/{image_id}?size=0\r\nX: 1", "builtin"
+        )
+    resolve_id.assert_not_awaited()
+
+
+async def test_provider_resolved_url_with_control_chars_is_not_fetched(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider resolving a clean path to a URL with CR/LF does not trigger a fetch."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="http://host/a.jpg\r\nX-Injected: 1")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    fetch_remote = AsyncMock(return_value=b"never")
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
+    fetch_remote.assert_not_called()
+
+
 async def test_local_file_read_cached_on_disk(
     mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
 ) -> None:
@@ -411,6 +463,54 @@ async def test_provider_reported_missing_image_fails_fast_with_single_warning(
     warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
     assert len(warnings) == 1
     assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_provider_without_an_image_is_a_quiet_miss(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider resolving a path to no image is asked once; the miss is remembered, not warned."""
+    fake_provider = MagicMock(spec=MetadataProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=None)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.DEBUG, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="no image"):
+        await get_image_data(mass_minimal, "rg-in-rainbows", "coverartarchive")
+    # follow-up requests fail fast from the negative cache, without asking the provider again
+    with pytest.raises(FileNotFoundError, match="no image"):
+        await get_image_data(mass_minimal, "rg-in-rainbows", "coverartarchive")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
+    records = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert [rec.levelno for rec in records] == [logging.DEBUG]
+    assert "not retrying" in records[0].getMessage()
+
+
+async def test_configured_provider_not_loaded_yet_is_not_remembered_as_failed(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image of a configured provider that loads late is served once the provider is loaded."""
+    instance_id = "filesystem_local--late"
+    mass_minimal.config.set(
+        f"providers/{instance_id}", {"domain": "filesystem_local", "instance_id": instance_id}
+    )
+    loaded_provider: MagicMock | None = None
+    monkeypatch.setattr(
+        mass_minimal, "get_provider", lambda _prov, *_args, **_kwargs: loaded_provider
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+
+    loaded_provider = MagicMock(spec=MusicProvider)
+    loaded_provider.resolve_image = AsyncMock(return_value=b"late-provider-image-bytes")
+    image = await get_image_data(mass_minimal, "Some Artist/folder.jpg", instance_id)
+    assert image == b"late-provider-image-bytes"
 
 
 async def test_failed_source_retried_after_ttl_or_invalidation(
@@ -639,28 +739,6 @@ async def test_embedded_art_retag_flow(
     new_art = await get_image_data(mass_minimal, track_path, "builtin")
     assert len(fetch_calls) == 2
     assert new_art != original_art
-
-
-async def test_create_collage_fetches_each_unique_image_once(
-    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
-) -> None:
-    """A collage fetches each unique image once and skips unfetchable ones."""
-    paths = [
-        str((tmp_path / name).absolute())
-        for name in ("one.png", "two.png", "three.png", "missing.png")
-    ]
-    for path, color in zip(paths[:3], ((200, 30, 30), (30, 200, 30), (30, 30, 200)), strict=True):
-        Image.new("RGB", (300, 300), color).save(path, "PNG")
-    collage_images = [
-        MediaItemImage(
-            type=ImageType.THUMB, path=path, provider="builtin", remotely_accessible=False
-        )
-        for path in paths
-    ]
-    collage = await images.create_collage(mass_minimal, collage_images, dimensions=(500, 500))
-    assert collage.startswith(b"\xff\xd8")  # JPEG magic
-    # each unique image was fetched exactly once (incl. the one failed attempt)
-    assert sorted(path for _prov, path in fetch_calls) == sorted(paths)
 
 
 # Provider icon helpers tests

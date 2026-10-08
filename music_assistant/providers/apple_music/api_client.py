@@ -70,6 +70,19 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
         )
 
 
+def _match_language_tag(locale: str, supported_tags: list[str]) -> str | None:
+    """Return the storefront language tag closest to the locale, if any."""
+    # Apple ignores a valid tag the storefront lacks, but rejects a malformed one with a 400.
+    language = locale.split("-", maxsplit=1)[0].lower()
+    for tag in supported_tags:
+        if tag.lower() == locale.lower():
+            return tag
+    for tag in supported_tags:
+        if tag.split("-")[0].lower() == language:
+            return tag
+    return None
+
+
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
@@ -83,6 +96,7 @@ class AppleMusicAPIClient:
         """Initialize the API client."""
         self.provider = provider
         self.logger = provider.logger
+        self._language: str | None = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -97,6 +111,8 @@ class AppleMusicAPIClient:
     async def get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """GET data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
+        if self._language and "l" not in kwargs:
+            kwargs = {**kwargs, "l": self._language}
         async with (
             self.provider.mass.http_session.get(
                 url,
@@ -242,10 +258,21 @@ class AppleMusicAPIClient:
         locale = self.provider.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         result = await self.get_data("me/storefront", l=language)
-        return cast("str", result["data"][0]["id"])
+        storefront = result["data"][0]
+        self._language = _match_language_tag(
+            locale, storefront["attributes"].get("supportedLanguageTags", [])
+        )
+        return cast("str", storefront["id"])
 
     async def get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
-        """Return a mapping of item_id → is_favourite for a list of IDs."""
+        """
+        Return the rating of each of the given items.
+
+        True is a thumbs up, False a thumbs down; an item without a rating is absent.
+
+        :param item_ids: The Apple Music item ids to look up.
+        :param media_type: Media type of the items.
+        """
         if media_type == MediaType.ARTIST:
             raise NotImplementedError(
                 "Ratings are not available for artist in the Apple Music API."

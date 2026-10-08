@@ -77,7 +77,7 @@ async def run_setup(session: SetupSession) -> None:
 async def _run_gpodder(session: SetupSession) -> None:
     """Collect classic gpodder/opodsync credentials; finish validates them by loading."""
     prefill = session.context.setup_data
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -118,13 +118,13 @@ async def _run_gpodder(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _run_nextcloud(session: SetupSession) -> None:
     """Run the Nextcloud Login Flow v2 (open URL + poll for the app password)."""
     prefill = session.context.setup_data
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -176,7 +176,7 @@ async def _run_nextcloud(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _nc_start(session: ClientSession, url_nc: str, verify_ssl: bool) -> tuple[str, str, str]:

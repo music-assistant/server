@@ -1,5 +1,6 @@
 """Regression tests for Apple Music parser and library fallbacks."""
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -260,6 +261,36 @@ def test_parse_album_regular_album_keeps_related_artists() -> None:
     assert [artist.name for artist in result.artists] == ["Paul McCartney"]
 
 
+def test_parse_album_full_release_date_sets_metadata_release_date() -> None:
+    """A full YYYY-MM-DD releaseDate is kept as a UTC datetime (needed for upcoming albums)."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "releaseDate": "2026-10-03"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert result.year == 2026
+    assert result.metadata.release_date == datetime(2026, 10, 3, tzinfo=UTC)
+
+
+def test_parse_album_year_only_release_date_keeps_year_without_date() -> None:
+    """A year-only releaseDate still sets the year but leaves release_date unset."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "releaseDate": "1998"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert result.year == 1998
+    assert result.metadata.release_date is None
+
+
 def test_parse_track_falls_back_to_album_name_when_relationship_missing() -> None:
     """Track parsing should keep album info from albumName if no album relation is present."""
     provider = _create_provider_mock()
@@ -425,7 +456,10 @@ async def test_library_tracks_request_includes_album_relations() -> None:
     _ = [track async for track in manager.get_library_tracks()]
 
     provider.api_client.iter_all_items.assert_called_once_with(
-        "me/library/songs", include="catalog,albums,artists", page_size=_TRACK_PAGE_SIZE
+        "me/library/songs",
+        include="catalog,albums,artists",
+        extend="dateAdded",
+        page_size=_TRACK_PAGE_SIZE,
     )
 
 

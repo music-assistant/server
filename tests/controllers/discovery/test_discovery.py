@@ -1,5 +1,6 @@
 """Tests for the discovery core controller."""
 
+import asyncio
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -229,6 +230,93 @@ async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) 
 
     assert result is None
     mock_service_info.assert_not_called()
+
+
+async def test_async_find_mdns_service_without_filter_matches_any_instance(
+    mass: MusicAssistant,
+) -> None:
+    """Omitting the name filter accepts whichever instance of the service type answers."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-b827eb8f8d85._amplipi._tcp.local.": {},
+    }
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        return_value=mock_info,
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=1.0)
+
+    assert result is mock_info
+    mock_service_info.assert_called_once_with(
+        "_amplipi._tcp.local.", "amplipi-b827eb8f8d85._amplipi._tcp.local."
+    )
+
+
+async def test_async_find_mdns_service_tries_past_a_stale_record(mass: MusicAssistant) -> None:
+    """A cached record that no longer answers must not starve the candidates behind it."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-one._amplipi._tcp.local.": {},
+        "amplipi-two._amplipi._tcp.local.": {},
+    }
+    attempts: list[str] = []
+
+    class _Info:
+        def __init__(self, _service_type: str, name: str) -> None:
+            self.name = name
+
+        async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+            attempts.append(self.name)
+            # candidates come off a set, so which name is tried first varies by hash seed;
+            # fail whichever it is, after burning the whole slice it was handed
+            if len(attempts) == 1:
+                await asyncio.sleep(timeout / 1000)
+                return False
+            return True
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        new=_Info,
+    ):
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=0.2)
+
+    assert len(attempts) == 2
+    assert result is not None
+    assert result.name == attempts[1]
+
+
+async def test_async_find_mdns_service_rescans_after_a_stale_request(
+    mass: MusicAssistant,
+) -> None:
+    """An instance announcing itself while a stale record is being resolved must still be found."""
+    cache = mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-stale._amplipi._tcp.local.": {},
+    }
+    attempts: list[str] = []
+
+    class _Info:
+        def __init__(self, _service_type: str, name: str) -> None:
+            self.name = name
+
+        async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+            attempts.append(self.name)
+            if "stale" in self.name:
+                # the live instance announces itself midway through the stale request
+                cache["amplipi-live._amplipi._tcp.local."] = {}
+                for waiter in mass.discovery._mdns_waiters:
+                    waiter.set()
+                await asyncio.sleep(timeout / 1000)
+                return False
+            return True
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        new=_Info,
+    ):
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=0.2)
+
+    assert result is not None
+    assert result.name == "amplipi-live._amplipi._tcp.local."
 
 
 async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssistant) -> None:

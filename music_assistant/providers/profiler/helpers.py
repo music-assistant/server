@@ -24,6 +24,7 @@ import psutil
 import yappi
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.memory import collect_cgroup_memory, collect_resident_memory_split
 
 if TYPE_CHECKING:
     import asyncio
@@ -32,6 +33,10 @@ if TYPE_CHECKING:
 RECORDER_FIELDS = (
     "ts_unix",
     "rss_mb",
+    "rss_anon_mb",
+    "rss_file_mb",
+    "rss_shmem_mb",
+    "cgroup_reported_mb",
     "cpu_pct",
     "loop_lag_avg_ms",
     "loop_lag_max_ms",
@@ -164,6 +169,8 @@ def collect_memory_stats(proc: psutil.Process) -> dict[str, Any]:
     return {
         "rss_mb": round(mem.rss / 1024**2, 1),
         "vms_mb": round(mem.vms / 1024**2, 1),
+        **collect_resident_memory_split(),
+        **collect_cgroup_memory(),
         "num_threads": proc.num_threads(),
         "open_fds": open_fds,
         "gc_enabled": gc.isenabled(),
@@ -261,6 +268,8 @@ def finalize_recorder_entry(
     """Add process-level metrics to a flight-recorder entry and append it to the stats CSV."""
     mem = proc.memory_info()
     entry["rss_mb"] = round(mem.rss / 1024**2, 1)
+    entry.update(collect_resident_memory_split())
+    entry["cgroup_reported_mb"] = collect_cgroup_memory()["cgroup_reported_mb"]
     # cpu percent is measured over the interval since the previous sample
     entry["cpu_pct"] = round(proc.cpu_percent(), 1)
     try:
@@ -332,16 +341,26 @@ def _md_table(rows: list[dict[str, Any]]) -> list[str]:
 def _append_csv_row(csv_path: str, entry: dict[str, Any]) -> None:
     """Append a recorder entry to the stats CSV, restarting the file when it grows too large."""
     path = Path(csv_path)
+    header = ",".join(RECORDER_FIELDS)
     write_header = True
     if path.is_file():
-        if path.stat().st_size > MAX_CSV_SIZE:
+        with path.open(encoding="utf-8") as _file:
+            existing_header = _file.readline().rstrip("\n")
+        # a file written by an older version has different columns, start over
+        if path.stat().st_size > MAX_CSV_SIZE or existing_header != header:
             path.unlink()
         else:
             write_header = False
     with path.open("a", encoding="utf-8") as _file:
         if write_header:
-            _file.write(",".join(RECORDER_FIELDS) + "\n")
-        _file.write(",".join(str(entry.get(field, "")) for field in RECORDER_FIELDS) + "\n")
+            _file.write(header + "\n")
+        _file.write(
+            ",".join(
+                "" if (value := entry.get(field)) is None else str(value)
+                for field in RECORDER_FIELDS
+            )
+            + "\n"
+        )
 
 
 def _process_name(proc: psutil.Process) -> str:

@@ -1,4 +1,4 @@
-"""Built-in/generic provider to handle media from files and (remote) urls."""
+"""Built-in/generic provider to handle media from (remote) urls and on-disk playlists."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
@@ -35,6 +36,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItem,
     MediaItemImage,
     MediaItemMetadata,
@@ -58,6 +61,7 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.favorites import with_user_favorites
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
@@ -65,6 +69,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
@@ -95,18 +100,17 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ALL_FAVORITE_TRACKS,
+    BUILTIN_PLAYLIST_FANART,
+    BUILTIN_PLAYLIST_IMAGE_PATHS,
+    BUILTIN_PLAYLIST_THUMBS,
     BUILTIN_PLAYLISTS,
     BUILTIN_PLAYLISTS_ENTRIES,
-    COLLAGE_IMAGE_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
-    CONF_KEY_PLAYLISTS,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
-    DEFAULT_FANART,
-    DEFAULT_THUMB,
     DYNAMIC_BUILTIN_PLAYLISTS,
     INFINITE_MIX,
     INFINITE_MIX_FAVORITES,
@@ -127,6 +131,10 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
+
+# accepted prefixes for a manual item image: a remote stream URL (embedded art carries
+# the track's own stream URL as its path) or an inline data URI, never a local file path
+REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
 
 # maximum number of detail rows rendered per table in the import matching report
 _IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
@@ -182,7 +190,7 @@ class _ImportTrackMatchResult:
 
 
 class BuiltinProvider(MusicProvider):
-    """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
+    """Built-in/generic provider for (manually added) media urls and on-disk playlists."""
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
@@ -209,8 +217,7 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # Run in the background: migrate legacy playlists and repair stored metadata drift.
-        # TODO: drop the config->M3U migration after MA 2.9, keep the repair pass
+        # Run in the background: repair stored metadata drift in the user's playlists.
         self.mass.tasks.register_scheduled_task(
             task_id="migrate_builtin_playlists",
             name="Builtin provider playlist migration",
@@ -285,20 +292,23 @@ class BuiltinProvider(MusicProvider):
                 is_editable=False,
                 is_dynamic=prov_playlist_id in DYNAMIC_BUILTIN_PLAYLISTS,
                 metadata=MediaItemMetadata(
-                    images=UniqueList([DEFAULT_THUMB])
-                    if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
-                    else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
+                    images=UniqueList(
+                        [BUILTIN_PLAYLIST_THUMBS[prov_playlist_id], BUILTIN_PLAYLIST_FANART]
+                    )
                 ),
             )
         # user created playlist - read from M3U file on disk
-        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        playlist_file = self._playlist_file(prov_playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             raise MediaNotFoundError(f"Playlist file not found: {prov_playlist_id}")
         # read playlist name and image from M3U
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
         metadata = MediaItemMetadata()
-        if image_url := parse_m3u_playlist_image(m3u_data):
+        image_url = parse_m3u_playlist_image(m3u_data)
+        # a local path is artwork written back from the library (such as a generated
+        # collage), which is not ours to serve
+        if image_url and image_url.startswith(REMOTE_IMAGE_PREFIXES):
             metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -343,6 +353,21 @@ class BuiltinProvider(MusicProvider):
                 yield await self.get_track(item["item_id"])
             except MediaNotFoundError as err:
                 self.report_skipped_sync_item(MediaType.TRACK, item["item_id"], err)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's items.
+
+        :param path: The path to browse, (e.g. builtin://playlists).
+        """
+        if path.split("://", 1)[-1].split("/", maxsplit=1)[0] == "playlists":
+            # the playlists are always library items, as that is where their access record
+            # lives: an empty listing means the caller may see none, not a library that
+            # is not synced yet, so never fall back to the raw files on disk
+            return await self.mass.music.playlists.library_items(
+                provider=self.instance_id, summary=False
+            )
+        return await super().browse(path)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
@@ -391,6 +416,9 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         else:
             return False
+        self._ensure_stream_url(item.item_id)
+        if item.image:
+            self._ensure_remote_image_url(item.image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -409,14 +437,14 @@ class BuiltinProvider(MusicProvider):
             self._update_config_value(prov_item_id, False)
             return True
         if media_type == MediaType.TRACK:
-            # regular manual track URL/path
+            # regular manual track URL
             key = CONF_KEY_TRACKS
         elif media_type == MediaType.RADIO:
-            # regular manual radio URL/path
+            # regular manual radio URL
             key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
-            playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
+            playlist_file = self._playlist_file(prov_item_id)
             # Hold both locks so the existence check and unlink cannot race other I/O.
             async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
                 if await asyncio.to_thread(os.path.isfile, playlist_file):
@@ -475,6 +503,9 @@ class BuiltinProvider(MusicProvider):
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -496,10 +527,13 @@ class BuiltinProvider(MusicProvider):
         """
         Add a track.
 
-        :param url: URL or local path.
+        :param url: Stream URL.
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -524,7 +558,9 @@ class BuiltinProvider(MusicProvider):
         if prov_playlist_id in BUILTIN_PLAYLISTS:
             if page > 0:
                 return []
-            return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+            tracks = list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+            # a cached list carries the favorite state of whoever filled it
+            return list(await with_user_favorites(self.mass, get_current_user(), tracks))
         return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -824,20 +860,31 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
+        Returns the file path of a bundled image, a remote URL / data URI as is, or a
+        bundled provider asset inside our own package directory. Any other local path is
+        user-supplied and refused: it would let the image route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
         if path in ("fanart.jpg", "fallback_fanart.jpeg"):
             return VARIOUS_ARTISTS_FANART
+        if path in BUILTIN_PLAYLIST_IMAGE_PATHS:
+            return str(RESOURCES_DIR.joinpath(path))
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
             icons_base = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME)
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
-        return path
+        if path.startswith(REMOTE_IMAGE_PREFIXES):
+            return path
+        # bundled provider assets (e.g. the AI Radio cover) are local files served through
+        # this provider; every other local path is user-supplied and refused, so it can not
+        # read an arbitrary server file
+        package_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        if Path(path).is_absolute() and is_safe_path(path, package_dir):
+            return path
+        raise FileNotFoundError(f"Invalid image reference: {path}")
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a track, radio stream, or sound effect."""
@@ -1448,8 +1495,46 @@ class BuiltinProvider(MusicProvider):
 
         return url
 
+    @staticmethod
+    def _ensure_stream_url(item_id: str) -> None:
+        """
+        Guard against a builtin track or radio that points at a local filesystem path.
+
+        The builtin provider streams remote URLs only. Local files belong to a
+        filesystem music provider, which is set up and access-controlled separately.
+
+        :param item_id: The track/radio identifier, expected to be a stream URL.
+        :raises MediaNotFoundError: If item_id is not an http(s)/rtsp/rtmp URL.
+        """
+        if not item_id.startswith(BUILTIN_URL_SCHEMES):
+            raise MediaNotFoundError(
+                "The builtin provider only supports stream URLs "
+                "(http, https, rtsp, rtmp), not local file paths"
+            )
+
+    @staticmethod
+    def _ensure_remote_image_url(image_url: str) -> None:
+        """
+        Guard against a manual item image that points at a local filesystem path.
+
+        A manually added track or radio image must be a remote URL or data URI. A local
+        path would let the image route read an arbitrary server file.
+
+        :param image_url: The image reference supplied for a manual item.
+        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
+        """
+        if not image_url.startswith(REMOTE_IMAGE_PREFIXES):
+            raise MediaNotFoundError(
+                "The builtin provider only supports remote image URLs or data URIs "
+                "for manual items, not local file paths"
+            )
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
+        # never hand a local filesystem path to ffprobe: the builtin provider streams
+        # remote URLs only, and this is the single choke point every track/radio
+        # resolve and stream call passes through
+        self._ensure_stream_url(url)
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(
             url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
@@ -1457,6 +1542,9 @@ class BuiltinProvider(MusicProvider):
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
         resolved_url = await self._resolve_url(url)
+        # a .pls can resolve to a nested entry, so re-check: a file:// entry must
+        # never reach ffprobe
+        self._ensure_stream_url(resolved_url)
         # parse info with ffprobe (and store in cache)
         media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
@@ -1466,8 +1554,19 @@ class BuiltinProvider(MusicProvider):
         )
         return media_info
 
-    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
+        # favorites are personal, so the cached playlist is keyed on the user asking
+        user = get_current_user()
+        return await self._random_favorite_tracks(user.user_id if user else None)
+
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _random_favorite_tracks(self, user_id: str | None) -> list[Track]:
+        """
+        Return the calling user's favorite tracks in random order, cached per user.
+
+        :param user_id: Only shapes the cache key: favorites are personal, the query reads
+            the calling user's own.
+        """
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
             favorite=True, limit=250000, order_by="random_play_count", summary=False
@@ -1622,9 +1721,27 @@ class BuiltinProvider(MusicProvider):
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
 
+    def _playlist_file(self, playlist_id: str) -> str:
+        """
+        Return the path of a playlist's M3U file inside the playlists folder.
+
+        :param playlist_id: The provider-side playlist id, used verbatim as the file name.
+        :raises MediaNotFoundError: The id is not a plain file name and would reach elsewhere.
+        """
+        # a playlist id doubles as its file name, so anything with a path separator
+        # ("../x", "./x", an absolute path) or a null byte must not become a file path
+        if (
+            playlist_id in ("", os.curdir, os.pardir)
+            or "\x00" in playlist_id
+            or os.sep in playlist_id
+            or (os.altsep is not None and os.altsep in playlist_id)
+        ):
+            raise MediaNotFoundError(f"Playlist not found: {playlist_id}")
+        return os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+
     async def _read_m3u_file(self, playlist_id: str) -> str:
         """Read the raw M3U file content for a playlist."""
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         # Hold the same lock delete uses for the existence check and open.
         async with self._playlist_lock:
             if not await asyncio.to_thread(os.path.isfile, playlist_file):
@@ -1642,7 +1759,7 @@ class BuiltinProvider(MusicProvider):
 
         :param playlist_id: The provider-side playlist ID to fingerprint.
         """
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             return None
         return self._playlist_generations.get(playlist_id, 0)
@@ -1668,9 +1785,7 @@ class BuiltinProvider(MusicProvider):
         counter = 1
         while True:
             async with self._get_playlist_lock(playlist_id), self._playlist_lock:
-                if not await asyncio.to_thread(
-                    os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-                ):
+                if not await asyncio.to_thread(os.path.isfile, self._playlist_file(playlist_id)):
                     # Bump the generation before creating a new file under this ID.
                     generation = self._playlist_generations[playlist_id] = (
                         self._playlist_generations.get(playlist_id, 0) + 1
@@ -1711,7 +1826,7 @@ class BuiltinProvider(MusicProvider):
         :param playlist_image_url: Optional playlist image URL to embed in the M3U header.
         """
         m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         async with aiofiles.open(playlist_file, "w", encoding="utf-8") as _file:
             await _file.write(m3u_content)
 
@@ -1755,7 +1870,7 @@ class BuiltinProvider(MusicProvider):
         self, prov_playlist_id: str, page: int
     ) -> list[PlaylistPlayableItem]:
         """Get user-created playlist tracks with caching and parallel resolution."""
-        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        playlist_file = self._playlist_file(prov_playlist_id)
         # use file mtime as cache checksum so edits invalidate the cache; nanosecond
         # resolution avoids two writes within the same second (e.g. import immediately
         # followed by a background match) sharing a checksum and hiding the second write
@@ -1855,59 +1970,12 @@ class BuiltinProvider(MusicProvider):
 
     async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """
-        Migrate old-style playlists to M3U files and repair incomplete or stale entries.
+        Repair incomplete or stale entries in the stored playlists.
 
         Raises RuntimeError when too many entries could not be resolved to keep a broken
         install from rewriting every playlist.
         """
-        # migrate playlists stored in config to M3U files on disk with enriched metadata
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        for stored_item in stored_items:
-            # keep the original item_id as filename so library DB references stay valid
-            playlist_id = stored_item["item_id"]
-            playlist_name = stored_item["name"]
-            self.logger.info("Migrating playlist '%s' to M3U format...", playlist_name)
-            update_current_task_progress_text(
-                f"Migrating playlist '{playlist_name}' to M3U format..."
-            )
-            old_file = os.path.join(self._playlists_dir, playlist_id)
-            # read old URI file and enrich each entry with full metadata
-            uris: list[str] = []
-            if await asyncio.to_thread(os.path.isfile, old_file):
-                async with aiofiles.open(old_file, encoding="utf-8") as _file:
-                    lines = await _file.readlines()
-                    uris = [line.strip() for line in lines if line.strip()]
-            entries: list[PlaylistItem] = []
-            for uri in uris:
-                try:
-                    entries.append(await self._build_m3u_entry_from_uri(uri))
-                except (
-                    MediaNotFoundError,
-                    InvalidDataError,
-                    InvalidProviderURI,
-                    ProviderUnavailableError,
-                ):
-                    # parse URI for minimal provider info so the entry is resolvable later
-                    entry = PlaylistItem(path=uri)
-                    if "://" in uri:
-                        try:
-                            domain, rest = uri.split("://", 1)
-                            media_type_str, item_id = rest.split("/", 1)
-                            entry.metadata = {"media_type": media_type_str}
-                            entry.providers = [ProviderMappingInfo(domain=domain, item_id=item_id)]
-                        except ValueError:
-                            pass
-                    entries.append(entry)
-                    self.logger.debug("Could not enrich migrated entry: %s", uri)
-            # write as {item_id}.m3u with the display name in #PLAYLIST
-            await self._write_m3u_file(playlist_id, playlist_name, entries)
-            # clean up old file (without .m3u extension)
-            if await asyncio.to_thread(os.path.isfile, old_file):
-                await asyncio.to_thread(os.remove, old_file)
-            self.logger.debug("Migrated playlist '%s' -> %s.m3u", playlist_name, playlist_id)
-        # clear old config entries
-        self.mass.config.remove(CONF_KEY_PLAYLISTS)
-        # fix (already migrated) user playlists that have unresolved URIs, or entries whose
+        # fix user playlists that have unresolved URIs, or entries whose
         # manually set name or artwork was lost, by re-saving them with enriched metadata
         errors = 0
         # built once: a lookup per entry would rescan the entire config list each time

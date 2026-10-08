@@ -498,16 +498,6 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
-    # The background tasks controller originally persisted runtime state directly under
-    # core/tasks, which could create a CoreConfig object without the required domain field.
-    # Repair that single known corruption case on load.
-    # TODO: remove after 2.9 release
-    tasks_core_config = data.get(CONF_CORE, {}).get("tasks")
-    if isinstance(tasks_core_config, dict) and "domain" not in tasks_core_config:
-        tasks_core_config["domain"] = "tasks"
-        LOGGER.warning("Repaired corrupt tasks core configuration")
-        changed = True
-
     # Drop orphaned provider config stubs: a load failure could write last_error back to a
     # provider key whose config had already been removed (e.g. removing an unsupported provider
     # while a load/retry was still in flight), leaving an entry with only a last_error and no
@@ -580,14 +570,6 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
     # TODO: remove after 2.10 release
     if _migrate_self_referential_protocol_links(data):
-        changed = True
-
-    # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
-    # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
-    # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
-    # old persisted state is orphaned and can be removed.
-    # TODO: remove after 2.9 release
-    if _migrate_metadata_maintenance_schedule(data):
         changed = True
 
     # TODO: remove after 2.10 release
@@ -1426,30 +1408,6 @@ def _migrate_self_referential_protocol_links(data: dict[str, Any]) -> bool:
             LOGGER.warning("Repaired self-referential protocol link for %s", player_id)
             changed = True
     return changed
-
-
-def _migrate_metadata_maintenance_schedule(data: dict[str, Any]) -> bool:
-    """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
-    core_config = data.get(CONF_CORE)
-    if not isinstance(core_config, dict):
-        return False
-    tasks_config = core_config.get("tasks")
-    if not isinstance(tasks_config, dict):
-        return False
-    task_states = tasks_config.get("scheduled_task_states")
-    if not isinstance(task_states, dict):
-        return False
-    legacy_task_ids = (
-        "metadata_missing_artist_metadata_scan",
-        "metadata_playlist_metadata_scan",
-        "metadata_thumb_cache_cleanup",
-    )
-    removed = [task_id for task_id in legacy_task_ids if task_id in task_states]
-    for task_id in removed:
-        del task_states[task_id]
-    if removed:
-        LOGGER.info("Removed orphaned metadata maintenance schedule state for %s", removed)
-    return bool(removed)
 
 
 def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:

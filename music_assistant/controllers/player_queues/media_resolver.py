@@ -46,6 +46,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -231,21 +232,50 @@ class MediaResolver:
                 continue
             result.append(genre_track)
 
+        provider_error: Exception | None = None
         for album in albums:
-            album_tracks = await self.get_album_tracks(album, None)
+            try:
+                album_tracks = await self.get_album_tracks(album, None)
+            except PROVIDER_FETCH_ERRORS as err:
+                # the genre is sampled best-effort: one failing album must not abort it
+                provider_error = err
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for album %s: %s",
+                    album.name,
+                    err,
+                )
+                continue
             result.extend(album_tracks[:5])
 
         for artist in artists:
-            artist_tracks = await self.mass.music.artists.top_tracks(
-                artist.item_id, artist.provider
-            )
-            if not artist_tracks:
-                # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
-                artist_tracks = await self.mass.music.artists.tracks(
+            try:
+                top_tracks = await self.mass.music.artists.top_tracks(
                     artist.item_id, artist.provider
                 )
+                # a provider can list top tracks that are all unplayable here, which must
+                # not stand in for the artist's playable tracks
+                artist_tracks = [track for track in top_tracks if track.available]
+                if not artist_tracks:
+                    # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
+                    all_tracks = await self.mass.music.artists.tracks(
+                        artist.item_id, artist.provider
+                    )
+                    artist_tracks = [track for track in all_tracks if track.available]
+            except PROVIDER_FETCH_ERRORS as err:
+                provider_error = err
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for artist %s: %s",
+                    artist.name,
+                    err,
+                )
+                continue
             random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
+        if provider_error is not None and not result:
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
@@ -379,23 +409,21 @@ class MediaResolver:
             "Fetching episode(s) and resume point to play for Podcast %s",
             podcast.name,
         )
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
         # Require exact case and keyword match to minimise false positives.
         if isinstance(episode, str) and episode in _LATEST_EPISODE_KEYWORDS:
-            # provider yields newest-first, so only pull the first episode here and skip
-            # materialising the rest, which avoids a per-episode resume lookup on each one
-            latest = await anext(
-                self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider), None
-            )
+            # the newest episode holds the highest position, whatever order the provider
+            # lists its episodes in. A tie at the top resolves to the first one listed
+            latest = max(all_episodes, key=lambda x: x.position, default=None)
             if latest is None:
                 raise InvalidDataError(
                     f"Unable to resolve episode to play for Podcast {podcast.name}"
                 )
             await self._set_episode_resume_point(latest, userid, start_from_beginning)
             return UniqueList([latest])
-        all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
-        ]
-        all_episodes.sort(key=lambda x: x.position)
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
         resolved_episode: PodcastEpisode | None = None
@@ -667,9 +695,19 @@ class MediaResolver:
         for mapping in artist.provider_mappings:
             if mapping.provider_instance not in unique_providers:
                 continue
-            tracks.extend(
-                await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
-            )
+            try:
+                tracks.extend(
+                    await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not drop the tracks of the artist's other providers
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for artist %s from provider %s: %s",
+                    artist.name,
+                    mapping.provider_instance,
+                    err,
+                )
         return tracks
 
     async def _resolve_media_items(
@@ -785,14 +823,20 @@ class MediaResolver:
             )
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
-            return list(await self._get_folder_tracks(media_item))
+            return await self._get_folder_items(media_item, userid, queue_id, start_from_beginning)
         # all other: single track or radio item
         return [cast("MediaItemType", media_item)]
 
-    async def _get_folder_tracks(self, folder: BrowseFolder) -> list[Track]:
-        """Fetch (playable) tracks for given browse folder."""
+    async def _get_folder_items(
+        self,
+        folder: BrowseFolder,
+        userid: str | None = None,
+        queue_id: str | None = None,
+        start_from_beginning: bool = False,
+    ) -> list[MediaItemType]:
+        """Fetch the playable items for the given browse folder."""
         self.logger.info(
-            "Fetching tracks to play for folder %s",
+            "Fetching items to play for folder %s",
             folder.name,
         )
         try:
@@ -800,20 +844,28 @@ class MediaResolver:
         except OSError as err:
             # e.g. the (top-level) folder URI points at a path that no longer exists
             raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err
-        tracks: list[Track] = []
+        items: list[MediaItemType] = []
         for item in folder_items:
             if not item.is_playable:
                 continue
             try:
-                # recursively fetch tracks from all media types
-                resolved = await self._resolve_media_items(item)
+                # recursively resolve every child, so a folder of podcast episodes or
+                # radio stations plays just like a folder of tracks
+                resolved = await self._resolve_media_items(
+                    item,
+                    userid=userid,
+                    queue_id=queue_id,
+                    start_from_beginning=start_from_beginning,
+                )
             except MediaNotFoundError:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
                 continue
-            tracks += [x for x in resolved if isinstance(x, Track)]
-
-        return tracks
+            # a dynamic station supplies its tracks on demand through the managed pool;
+            # queued as a plain item it cannot be streamed, so leave it out here. This is
+            # checked after resolving, as an ItemMapping child only reveals it once resolved.
+            items += [x for x in resolved if not (isinstance(x, Radio) and x.is_dynamic)]
+        return items
 
     def _mark_container_played(
         self,

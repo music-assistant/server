@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import UTC, datetime
 from math import ceil
 from typing import TYPE_CHECKING, NoReturn
 
@@ -24,8 +24,10 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 
+from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
+from .parsers import parse_date
 
 if TYPE_CHECKING:
     from .provider import DeezerProvider
@@ -58,8 +60,12 @@ class DeezerStreamingManager:
             return (False, 0, None)
         bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         if item_id in bookmarks:
-            is_played, position_ms = bookmarks[item_id]
-            return (is_played, position_ms, None)
+            is_played, position_ms, bookmarked_at = bookmarks[item_id]
+            timestamp = parse_date(bookmarked_at)
+            if timestamp is not None and timestamp.tzinfo is None:
+                # the core compares against an aware timestamp; Deezer's times are UTC
+                timestamp = timestamp.replace(tzinfo=UTC)
+            return (is_played, position_ms, timestamp)
         return (False, 0, None)
 
     # -- Playback callbacks --
@@ -367,6 +373,8 @@ class DeezerStreamingManager:
     def _get_blowfish_key(self, track_id: str) -> str:
         """Get blowfish key to decrypt a chunk of a track."""
         secret = app_var("deezer_decrypt_key")
+        if len(secret) != DECRYPT_KEY_LENGTH:
+            raise AudioError(DECRYPT_KEY_ERROR)
         id_md5 = self._md5(track_id)
         return "".join(
             chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)

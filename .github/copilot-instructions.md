@@ -31,7 +31,7 @@ Read the demo provider alongside the new one, then flag deviations from its requ
 
 ## Don't duplicate CI
 
-Reviews happen before CI finishes, which makes it tempting to flag what CI will catch on its own — formatting, lint, test failures, missing dependencies. Those comments cost the author a round trip and tell them nothing they won't hear from CI a minute later; `.pre-commit-config.yaml` and `.github/workflows/test.yml` are the authority on that class of problem. Spend the review on what CI can't see.
+Reviews are requested only once `lint` and `test` have passed on the commit under review, so formatting, lint, test failures and missing dependencies are already settled — don't flag them. `.pre-commit-config.yaml` and `.github/workflows/test.yml` are the authority on that class of problem. Spend the review on what CI can't see.
 
 ## PR title
 

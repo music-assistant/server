@@ -19,6 +19,7 @@ import aiofiles
 import shortuuid
 from aiofiles.os import wrap
 from music_assistant_models.enums import (
+    ArtistType,
     ContentType,
     EventType,
     ExternalID,
@@ -42,6 +43,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     MediaItemType,
     Playlist,
@@ -62,8 +64,10 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -79,6 +83,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -91,6 +96,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AUTHOR_ID_PREFIX,
     AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
@@ -100,6 +106,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
+    CONF_AUTHOR_NARRATOR_REPARSE_DONE,
     CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -110,10 +117,10 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
-    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
     METADATA_FILE_EXTENSIONS,
+    NARRATOR_ID_PREFIX,
     NFO_FILENAMES,
     PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
@@ -123,6 +130,7 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
+    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -139,6 +147,7 @@ from .helpers import (
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    get_valid_isrcs,
     is_disc_dir,
     is_image_file,
     is_metadata_file,
@@ -146,7 +155,7 @@ from .helpers import (
     recursive_iter,
     sorted_scandir,
 )
-from .parsers import parse_album_nfo, parse_artist_nfo
+from .parsers import nfo_album_artist, parse_album_nfo, parse_artist_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -157,11 +166,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 
-isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
-ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
-makedirs = wrap(os.makedirs)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -217,6 +223,9 @@ class LocalFileSystemProvider(MusicProvider):
     _SYNC_CONCURRENCY: ClassVar[int] = 16
     _sync_tracks: bool = True
     _sync_playlists: bool = True
+    # set for the single sync that has to reparse an audiobook library that was
+    # indexed before authors/narrators became artists
+    _force_full_reparse: bool = False
 
     def __init__(
         self,
@@ -227,8 +236,8 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
-        # the plain local provider reads its scan directory from the setup data
+        # subclasses (cloud, WebDAV) pass their own base_path; the plain local provider
+        # reads its scan directory from the setup data
         self.base_path: str = (
             base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
         )
@@ -246,6 +255,9 @@ class LocalFileSystemProvider(MusicProvider):
         # is not enough, since a concurrent on-demand parse could otherwise start consulting
         # the index for the entire (potentially long) walk before it is actually populated
         self._sync_nfo_index_ready: bool = False
+        # folders already warned about a missing ALBUMARTIST tag, reset at the start of
+        # each sync so every sync reports the current state of the library once per album
+        self._missing_album_artist_warned: set[str] = set()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -255,6 +267,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
+            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -270,7 +283,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
+            return {
+                ProviderFeature.LIBRARY_AUDIOBOOKS,
+                ProviderFeature.LIBRARY_ARTISTS,
+                *base_features,
+            }
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         if self.media_content_type == "sound_effects":
@@ -289,6 +306,13 @@ class LocalFileSystemProvider(MusicProvider):
         return music_features
 
     @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Supported artist types."""
+        if self.media_content_type == "audiobooks":
+            return {ArtistType.AUTHOR, ArtistType.NARRATOR}
+        return {ArtistType.SINGER}
+
+    @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
@@ -300,8 +324,17 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await isdir(self.base_path):
-            msg = f"Music Directory {self.base_path} does not exist"
+        if not await self.mass.storage.is_available(self.base_path):
+            location = self.mass.storage.get_location_for_path(self.base_path)
+            if location is not None and not location.available:
+                msg = f"Storage location {location.path} is not available"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="storage_location_unavailable",
+                    translation_owner=self.translation_owner,
+                    translation_args=[location.path],
+                )
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
@@ -406,6 +439,12 @@ class LocalFileSystemProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                if await self._cue.find_audio_file(item, cue_sheet) is None:
+                    self.logger.debug(
+                        "Skipping CUE sheet with missing companion audio file: %s",
+                        item.relative_path,
+                    )
+                    continue
                 # also hide the audio file named in the CUE (may differ from its stem)
                 if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
                     cue_stems.add(companion_stem)
@@ -498,6 +537,10 @@ class LocalFileSystemProvider(MusicProvider):
         elif self.media_content_type == "audiobooks":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
                 return
+            self._force_full_reparse = not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_AUTHOR_NARRATOR_REPARSE_DONE, False
+            )
+
         elif self.media_content_type == "podcasts":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
                 return
@@ -545,6 +588,7 @@ class LocalFileSystemProvider(MusicProvider):
         self.sync_running = True
         self._sync_nfo_by_dir = {}
         self._sync_nfo_index_ready = False
+        self._missing_album_artist_warned = set()
         try:
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
@@ -671,11 +715,24 @@ class LocalFileSystemProvider(MusicProvider):
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
+        # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
+        if self._force_full_reparse and not scan_errors.incomplete:
+            self._force_full_reparse = False
+            self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
+
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id.startswith(AUTHOR_ID_PREFIX):
+            return self._parse_audiobook_artist(
+                prov_artist_id.removeprefix(AUTHOR_ID_PREFIX), ArtistType.AUTHOR
+            )
+        if prov_artist_id.startswith(NARRATOR_ID_PREFIX):
+            return self._parse_audiobook_artist(
+                prov_artist_id.removeprefix(NARRATOR_ID_PREFIX), ArtistType.NARRATOR
+            )
         db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
             prov_artist_id, self.instance_id
         )
@@ -930,7 +987,7 @@ class LocalFileSystemProvider(MusicProvider):
         if cached_data is not None:
             return cached_data  # type: ignore[no-any-return]
 
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         try:
             # get playlist file contents
             playlist_data_raw = await self._read_file(prov_playlist_id)
@@ -983,7 +1040,8 @@ class LocalFileSystemProvider(MusicProvider):
             or x.ext in IMAGE_EXTENSIONS
             or x.filename.lower() == "metadata.json"
         ]
-        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        # bump the version when parsing adds episode fields, so existing listings are rebuilt
+        cache_key = f"podcast_episodes.v2.{prov_podcast_id}"
         cache_checksum = get_folder_signature(signature_files)
         if (
             cached_episodes := await self.mass.cache.get(
@@ -1068,7 +1126,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
@@ -1322,7 +1380,7 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             prev_checksum = file_checksums.get(item.relative_path)
             checksum_matches = item_checksum == prev_checksum
-        if checksum_matches:
+        if checksum_matches and not self._force_full_reparse:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -1806,6 +1864,44 @@ class LocalFileSystemProvider(MusicProvider):
                 rejected.add(folder)
         return None
 
+    async def _album_nfo_for(
+        self,
+        folder_path: str,
+        validated_item: FileSystemItem | None,
+        validated_root: dict[str, Any] | None,
+        rejected_folders: set[str],
+        loaded: dict[str, tuple[FileSystemItem, dict[str, Any]] | None],
+    ) -> tuple[FileSystemItem, dict[str, Any]] | None:
+        """
+        Return the album.nfo (file and parsed root) that may apply to the given folder, if any.
+
+        :param folder_path: The album or disc folder to look in.
+        :param validated_item: The NFO that resolved the album's identity, if any.
+        :param validated_root: The parsed root of that validated NFO.
+        :param rejected_folders: Folders whose own album.nfo was read and rejected as identity.
+        :param loaded: Per-album memo of NFOs already read, so a file is parsed only once.
+        """
+        if folder_path in loaded:
+            return loaded[folder_path]
+        result: tuple[FileSystemItem, dict[str, Any]] | None = None
+        if validated_item is not None and validated_root is not None:
+            # identity came from the validated NFO resolution, so only that winning NFO
+            # applies. An album.nfo the other candidate folder happens to hold was never
+            # validated against this track and must not overwrite the resolved album.
+            if folder_path == validated_item.relative_parent_path:
+                result = (validated_item, validated_root)
+        elif folder_path not in rejected_folders and (
+            nfo_item := await self._nfo_item_for(folder_path, "album.nfo")
+        ):
+            # a folder whose own album.nfo was read and rejected as identity is skipped, so
+            # a relaxed (fuzzy/layout/date-prefix) match landing here never trusts that file
+            if root := await self._load_nfo_root(nfo_item, "album"):
+                result = (nfo_item, root)
+            else:
+                self.logger.warning("Failed to parse album NFO file %s", nfo_item.relative_path)
+        loaded[folder_path] = result
+        return result
+
     @staticmethod
     def _album_nfo_matches(
         root: dict[str, Any],
@@ -2049,11 +2145,11 @@ class LocalFileSystemProvider(MusicProvider):
             self._cancel_availability_probe()
         else:
             self._schedule_availability_probe()
-        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
-        return bool(await isdir(self.base_path))
+        return await self.mass.storage.is_available(self.base_path)
 
     @property
     def _availability_probe_id(self) -> str:
@@ -2131,7 +2227,6 @@ class LocalFileSystemProvider(MusicProvider):
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
-                    track.favorite = False
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
@@ -2147,7 +2242,7 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
-                track.favorite = False  # TODO: implement favorite status based on rating ?
+                # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
@@ -2184,11 +2279,14 @@ class LocalFileSystemProvider(MusicProvider):
 
         except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
+            # an unreadable/corrupt file is already fully described by the message itself,
+            # so only attach a traceback for errors we did not expect
+            unexpected = not isinstance(err, InvalidDataError)
             self.logger.error(
                 "Error processing %s - %s",
                 item.relative_path,
                 str(err),
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
             # the file is still on the storage, so keep it in the scan result:
@@ -2242,12 +2340,13 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
 
-        # Remove artists without any tracks or albums
+        # Remove artists without any tracks, albums or audiobooks.
         query = (
             f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
             f"WHERE item_id not in "
             f"( select artist_id from {DB_TABLE_TRACK_ARTISTS} "
-            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} ) "
+            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} "
+            f"UNION SELECT artist_id from {DB_TABLE_AUDIOBOOK_ARTISTS} ) "
             f"AND item_id in ( SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
             f"WHERE provider_instance = '{self.instance_id}' and media_type = 'artist' )"
         )
@@ -2265,10 +2364,18 @@ class LocalFileSystemProvider(MusicProvider):
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            elif "." not in file_path:
+            elif not file_path:
+                # an empty id matches no single library item
                 continue
+            elif "." not in file_path:
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    MediaType.AUDIOBOOK
+                    if self.media_content_type == "audiobooks"
+                    else MediaType.TRACK
+                )
             else:
-                _, ext = file_path.rsplit(".", 1)
+                ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
                     controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
                 elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2284,7 +2391,13 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if is_track(library_item):
+                is_last_mapping = all(
+                    x.provider_instance == self.instance_id and x.item_id == file_path
+                    for x in library_item.provider_mappings
+                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping
@@ -2295,7 +2408,11 @@ class LocalFileSystemProvider(MusicProvider):
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
-                await controller.remove_item_from_library(library_item.item_id)
+                # the library item may also be mapped to other providers,
+                # so only drop this file's mapping
+                await controller.remove_provider_mapping(
+                    library_item.item_id, self.instance_id, file_path
+                )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2465,9 +2582,8 @@ class LocalFileSystemProvider(MusicProvider):
             ),
         )
 
-        if isrc_tags := tags.isrc:
-            for isrsc in isrc_tags:
-                track.external_ids.add((ExternalID.ISRC, isrsc))
+        for isrc in get_valid_isrcs(tags.isrc, file_item.relative_path, self.logger):
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if acoustid := tags.get("acoustid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
@@ -2528,6 +2644,7 @@ class LocalFileSystemProvider(MusicProvider):
         if tags.track:
             track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
+        track.metadata.release_date = tags.release_date
         track.metadata.lyrics = tags.lyrics
         track.metadata.grouping = tags.get("grouping")
         track.metadata.description = tags.get("comment")
@@ -2659,6 +2776,30 @@ class LocalFileSystemProvider(MusicProvider):
         return next(
             (x for x in album.artists if (mbid and x.mbid == mbid) or x.name == name),
             None,
+        )
+
+    def _parse_audiobook_artist(self, name: str, artist_type: ArtistType) -> Artist:
+        """
+        Build the Artist for an audiobook author or narrator.
+
+        :param name: The name as tagged on the audiobook file.
+        :param artist_type: Author or narrator.
+        """
+        prefix = AUTHOR_ID_PREFIX if artist_type == ArtistType.AUTHOR else NARRATOR_ID_PREFIX
+        prov_artist_id = f"{prefix}{name}"
+        return Artist(
+            item_id=prov_artist_id,
+            provider=self.instance_id,
+            name=name,
+            artist_type=artist_type,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    in_library=True,
+                )
+            },
         )
 
     async def _parse_artist(
@@ -2857,7 +2998,22 @@ class LocalFileSystemProvider(MusicProvider):
             )
 
         # parse other info
-        audio_book.authors.set(tags.writers or tags.album_artists or tags.artists)
+        author_names = tags.authors
+        narrator_names = tags.narrators
+        audio_book.authors.set(
+            [self._parse_audiobook_artist(name, ArtistType.AUTHOR) for name in author_names]
+        )
+        audio_book.narrators.set(
+            [self._parse_audiobook_artist(name, ArtistType.NARRATOR) for name in narrator_names]
+        )
+        if series := tags.series:
+            audio_book.metadata.collections = UniqueList(
+                [MediaItemCollection(title=series, sequence=tags.series_part)]
+            )
+        else:
+            # clean up removed collections
+            audio_book.metadata.collections = UniqueList([])
+
         audio_book.metadata.genres = (
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
@@ -2940,6 +3096,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
             position=tags.track or 0,
+            # tags.track falls back to a number guessed from the file name, so read the tag itself
+            episode_number=get_publisher_number(
+                try_parse_int(tags.tags.get("track", "").split("/")[0], None)
+            ),
+            season=get_publisher_number(tags.disc),
             duration=try_parse_int(tags.duration) or 0,
             podcast=Podcast(
                 item_id=podcast_path,
@@ -2975,6 +3136,7 @@ class LocalFileSystemProvider(MusicProvider):
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
         episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.release_date = tags.release_date
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")
@@ -3140,6 +3302,9 @@ class LocalFileSystemProvider(MusicProvider):
         # tier below; a later relaxed/fuzzy match landing on one of these must not blindly
         # trust that same rejected file during enrichment further down
         rejected_nfo_folders: set[str] = set()
+        # album.nfo files already read, shared by the album artist fallback and the
+        # metadata enrichment so no file is parsed twice
+        loaded_album_nfos: dict[str, tuple[FileSystemItem, dict[str, Any]] | None] = {}
         if not album_dir:
             # exact matching found nothing: fall back to a bounded validated album.nfo
             # (the immediate parent, and the track directory itself unless it is a disc
@@ -3187,9 +3352,45 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             # album artist tag is missing, determine fallback
             fallback_action = self.config.get_value(CONF_ENTRY_MISSING_ALBUM_ARTIST.key)
-            if fallback_action == "folder_name" and album_dir:
+            # the same fallback applies to every track in the folder, so warn for the first
+            # track only and leave the rest to debug, instead of repeating the same line for
+            # every track of an untagged album
+            warn_key = album_dir or track_dir
+            log_missing_tag = (
+                self.logger.debug
+                if warn_key in self._missing_album_artist_warned
+                else self.logger.warning
+            )
+            self._missing_album_artist_warned.add(warn_key)
+            if (
+                album_dir
+                and (
+                    album_nfo := await self._album_nfo_for(
+                        album_dir, nfo_item, nfo_root, rejected_nfo_folders, loaded_album_nfos
+                    )
+                )
+                and (nfo_artist_name := nfo_album_artist(album_nfo[1]))
+            ):
+                # a single album artist named in the album folder's own album.nfo beats the
+                # configured fallback, a disc subfolder's album.nfo is never consulted here
+                log_missing_tag(
+                    "%s is missing ID3 tag [albumartist], using %s from %s as fallback",
+                    track_path,
+                    nfo_artist_name,
+                    album_nfo[0].relative_path,
+                )
+                album_artists = UniqueList(
+                    [
+                        await self._parse_artist(
+                            name=nfo_artist_name,
+                            album_dir=album_dir,
+                            representative_track=representative_track,
+                        )
+                    ]
+                )
+            elif fallback_action == "folder_name" and album_dir:
                 possible_artist_folder = os.path.dirname(album_dir)
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
                     track_path,
                     possible_artist_folder,
@@ -3206,7 +3407,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             # fallback to track artists (if defined by user)
             elif fallback_action == "track_artist":
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
                     track_path,
                 )
@@ -3222,7 +3423,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             # all other: fallback to various artists
             else:
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using %s as fallback",
                     track_path,
                     VARIOUS_ARTISTS_NAME,
@@ -3285,33 +3486,15 @@ class LocalFileSystemProvider(MusicProvider):
         for folder_path in dict.fromkeys((track_dir, album_dir)):
             if not folder_path or not await self.exists(folder_path):
                 continue
-            if nfo_item is not None and nfo_root is not None:
-                # identity was established through the bounded, validated NFO resolution
-                # fallback above: only that one winning NFO ever applies. An unrelated
-                # album.nfo the other candidate folder (track_dir or album_dir) happens to
-                # also have was never validated against this track and must not silently
-                # overwrite the resolved album's metadata.
-                if folder_path == nfo_item.relative_parent_path:
-                    parse_album_nfo(album, nfo_root, nfo_item.relative_path)
-                    await self._register_metadata_file(nfo_item, representative_track)
-            elif folder_path not in rejected_nfo_folders and (
-                read_nfo_item := await self._nfo_item_for(folder_path, "album.nfo")
+            if album_nfo := await self._album_nfo_for(
+                folder_path, nfo_item, nfo_root, rejected_nfo_folders, loaded_album_nfos
             ):
-                # found NFO file with metadata; read and parse it. Skipped when this folder's
-                # own album.nfo was already read and rejected by the validated NFO tier above,
-                # so a relaxed (fuzzy/layout/date-prefix) match landing here can't silently
-                # trust that same rejected file
-                if read_root := await self._load_nfo_root(read_nfo_item, "album"):
-                    parse_album_nfo(album, read_root, read_nfo_item.relative_path)
-                    # only a successful parse counts as having read this NFO: registering on
-                    # a malformed file would advance its token and treat the bad edit as
-                    # handled, permanently masking it (until unrelated changes trigger a full
-                    # reparse)
-                    await self._register_metadata_file(read_nfo_item, representative_track)
-                else:
-                    self.logger.warning(
-                        "Failed to parse album NFO file %s", read_nfo_item.relative_path
-                    )
+                parse_album_nfo(album, album_nfo[1], album_nfo[0].relative_path)
+                # only a successful parse counts as having read this NFO: registering on
+                # a malformed file would advance its token and treat the bad edit as
+                # handled, permanently masking it (until unrelated changes trigger a full
+                # reparse)
+                await self._register_metadata_file(album_nfo[0], representative_track)
 
             # find local images
             if images := await self._get_local_images(

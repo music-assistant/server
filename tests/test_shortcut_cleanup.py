@@ -8,11 +8,14 @@ import pathlib
 import threading
 from collections.abc import AsyncGenerator
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import UserRole
 
+from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.music.controller import MusicController
 from music_assistant.controllers.webserver.auth import (
     PREF_SIDEBAR_SHORTCUTS,
     AuthenticationManager,
@@ -196,3 +199,117 @@ async def test_cleanup_preserves_other_preferences(auth: AuthenticationManager) 
     result_prefs: dict[str, Any] = json_loads(row["preferences"])
     assert result_prefs["frontend.settings.theme"] == "dark"
     assert result_prefs[PREF_SIDEBAR_SHORTCUTS] == []
+
+
+def _music_controller(
+    mass: MusicAssistant, library_hit: bool, lookup_error: type[Exception] | None = None
+) -> MusicController:
+    """
+    Build a MusicController that resolves provider items to a fixed library id.
+
+    :param mass: The MusicAssistant instance to bind the controller to.
+    :param library_hit: Whether the media controller finds a library item for the shortcut.
+    :param lookup_error: Optional error the library lookup raises when it is reached.
+    """
+    music = MusicController.__new__(MusicController)
+    music.mass = mass
+    music.logger = logging.getLogger("test.music")
+    media_ctrl = MagicMock()
+    media_ctrl.get_library_item_by_prov_id = AsyncMock(
+        return_value=MagicMock(item_id="7") if library_hit else None,
+        side_effect=lookup_error,
+    )
+    music.get_controller = MagicMock(return_value=media_ctrl)  # type: ignore[method-assign]
+    return music
+
+
+async def test_stale_provider_shortcut_follows_library_item(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """A shortcut on a removed provider instance follows the library copy of its item."""
+    user = await auth.create_user(username="dave", role=UserRole.USER)
+    await _set_shortcuts(auth, user.user_id, ["ytmusic--old://playlist/abc"])
+    mass_minimal.config.set(CONF_PROVIDERS, {"ytmusic--new": {"domain": "ytmusic"}})
+
+    await _music_controller(mass_minimal, library_hit=True).cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == ["library://playlist/7"]
+
+
+async def test_stale_provider_shortcut_dropped_when_not_in_library(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """A shortcut on a removed provider instance is dropped when the item is not in library."""
+    user = await auth.create_user(username="erin", role=UserRole.USER)
+    await _set_shortcuts(auth, user.user_id, ["ytmusic--old://playlist/abc", "library://track/1"])
+    mass_minimal.config.set(CONF_PROVIDERS, {"ytmusic--new": {"domain": "ytmusic"}})
+
+    await _music_controller(mass_minimal, library_hit=False).cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == ["library://track/1"]
+
+
+async def test_live_provider_shortcuts_are_kept(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """Shortcuts naming a configured instance, its bare domain or the library are untouched."""
+    user = await auth.create_user(username="frank", role=UserRole.USER)
+    uris = [
+        "ytmusic--new://playlist/abc",
+        "ytmusic://track/def",
+        "builtin://playlist/ghi",
+        "library://track/1",
+    ]
+    await _set_shortcuts(auth, user.user_id, uris)
+    mass_minimal.config.set(
+        CONF_PROVIDERS,
+        {"ytmusic--new": {"domain": "ytmusic"}, "builtin": {"domain": "builtin"}},
+    )
+
+    await _music_controller(mass_minimal, library_hit=False).cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == uris
+
+
+async def test_empty_provider_config_keeps_shortcuts(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """An unconfigured install must not be mistaken for every provider having been removed."""
+    user = await auth.create_user(username="grace", role=UserRole.USER)
+    uris = ["ytmusic--old://playlist/abc"]
+    await _set_shortcuts(auth, user.user_id, uris)
+    mass_minimal.config.set(CONF_PROVIDERS, {})
+
+    await _music_controller(mass_minimal, library_hit=False).cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == uris
+
+
+async def test_malformed_shortcut_is_dropped_without_raising(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """A URI that parses to an empty item id is dropped, not asserted on."""
+    user = await auth.create_user(username="heidi", role=UserRole.USER)
+    await _set_shortcuts(auth, user.user_id, ["oldprov--x://track/", "library://track/1"])
+    mass_minimal.config.set(CONF_PROVIDERS, {"ytmusic--new": {"domain": "ytmusic"}})
+    # the real lookup asserts on an empty item id, so it must never be reached
+    music = _music_controller(mass_minimal, library_hit=False, lookup_error=AssertionError)
+
+    await music.cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == ["library://track/1"]
+
+
+async def test_sweep_failure_never_aborts_startup(
+    mass_minimal: MusicAssistant, auth: AuthenticationManager
+) -> None:
+    """The sweep runs on the boot path, so a failure must not propagate."""
+    user = await auth.create_user(username="ivan", role=UserRole.USER)
+    uris = ["ytmusic--old://playlist/abc"]
+    await _set_shortcuts(auth, user.user_id, uris)
+    mass_minimal.config.set(CONF_PROVIDERS, {"ytmusic--new": {"domain": "ytmusic"}})
+    music = _music_controller(mass_minimal, library_hit=False, lookup_error=RuntimeError)
+
+    await music.cleanup_stale_provider_shortcuts()
+
+    assert await _get_shortcuts(auth, user.user_id) == uris

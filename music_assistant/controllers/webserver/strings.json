@@ -21,7 +21,7 @@
       "description": "The TCP port to run the webserver."
     },
     "webserver_warn": {
-      "label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nEnable SSL below or use a reverse proxy or VPN to secure access. \n\nAs an alternative, consider using the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly."
+      "label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nTo access Music Assistant from outside your local network, use the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly. \n\nAlternatively, you can use a reverse proxy, VPN or enable SSL."
     },
     "ssl_inactive_warn": {
       "label": "SSL/TLS is enabled, but the certificate could not be loaded, so the webserver is still running unencrypted. \n\nCheck the certificate and private key below and use the Verify button to test them. The webserver switches to HTTPS as soon as a valid certificate is saved."

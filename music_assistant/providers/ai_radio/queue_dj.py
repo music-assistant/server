@@ -15,7 +15,8 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
-from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
+from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID, EVENT_QUEUE_DJ_UPDATED
+from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection, SessionState
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class AIRadioQueueDJMixin:
         queue_id = str(queue_id).strip()
         if not queue_id:
             raise InvalidDataError("queue_id is required")
+        check_player_access(queue_id)
         armed: DJQueueState | None = None
         try:
             async with self._dj_lock:
@@ -86,6 +88,7 @@ class AIRadioQueueDJMixin:
                 async with self._dj_lock:
                     if self._dj_queues.get(queue_id) is armed:
                         del self._dj_queues[queue_id]
+                        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
             raise
         if armed is not None:
             if self._dj_queues.get(queue_id) is armed:
@@ -96,8 +99,12 @@ class AIRadioQueueDJMixin:
         return await self.get_queue_dj_status()
 
     async def get_queue_dj_status(self) -> dict[str, str]:
-        """Return the queue-to-host mapping of all active queue DJs."""
-        return {queue_id: state.host_id for queue_id, state in self._dj_queues.items()}
+        """Return the queue-to-host mapping of the queue DJs the calling user may see."""
+        return {
+            queue_id: state.host_id
+            for queue_id, state in self._dj_queues.items()
+            if has_player_access(queue_id)
+        }
 
     async def _load_queue_dj(self) -> None:
         """Load persisted queue DJ assignments and arm their states."""
@@ -135,6 +142,7 @@ class AIRadioQueueDJMixin:
             },
         }
         await self._write_json_file(self._dj_file, payload)
+        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
 
     def _arm_dj_state(self, queue_id: str, host_id: str) -> DJQueueState:
         """Create fresh in-memory DJ state for a queue."""

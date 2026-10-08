@@ -18,12 +18,24 @@ covered.
 from __future__ import annotations
 
 import json
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
+from mcp.shared.exceptions import McpError
+from music_assistant_models.access import PlaylistAccess
+from music_assistant_models.auth import UserRole
+from music_assistant_models.enums import ProviderSharing
 
+from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.providers.fastmcp_server.resource_helpers import (
+    to_brief_player,
+    to_brief_queue,
+    to_resource_text,
+)
 from music_assistant.providers.fastmcp_server.resources.library_resources import (
     register_library_resources,
 )
@@ -39,6 +51,11 @@ _LIBRARY_KINDS = [
     ("playlist", "playlists", "library://playlist/17"),
     ("radio", "radio", "library://radio/17"),
 ]
+
+
+def test_resource_helpers_have_a_tool_independent_public_module() -> None:
+    """Resources retain their converters after the custom tool package is removed."""
+    assert all(callable(helper) for helper in (to_resource_text, to_brief_player, to_brief_queue))
 
 
 @pytest.mark.parametrize(("kind", "controller_attr", "uri"), _LIBRARY_KINDS)
@@ -103,6 +120,22 @@ async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock)
     assert parsed["player_id"] == "p1"
     assert parsed["state"] == "playing"
     assert parsed["powered"] is True
+
+
+async def test_player_resource_does_not_hide_queue_controller_failures(
+    mock_mass: MagicMock,
+) -> None:
+    """An unexpected queue-controller failure surfaces instead of a plausible snapshot."""
+    mock_mass.players.get_player.return_value = SimpleNamespace(
+        player_id="p1", display_name="P1", name="P1", state=None
+    )
+    mock_mass.player_queues.get_active_queue.side_effect = RuntimeError("queue controller bug")
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        with pytest.raises(McpError):
+            await client.read_resource("player://p1")
 
 
 async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> None:
@@ -263,3 +296,41 @@ async def test_queue_resource_returns_null_for_missing(mock_mass: MagicMock) -> 
     # ``items`` must not be queried when the queue itself is None — otherwise
     # the handler is doing wasted work and racing against a deleted queue.
     mock_mass.player_queues.items.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("access", "visible"),
+    [
+        (PlaylistAccess(owner="member-1"), True),
+        (PlaylistAccess(owner="member-2"), False),
+        (PlaylistAccess(owner="member-2", sharing=ProviderSharing.MEMBERS), True),
+        (PlaylistAccess(owner="member-2", sharing=ProviderSharing.SELECTED), False),
+        (None, True),
+    ],
+)
+async def test_playlist_resource_hides_playlists_the_member_may_not_see(
+    mock_mass: MagicMock, access: PlaylistAccess | None, visible: bool
+) -> None:
+    """A personal playlist reads as ``"null"`` for a member it is not shared with."""
+    playlist = SimpleNamespace(
+        uri="library://playlist/17",
+        access=access,
+        to_dict=lambda: {"uri": "library://playlist/17", "name": "Private"},
+    )
+    mock_mass.music.playlists.get_library_item.return_value = playlist
+    mock_mass.music.playlists.visible_to_caller = partial(
+        PlaylistController.visible_to_caller, mock_mass.music.playlists
+    )
+    member = SimpleNamespace(user_id="member-1", role=UserRole.USER)
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_library_resources(mcp, mock_mass)
+    context_token = auth_middleware.current_user.set(member)
+    try:
+        async with Client(mcp) as client:
+            contents = await client.read_resource("library://playlist/17")
+    finally:
+        auth_middleware.current_user.reset(context_token)
+
+    text_blocks = [c.text for c in contents if hasattr(c, "text")]
+    assert (text_blocks != ["null"]) is visible
