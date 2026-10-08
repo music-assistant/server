@@ -552,11 +552,13 @@ webserver/
 ├── controller.py                       # Main webserver controller
 ├── auth.py                             # Authentication manager
 ├── websocket_client.py                 # WebSocket client handler
+├── sendspin_proxy.py                   # Authenticated WebSocket proxy to the Sendspin server
 ├── api_docs.py                         # API documentation generator
 ├── README.md                           # This file
 ├── helpers/
 │   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
-│   └── auth_providers.py               # Authentication providers
+│   ├── auth_providers.py               # Authentication providers
+│   └── ssl.py                          # SSL certificate helpers
 └── remote_access/
     ├── __init__.py                     # Remote access manager
     └── gateway.py                      # WebRTC gateway implementation
