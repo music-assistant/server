@@ -33,6 +33,10 @@ MUSICAE_HOST = "dj-track-audio-analysis-api.p.rapidapi.com"
 MUSICAE_BASE = f"https://{MUSICAE_HOST}"
 CACHE_TTL = 86400.0
 
+# Signals whose weight may be tuned per call; clap joins them once the
+# audio-analysis pipeline carries the embedding (models/audio_analysis.py).
+CLAP_SIGNAL = "clap"
+
 
 def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
     """Convert Music Assistant key/mode to Camelot notation."""
@@ -67,7 +71,7 @@ def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
         "A": "11B",
         "E": "12B",
     }
-    normalized = key.replace("♭", "b").replace("♯", "#")
+    normalized = key.replace("\u266d", "b").replace("\u266f", "#")
     return (minor_keys if minor else major_keys).get(normalized)
 
 
@@ -139,6 +143,7 @@ class SmartDJProvider(PluginProvider):
             genre=signal("genre"),
             artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
             momentum=signal("momentum"),
+            clap=signal("clap"),
             bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
             bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
             max_bpm_jump=float(raw["max_bpm_jump"])
@@ -251,6 +256,17 @@ class SmartDJProvider(PluginProvider):
                 "states": ["hard", "soft", "disabled"],
                 "transition_bars": [4, 8, 16, 32],
                 "lookahead": [1, 2, 4, 8, 16, 32],
+                "signals": [
+                    "bpm",
+                    "key",
+                    "energy",
+                    "danceability",
+                    "loudness",
+                    "genre",
+                    "artist_spacing",
+                    "momentum",
+                    CLAP_SIGNAL,
+                ],
             },
         }
 
@@ -364,68 +380,66 @@ class SmartDJProvider(PluginProvider):
                 body = await response.text()
                 raise RuntimeError(f"Musicae request failed ({response.status}): {body[:300]}")
             data = await response.json()
-            if not isinstance(data, dict):
-                raise TypeError("Musicae returned an invalid response")
-            return data
+        return data if isinstance(data, dict) else {}
 
     async def _analysis(
         self,
         item_id: str,
         provider: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None,
         analysis_provider: str = "auto",
     ) -> dict[str, Any] | None:
-        """Get analysis using the selected provider policy."""
-        if analysis_provider not in {"auto", "music_assistant", "musicae"}:
-            raise TypeError(f"Unknown analysis provider: {analysis_provider}")
-        try:
-            analysis = None
-            if analysis_provider != "musicae":
+        """Return normalized analysis for one track, preferring Music Assistant."""
+        if analysis_provider in {"auto", "music_assistant"}:
+            try:
                 analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
-                    item_id, provider
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider,
                 )
-            if analysis:
-                return {
-                    "bpm": analysis.bpm,
-                    "key": analysis.key,
-                    "mode": analysis.mode,
-                    "energy": analysis.energy,
-                    "danceability": analysis.danceability,
-                    "valence": analysis.valence,
-                    "arousal": analysis.arousal,
-                    "loudness": analysis.loudness_integrated,
-                    "beats_per_bar": analysis.beats_per_bar,
-                    "beats": analysis.beats,
-                    "downbeats": analysis.downbeats,
-                    "rms_energy": analysis.rms_energy,
-                    "spectral_centroid": analysis.spectral_centroid,
-                    "instrumental": (
-                        None
-                        if analysis.instrumentalness is None
-                        else analysis.instrumentalness >= 0.5
-                    ),
-                    "instrumentalness": analysis.instrumentalness,
-                    "camelot": _camelot_from_key(analysis.key, analysis.mode),
-                    "source": "music_assistant",
-                    "sources": dict.fromkeys(
-                        (
-                            "bpm",
-                            "key",
-                            "camelot",
-                            "energy",
-                            "danceability",
-                            "loudness",
-                            "beats_per_bar",
-                            "beats",
-                            "downbeats",
-                            "instrumental",
+                if analysis is not None:
+                    return {
+                        "bpm": analysis.bpm,
+                        "key": analysis.key,
+                        "mode": analysis.mode,
+                        "energy": analysis.energy,
+                        "danceability": analysis.danceability,
+                        "valence": analysis.valence,
+                        "arousal": analysis.arousal,
+                        "loudness": analysis.loudness_integrated,
+                        "beats_per_bar": analysis.beats_per_bar,
+                        "beats": analysis.beats,
+                        "downbeats": analysis.downbeats,
+                        "rms_energy": analysis.rms_energy,
+                        "spectral_centroid": analysis.spectral_centroid,
+                        "instrumental": (
+                            None
+                            if analysis.instrumentalness is None
+                            else analysis.instrumentalness >= 0.5
                         ),
-                        "music_assistant",
-                    ),
-                    **(metadata or {}),
-                }
-        except Exception as err:
-            self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
+                        "instrumentalness": analysis.instrumentalness,
+                        "camelot": _camelot_from_key(analysis.key, analysis.mode),
+                        "clap_embedding": analysis.clap_embedding,
+                        "source": "music_assistant",
+                        "sources": dict.fromkeys(
+                            (
+                                "bpm",
+                                "key",
+                                "camelot",
+                                "energy",
+                                "danceability",
+                                "loudness",
+                                "beats_per_bar",
+                                "beats",
+                                "downbeats",
+                                "instrumental",
+                                "clap_embedding",
+                            ),
+                            "music_assistant",
+                        ),
+                        **(metadata or {}),
+                    }
+            except Exception as err:
+                self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
 
         if analysis_provider == "music_assistant":
             return None
@@ -472,6 +486,7 @@ class SmartDJProvider(PluginProvider):
             "spectral_centroid": result.get("spectral_centroid"),
             "instrumental": instrumental_flag,
             "instrumentalness": result.get("instrumentalness"),
+            "clap_embedding": result.get("clap_embedding"),
             "source": "musicae",
             "sources": dict.fromkeys(
                 (
@@ -485,6 +500,7 @@ class SmartDJProvider(PluginProvider):
                     "beats",
                     "downbeats",
                     "instrumental",
+                    "clap_embedding",
                 ),
                 "musicae",
             ),
