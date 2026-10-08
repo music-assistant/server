@@ -148,23 +148,76 @@ def test_should_scrobble_only_after_fully_played() -> None:
     assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
 
 
-def test_should_scrobble_dedups_a_single_play() -> None:
-    """A single play is only checked in once."""
-    handler = _handler(_mass())
+async def test_should_scrobble_dedups_after_a_successful_check_in() -> None:
+    """A completed check-in suppresses further reports for the same play."""
+    handler = _handler(_mass(_ncm_provider()))
+    report = _report(uri=f"{INSTANCE_A}://track/123", seconds_played=180, fully_played=True)
 
-    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
-    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is False
+    # not yet marked before the check-in actually happens
+    assert handler.should_scrobble(report) is True
+    await handler._scrobble(report)
+    assert handler.should_scrobble(report) is False
 
 
-def test_should_scrobble_allows_a_replay() -> None:
+async def test_should_scrobble_allows_a_replay() -> None:
     """Progress going backwards marks a new play, which may be checked in again."""
-    handler = _handler(_mass())
+    handler = _handler(_mass(_ncm_provider()))
+    uri = f"{INSTANCE_A}://track/123"
 
-    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
-    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is False
+    await handler._scrobble(_report(uri=uri, seconds_played=180, fully_played=True))
+    assert handler.should_scrobble(_report(uri=uri, seconds_played=180, fully_played=True)) is False
     # the track restarted (loop/replay)
-    assert handler.should_scrobble(_report(seconds_played=5)) is False
-    assert handler.should_scrobble(_report(seconds_played=180, fully_played=True)) is True
+    assert handler.should_scrobble(_report(uri=uri, seconds_played=5)) is False
+    assert handler.should_scrobble(_report(uri=uri, seconds_played=180, fully_played=True)) is True
+
+
+async def test_state_is_keyed_per_player() -> None:
+    """The same track playing on two players is tracked independently."""
+    handler = _handler(_mass(_ncm_provider()))
+    uri = f"{INSTANCE_A}://track/123"
+
+    await handler._scrobble(_report(uri=uri, seconds_played=180, fully_played=True, player_id="p1"))
+
+    assert (
+        handler.should_scrobble(
+            _report(uri=uri, seconds_played=180, fully_played=True, player_id="p2")
+        )
+        is True
+    )
+    assert (
+        handler.should_scrobble(
+            _report(uri=uri, seconds_played=180, fully_played=True, player_id="p1")
+        )
+        is False
+    )
+
+
+async def test_transient_failure_does_not_mark_the_play() -> None:
+    """A failed /scrobble leaves the play unmarked so a later report can retry it."""
+    inst = _ncm_provider(INSTANCE_A)
+    scrobble_calls = {"n": 0}
+
+    async def _get(path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/song/detail":
+            return {"songs": [{"al": {"id": 456}}]}
+        scrobble_calls["n"] += 1
+        if scrobble_calls["n"] == 1:
+            raise InvalidDataError("Netease API error code 400 for /scrobble")
+        return {"code": 200}
+
+    inst.api_client = Mock(get=AsyncMock(side_effect=_get))
+    provider = _plugin(_mass(inst))
+    await provider.handle_async_init()
+    report = _report(uri=f"{INSTANCE_A}://track/123", seconds_played=200, fully_played=True)
+
+    # the transient failure is swallowed by the helper and the play stays unmarked
+    await provider.on_media_item_played(report)
+    assert provider._handler is not None
+    assert provider._handler._scrobbled_plays == set()
+
+    # a later completion report retries and succeeds
+    await provider.on_media_item_played(report)
+    assert provider._handler._scrobbled_plays
 
 
 async def test_direct_uri_reports_through_that_instance() -> None:

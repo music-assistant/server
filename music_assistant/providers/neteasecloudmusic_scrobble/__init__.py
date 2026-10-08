@@ -91,9 +91,10 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         # ScrobblerHelper's own last_scrobbled dedup cannot be used here because it
         # treats any same-uri progress report as a loop restart, which would re-check
         # in on every periodic progress report of a single continuous play.
-        self._scrobbled_plays: set[str] = set()
-        # uri -> last seen seconds_played, to detect a track starting over (loop)
-        self._last_progress: dict[str, int] = {}
+        # keyed by (player_id, uri): the same track may play on two players at once.
+        self._scrobbled_plays: set[tuple[str, str]] = set()
+        # (player_id, uri) -> last seen seconds_played, to detect a track starting over
+        self._last_progress: dict[tuple[str, str], int] = {}
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """
@@ -102,29 +103,32 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         A track is only checked in once it has been listened to the end, so the
         reported listen time is the real elapsed time rather than a bare minimum.
         """
+        key = (report.player_id or "", report.uri)
         if len(self._last_progress) > 128:
             # opportunistic cleanup of long radio sessions
-            for uri in list(self._last_progress)[:64]:
-                del self._last_progress[uri]
-                self._scrobbled_plays.discard(uri)
-        last_progress = self._last_progress.get(report.uri)
+            for stale in list(self._last_progress)[:64]:
+                del self._last_progress[stale]
+                self._scrobbled_plays.discard(stale)
+        last_progress = self._last_progress.get(key)
         if last_progress is not None and report.seconds_played < last_progress:
             # progress went backwards: the track started over (loop/replay),
             # so its previous play is done and may be checked in again
-            self._scrobbled_plays.discard(report.uri)
-        self._last_progress[report.uri] = report.seconds_played
-        if report.uri in self._scrobbled_plays:
+            self._scrobbled_plays.discard(key)
+        self._last_progress[key] = report.seconds_played
+        if report.uri in self._scrobbles_in_flight:
+            # a check-in for this track is already running
+            return False
+        if key in self._scrobbled_plays:
             # already checked in for this play
             self.logger.debug("skipped check-in: track %s already checked in", report.uri)
             return False
-        if not report.fully_played:
-            # not listened to the end yet: report nothing until it is
-            return False
-        self._scrobbled_plays.add(report.uri)
-        return True
+        # not marked as done here on purpose: only a successful /scrobble marks the
+        # play, so a transient api failure is retried on the next completion report
+        return bool(report.fully_played)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         """Scrobble a track to the NetEase instance it streamed from."""
+        key = (report.player_id or "", report.uri)
         resolved = await self._resolve_ncm_track(report)
         if resolved is None:
             return
@@ -159,6 +163,7 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
                 )
                 return
             raise
+        self._scrobbled_plays.add(key)
         self.logger.info(
             "Checked in track %s to NetEase (source %s, played %ss)",
             track_id,
@@ -183,7 +188,7 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             instance_id = scheme
             track_id = rest.removeprefix("track/")
         else:
-            # library items may be linked to any provider: only check in when the
+            # library items may have been linked to any provider: only check in when the
             # queue shows the track actually streamed from a NetEase instance
             streamed = await self._lookup_queue_stream_track(report)
             if streamed is None:
