@@ -404,6 +404,8 @@ async def test_ingress_site_request_from_the_supervisor_authenticates_the_linked
 ) -> None:
     """A request on the ingress site opened by the Supervisor signs in the linked HA user."""
     created = await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+    # the linked user needs no HA lookup; mark the provider ready so none is awaited
+    auth_manager.mass.get_provider_ready_event("hass").set()
     headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
 
     user = await get_authenticated_user(
