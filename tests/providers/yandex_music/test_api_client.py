@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
+from yandex_music import ClientAsync
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
@@ -724,7 +725,7 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
     """get_dashboard_stations() returns stations from rotor/stations/dashboard."""
     client, underlying = _make_client()
 
-    _de_client = type("C", (), {"report_unknown_fields": False})()
+    _de_client = ClientAsync()
 
     station_result = StationResult.de_json(
         {
@@ -809,7 +810,7 @@ async def test_get_dashboard_stations_skips_user_type() -> None:
     """get_dashboard_stations() filters out personal 'user' type stations."""
     client, underlying = _make_client()
 
-    _de_client = type("C", (), {"report_unknown_fields": False})()
+    _de_client = ClientAsync()
 
     personal_station = StationResult.de_json(
         {
