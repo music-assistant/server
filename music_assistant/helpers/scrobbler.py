@@ -61,10 +61,7 @@ class ScrobblerHelper:
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """Determine if a track should be scrobbled, to be extended later."""
-        if (
-            self.last_scrobbled == report.uri
-            or self._in_flight_key(report) in self._scrobbles_in_flight
-        ):
+        if self.last_scrobbled == report.uri or report.uri in self._scrobbles_in_flight:
             self.logger.debug("skipped scrobbling due to duplicate event")
             return False
 
@@ -118,15 +115,14 @@ class ScrobblerHelper:
                 self.logger.exception("Error while marking track as 'now playing'")
 
         async def scrobble() -> None:
-            in_flight_key = self._in_flight_key(report)
-            self._scrobbles_in_flight.add(in_flight_key)
+            self._scrobbles_in_flight.add(report.uri)
             try:
                 await self._scrobble(report)
                 self.last_scrobbled = report.uri
             except self.scrobble_exceptions:
                 self.logger.exception("Error while scrobbling track")
             finally:
-                self._scrobbles_in_flight.discard(in_flight_key)
+                self._scrobbles_in_flight.discard(report.uri)
 
         # update now playing if needed
         if report.is_playing and (
@@ -140,18 +136,6 @@ class ScrobblerHelper:
     def _is_configured(self) -> bool:
         """Override if subclass needs specific configuration."""
         return True
-
-    def _in_flight_key(self, report: MediaItemPlaybackProgressReport) -> str:
-        """
-        Return the key used to mark this report's scrobble as in flight.
-
-        Override to add context (such as the player) when the same track may be
-        scrobbled by several concurrent playbacks, so one submission does not
-        suppress another.
-
-        :param report: The playback progress report of the played item.
-        """
-        return report.uri
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         """Send a Now Playing update to the scrobbling service."""

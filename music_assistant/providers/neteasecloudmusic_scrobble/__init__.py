@@ -180,7 +180,7 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             },
             cookie=prov.cookie,
         )
-        self.logger.info(
+        self.logger.debug(
             "Checked in track %s to NetEase (source %s, played %ss)",
             track_id,
             source_id,
