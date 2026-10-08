@@ -462,7 +462,7 @@ class ProviderConfigMixin:
                 continue
             try:
                 access = ProviderAccess.from_dict(raw_access)
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 # a record that can not be read is left for the admin to repair
                 LOGGER.warning("Skipping the unreadable access record of %s", instance_id)
                 continue

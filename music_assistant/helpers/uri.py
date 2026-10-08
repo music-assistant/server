@@ -134,7 +134,7 @@ def share_url_provider(url: str, media_type: MediaType | None = None) -> str | N
         return None
     try:
         parsed = _parse_share_url(url)
-    except KeyError, ValueError, IndexError:
+    except (KeyError, ValueError, IndexError):
         return None
     if parsed is None:
         return None

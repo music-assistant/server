@@ -355,7 +355,7 @@ class SonosPlayer(Player):
                 return
         try:
             await asyncio.to_thread(_poll)
-        except OSError, SoCoException, SonosUpdateError:
+        except (OSError, SoCoException, SonosUpdateError):
             # a single failed poll does not mean the speaker is gone; the availability
             # check decides based on how long it has been silent
             await self._check_availability()

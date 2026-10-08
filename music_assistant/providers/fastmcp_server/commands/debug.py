@@ -151,7 +151,7 @@ async def health(
             for queue in mass.player_queues.all()
             if queue_visible is None or queue_visible(queue)
         ]
-    except AttributeError, TypeError:
+    except (AttributeError, TypeError):
         queues = []
     disabled_capabilities: list[str] = []
     events_per_min: dict[str, float] | None = None

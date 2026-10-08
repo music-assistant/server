@@ -540,7 +540,7 @@ def _coerce_seconds(value: Any) -> float | None:
         return None
     try:
         seconds = float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     return seconds if isfinite(seconds) else None
 
@@ -710,7 +710,7 @@ def _inject_podcast_namespace_tags(feed_url: str, feed_data: bytes, parsed: dict
     # transcripts nor chapters on the current namespace address
     try:
         root = parse_xml(feed_data)
-    except XMLParseError, ValueError:
+    except (XMLParseError, ValueError):
         return
 
     channel = root.find("channel")

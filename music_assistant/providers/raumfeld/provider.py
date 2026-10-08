@@ -126,7 +126,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             room_udn = resolve["room_to_udn"].get(room)
             rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
             return resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
+        except (KeyError, AttributeError):
             return None
 
     def resolve_room_renderer(self, room: str) -> tuple[str | None, str | None]:
@@ -140,7 +140,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             room_udn = resolve["room_to_udn"].get(room)
             rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
             devloc = resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
+        except (KeyError, AttributeError):
             return None, None
         uuid = rend_udn.removeprefix("uuid:") if rend_udn else None
         ip_address = urlparse(devloc).hostname if devloc else None
@@ -339,7 +339,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Return the room UDN the host reports for a room, or ``None``."""
         try:
             udn: str | None = self.host.resolve["room_to_udn"].get(room)
-        except KeyError, AttributeError:
+        except (KeyError, AttributeError):
             return None
         return udn
 
@@ -393,7 +393,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             zone_udn = self.host.roomlst_to_zoneudn(zone_rooms)
             udn_order = resolve["zoneudn_to_roomudnlst"].get(zone_udn) or []
             udn_to_room = {udn: room for room, udn in resolve["room_to_udn"].items()}
-        except KeyError, AttributeError:
+        except (KeyError, AttributeError):
             return list(zone_rooms)
         ordered = [udn_to_room[udn] for udn in udn_order if udn in udn_to_room]
         # keep any room the coordinator list didn't cover

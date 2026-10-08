@@ -170,7 +170,7 @@ class AppleMusicMediaManager:
         """
         try:
             apple_type = translate_media_type_to_apple_type(MediaType(media_type))
-        except ValueError, MusicAssistantError:
+        except (ValueError, MusicAssistantError):
             return None
         # playlists use globalId ("pl.") catalog ids; all other types use the
         # library id format to tell library and catalog items apart

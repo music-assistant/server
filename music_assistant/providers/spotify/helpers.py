@@ -354,7 +354,7 @@ async def _await_credentials_file(cache_dir: str) -> str:
         if Path(credentials_file).exists():
             try:
                 return await asyncio.to_thread(_read_credentials_file, credentials_file)
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 # the file was caught mid-write; fall through and retry
                 pass
         await asyncio.sleep(1)

@@ -212,7 +212,7 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
     """
     try:
         candidates = _extract_candidates(image_bytes)
-    except ValueError, OSError:
+    except (ValueError, OSError):
         return MediaItemPalette()
     return _derive_palette(candidates)
 
@@ -222,7 +222,7 @@ async def _extract_and_cache(
 ) -> MediaItemPalette:
     try:
         img_data = await get_image_data(mass, path_or_url, provider)
-    except FileNotFoundError, MusicAssistantError:
+    except (FileNotFoundError, MusicAssistantError):
         # the image is unavailable (e.g. a stale artwork URL that 404s); the
         # empty palette is not cached below, so extraction is retried once the
         # image becomes available again
@@ -297,5 +297,5 @@ async def get_palette_for_url(
         path, provider = image_url, "builtin"
     try:
         return await get_palette(mass, path, provider)
-    except FileNotFoundError, OSError:
+    except (FileNotFoundError, OSError):
         return None

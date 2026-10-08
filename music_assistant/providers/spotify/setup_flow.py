@@ -665,7 +665,7 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
             }
         except SetupFlowError as err:
             errors = {"base": err if err.translation_key else "playback_auth_failed"}
-        except LoginFailed, ClientError, KeyError:
+        except (LoginFailed, ClientError, KeyError):
             # librespot refusing the token, a transport failure, or a token response without a
             # token; LoginFailed's own default key is too generic to show here
             errors = {"base": "playback_auth_failed"}
@@ -731,7 +731,7 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
             expires_in=LOOPBACK_WAIT_TIMEOUT,
         )
         code = authorization_code_from_params(callback_params)
-    except StepExpiredError, OSError:
+    except (StepExpiredError, OSError):
         values = await session.form(
             [CONF_ENTRY_PLAYBACK_CALLBACK_URL],
             step_id="playback_browser",

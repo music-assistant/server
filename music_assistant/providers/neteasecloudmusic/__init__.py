@@ -261,7 +261,7 @@ def _extract_code(payload: dict[str, Any]) -> int | None:
         raw_code = payload["data"].get("code")
     try:
         return int(raw_code) if raw_code is not None else None
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -953,7 +953,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         async def _fetch_quality(track_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 quality_obj = await self._get_song_music_detail(track_id)
-            except InvalidDataError, ResourceTemporarilyUnavailable:
+            except (InvalidDataError, ResourceTemporarilyUnavailable):
                 return track_id, None
             return track_id, quality_obj if isinstance(quality_obj, dict) else None
 

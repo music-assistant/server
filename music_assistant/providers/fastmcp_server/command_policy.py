@@ -669,7 +669,7 @@ def _config_value_is_secure_sync(
         if entry is None:
             return None
         entry_type = ConfigEntryType(entry.type)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     return (
         True

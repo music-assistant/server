@@ -684,7 +684,7 @@ class ITunesPodcastsProvider(MusicProvider):
         for entry in entries:
             try:
                 ids.append(int(entry["id"]["attributes"]["im:id"]))
-            except KeyError, TypeError, ValueError:
+            except (KeyError, TypeError, ValueError):
                 continue
         return ids
 

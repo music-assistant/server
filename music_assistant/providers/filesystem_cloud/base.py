@@ -204,7 +204,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             return False
         try:
             return await self._lookup(self._normalize_path(file_path)) is not None
-        except ProviderUnavailableError, MediaNotFoundError:
+        except (ProviderUnavailableError, MediaNotFoundError):
             return False
 
     async def resolve_image(self, path: str) -> str | bytes:

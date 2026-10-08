@@ -528,7 +528,7 @@ class DLNAPlayer(Player):
 
         try:
             self.update_state()
-        except KeyError, TypeError:
+        except (KeyError, TypeError):
             # at start the update might come faster than the config is initialized
             await asyncio.sleep(2)
             self.update_state()

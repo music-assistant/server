@@ -76,7 +76,7 @@ async def current_user_mcp_tokens(mass: MusicAssistant) -> tuple[PolicyToken, ..
     try:
         current_user = await mass.webserver.auth.get_current_user_info()
         tokens = await mass.webserver.auth.get_user_tokens()
-    except AuthenticationRequired, AttributeError, RuntimeError, TypeError:
+    except (AuthenticationRequired, AttributeError, RuntimeError, TypeError):
         LOGGER.warning("Unable to discover current-user MCP tokens")
         return ()
     user_id = str(getattr(current_user, "user_id", ""))
@@ -233,7 +233,7 @@ def _parse_selection(
         return PolicySelection.profile(PolicyProfile.SAFE_QUERIES)
     try:
         profile = PolicyProfile(raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return PolicySelection.profile(PolicyProfile.SAFE_QUERIES)
     if profile is not PolicyProfile.CUSTOM:
         return PolicySelection.profile(profile)
@@ -252,7 +252,7 @@ def _parse_mode(raw: object) -> PolicyMode:
         return PolicyMode.DENY
     try:
         return PolicyMode(raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return PolicyMode.DENY
 
 

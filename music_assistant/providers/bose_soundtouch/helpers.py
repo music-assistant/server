@@ -30,7 +30,7 @@ def extract_preset_id(message: str) -> int | None:
 
     try:
         return int(preset_id) if preset_id else None
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 

@@ -173,7 +173,7 @@ class IHeartRadioAuthManager:
             await self.provider.api.request(
                 "HEAD", PATH_SESSION, headers=session.headers, retry_auth=False
             )
-        except LoginFailed, MediaNotFoundError:
+        except (LoginFailed, MediaNotFoundError):
             # a dead session answers 401, an expired one 410
             return False
         return True

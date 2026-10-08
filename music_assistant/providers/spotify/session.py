@@ -99,7 +99,7 @@ class SpotifySession:
                 try:
                     error = await response.json(loads=json_loads)
                     message = error.get("error", {}).get("message") or response.reason
-                except aiohttp.ContentTypeError, JSONDecodeError:
+                except (aiohttp.ContentTypeError, JSONDecodeError):
                     message = (await response.text()) or response.reason
 
                 self.logger.debug(

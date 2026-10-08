@@ -85,7 +85,7 @@ class PodcastIndexProvider(MusicProvider):
         # Test API connection
         try:
             await self._api_request("stats/current")
-        except LoginFailed, ProviderUnavailableError:
+        except (LoginFailed, ProviderUnavailableError):
             # Re-raise these specific errors as they have proper context
             raise
         except aiohttp.ClientConnectorError as err:
@@ -251,7 +251,7 @@ class PodcastIndexProvider(MusicProvider):
                 podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.debug("Unexpected error getting podcast %s: %s", prov_podcast_id, err)
@@ -307,7 +307,7 @@ class PodcastIndexProvider(MusicProvider):
                 if episode:
                     yield episode
 
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning(
@@ -331,7 +331,7 @@ class PodcastIndexProvider(MusicProvider):
                 episode = parse_episode_from_data(
                     episode_data, podcast_id, self.instance_id, self.domain
                 )
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except ValueError as err:
             # Handle malformed episode ID
@@ -360,7 +360,7 @@ class PodcastIndexProvider(MusicProvider):
         try:
             _, episode_id = prov_episode_id.split("|", 1)
             transcripts = await self._get_episode_transcripts(episode_id)
-        except ValueError, ProviderUnavailableError, InvalidDataError:
+        except (ValueError, ProviderUnavailableError, InvalidDataError):
             return None, None
         return await get_episode_transcript(
             mass=self.mass,
@@ -404,7 +404,7 @@ class PodcastIndexProvider(MusicProvider):
                     allow_seek=True,
                 )
 
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except ValueError as err:
             # Handle malformed episode ID
@@ -449,7 +449,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("podcasts/byfeedid", params={"id": podcast_id})
             feed_data: dict[str, Any] = response.get("feed", {})
             return feed_data.get("url")
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning(
@@ -465,7 +465,7 @@ class PodcastIndexProvider(MusicProvider):
         """Browse trending podcasts."""
         try:
             return await self._fetch_podcasts("podcasts/trending", {"max": 50})
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning(
@@ -497,7 +497,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return episodes
 
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning("Unexpected error getting recent episodes: %s", err, exc_info=True)
@@ -528,7 +528,7 @@ class PodcastIndexProvider(MusicProvider):
             # Sort by name
             return sorted(categories, key=lambda x: x.name)
 
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning("Unexpected error getting categories: %s", err, exc_info=True)
@@ -551,7 +551,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return podcasts
 
-        except ProviderUnavailableError, InvalidDataError, LoginFailed:
+        except (ProviderUnavailableError, InvalidDataError, LoginFailed):
             raise
         except Exception as err:
             self.logger.warning(

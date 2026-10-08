@@ -193,7 +193,7 @@ class MusicBrainzRecommendationManager:
         days_config = self.provider.config.get_value("recommendation_days", 3)
         try:
             days_before_after = int(str(days_config))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             days_before_after = 3
         return max(1, min(15, days_before_after))
 

@@ -120,7 +120,7 @@ def parse_airplay_features(features_value: str | None) -> int:
         features = int(parts[0], 16)
         if len(parts) > 1:
             features |= int(parts[1], 16) << 32
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0
     return features
 
@@ -234,7 +234,7 @@ def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
         return False
     try:
         flags = int(raw_flags, 16)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
         flags & _COMPANION_PAIRING_DISABLED
@@ -293,7 +293,7 @@ async def probe_audio_formats(mass: MusicAssistant, host: str, port: int) -> int
             if resp.status != 200:
                 return 0
             info = plistlib.loads(await resp.read())
-    except ClientError, TimeoutError, plistlib.InvalidFileException, ValueError:
+    except (ClientError, TimeoutError, plistlib.InvalidFileException, ValueError):
         return 0
     return _parse_format_tables(info) if isinstance(info, dict) else 0
 

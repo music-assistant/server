@@ -741,7 +741,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             try:
                 access = PlaylistAccess.from_dict(json_loads(db_row["access"]))
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 # a record that can not be read is left for an admin to repair
                 self.logger.warning(
                     "Skipping the unreadable access record of playlist %s", db_row["item_id"]

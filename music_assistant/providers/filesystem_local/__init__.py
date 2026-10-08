@@ -1595,7 +1595,7 @@ class LocalFileSystemProvider(MusicProvider):
                 continue
             try:
                 track_item = await self.resolve(track_path)
-            except MediaNotFoundError, OSError:
+            except (MediaNotFoundError, OSError):
                 # the representative no longer resolves: leave the old token in place so a
                 # future sync (once a fresh representative registers) or a manual refresh
                 # can recover; this change is deferred, not lost - and since nothing is
@@ -1803,7 +1803,7 @@ class LocalFileSystemProvider(MusicProvider):
                     item_id="", provider=self.instance_id, name="", provider_mappings=set()
                 )
                 parse_artist_nfo(scratch_artist, root)
-        except ValueError, TypeError, AttributeError:
+        except (ValueError, TypeError, AttributeError):
             # AttributeError covers a non-scalar field shape (e.g. a repeated/nested XML
             # element) reaching a string-only helper such as split_items
             return False
@@ -2437,7 +2437,7 @@ class LocalFileSystemProvider(MusicProvider):
             return cached[0] if cached else None
         try:
             folder_files = await self._scandir(file_item.relative_parent_path)
-        except OSError, MusicAssistantError:
+        except (OSError, MusicAssistantError):
             return None
         target = file_item.name.lower()
         result: MediaItemImage | None = None

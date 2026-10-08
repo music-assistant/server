@@ -1387,7 +1387,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # instead of bubbling MediaNotFoundError from get_item_by_uri.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except InvalidProviderURI, InvalidProviderID:
+            except (InvalidProviderURI, InvalidProviderID):
                 uri_media_type = None
             if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
                 raise UnsupportedFeaturedException(
@@ -1527,7 +1527,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # Mirrors the same guard in add_item_to_favorites.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except InvalidProviderURI, InvalidProviderID:
+            except (InvalidProviderURI, InvalidProviderID):
                 uri_media_type = None
             if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
                 raise UnsupportedFeaturedException(
@@ -2346,7 +2346,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def _rewrite(uri: str) -> str | None:
             try:
                 media_type, provider, item_id = await parse_uri(uri)
-            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+            except (InvalidProviderURI, InvalidProviderID, KeyError, ValueError):
                 return uri
             if provider != provider_instance:
                 return uri
@@ -2373,7 +2373,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def _rewrite(uri: str) -> str | None:
             try:
                 media_type, provider, item_id = await parse_uri(uri)
-            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+            except (InvalidProviderURI, InvalidProviderID, KeyError, ValueError):
                 return uri
             if provider == "library" or provider in known_providers:
                 return uri
@@ -2395,7 +2395,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def _rewrite(uri: str) -> str | None:
             try:
                 media_type, provider, item_id = await parse_uri(uri)
-            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+            except (InvalidProviderURI, InvalidProviderID, KeyError, ValueError):
                 return uri
             if provider != "library":
                 return uri
@@ -2405,7 +2405,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return uri
             try:
                 await ctrl.get_library_item(item_id)
-            except MediaNotFoundError, ValueError:
+            except (MediaNotFoundError, ValueError):
                 return None
             return uri
 
@@ -3708,7 +3708,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
-        except InvalidProviderURI, InvalidProviderID:
+        except (InvalidProviderURI, InvalidProviderID):
             return False
 
         # fast return for a provider uri on a music source this user may not use
@@ -3736,7 +3736,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
                 allow_update_metadata=False,  # no need trigger more methods
             )
-        except MediaNotFoundError, NotImplementedError:
+        except (MediaNotFoundError, NotImplementedError):
             # NotImplementedError: the uri has a valid format, but specifies an unknown media type
             return False
 

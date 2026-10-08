@@ -1345,7 +1345,7 @@ class AirPlayStream:
                 continue
             try:
                 formats |= int(fields[mask_field], 16)
-            except KeyError, ValueError:
+            except (KeyError, ValueError):
                 continue
         if formats and formats != self.player.advertised_audio_formats:
             self.player.logger.debug(
@@ -1512,7 +1512,7 @@ class AirPlayStream:
         elif "[STATUS] playing elapsed_ms=" in line:
             try:
                 millis = int(line.split("elapsed_ms=")[1])
-            except ValueError, IndexError:
+            except (ValueError, IndexError):
                 pass
             else:
                 self._update_elapsed(millis / 1000)
@@ -1523,7 +1523,7 @@ class AirPlayStream:
                 fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
                 requested = int(fields.get("requested_unix_ms", 0))
                 actual = int(fields.get("at_unix_ms", 0))
-            except ValueError, IndexError:
+            except (ValueError, IndexError):
                 # Malformed ack: leave _start_ack unset so the caller falls
                 # back to trusting the commanded instant, without waiting out
                 # the ack timeout.
@@ -1570,7 +1570,7 @@ class AirPlayStream:
                     self.flushed_head_unix_ms = int(
                         line.split("head_unix_ms=")[1].split(maxsplit=1)[0]
                     )
-                except ValueError, IndexError:
+                except (ValueError, IndexError):
                     self.flushed_head_unix_ms = 0
             else:
                 self.flushed_head_unix_ms = 0
@@ -1593,7 +1593,7 @@ class AirPlayStream:
             if "buffered_ms=" in line:
                 try:
                     self.audio_pending_ms = int(line.split("buffered_ms=")[1].split(maxsplit=1)[0])
-                except ValueError, IndexError:
+                except (ValueError, IndexError):
                     self.audio_pending_ms = 0
             else:
                 self.audio_pending_ms = 0
@@ -1646,7 +1646,7 @@ class AirPlayStream:
         fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
         try:
             total_frames = int(fields["total_shifted_frames"])
-        except KeyError, ValueError:
+        except (KeyError, ValueError):
             return
         self.cumulative_shift_seconds = total_frames / self._reanchor_sample_rate(
             fields.get("sample_rate")
@@ -2008,7 +2008,7 @@ class AirPlayStream:
             from_unix_ms = int(fields.get("from_unix_ms", 0))
             at_unix_ms = int(fields.get("at_unix_ms", 0))
             content_cut_ms = int(fields.get("content_cut_ms", 0))
-        except ValueError, IndexError:
+        except (ValueError, IndexError):
             # Malformed line: drop it rather than react to bogus numbers.
             return
         # The binary's elapsed counts only the retained content, so the
@@ -2054,7 +2054,7 @@ class AirPlayStream:
             requested_ms = int(fields.get("requested_ms", 0))
             cut_bytes = int(fields.get("cut_bytes", 0))
             drain_ms = int(fields.get("drain_ms", 0))
-        except KeyError, ValueError, IndexError:
+        except (KeyError, ValueError, IndexError):
             # Malformed line: drop it rather than react to bogus numbers.
             return
         applied_ms = self._pending_content_cut_ms
@@ -2130,7 +2130,7 @@ class AirPlayStream:
             mode = fields.get("mode", "")
             state = fields.get("state", "")
             ready_at_unix_ms = int(fields.get("ready_at_unix_ms", 0))
-        except ValueError, IndexError:
+        except (ValueError, IndexError):
             # Malformed line: drop it rather than react to bogus numbers.
             return
         if state == "cold" and mode != "ntp":
@@ -2187,7 +2187,7 @@ class AirPlayStream:
         """Debug-log a [STATUS] clock_verified line; no correction means no server action."""
         try:
             margin_ms = int(line.split("margin_ms=")[1])
-        except ValueError, IndexError:
+        except (ValueError, IndexError):
             return
         self.player.logger.debug(
             "cliairplay clock verified for %s (margin %d ms)",
@@ -2222,5 +2222,5 @@ def _status_int(fields: Mapping[str, str], key: str) -> int:
     """
     try:
         return int(fields[key])
-    except KeyError, ValueError:
+    except (KeyError, ValueError):
         return 0

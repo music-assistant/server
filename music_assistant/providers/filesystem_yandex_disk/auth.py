@@ -295,7 +295,7 @@ async def _post_oauth_json(
                 if status == 429 or status >= 500:
                     raise OAuthTransportError("Yandex OAuth returned an HTTP error") from err
                 raise OAuthProtocolError("Yandex OAuth returned malformed JSON") from err
-    except OAuthProtocolError, OAuthTransportError:
+    except (OAuthProtocolError, OAuthTransportError):
         raise
     except (aiohttp.ClientError, TimeoutError) as err:
         raise OAuthTransportError("Unable to reach Yandex OAuth") from err

@@ -140,7 +140,7 @@ def _load_valid_categories() -> set[str]:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
             valid.update(data.get("config_categories", {}).keys())
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             continue
     return valid
 

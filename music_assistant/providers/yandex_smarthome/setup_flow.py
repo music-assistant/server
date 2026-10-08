@@ -347,7 +347,7 @@ async def _provision_skill(
 
         try:
             return await _attempt(str(cached))
-        except SetupFlowError, InvalidCredentialsError:
+        except (SetupFlowError, InvalidCredentialsError):
             # the cached token may be revoked/expired: never a dead end, fall back
             # to a fresh device login and try once more
             collected.pop(CONF_AUTH_X_TOKEN, None)

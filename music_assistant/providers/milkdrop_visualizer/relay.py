@@ -201,7 +201,7 @@ class MilkdropRelay:
                 try:
                     data = loads(msg.data)
                     await self._handle_client_message(ws, data)
-                except ValueError, KeyError, TypeError:
+                except (ValueError, KeyError, TypeError):
                     self.logger.debug("Ignoring malformed viewer message", exc_info=True)
                     continue
                 if data.get("type") == "client/goodbye":

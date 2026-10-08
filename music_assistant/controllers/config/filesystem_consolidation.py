@@ -246,7 +246,7 @@ async def _plan_conversions(
     for name, record in raw_shares.items():
         try:
             shares[name] = NetworkShareSpec.from_dict(record)
-        except LookupError, ValueError, TypeError:
+        except (LookupError, ValueError, TypeError):
             # its name stays taken, it just can not be reused
             continue
     taken = set(raw_shares)

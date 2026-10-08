@@ -220,7 +220,7 @@ class LiveAnnouncementManager:
             async for chunk in audio:
                 try:
                     await resp.write(chunk)
-                except ConnectionResetError, BrokenPipeError:
+                except (ConnectionResetError, BrokenPipeError):
                     break
         return resp
 

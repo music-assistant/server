@@ -151,7 +151,7 @@ def _read_binary_version(binary_path: Path) -> tuple[int, int, int] | None:
             text=True,
             timeout=5,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None

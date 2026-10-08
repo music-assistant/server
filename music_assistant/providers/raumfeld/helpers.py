@@ -50,7 +50,7 @@ def parse_serial_number(description_xml: str | None) -> str | None:
         return None
     try:
         root = DefusedET.fromstring(description_xml)
-    except DefusedET.ParseError, ValueError:
+    except (DefusedET.ParseError, ValueError):
         return None
     # the description is namespaced (urn:schemas-upnp-org:device-1-0); the root device's
     # serial comes first, ahead of any embedded devices
@@ -79,7 +79,7 @@ def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
         return result
     try:
         root = DefusedET.fromstring(didl_xml)
-    except DefusedET.ParseError, ValueError:
+    except (DefusedET.ParseError, ValueError):
         return result
     item = root.find(".//{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}item")
     node = item if item is not None else root
@@ -107,7 +107,7 @@ def parse_duration(value: str | None) -> int | None:
     # tolerant wrapper around the shared parser (which raises on non-numeric input)
     try:
         return int(try_parse_duration(value.strip()))
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -122,7 +122,7 @@ def parse_line_in(didl_xml: str | None) -> dict[str, tuple[str, str]]:
         return result
     try:
         root = DefusedET.fromstring(didl_xml)
-    except DefusedET.ParseError, ValueError:
+    except (DefusedET.ParseError, ValueError):
         return result
     for item in root.findall(f".//{_DIDL}item"):
         res = item.find(f"{_DIDL}res")

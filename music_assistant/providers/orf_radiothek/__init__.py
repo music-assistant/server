@@ -801,7 +801,7 @@ class RadiothekProvider(MusicProvider):
             return None
         try:
             return from_iso_string(ts)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
 
     @staticmethod

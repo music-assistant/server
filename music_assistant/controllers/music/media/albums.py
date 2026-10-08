@@ -895,7 +895,7 @@ class AlbumsController(MediaControllerBase[Album]):
             await self.get_provider_item(
                 mapping.item_id, mapping.provider_instance, allow_fallback=False
             )
-        except MusicAssistantError, aiohttp.ClientError, TimeoutError:
+        except (MusicAssistantError, aiohttp.ClientError, TimeoutError):
             return False
         return True
 

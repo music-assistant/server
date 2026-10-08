@@ -890,7 +890,7 @@ class QQMusicProvider(MusicProvider):
                 tab_albums,
                 ("album_tab", "albumList", "album_list", "list"),
             )
-        except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
+        except (MediaNotFoundError, InvalidDataError, TypeError, ValueError):
             raw_albums = []
 
         if not raw_albums:
@@ -1227,7 +1227,7 @@ class QQMusicProvider(MusicProvider):
                 track = self._parse_track(song)
                 track.position = index
                 results.append(track)
-            except InvalidDataError, TypeError, ValueError:
+            except (InvalidDataError, TypeError, ValueError):
                 continue
         return results
 

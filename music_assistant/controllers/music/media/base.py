@@ -1064,7 +1064,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         await self.get_library_item_by_prov_id(result.item_id, result.provider)
                         or result
                     )
-            except NotImplementedError, MediaNotFoundError:
+            except (NotImplementedError, MediaNotFoundError):
                 continue
             except ProviderUnavailableError as err:
                 self.logger.debug(

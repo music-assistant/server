@@ -580,7 +580,7 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
                     continue
                 # check dedup against the newly built entry's providers too
@@ -1247,7 +1247,7 @@ class BuiltinProvider(MusicProvider):
                     allow_fallback=False,
                     strict_provider_instance=True,
                 )
-            except MediaNotFoundError, InvalidProviderID:
+            except (MediaNotFoundError, InvalidProviderID):
                 # Missing or malformed ids are permanently dead for this provider.
                 confirmed_dead.add((provider.instance_id, provider_item_id))
                 continue
@@ -1861,7 +1861,7 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except InvalidDataError, KeyError, NotImplementedError:
+            except (InvalidDataError, KeyError, NotImplementedError):
                 continue
         # return unresolved media item so the entry still shows in the playlist
         return media_item

@@ -271,7 +271,7 @@ class ImageProxyMixin:
         provider, path = resolved
         try:
             return await get_palette(self.mass, path, provider)
-        except MediaNotFoundError, OSError:
+        except (MediaNotFoundError, OSError):
             return None
 
     async def invalidate_image_cache(self, provider: str, path: str) -> None:

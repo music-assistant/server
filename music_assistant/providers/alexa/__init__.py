@@ -88,7 +88,7 @@ async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) ->
         _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
     try:
         await asyncio.to_thread(cookie_jar.save, login._cookiefile[0])
-    except OSError, EOFError, TypeError, AttributeError:
+    except (OSError, EOFError, TypeError, AttributeError):
         _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
 
 
@@ -421,7 +421,7 @@ class AlexaPlayer(Player):
                     },
                     timeout=5,
                 )
-            except ActionUnavailable, aiohttp.ClientError, TimeoutError:
+            except (ActionUnavailable, aiohttp.ClientError, TimeoutError):
                 # Don't try again until the skill confirms with its next pageLive answer.
                 self._skill_keeps_screen_open = False
                 return False

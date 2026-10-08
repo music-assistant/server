@@ -30,7 +30,7 @@ async def remove_items_safe(mass: Any, queue_id: str, item_ids: list[str]) -> Re
         else:
             try:
                 mass.player_queues.delete_item(queue_id, item_id)
-            except KeyError, InvalidDataError:
+            except (KeyError, InvalidDataError):
                 result.not_found.append(item_id)
                 continue
             bucket = (

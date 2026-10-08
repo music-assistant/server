@@ -571,7 +571,7 @@ class MusicCastPhysicalDevice:
         """
         try:
             await self.fetch()
-        except MusicCastConnectionException, MusicCastGroupException:
+        except (MusicCastConnectionException, MusicCastGroupException):
             return False
 
         self.device.build_capabilities()

@@ -528,7 +528,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return False
         try:
             device = await self._pyatv_connect(config)
-        except pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError:
+        except (pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError):
             self.logger.warning(
                 "Stored Companion credentials are no longer valid for %s",
                 self.display_name,

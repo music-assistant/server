@@ -617,7 +617,7 @@ class AsyncProcess:
             await asyncio.wait_for(self.proc.stdin.drain(), timeout)
         except TimeoutError:
             return False
-        except BrokenPipeError, RuntimeError, ConnectionResetError:
+        except (BrokenPipeError, RuntimeError, ConnectionResetError):
             # already exited, race condition: nothing is left to arrive
             return True
         finally:

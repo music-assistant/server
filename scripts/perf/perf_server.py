@@ -213,7 +213,7 @@ def _shorten_module(module: str) -> str:
         return match.group(1)
     try:
         return Path(module).resolve().relative_to(REPO_ROOT).as_posix()
-    except ValueError, OSError:
+    except (ValueError, OSError):
         return normalized
 
 

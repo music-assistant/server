@@ -131,7 +131,7 @@ class SmartShuffle:
         raw = self.mass.config.get_raw_core_config_value(CONF_PLAYER_QUEUES, key, default)
         try:
             return int(raw)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return default
 
 

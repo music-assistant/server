@@ -169,7 +169,7 @@ async def migrate_database(  # noqa: PLR0915
                 metadata = json_loads(db_row["metadata"])
                 try:
                     datetime.fromisoformat(metadata["release_date"])
-                except KeyError, ValueError:
+                except (KeyError, ValueError):
                     # this is not a valid date, so we set it to None
                     metadata["release_date"] = None
                     await database.update(

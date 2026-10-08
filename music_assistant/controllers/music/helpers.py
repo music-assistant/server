@@ -258,7 +258,7 @@ async def provider_mappings_from_urls(
             continue
         try:
             url_media_type, domain, item_id = await parse_uri(url, validate_id=True)
-        except InvalidProviderURI, InvalidProviderID:
+        except (InvalidProviderURI, InvalidProviderID):
             continue
         if domain == "builtin" or url_media_type != media_type or domain in exclude_domains:
             continue
