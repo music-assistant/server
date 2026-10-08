@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from copy import copy
-from pathlib import PurePosixPath
+from collections.abc import Collection
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, SetupFailedError
-from music_assistant_models.media_items import Album, Artist
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
@@ -27,10 +32,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
 )
-from music_assistant.helpers.compare import compare_track
 from music_assistant.helpers.security import is_safe_path
-from music_assistant.helpers.tags import clean_mbid
-from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -45,12 +47,10 @@ from .constants import (
     CONF_REPLAYGAIN_TARGET_LEVEL,
     IMAGE_PATH_PREFIX,
     ITEM_BATCH_SIZE,
-    SYNC_CONCURRENCY,
 )
-from .library import BeetsLibrary, BeetsLibraryError, BeetsRow
+from .library import BeetsLibrary, BeetsRow
 from .parsers import (
     ParseContext,
-    album_id_prefix,
     expand_path,
     item_checksum,
     loudness_from_gains,
@@ -58,17 +58,14 @@ from .parsers import (
     parse_artist,
     parse_audio_format,
     parse_track,
-    track_id_prefix,
     track_item_id,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import MediaItemType, ProviderMapping, Track
+    from music_assistant_models.media_items import Album, Artist, Track
     from music_assistant_models.provider import ProviderManifest
 
-    from music_assistant.controllers.music.media.albums import AlbumsController
-    from music_assistant.controllers.music.media.artists import ArtistsController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -100,8 +97,6 @@ class BeetsProvider(MusicProvider):
         self.beets_directory: str | None = (
             str(self.get_setup_value(CONF_BEETS_DIRECTORY) or "") or None
         )
-        self.sync_running = False
-        self._library_write_lock = asyncio.Lock()
         self._ctx = ParseContext(
             instance_id=self.instance_id,
             domain=self.domain,
@@ -139,7 +134,7 @@ class BeetsProvider(MusicProvider):
             )
         try:
             await self.library.open()
-        except BeetsLibraryError as err:
+        except ProviderUnavailableError as err:
             msg = f"Unable to read beets library database {db_path}: {err}"
             raise SetupFailedError(
                 msg,
@@ -161,19 +156,12 @@ class BeetsProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
-        if self.sync_running:
-            self.logger.warning("Library sync already running for %s", self.name)
-            return
-        self.sync_running = True
-        try:
-            await self._sync_tracks()
-        finally:
-            self.sync_running = False
+        await self._sync_tracks()
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         item = await self._get_item(prov_track_id)
-        album = await self.library.get_album(item.album_id) if item.album_id else None
+        album = await self._get_album_row(item.album_id) if item.album_id else None
         return parse_track(
             item,
             album,
@@ -236,8 +224,7 @@ class BeetsProvider(MusicProvider):
         if not reference.startswith(IMAGE_PATH_PREFIX):
             msg = f"Image not found: {path}"
             raise MediaNotFoundError(msg)
-        # image paths carry the bare beets album id, not the namespaced provider album id
-        album = await self.library.get_album(_parse_id(reference, IMAGE_PATH_PREFIX))
+        album = await self.library.get_album(int(reference.removeprefix(IMAGE_PATH_PREFIX)))
         if album is None:
             msg = f"Image not found: {path}"
             raise MediaNotFoundError(msg)
@@ -268,9 +255,7 @@ class BeetsProvider(MusicProvider):
 
     async def _get_item(self, prov_item_id: str) -> BeetsRow:
         """Return the beets item for a provider item id, or raise when beets has none."""
-        item = await self.library.get_item(
-            _parse_id(prov_item_id, track_id_prefix(self.instance_id))
-        )
+        item = await self.library.get_item(int(prov_item_id))
         if item is None:
             msg = f"Track not found: {prov_item_id}"
             raise MediaNotFoundError(msg)
@@ -278,13 +263,47 @@ class BeetsProvider(MusicProvider):
 
     async def _get_album(self, prov_album_id: str) -> BeetsRow:
         """Return the beets album for a provider album id, or raise when beets has none."""
-        album = await self.library.get_album(
-            _parse_id(prov_album_id, album_id_prefix(self.instance_id))
-        )
+        album = await self._get_album_row(int(prov_album_id))
         if album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
         return album
+
+    async def _get_album_row(self, album_id: int) -> BeetsRow | None:
+        """Return a beets album row with its cover stamp, or None when beets has none."""
+        if (album := await self.library.get_album(album_id)) is not None:
+            await self._stamp_art([album])
+        return album
+
+    async def _stamp_art(self, albums: Collection[BeetsRow]) -> None:
+        """
+        Record the size and modification time of each album's cover file on its row.
+
+        :param albums: The beets album rows.
+        """
+        paths = {
+            album.id: path
+            for album in albums
+            if (
+                path := expand_path(
+                    album.fields.get("artpath"), self.music_directory, self.beets_directory
+                )
+            )
+        }
+
+        def _stat_all() -> dict[int, str]:
+            stamps: dict[int, str] = {}
+            for album_id, path in paths.items():
+                try:
+                    stat = Path(path).stat()
+                except OSError:
+                    continue
+                stamps[album_id] = f"{stat.st_mtime_ns}-{stat.st_size}"
+            return stamps
+
+        stamps = await asyncio.to_thread(_stat_all)
+        for album in albums:
+            album.art_stamp = stamps.get(album.id)
 
     async def _sync_tracks(self) -> None:
         """Import new and changed beets items, then remove what beets no longer has."""
@@ -292,26 +311,26 @@ class BeetsProvider(MusicProvider):
         current_ids: set[str] = set()
         try:
             total = await self.library.count_items()
-            albums: dict[int, BeetsRow | None] = dict(await self.library.get_albums())
+            album_rows = await self.library.get_albums()
+            await self._stamp_art(album_rows.values())
+            albums: dict[int, BeetsRow | None] = dict(album_rows)
             processed = 0
-            async with TaskManager(self.mass, SYNC_CONCURRENCY) as task_manager:
-                async for batch in self.library.iter_items(ITEM_BATCH_SIZE):
-                    for item in batch:
-                        album = await self._album_for(item, albums)
-                        item_id = track_item_id(self._ctx, item.id)
-                        current_ids.add(item_id)
-                        checksum = item_checksum(item, album, self._ctx)
-                        if previous.get(item_id) == checksum:
-                            continue
-                        await task_manager.create_task_with_limit(
-                            self._import_item(item, album, checksum, overwrite=item_id in previous)
+            async for batch in self.library.iter_items(ITEM_BATCH_SIZE):
+                for item in batch:
+                    album = await self._album_for(item, albums)
+                    item_id = track_item_id(item.id)
+                    current_ids.add(item_id)
+                    checksum = item_checksum(item, album, self._ctx)
+                    if previous.get(item_id) != checksum:
+                        await self._import_item(
+                            item, album, checksum, overwrite=item_id in previous
                         )
-                    processed += len(batch)
-                    # beets may have added items after count_items() ran, including from 0
-                    update_current_task_progress_from_index(
-                        processed, max(total, processed), f"Read {processed}/{total} beets items"
-                    )
-        except BeetsLibraryError as err:
+                processed += len(batch)
+                # beets may have added items after count_items() ran, including from 0
+                update_current_task_progress_from_index(
+                    processed, max(total, processed), f"Read {processed}/{total} beets items"
+                )
+        except ProviderUnavailableError as err:
             self.logger.error("Aborting sync for %s: %s", self.name, err)
             report_current_task_failure(f"Sync aborted: unable to read the beets library: {err}")
             return
@@ -340,7 +359,7 @@ class BeetsProvider(MusicProvider):
         if (album_id := item.album_id) is None:
             return None
         if album_id not in albums:
-            albums[album_id] = await self.library.get_album(album_id)
+            albums[album_id] = await self._get_album_row(album_id)
         return albums[album_id]
 
     async def _import_item(
@@ -358,17 +377,8 @@ class BeetsProvider(MusicProvider):
                     loudness,
                     loudness_from_gains(item.fields, "album", self._ctx),
                 )
-            # every library write of the sync holds this lock: an overwrite reads the mappings
-            # of the library track before replacing them, and a concurrent add merging another
-            # beets item into that track in between would have its mapping dropped
-            async with self._library_write_lock:
-                if overwrite:
-                    await self._overwrite_library_track(track)
-                else:
-                    await self.mass.music.tracks.add_item_to_library(
-                        track, overwrite_existing=False
-                    )
-        except Exception as err:
+            await self.mass.music.tracks.add_item_to_library(track, overwrite_existing=overwrite)
+        except (MusicAssistantError, ValueError, TypeError) as err:
             # one broken item must not abort the sync; it keeps its previous checksum, so the
             # next sync retries it, and it stays out of the deletion pass
             unexpected = not isinstance(err, InvalidDataError)
@@ -379,47 +389,6 @@ class BeetsProvider(MusicProvider):
                 exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to import beets item {item.id}: {err}")
-
-    async def _overwrite_library_track(self, track: Track) -> None:
-        """Replace a library track with a changed beets item, keeping other items merged into it."""
-        tracks = self.mass.music.tracks
-        await self._keep_merged_album_and_artists(track)
-        current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
-        other_mappings = _other_item_mappings(current, track) if current else set()
-        if current is None or not other_mappings:
-            await tracks.add_item_to_library(track, overwrite_existing=True)
-        elif _is_same_recording(current, track):
-            # an overwrite replaces every mapping of this instance on the library track, so the
-            # other beets items' mappings are passed along
-            track.provider_mappings.update(other_mappings)
-            await tracks.add_item_to_library(track, overwrite_existing=True)
-        else:
-            # retagged as another recording: the library track stays with the other items,
-            # its favorite and its history, and the changed item is added on its own
-            await tracks.remove_provider_mapping(current.item_id, self.instance_id, track.item_id)
-            await tracks.add_item_to_library(track, overwrite_existing=False)
-
-    async def _keep_merged_album_and_artists(self, track: Track) -> None:
-        """Pass along the other beets albums and artists merged into a track's album and artists."""
-        # overwriting the track overwrites its album and artists too, which replaces every
-        # mapping of this instance on them; a library album or artist can also hold another
-        # beets album or artist id (a merged release, or an artist with and without an mbid)
-        music = self.mass.music
-        artists = [*track.artists]
-        if isinstance(track.album, Album):
-            await self._add_merged_mappings(music.albums, track.album)
-            artists.extend(track.album.artists)
-        for artist in artists:
-            if isinstance(artist, Artist):
-                await self._add_merged_mappings(music.artists, artist)
-
-    async def _add_merged_mappings(
-        self, controller: AlbumsController | ArtistsController, item: Album | Artist
-    ) -> None:
-        """Add the mappings of other beets items of this instance merged into item's library item."""
-        current = await controller.get_library_item_by_prov_id(item.item_id, self.instance_id)
-        if current is not None:
-            item.provider_mappings.update(_other_item_mappings(current, item))
 
     async def _get_previous_checksums(self) -> dict[str, str]:
         """Return the checksum stored for every beets item this instance imported before."""
@@ -504,72 +473,12 @@ def _mapped_ids(media_type: str) -> str:
     )
 
 
-def _other_item_mappings(library_item: MediaItemType, item: MediaItemType) -> set[ProviderMapping]:
-    """
-    Return the mappings of this instance's other beets items merged into a library item.
-
-    :param library_item: The library item the provider item is mapped to.
-    :param item: The provider item of this instance.
-    """
-    return {
-        mapping
-        for mapping in library_item.provider_mappings
-        if mapping.provider_instance == item.provider and mapping.item_id != item.item_id
-    }
-
-
-def _is_same_recording(library_track: Track, track: Track) -> bool:
-    """
-    Return whether a changed beets item still is the recording of its library track.
-
-    :param library_track: The library track the changed beets item is mapped to.
-    :param track: The provider track of the changed beets item.
-    """
-    # without its mappings the library track cannot match the changed item on its own
-    # mapping, so the comparison decides on the metadata alone
-    reference = copy(library_track)
-    reference.provider_mappings = set()
-    return compare_track(reference, track, strict=True)
-
-
 def _parse_artist_id(prov_artist_id: str) -> tuple[str | None, str | None]:
     """
     Return the name or the MusicBrainz id an artist provider item id is keyed by.
 
     :param prov_artist_id: The provider artist id.
-    :raises MediaNotFoundError: If the id is neither a canonical MusicBrainz id nor a
-        name without surrounding whitespace, behind its prefix.
     """
     if prov_artist_id.startswith(ARTIST_MBID_ID_PREFIX):
-        mbid = prov_artist_id.removeprefix(ARTIST_MBID_ID_PREFIX)
-        if mbid and clean_mbid(mbid) == mbid:
-            return None, mbid
-    elif prov_artist_id.startswith(ARTIST_NAME_ID_PREFIX):
-        name = prov_artist_id.removeprefix(ARTIST_NAME_ID_PREFIX)
-        if name and name == name.strip():
-            return name, None
-    msg = f"Invalid beets artist id: {prov_artist_id}"
-    raise MediaNotFoundError(msg)
-
-
-def _parse_id(prov_item_id: str, prefix: str) -> int:
-    """
-    Return the beets row id encoded in a provider item id or image path.
-
-    :param prov_item_id: The provider item id or image path.
-    :param prefix: The prefix the id must start with, followed by the beets row id.
-    :raises MediaNotFoundError: If the id lacks the prefix or the rest is not the canonical
-        decimal form of the beets row id (no sign, whitespace, underscore or leading zero).
-    """
-    if not prov_item_id.startswith(prefix):
-        msg = f"Invalid beets id: {prov_item_id}"
-        raise MediaNotFoundError(msg)
-    remainder = prov_item_id.removeprefix(prefix)
-    if not (remainder and remainder.isascii() and remainder.isdigit()):
-        msg = f"Invalid beets id: {prov_item_id}"
-        raise MediaNotFoundError(msg)
-    value = int(remainder)
-    if remainder != str(value):
-        msg = f"Invalid beets id: {prov_item_id}"
-        raise MediaNotFoundError(msg)
-    return value
+        return None, prov_artist_id.removeprefix(ARTIST_MBID_ID_PREFIX)
+    return prov_artist_id.removeprefix(ARTIST_NAME_ID_PREFIX), None

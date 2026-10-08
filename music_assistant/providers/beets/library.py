@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 import aiosqlite
+from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.helpers.tags import clean_mbid
 
@@ -19,9 +20,8 @@ from .constants import (
     SQLITE_BUSY_TIMEOUT,
 )
 
-_TABLES = ("items", "albums", "item_attributes", "album_attributes")
-# the columns sync and playback read unconditionally; any other column may be missing
-_REQUIRED_ITEM_COLUMNS = frozenset({"id", "path"})
+# databases from older beets versions lack some columns, such as the multi-valued fields
+_COLUMN_CHECKED_TABLES = ("items", "albums")
 # album artists are looked up before track artists and, like the parsers read them, the
 # multi-valued lists before the single-valued columns: (table, list columns, single columns)
 _ARTIST_LOOKUPS = (
@@ -68,10 +68,6 @@ class BeetsArtist:
     mbid: str | None
 
 
-class BeetsLibraryError(Exception):
-    """Raised when the beets library database cannot be opened or read."""
-
-
 @dataclass
 class BeetsRow:
     """A row of the beets items or albums table plus its flexible attributes."""
@@ -79,6 +75,8 @@ class BeetsRow:
     id: int
     fields: dict[str, Any]
     flex: dict[str, Any] = field(default_factory=dict)
+    # size and modification time of an album's cover file, so a replaced cover is noticed
+    art_stamp: str | None = None
 
     @property
     def album_id(self) -> int | None:
@@ -104,8 +102,7 @@ class BeetsLibrary:
         """
         Open the database read-only.
 
-        :raises BeetsLibraryError: If the file cannot be opened or holds no beets items table
-            with the columns beets always has.
+        :raises ProviderUnavailableError: If the database cannot be opened or read.
         """
         await self.close()
         try:
@@ -113,24 +110,17 @@ class BeetsLibrary:
                 f"file:{quote(self.db_path)}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT
             )
             self._db.row_factory = aiosqlite.Row
-            columns = {table: await self._table_columns(table) for table in _TABLES}
-        except BeetsLibraryError:
+            self._columns = {
+                table: await self._table_columns(table) for table in _COLUMN_CHECKED_TABLES
+            }
+        except ProviderUnavailableError:
             # already reports its own reason (from _fetch_all); do not wrap it again
             await self.close()
             raise
         except sqlite3.Error as err:
             await self.close()
             msg = f"Unable to open {self.db_path}: {err}"
-            raise BeetsLibraryError(msg) from err
-        if not columns["items"]:
-            await self.close()
-            msg = f"{self.db_path} has no beets items table"
-            raise BeetsLibraryError(msg)
-        if missing := _REQUIRED_ITEM_COLUMNS - columns["items"]:
-            await self.close()
-            msg = f"{self.db_path} items table lacks beets columns: {', '.join(sorted(missing))}"
-            raise BeetsLibraryError(msg)
-        self._columns = columns
+            raise ProviderUnavailableError(msg) from err
 
     async def close(self) -> None:
         """Close the database connection if it is open."""
@@ -146,9 +136,6 @@ class BeetsLibrary:
 
     async def get_albums(self) -> dict[int, BeetsRow]:
         """Return every album keyed by its beets id."""
-        self._require_open()
-        if not self._columns.get("albums"):
-            return {}
         rows = await self._fetch_all("SELECT * FROM albums")
         return {row.id: row for row in await self._with_flex(rows, "album_attributes")}
 
@@ -185,9 +172,6 @@ class BeetsLibrary:
 
         :param album_id: The beets album id.
         """
-        self._require_open()
-        if not self._columns.get("albums"):
-            return None
         rows = await self._fetch_all("SELECT * FROM albums WHERE id = ?", (album_id,))
         return next(iter(await self._with_flex(rows, "album_attributes")), None)
 
@@ -215,7 +199,6 @@ class BeetsLibrary:
         :param name: The artist name, used when mbid is not given.
         :param mbid: The artist's MusicBrainz id in canonical form.
         """
-        self._require_open()
         if mbid is None and not name:
             return None
         for table, list_columns, single_columns in _ARTIST_LOOKUPS:
@@ -226,17 +209,6 @@ class BeetsLibrary:
                 ):
                     return artist
         return None
-
-    def _require_open(self) -> aiosqlite.Connection:
-        """
-        Return the open database connection.
-
-        :raises BeetsLibraryError: If the database connection is not open.
-        """
-        if self._db is None:
-            msg = "The beets library is not open"
-            raise BeetsLibraryError(msg)
-        return self._db
 
     async def _find_artist_in(
         self,
@@ -281,7 +253,7 @@ class BeetsLibrary:
 
     async def _with_flex(self, rows: list[sqlite3.Row], flex_table: str) -> list[BeetsRow]:
         result = [BeetsRow(id=int(row["id"]), fields=dict(row)) for row in rows]
-        if not result or not self._columns.get(flex_table):
+        if not result:
             return result
         by_id = {row.id: row for row in result}
         ids = list(by_id)
@@ -300,12 +272,14 @@ class BeetsLibrary:
         return result
 
     async def _fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        db = self._require_open()
+        if self._db is None:
+            msg = f"The beets library {self.db_path} is not open"
+            raise ProviderUnavailableError(msg)
         try:
-            return list(await db.execute_fetchall(sql, tuple(params)))
+            return list(await self._db.execute_fetchall(sql, tuple(params)))
         except sqlite3.Error as err:
             msg = f"Unable to read {self.db_path}: {err}"
-            raise BeetsLibraryError(msg) from err
+            raise ProviderUnavailableError(msg) from err
 
 
 def _like_pattern(name: str) -> str:

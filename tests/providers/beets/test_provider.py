@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import Album
 from music_assistant_models.provider import ProviderManifest
 
@@ -20,7 +23,6 @@ from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers import beets
 from music_assistant.providers.beets import SUPPORTED_FEATURES, BeetsProvider
-from music_assistant.providers.beets.library import BeetsLibraryError
 from music_assistant.providers.beets.setup_flow import run_setup
 from tests.providers.beets.beets_db import (
     ARTIST_MBID,
@@ -46,21 +48,6 @@ async def test_setup_fails_for_missing_database(
     assert err.value.translation_key == "library_db_not_found"
 
 
-async def test_setup_fails_for_non_beets_database(
-    make_provider: MakeProvider, tmp_path: Path
-) -> None:
-    """A SQLite file without beets tables is reported as invalid."""
-    db_path = tmp_path / "other.db"
-    connection = sqlite3.connect(db_path)
-    connection.execute("CREATE TABLE unrelated (id INTEGER)")
-    connection.commit()
-    connection.close()
-    provider = await make_provider(db_path=db_path, open_library=False)
-    with pytest.raises(SetupFailedError) as err:
-        await provider.handle_async_init()
-    assert err.value.translation_key == "library_db_invalid"
-
-
 async def test_setup_fails_for_missing_music_directory(
     make_provider: MakeProvider, music_dir: Path
 ) -> None:
@@ -70,7 +57,7 @@ async def test_setup_fails_for_missing_music_directory(
     with pytest.raises(SetupFailedError) as err:
         await provider.handle_async_init()
     assert err.value.translation_key == "music_directory_not_found"
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await provider.library.count_items()
 
 
@@ -185,14 +172,10 @@ async def test_get_artist_finds_featured_artist_after_many_substring_matches(
     assert (artist.name, artist.mbid) == ("Mo", None)
 
 
-@pytest.mark.parametrize(
-    ("prov_track_id", "prov_album_id"),
-    [(track_prov_id(9999), album_prov_id(9999)), ("not-a-number", "not-a-number")],
-)
-async def test_unknown_ids_raise_media_not_found(
-    make_provider: MakeProvider, prov_track_id: str, prov_album_id: str
-) -> None:
-    """Unknown or malformed ids surface as MediaNotFoundError."""
+async def test_unknown_ids_raise_media_not_found(make_provider: MakeProvider) -> None:
+    """Ids beets has no row for surface as MediaNotFoundError."""
+    prov_track_id = track_prov_id(9999)
+    prov_album_id = album_prov_id(9999)
     provider = await make_provider()
     with pytest.raises(MediaNotFoundError):
         await provider.get_track(prov_track_id)
@@ -204,87 +187,6 @@ async def test_unknown_ids_raise_media_not_found(
         await provider.get_artist("artist-name-Nobody")
     with pytest.raises(MediaNotFoundError):
         await provider.get_artist(f"artist-mbid-{TRACK_MBID}")
-
-
-@pytest.mark.parametrize(
-    "prov_artist_id",
-    [
-        "Artist",
-        "artist-name-",
-        "artist-name- Artist",
-        "artist-mbid-",
-        "artist-mbid-not-an-mbid",
-        f"artist-mbid-{ARTIST_MBID.upper()}",
-    ],
-)
-async def test_get_artist_rejects_malformed_ids(
-    make_provider: MakeProvider, beets_db: BeetsDb, prov_artist_id: str
-) -> None:
-    """Artist ids without a known prefix, or with a non-canonical name or id, are not found."""
-    beets_db.add_item(**item_fields())
-    provider = await make_provider()
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_artist(prov_artist_id)
-
-
-@pytest.mark.parametrize(
-    "remainder",
-    ["0{n}", "+{n}", " {n}", "{n}_0", "-{n}", ""],
-)
-async def test_get_track_rejects_non_canonical_remainder(
-    make_provider: MakeProvider, beets_db: BeetsDb, remainder: str
-) -> None:
-    """Only the exact decimal beets id, with no leading zero or extra characters, resolves."""
-    item_id = beets_db.add_item(**item_fields())
-    provider = await make_provider()
-    bad_id = f"track-{INSTANCE_ID}-{remainder.format(n=item_id)}"
-
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_track(bad_id)
-    assert (await provider.get_track(track_prov_id(item_id))).name == "Song"
-
-
-@pytest.mark.parametrize(
-    "prov_id",
-    ["1", album_prov_id(1), track_prov_id(1, "beets--other"), f"track-{INSTANCE_ID}-nope"],
-)
-async def test_track_ids_need_this_instance_track_prefix(
-    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path, prov_id: str
-) -> None:
-    """A track id without this instance's track prefix is not found, though beets has item 1."""
-    audio = music_dir / "Artist" / "Album" / "01 Song.flac"
-    audio.parent.mkdir(parents=True)
-    audio.write_bytes(b"fLaC" + bytes(16))
-    album_id = beets_db.add_album(**album_fields())
-    item_id = beets_db.add_item(**item_fields(album_id=album_id))
-    assert (album_id, item_id) == (1, 1)
-    provider = await make_provider()
-
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_track(prov_id)
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details(prov_id, MediaType.TRACK)
-    assert (await provider.get_track(track_prov_id(item_id))).name == "Song"
-
-
-@pytest.mark.parametrize(
-    "prov_id",
-    ["1", track_prov_id(1), album_prov_id(1, "beets--other"), f"album-{INSTANCE_ID}-nope"],
-)
-async def test_album_ids_need_this_instance_album_prefix(
-    make_provider: MakeProvider, beets_db: BeetsDb, prov_id: str
-) -> None:
-    """An album id without this instance's album prefix is not found, though beets has album 1."""
-    album_id = beets_db.add_album(**album_fields())
-    item_id = beets_db.add_item(**item_fields(album_id=album_id))
-    assert (album_id, item_id) == (1, 1)
-    provider = await make_provider()
-
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_album(prov_id)
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_album_tracks(prov_id)
-    assert (await provider.get_album(album_prov_id(album_id))).name == "Album"
 
 
 async def test_stream_details_for_existing_file(
@@ -326,6 +228,28 @@ async def test_resolve_image_returns_album_art(
     album_id = beets_db.add_album(**album_fields(artpath=b"Artist/Album/cover.jpg"))
     provider = await make_provider()
     assert await provider.resolve_image(f"album/{album_id}?cs=abc") == str(art)
+
+
+async def test_replacing_the_cover_file_changes_the_image_path(
+    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path
+) -> None:
+    """A cover replaced under the same artpath gets a new image path, so caches refresh."""
+    art = music_dir / "Artist" / "Album" / "cover.jpg"
+    art.parent.mkdir(parents=True)
+    art.write_bytes(b"old cover")
+    album_id = beets_db.add_album(**album_fields(artpath=b"Artist/Album/cover.jpg"))
+    provider = await make_provider()
+
+    async def _image_path() -> str:
+        album = await provider.get_album(album_prov_id(album_id))
+        assert album.metadata.images is not None
+        return album.metadata.images[0].path
+
+    before = await _image_path()
+    assert await _image_path() == before
+    art.write_bytes(b"a new, larger cover")
+
+    assert await _image_path() != before
 
 
 async def test_resolve_image_with_missing_art_file(
@@ -383,7 +307,7 @@ async def test_symlinks_within_the_music_directory_are_served(
     assert details.path == str(music_dir / "song.flac")
 
 
-@pytest.mark.parametrize("path", ["album/9999", "album/nope", "/etc/passwd", "Artist/cover.jpg"])
+@pytest.mark.parametrize("path", ["album/9999", "/etc/passwd", "Artist/cover.jpg"])
 async def test_resolve_image_rejects_other_paths(make_provider: MakeProvider, path: str) -> None:
     """Only album ids resolve; file paths are never served directly."""
     provider = await make_provider()

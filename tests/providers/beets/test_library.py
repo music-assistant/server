@@ -8,8 +8,9 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from music_assistant_models.errors import ProviderUnavailableError
 
-from music_assistant.providers.beets.library import BeetsArtist, BeetsLibrary, BeetsLibraryError
+from music_assistant.providers.beets.library import BeetsArtist, BeetsLibrary
 from tests.providers.beets.beets_db import (
     ALBUM_MBID,
     ARTIST_MBID,
@@ -24,7 +25,7 @@ from tests.providers.beets.beets_db import (
 async def test_open_fails_for_missing_file_without_creating_it(tmp_path: Path) -> None:
     """A path without a database is reported as an error and never created."""
     library = BeetsLibrary(str(tmp_path / "missing.db"))
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.open()
     assert not (tmp_path / "missing.db").exists()
 
@@ -34,33 +35,9 @@ async def test_open_of_non_sqlite_file_does_not_double_wrap_the_error(tmp_path: 
     db_path = tmp_path / "junk.db"
     db_path.write_bytes(b"not a sqlite database at all")
     library = BeetsLibrary(str(db_path))
-    with pytest.raises(BeetsLibraryError) as err:
+    with pytest.raises(ProviderUnavailableError) as err:
         await library.open()
     assert not ("Unable to open" in str(err.value) and "Unable to read" in str(err.value))
-
-
-async def test_open_fails_without_items_table(tmp_path: Path) -> None:
-    """A SQLite file that is not a beets library is rejected."""
-    db_path = tmp_path / "other.db"
-    connection = sqlite3.connect(db_path)
-    connection.execute("CREATE TABLE unrelated (id INTEGER)")
-    connection.commit()
-    connection.close()
-    library = BeetsLibrary(str(db_path))
-    with pytest.raises(BeetsLibraryError, match="items"):
-        await library.open()
-
-
-async def test_open_fails_for_items_table_without_beets_columns(tmp_path: Path) -> None:
-    """An items table that lacks the columns beets always has is not a beets library."""
-    db_path = tmp_path / "other.db"
-    connection = sqlite3.connect(db_path)
-    connection.execute("CREATE TABLE items (id INTEGER, name TEXT)")
-    connection.commit()
-    connection.close()
-    library = BeetsLibrary(str(db_path))
-    with pytest.raises(BeetsLibraryError, match="path"):
-        await library.open()
 
 
 async def test_reads_albums_and_items_with_flex_attributes(beets_db: BeetsDb) -> None:
@@ -322,27 +299,23 @@ async def test_find_artist_from_list_column_skips_legacy_database(
 
 
 async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
-    """Reads before open() and after close() raise the library error, never a fallback value."""
+    """Reads before open() and after close() raise ProviderUnavailableError."""
     library = BeetsLibrary(str(beets_db.path))
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.count_items()
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.get_albums()
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.get_album(1)
-    with pytest.raises(BeetsLibraryError):
-        await library.find_artist(name="Artist")
 
     await library.open()
     await library.close()
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.count_items()
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.get_albums()
-    with pytest.raises(BeetsLibraryError):
+    with pytest.raises(ProviderUnavailableError):
         await library.get_album(1)
-    with pytest.raises(BeetsLibraryError):
-        await library.find_artist(name="Artist")
 
 
 async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:
@@ -354,7 +327,7 @@ async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:
     locker = sqlite3.connect(beets_db.path)
     try:
         locker.execute("BEGIN EXCLUSIVE")
-        with pytest.raises(BeetsLibraryError, match="locked"):
+        with pytest.raises(ProviderUnavailableError, match="locked"):
             await library.count_items()
     finally:
         locker.rollback()

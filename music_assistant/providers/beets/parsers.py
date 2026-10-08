@@ -32,14 +32,12 @@ from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
 from .constants import (
-    ALBUM_ID_PREFIX,
     ALBUM_TYPE_PRIORITY,
     ARTIST_MBID_ID_PREFIX,
     ARTIST_NAME_ID_PREFIX,
     BEETS_DB_TO_LUFS_OFFSET,
     IMAGE_PATH_PREFIX,
     PARSER_VERSION,
-    TRACK_ID_PREFIX,
 )
 from .library import BeetsRow, value_at
 from .library import split_multi_value as split_multi_value  # noqa: PLC0414 (re-exported)
@@ -57,42 +55,22 @@ class ParseContext:
     r128_target_level: int = 84
 
 
-def track_id_prefix(instance_id: str) -> str:
-    """
-    Return the prefix a track provider item id of this instance starts with.
-
-    :param instance_id: The provider instance id.
-    """
-    return f"{TRACK_ID_PREFIX}{instance_id}-"
-
-
-def album_id_prefix(instance_id: str) -> str:
-    """
-    Return the prefix an album provider item id of this instance starts with.
-
-    :param instance_id: The provider instance id.
-    """
-    return f"{ALBUM_ID_PREFIX}{instance_id}-"
-
-
-def track_item_id(ctx: ParseContext, beets_id: int) -> str:
+def track_item_id(beets_id: int) -> str:
     """
     Return the provider item id of a beets item.
 
-    :param ctx: The provider parse context.
     :param beets_id: The beets item id.
     """
-    return f"{track_id_prefix(ctx.instance_id)}{beets_id}"
+    return str(beets_id)
 
 
-def album_item_id(ctx: ParseContext, beets_id: int) -> str:
+def album_item_id(beets_id: int) -> str:
     """
     Return the provider item id of a beets album.
 
-    :param ctx: The provider parse context.
     :param beets_id: The beets album id.
     """
-    return f"{album_id_prefix(ctx.instance_id)}{beets_id}"
+    return str(beets_id)
 
 
 def artist_item_id(name: str, mbid: str | None) -> str:
@@ -212,11 +190,11 @@ def parse_audio_format(fields: Mapping[str, Any]) -> AudioFormat:
 
 def album_checksum(album: BeetsRow) -> str:
     """
-    Return a checksum that changes whenever the album row or its attributes change.
+    Return a checksum that changes with the album row, its attributes or its cover file.
 
     :param album: The beets album row.
     """
-    return _digest([album.fields, album.flex])
+    return _digest([album.fields, album.flex, album.art_stamp])
 
 
 def item_checksum(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext) -> str:
@@ -236,6 +214,7 @@ def item_checksum(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext) -> 
             item.flex,
             album.fields if album else None,
             album.flex if album else None,
+            album.art_stamp if album else None,
         ]
     )
 
@@ -280,7 +259,7 @@ def parse_album(album: BeetsRow, ctx: ParseContext) -> Album:
     :param ctx: The provider parse context.
     """
     fields = album.fields
-    item_id = album_item_id(ctx, album.id)
+    item_id = album_item_id(album.id)
     name, version = parse_title_and_version(_text(fields.get("album")) or str(album.id))
     result = Album(
         item_id=item_id,
@@ -293,6 +272,7 @@ def parse_album(album: BeetsRow, ctx: ParseContext) -> Album:
                 provider_domain=ctx.domain,
                 provider_instance=ctx.instance_id,
                 in_library=True,
+                is_unique=True,
             )
         },
     )
@@ -347,7 +327,7 @@ def parse_track(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext, check
     :raises InvalidDataError: If neither the item nor its album names an artist.
     """
     fields = item.fields
-    item_id = track_item_id(ctx, item.id)
+    item_id = track_item_id(item.id)
     path = decode_path(fields.get("path"))
     title = _text(fields.get("title")) or (PurePosixPath(path).stem if path else str(item.id))
     name, version = parse_title_and_version(title)
@@ -364,6 +344,7 @@ def parse_track(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext, check
                 audio_format=parse_audio_format(fields),
                 details=checksum,
                 in_library=True,
+                is_unique=True,
             )
         },
         disc_number=int(fields.get("disc") or 0),

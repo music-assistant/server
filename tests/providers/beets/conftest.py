@@ -18,24 +18,22 @@ from tests.providers.beets.beets_db import BeetsDb
 INSTANCE_ID = "beets--test"
 
 
-def track_prov_id(beets_id: int, instance_id: str = INSTANCE_ID) -> str:
+def track_prov_id(beets_id: int) -> str:
     """
-    Return the provider id a beets instance gives a beets item.
+    Return the provider id of a beets item.
 
     :param beets_id: The beets items.id.
-    :param instance_id: The beets provider instance.
     """
-    return f"track-{instance_id}-{beets_id}"
+    return str(beets_id)
 
 
-def album_prov_id(beets_id: int, instance_id: str = INSTANCE_ID) -> str:
+def album_prov_id(beets_id: int) -> str:
     """
-    Return the provider id a beets instance gives a beets album.
+    Return the provider id of a beets album.
 
     :param beets_id: The beets albums.id.
-    :param instance_id: The beets provider instance.
     """
-    return f"album-{instance_id}-{beets_id}"
+    return str(beets_id)
 
 
 @pytest.fixture
@@ -81,8 +79,6 @@ async def make_provider(
         provider.library = BeetsLibrary(str(db_path or beets_db.path))
         provider.music_directory = str(music_dir)
         provider.beets_directory = beets_directory
-        provider.sync_running = False
-        provider._library_write_lock = asyncio.Lock()
         provider._ctx = ParseContext(
             instance_id=instance_id,
             domain="beets",
@@ -100,7 +96,7 @@ async def make_provider(
 
 
 def _mock_mass() -> MagicMock:
-    """Return a mocked mass whose TaskManager tasks really run."""
+    """Return a mocked mass whose background tasks really run."""
     mass = MagicMock()
 
     def _create_task(coro: Any, **_kwargs: Any) -> asyncio.Task[Any]:

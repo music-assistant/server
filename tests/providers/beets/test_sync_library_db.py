@@ -17,7 +17,7 @@ from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPP
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.beets import BeetsProvider
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
+from tests.providers.beets.conftest import INSTANCE_ID, track_prov_id
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Track
@@ -28,7 +28,7 @@ LIBRARY_B = "beets--libB"
 OTHER_INSTANCE = "other--instance"
 USER_ID = "listener"
 
-# the sync's TaskManager runs its imports through mass.create_task, which pins tasks to
+# library writes start background work through mass.create_task, which pins tasks to
 # mass.loop, so each test must run on the loop its class-scoped Music Assistant was created on
 pytestmark = pytest.mark.asyncio(loop_scope="class")
 
@@ -144,7 +144,7 @@ async def _library_track(
     rows = await mass.music.database.get_rows_from_query(
         f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} WHERE media_type = 'track' "
         "AND provider_instance = :instance_id AND provider_item_id = :item_id",
-        {"instance_id": instance_id, "item_id": track_prov_id(beets_item_id, instance_id)},
+        {"instance_id": instance_id, "item_id": track_prov_id(beets_item_id)},
         limit=0,
     )
     if not rows:
@@ -266,194 +266,6 @@ class TestReimportedItem:
             for mapping in reimported.provider_mappings
             if mapping.provider_instance == INSTANCE_ID
         } == {track_prov_id(new_id)}
-
-
-class TestMergedItems:
-    """Two beets items of the same recording on different albums share one library track."""
-
-    async def test_editing_one_item_keeps_the_other_items_mapping(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """After an edit to one item, the library track still maps both beets items."""
-        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
-        first_album = _add_album(beets_db, "First Album")
-        second_album = _add_album(beets_db, "Second Album")
-        edited = _add_item(beets_db, first_album, "Song", **recording)
-        other = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        library_track = await _library_track(library_mass, edited)
-        assert library_track is not None
-        both = {(INSTANCE_ID, track_prov_id(edited)), (INSTANCE_ID, track_prov_id(other))}
-        assert _mappings(library_track) == both
-
-        beets_db.update_item(edited, comments="Edited")
-        await _sync(provider)
-
-        edited_track = await _library_track(library_mass, edited)
-        assert edited_track is not None
-        assert edited_track.item_id == library_track.item_id
-        assert _mappings(edited_track) == both
-        assert edited_track.metadata.description == "Edited"
-
-
-class TestMergedItemRetaggedAsAnotherRecording:
-    """A merged beets item retagged as a different recording splits off its own library track."""
-
-    async def test_retagged_item_and_other_item_end_on_separate_tracks(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """Each beets item ends on its own library track with its own title in one sync."""
-        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
-        first_album = _add_album(beets_db, "First Album")
-        second_album = _add_album(beets_db, "Second Album")
-        retagged = _add_item(beets_db, first_album, "Song", **recording)
-        other = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        merged = await _library_track(library_mass, retagged)
-        assert merged is not None
-        assert _mappings(merged) == {
-            (INSTANCE_ID, track_prov_id(retagged)),
-            (INSTANCE_ID, track_prov_id(other)),
-        }
-        await library_mass.music.tracks.set_favorite(merged.item_id, True, [USER_ID])
-
-        beets_db.update_item(
-            retagged,
-            title="Totally Different",
-            mb_trackid=str(uuid4()),
-            acoustid_id=str(uuid4()),
-            isrc="TESTRETAG0001",
-        )
-        await _sync(provider)
-
-        retagged_track = await _library_track(library_mass, retagged)
-        other_track = await _library_track(library_mass, other)
-        assert retagged_track is not None
-        assert other_track is not None
-        assert retagged_track.item_id != other_track.item_id
-        assert retagged_track.name == "Totally Different"
-        assert other_track.name == "Song"
-        assert _mappings(retagged_track) == {(INSTANCE_ID, track_prov_id(retagged))}
-        assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
-        # the library track, with its favorite, stays with the item that did not change
-        assert other_track.item_id == merged.item_id
-        assert await _is_favorite(library_mass, other_track)
-        assert not await _is_favorite(library_mass, retagged_track)
-
-
-class TestMergedItemRematchedKeepingItsFingerprint:
-    """A merged beets item re-matched to another recording splits off despite its AcoustID."""
-
-    async def test_rematched_item_and_other_item_end_on_separate_tracks(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """A new MusicBrainz recording and ISRC outweigh the unchanged audio fingerprint."""
-        recording = {
-            "mb_trackid": str(uuid4()),
-            "acoustid_id": str(uuid4()),
-            "isrc": "TESTSHARED001",
-            "track": 1,
-        }
-        first_album = _add_album(beets_db, "First Album")
-        second_album = _add_album(beets_db, "Second Album")
-        rematched = _add_item(beets_db, first_album, "Song", **recording)
-        other = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        merged = await _library_track(library_mass, rematched)
-        assert merged is not None
-        assert _mappings(merged) == {
-            (INSTANCE_ID, track_prov_id(rematched)),
-            (INSTANCE_ID, track_prov_id(other)),
-        }
-        await library_mass.music.tracks.set_favorite(merged.item_id, True, [USER_ID])
-
-        beets_db.update_item(
-            rematched, title="Totally Different", mb_trackid=str(uuid4()), isrc="TESTREMATCH01"
-        )
-        await _sync(provider)
-
-        rematched_track = await _library_track(library_mass, rematched)
-        other_track = await _library_track(library_mass, other)
-        assert rematched_track is not None
-        assert other_track is not None
-        assert rematched_track.item_id != other_track.item_id
-        assert rematched_track.name == "Totally Different"
-        assert other_track.name == "Song"
-        assert _mappings(rematched_track) == {(INSTANCE_ID, track_prov_id(rematched))}
-        assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
-        # the library track, with its favorite, stays with the item that did not change
-        assert other_track.item_id == merged.item_id
-        assert await _is_favorite(library_mass, other_track)
-        assert not await _is_favorite(library_mass, rematched_track)
-
-
-class TestMergedItemsWithoutExternalIds:
-    """Beets items merged on name, artist and duration alone stay merged when one is edited."""
-
-    async def test_edit_keeps_the_other_items_mapping(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """After a comment edit to one singleton, the library track still maps both items."""
-        singleton = {
-            "mb_trackid": None,
-            "acoustid_id": None,
-            "isrc": None,
-            "track": 0,
-            "disc": 0,
-            "length": 215.0,
-        }
-        edited = _add_item(beets_db, None, "Song", path=b"Singles/Song.flac", **singleton)
-        other = _add_item(beets_db, None, "Song", path=b"Singles/Song (copy).flac", **singleton)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        library_track = await _library_track(library_mass, edited)
-        assert library_track is not None
-        assert not library_track.external_ids
-        both = {(INSTANCE_ID, track_prov_id(edited)), (INSTANCE_ID, track_prov_id(other))}
-        assert _mappings(library_track) == both
-
-        beets_db.update_item(edited, comments="Edited")
-        await _sync(provider)
-
-        edited_track = await _library_track(library_mass, edited)
-        assert edited_track is not None
-        assert edited_track.item_id == library_track.item_id
-        assert _mappings(edited_track) == both
-        assert edited_track.metadata.description == "Edited"
-
-
-class TestMergedItemsChangedTogether:
-    """Two merged beets items that change in the same sync both keep their current mapping."""
-
-    async def test_both_mappings_hold_their_new_checksums(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """The library track maps both items afterwards, and a further sync imports nothing."""
-        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
-        first_album = _add_album(beets_db, "First Album")
-        second_album = _add_album(beets_db, "Second Album")
-        first = _add_item(beets_db, first_album, "Song", **recording)
-        second = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-
-        beets_db.set_item_flex(first, "mood", "happy")
-        beets_db.set_item_flex(second, "mood", "happy")
-        await _sync(provider)
-
-        library_track = await _library_track(library_mass, first)
-        assert library_track is not None
-        assert _mappings(library_track) == {
-            (INSTANCE_ID, track_prov_id(first)),
-            (INSTANCE_ID, track_prov_id(second)),
-        }
-        tracks = library_mass.music.tracks
-        with patch.object(tracks, "add_item_to_library", wraps=tracks.add_item_to_library) as add:
-            await _sync(provider)
-        add.assert_not_awaited()
 
 
 class TestDeletedItem:
@@ -663,62 +475,3 @@ class TestTwoBeetsLibraries:
         assert set(remaining) == {"A Two", "B One", "B Two"}
         assert remaining["B One"].item_id == tracks["B One"].item_id
         assert _mappings(remaining["B One"]) == _mappings(tracks["B One"])
-
-
-class TestMergedAlbumsOnTrackEdit:
-    """A track edit keeps the other beets albums merged into its library album."""
-
-    async def test_edit_keeps_the_other_albums_mapping(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """Both beets albums of the same release still map the library album afterwards."""
-        release = {"mb_albumid": str(uuid4()), "mb_releasegroupid": str(uuid4())}
-        first_album = _add_album(beets_db, "Album", **release)
-        second_album = _add_album(beets_db, "Album", **release)
-        edited = _add_item(beets_db, first_album, "One", track=1)
-        _add_item(beets_db, second_album, "Two", track=2)
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        albums = library_mass.music.albums
-        library_album = await albums.get_library_item_by_prov_id(
-            album_prov_id(first_album), INSTANCE_ID
-        )
-        assert library_album is not None
-        both = {
-            (INSTANCE_ID, album_prov_id(first_album)),
-            (INSTANCE_ID, album_prov_id(second_album)),
-        }
-        assert _mappings(library_album) == both
-
-        beets_db.update_item(edited, comments="Edited")
-        await _sync(provider)
-
-        library_album = await albums.get_library_item(library_album.item_id)
-        assert _mappings(library_album) == both
-
-
-class TestMergedArtistsOnTrackEdit:
-    """A track edit keeps the other beets artist ids merged into its library artist."""
-
-    async def test_edit_keeps_the_artist_id_without_mbid(
-        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
-    ) -> None:
-        """An artist credited with and without its MusicBrainz id keeps both mappings."""
-        mbid = str(uuid4())
-        edited = _add_item(beets_db, None, "Tagged", **_artist_fields("Twin", mbid))
-        _add_item(beets_db, None, "Untagged", **_artist_fields("Twin", ""))
-        provider = await _attach(make_provider, library_mass)
-        await _sync(provider)
-        artists = library_mass.music.artists
-        library_artist = await artists.get_library_item_by_prov_id(
-            f"artist-mbid-{mbid}", INSTANCE_ID
-        )
-        assert library_artist is not None
-        both = {(INSTANCE_ID, f"artist-mbid-{mbid}"), (INSTANCE_ID, "artist-name-Twin")}
-        assert _mappings(library_artist) == both
-
-        beets_db.update_item(edited, comments="Edited")
-        await _sync(provider)
-
-        library_artist = await artists.get_library_item(library_artist.item_id)
-        assert _mappings(library_artist) == both

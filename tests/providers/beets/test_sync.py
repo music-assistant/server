@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MusicAssistantError, ProviderUnavailableError
 from music_assistant_models.media_items import Album, ProviderMapping
 
 from music_assistant.controllers.tasks.context import calculate_progress
 from music_assistant.providers.beets import BeetsProvider
-from music_assistant.providers.beets.library import BeetsLibraryError, BeetsRow
+from music_assistant.providers.beets.library import BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
 from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
@@ -86,7 +86,6 @@ async def test_sync_with_zero_initial_count_does_not_crash_on_progress(
 
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert [call.args[0].name for call in calls] == ["Song"]
-    assert provider.sync_running is False
 
 
 async def test_album_for_falls_back_to_get_album_when_missing_from_pre_read_map(
@@ -105,17 +104,6 @@ async def test_album_for_falls_back_to_get_album_when_missing_from_pre_read_map(
     track = calls[0].args[0]
     assert isinstance(track.album, Album)
     assert track.album.item_id == album_prov_id(album_id)
-
-
-async def test_second_sync_while_running_is_ignored(
-    make_provider: MakeProvider, beets_db: BeetsDb
-) -> None:
-    """A sync request while one is running does nothing."""
-    beets_db.add_item(**item_fields())
-    provider = await make_provider()
-    provider.sync_running = True
-    await provider.sync_library(MediaType.TRACK)
-    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_only_changed_items_are_updated(
@@ -215,7 +203,7 @@ async def test_unreadable_library_does_not_delete(
     )
     _stub_cleanup(provider)
     provider.library.iter_items = MagicMock(  # type: ignore[method-assign]
-        side_effect=BeetsLibraryError("database is locked")
+        side_effect=ProviderUnavailableError("database is locked")
     )
 
     with patch(REPORT_FAILURE) as report:
@@ -224,13 +212,12 @@ async def test_unreadable_library_does_not_delete(
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
     report.assert_called_once()
-    assert provider.sync_running is False
 
 
 async def test_read_error_after_imports_started_does_not_delete(
     make_provider: MakeProvider, beets_db: BeetsDb
 ) -> None:
-    """A read that fails while imports are still running waits for them and deletes nothing."""
+    """A read that fails after some items were imported deletes nothing."""
     first = beets_db.add_item(**item_fields(title="First"))
     beets_db.add_item(**item_fields(title="Second"))
     provider = await make_provider()
@@ -247,7 +234,7 @@ async def test_read_error_after_imports_started_does_not_delete(
         yield first_batch
         awaited_when_read_failed.append(imports.await_count)  # type: ignore[attr-defined]
         msg = "database is locked"
-        raise BeetsLibraryError(msg)
+        raise ProviderUnavailableError(msg)
 
     provider.library.iter_items = MagicMock(  # type: ignore[method-assign]
         return_value=_fail_after_first_batch()
@@ -256,13 +243,12 @@ async def test_read_error_after_imports_started_does_not_delete(
     with patch(REPORT_FAILURE) as report:
         await provider.sync_library(MediaType.TRACK)
 
-    assert awaited_when_read_failed == [0]
+    assert awaited_when_read_failed == [1]
     calls = imports.await_args_list  # type: ignore[attr-defined]
     assert [call.args[0].item_id for call in calls] == [track_prov_id(first)]
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
     report.assert_called_once()
-    assert provider.sync_running is False
 
 
 async def test_failing_item_is_reported_and_not_deleted(
@@ -283,6 +269,24 @@ async def test_failing_item_is_reported_and_not_deleted(
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert [call.args[0].item_id for call in calls] == [track_prov_id(ok)]
     assert report.call_count == 1
+    provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_unexpected_import_error_aborts_the_sync(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """An error no item import is expected to raise stops the sync before any deletion."""
+    beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"provider_item_id": track_prov_id(99), "details": "x"}]
+    )
+    _stub_cleanup(provider)
+    provider.mass.music.tracks.add_item_to_library.side_effect = RuntimeError("bug")  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError):
+        await provider.sync_library(MediaType.TRACK)
+
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
 
 
@@ -308,7 +312,8 @@ async def test_failed_loudness_write_leaves_the_checksum_for_a_retry(
     beets_db.add_item(**item_fields(rg_track_gain=-5.0))
     provider = await make_provider()
     _stub_cleanup(provider)
-    provider.mass.streams.audio_analysis.set_track_loudness.side_effect = OSError("disk full")  # type: ignore[attr-defined]
+    loudness = provider.mass.streams.audio_analysis.set_track_loudness
+    loudness.side_effect = MusicAssistantError("storage failed")  # type: ignore[attr-defined]
 
     with patch(REPORT_FAILURE) as report:
         await provider.sync_library(MediaType.TRACK)
@@ -395,38 +400,3 @@ async def test_orphaned_albums_and_artists_lose_this_instances_mappings(
         call.args[1] == {"instance_id": INSTANCE_ID}
         for call in music.database.get_rows_from_query.await_args_list
     )
-
-
-async def test_new_import_waits_for_an_overwrite_reading_the_library_track(
-    make_provider: MakeProvider, beets_db: BeetsDb
-) -> None:
-    """A new item cannot merge into a library track while an overwrite of it is in progress."""
-    changed_id = beets_db.add_item(**item_fields(title="Changed"))
-    new_id = beets_db.add_item(**item_fields(title="New"))
-    provider = await make_provider()
-    tracks = provider.mass.music.tracks
-    lookup_started = asyncio.Event()
-    release_lookup = asyncio.Event()
-
-    async def _slow_lookup(*_args: Any) -> None:
-        lookup_started.set()
-        await release_lookup.wait()
-
-    tracks.get_library_item_by_prov_id = AsyncMock(side_effect=_slow_lookup)  # type: ignore[method-assign]
-    changed = await provider.library.get_item(changed_id)
-    new = await provider.library.get_item(new_id)
-    assert changed is not None
-    assert new is not None
-
-    overwrite = asyncio.create_task(provider._import_item(changed, None, "a", overwrite=True))
-    await lookup_started.wait()
-    add = asyncio.create_task(provider._import_item(new, None, "b", overwrite=False))
-    await asyncio.sleep(0)
-    tracks.add_item_to_library.assert_not_awaited()  # type: ignore[attr-defined]
-
-    release_lookup.set()
-    await asyncio.gather(overwrite, add)
-    assert [
-        call.args[0].item_id
-        for call in tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
-    ] == [track_prov_id(changed_id), track_prov_id(new_id)]

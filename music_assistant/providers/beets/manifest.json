@@ -5,6 +5,7 @@
   "name": "beets",
   "description": "Play the music library you manage with beets.",
   "codeowners": ["@stellar-aria"],
+  "documentation": "https://music-assistant.io/music-providers/beets/",
   "credits": ["[beets logo © Adrian Sampson, MIT License](https://github.com/beetbox/beets)"],
   "requirements": [],
   "multi_instance": true,
