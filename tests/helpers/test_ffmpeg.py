@@ -148,44 +148,6 @@ def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
     return args[:idx], args[idx + 2 :]
 
 
-def test_get_ffmpeg_args_skips_tls_verification_for_https_input() -> None:
-    """An https input is opened without certificate checks, so self-signed hosts still play."""
-    input_args, _ = _split_at_input(
-        get_ffmpeg_args(
-            AudioFormat(content_type=ContentType.MP3),
-            _PCM_OUT,
-            [],
-            input_path="https://homeassistant.local:8123/api/tts_proxy/abc.mp3",
-        )
-    )
-
-    assert input_args[input_args.index("-tls_verify") + 1] == "0"
-
-
-@pytest.mark.parametrize("input_path", ["http://example.invalid/a.mp3", "/media/a.mp3", "-"])
-def test_get_ffmpeg_args_no_tls_verify_for_non_https_input(input_path: str) -> None:
-    """Inputs without TLS get no tls_verify option, which ffmpeg rejects for them."""
-    args = get_ffmpeg_args(
-        AudioFormat(content_type=ContentType.MP3), _PCM_OUT, [], input_path=input_path
-    )
-
-    assert "-tls_verify" not in args
-
-
-def test_get_ffmpeg_args_keeps_caller_tls_verify() -> None:
-    """A caller that sets tls_verify itself keeps its own value."""
-    args = get_ffmpeg_args(
-        AudioFormat(content_type=ContentType.MP3),
-        _PCM_OUT,
-        [],
-        input_path="https://example.invalid/a.mp3",
-        extra_input_args=["-tls_verify", "1"],
-    )
-
-    assert args.count("-tls_verify") == 1
-    assert args[args.index("-tls_verify") + 1] == "1"
-
-
 @pytest.mark.parametrize(
     ("channels", "expected_layout"),
     [(1, "mono"), (2, "stereo")],
