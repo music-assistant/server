@@ -3923,34 +3923,48 @@ class LocalFileSystemProvider(MusicProvider):
                     existing = os.lstat(name, dir_fd=dir_fd)
                 except FileNotFoundError:
                     existing = None
+                old_fd = -1
                 if existing is not None:
                     if not stat.S_ISREG(existing.st_mode):
                         raise InvalidDataError(msg)
                     # replacing the entry must not get around the file's own write permission
                     probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-                    os.close(os.open(name, probe_flags, dir_fd=dir_fd))
+                    old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
                 # written to a new file and renamed into place, so no existing inode is opened
-                # or truncated, whatever else links to it
+                # for writing or truncated, whatever else links to it
                 temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 temp_fd = os.open(temp_name, flags, 0o644, dir_fd=dir_fd)
                 try:
                     with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
-                        if existing is not None:
-                            # keep owner and mode of the file being replaced; a non-root
-                            # server cannot change the owner, which is no worse than before
-                            with contextlib.suppress(PermissionError):
-                                os.fchown(_file.fileno(), existing.st_uid, existing.st_gid)
-                            os.fchmod(_file.fileno(), stat.S_IMODE(existing.st_mode))
+                        if old_fd >= 0:
+                            _copy_file_security(old_fd, _file.fileno())
                         _file.write(data)
                     os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
                 except BaseException:
                     with contextlib.suppress(OSError):
                         os.unlink(temp_name, dir_fd=dir_fd)
                     raise
+                finally:
+                    if old_fd >= 0:
+                        os.close(old_fd)
             except OSError as err:
                 raise InvalidDataError(msg) from err
             finally:
                 os.close(dir_fd)
 
         await asyncio.to_thread(_write)
+
+
+def _copy_file_security(src_fd: int, dst_fd: int) -> None:
+    """Give dst the owner, mode and security attributes (ACLs) of src, as far as allowed."""
+    src_stat = os.fstat(src_fd)
+    # a non-root server cannot change the owner, which is no worse than before
+    with contextlib.suppress(PermissionError):
+        os.fchown(dst_fd, src_stat.st_uid, src_stat.st_gid)
+    os.fchmod(dst_fd, stat.S_IMODE(src_stat.st_mode))
+    # POSIX ACLs and other security metadata live in extended attributes on Linux
+    if hasattr(os, "listxattr"):
+        for attr in os.listxattr(src_fd):
+            with contextlib.suppress(OSError):
+                os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))
