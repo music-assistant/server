@@ -15,6 +15,7 @@ from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
+    HASSIO_SUPERVISOR_IP,
     HOMEASSISTANT_SYSTEM_USER,
     INGRESS_SERVER_PORT,
 )
@@ -388,7 +389,7 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
     """An unlinked HA user whose username matches a disabled user is refused, and not linked."""
     mass = auth_manager.mass
     await _create_user(auth_manager, "bob", disabled=True)
-    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=False)
+    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=False, details=("bob", None, None))
     headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "Bob"}
 
     with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
@@ -396,6 +397,21 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
 
     assert user is None
     assert await _get_ha_link(auth_manager, "ha_bob") is None
+
+
+async def test_ingress_site_request_from_the_supervisor_authenticates_the_linked_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A request on the ingress site opened by the Supervisor signs in the linked HA user."""
+    created = await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    user = await get_authenticated_user(
+        _socket_request(auth_manager.mass, headers, HASSIO_SUPERVISOR_IP)
+    )
+
+    assert user is not None
+    assert user.user_id == created.user_id
 
 
 @pytest.mark.parametrize("peer_ip", ["127.0.0.1", "172.30.32.1"])
