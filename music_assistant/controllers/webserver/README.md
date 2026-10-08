@@ -197,11 +197,13 @@ Manages individual WebSocket connections:
 6. **Token Generation**: A short-lived MA token is created and the callback answers with
    [oauth_callback.html](../../helpers/resources/oauth_callback.html), which carries the token and
    the `return_url` with the token appended as `code` parameter
-7. **Client Handling**: The page asks for consent first when `return_url` is on an external
-   domain. A popup whose `return_url` is an absolute URL on the server's own origin posts the
-   token to its opener (an `oauth_success` message) and closes; otherwise the page navigates to
-   `return_url` (`/` when none or an invalid one was given), where the client reads the token
-   from the `code` parameter
+7. **Client Handling**: The page asks for consent first unless `return_url` is trusted: the same
+   origin, localhost, a private network address, the configured base URL or an allowlisted Home
+   Assistant or app URL (see `is_allowed_redirect_url` in
+   [redirect_validation.py](../../helpers/redirect_validation.py)). A popup whose `return_url`
+   is an absolute URL on the server's own origin posts the token to its opener (an
+   `oauth_success` message) and closes; otherwise the page navigates to `return_url` (`/` when
+   none or an invalid one was given), where the client reads the token from the `code` parameter
 
 ### Ingress Authentication (Home Assistant Add-on)
 
