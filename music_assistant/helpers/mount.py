@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.parse import quote
 
 from music_assistant_models.errors import LoginFailed, SetupFailedError, UnsupportedSystemError
@@ -14,6 +14,8 @@ from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
     from logging import Logger
+
+UNMOUNT_TIMEOUT: Final[int] = 15
 
 # lowercase fragments that both mount tools (Linux mount.cifs and macOS mount_smbfs) emit when
 # the server rejected the credentials - only those must be reported back as an auth problem
@@ -206,9 +208,9 @@ async def unmount(path: str, logger: Logger) -> None:
     :param logger: Logger to report a failed (regular) unmount on.
     :raises SetupFailedError: If the path could not be freed.
     """
-    if not await asyncio.to_thread(os.path.ismount, path):
+    if not await _is_mount(path):
         return
-    returncode, output = await check_output("umount", path)
+    returncode, output = await _umount(path)
     if returncode == 0:
         return
     error = output.decode().strip()
@@ -217,8 +219,8 @@ async def unmount(path: str, logger: Logger) -> None:
     # lazy detach on Linux (frees the mountpoint immediately, even with files still open)
     # and the forced variant on macOS, which has no lazy equivalent.
     detach_flag = "-f" if platform.system() == "Darwin" else "-l"
-    returncode, output = await check_output("umount", detach_flag, path)
-    if returncode != 0 and await asyncio.to_thread(os.path.ismount, path):
+    returncode, output = await _umount(detach_flag, path)
+    if returncode != 0 and await _is_mount(path):
         error = output.decode().strip()
         msg = f"Unable to unmount {path}: {error}"
         raise SetupFailedError(
@@ -226,3 +228,28 @@ async def unmount(path: str, logger: Logger) -> None:
             translation_key="unmount_failed",
             translation_args=[error_summary(error)],
         )
+
+
+async def _is_mount(path: str) -> bool:
+    """
+    Return whether a path is a mountpoint; a mount that does not answer in time counts as one.
+
+    :param path: The (local) path to check.
+    """
+    try:
+        async with asyncio.timeout(UNMOUNT_TIMEOUT):
+            return await asyncio.to_thread(os.path.ismount, path)
+    except TimeoutError:
+        return True
+
+
+async def _umount(*args: str) -> tuple[int, bytes]:
+    """
+    Run umount, giving up when it does not finish in time.
+
+    :param args: The arguments of umount.
+    """
+    try:
+        return await check_output("umount", *args, timeout=UNMOUNT_TIMEOUT)
+    except TimeoutError:
+        return 1, f"umount did not finish within {UNMOUNT_TIMEOUT} seconds".encode()
