@@ -130,6 +130,21 @@ async def test_add_playlist_tracks_keeps_the_playlist_permissions(base: Path) ->
     assert "Added" in playlist.read_text()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may write read-only files")
+async def test_add_playlist_tracks_respects_a_read_only_playlist(base: Path) -> None:
+    """A playlist the server may not write to is not replaced either."""
+    playlist = base / "locked.m3u"
+    playlist.write_text(ORIGINAL)
+    playlist.chmod(0o444)
+    provider = _make_provider(base)
+    provider.get_track = AsyncMock(return_value=_fake_track("Added"))  # type: ignore[method-assign]
+
+    with pytest.raises(InvalidDataError):
+        await provider.add_playlist_tracks("locked.m3u", ["some/added.mp3"])
+
+    assert playlist.read_text() == ORIGINAL
+
+
 async def test_create_playlist_writes_regular_file(base: Path) -> None:
     """A regular playlist is created with an M3U header."""
     provider = _make_provider(base)

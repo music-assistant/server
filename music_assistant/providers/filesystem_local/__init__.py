@@ -3923,8 +3923,11 @@ class LocalFileSystemProvider(MusicProvider):
                     existing = os.lstat(name, dir_fd=dir_fd)
                 except FileNotFoundError:
                     existing = None
-                if existing is not None and not stat.S_ISREG(existing.st_mode):
-                    raise InvalidDataError(msg)
+                if existing is not None:
+                    if not stat.S_ISREG(existing.st_mode):
+                        raise InvalidDataError(msg)
+                    # replacing the entry must not get around the file's own write permission
+                    os.close(os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=dir_fd))
                 # written to a new file and renamed into place, so no existing inode is opened
                 # or truncated, whatever else links to it
                 temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
