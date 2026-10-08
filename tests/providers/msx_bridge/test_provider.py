@@ -100,32 +100,14 @@ async def test_get_ma_stream_url_accepts_universal_group_flow_media(
     assert url == stream_url
 
 
-def test_shared_stream_mode_migrates_to_independent(provider: MSXBridgeProvider) -> None:
-    """The removed shared mode migrates without changing local delivery topology."""
+def test_legacy_shared_mode_fallback_does_not_write_settings(provider: MSXBridgeProvider) -> None:
+    """Older MA versions keep independent delivery; MA core owns persistent migration."""
     cast("Any", provider.config).get_value = Mock(return_value="shared")
     set_raw_value = Mock()
     cast("Any", provider.mass.config).set_raw_provider_config_value = set_raw_value
 
-    mode = provider._load_stream_mode()
-
-    assert mode == "independent"
-    set_raw_value.assert_called_once_with(
-        provider.instance_id,
-        "group_stream_mode",
-        "independent",
-    )
-
-
-def test_shared_stream_mode_migration_failure_is_non_fatal(
-    provider: MSXBridgeProvider,
-) -> None:
-    """A failed best-effort config write must not prevent provider startup."""
-    cast("Any", provider.config).get_value = Mock(return_value="shared")
-    cast("Any", provider.mass.config).set_raw_provider_config_value = Mock(
-        side_effect=OSError("read-only")
-    )
-
     assert provider._load_stream_mode() == "independent"
+    set_raw_value.assert_not_called()
 
 
 async def test_get_ma_stream_url_returns_none_on_error(

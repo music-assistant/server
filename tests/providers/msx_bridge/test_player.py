@@ -427,7 +427,7 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
 
 
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
-    """play_media should skip all WS notifications when _skip_ws_notify is True."""
+    """Native transitions suppress playback commands while allowing a clock reset."""
     player._playing_from_queue = True
     player._skip_ws_notify = True
 

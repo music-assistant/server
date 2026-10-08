@@ -91,6 +91,8 @@
         clearPendingServerSeek();
         detachMediaListeners();
         pausedAtPosition = 0;
+        pausedByServer = false;
+        resumedByServer = false;
         startPositionTimer(0);
     }
 
@@ -129,7 +131,9 @@
         ws.onmessage = function(ev) {
             try {
                 var msg = JSON.parse(ev.data);
-                if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                if (msg.type === "clock_reset") {
+                    resetPlaybackClock();
+                } else if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     stopPositionTimer();
                     clearPendingServerSeek();
                     var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";

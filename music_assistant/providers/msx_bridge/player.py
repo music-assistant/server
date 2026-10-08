@@ -136,7 +136,9 @@ class MSXPlayer(Player):
         self._accepted_position = False
         self.update_state()
 
-        if not self._skip_ws_notify:
+        if self._skip_ws_notify:
+            cast("MSXBridgeProvider", self.provider).notify_native_track_started(self.player_id)
+        else:
             self._notify_msx_playback(media)
 
     async def play(self) -> None:

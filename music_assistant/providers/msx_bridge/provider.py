@@ -253,6 +253,11 @@ class MSXBridgeProvider(PlayerProvider):
         await self._handle_player_unregister(player_id)
         self.logger.info("Player %s removed by user", player_id)
 
+    def notify_native_track_started(self, player_id: str) -> None:
+        """Reset the TV clock for a new item without reloading its native playlist."""
+        if self.http_server:
+            self.http_server.broadcast_clock_reset(player_id)
+
     def notify_play_started(
         self,
         player_id: str,
@@ -415,20 +420,9 @@ class MSXBridgeProvider(PlayerProvider):
         return f"{prefix_label} ({suffix})"
 
     def _load_stream_mode(self) -> str:
-        """Load the configured stream mode and migrate the removed shared mode."""
+        """Load stream mode; retain a read-only fallback for older MA installations."""
         raw_mode = self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE)
         if raw_mode == LEGACY_GROUP_STREAM_MODE_SHARED:
-            try:
-                self.mass.config.set_raw_provider_config_value(
-                    self.instance_id,
-                    CONF_GROUP_STREAM_MODE,
-                    GROUP_STREAM_MODE_INDEPENDENT,
-                )
-            except KeyError, OSError, RuntimeError, TypeError, ValueError:
-                self.logger.warning(
-                    "Unable to persist stream mode migration from shared to independent",
-                    exc_info=True,
-                )
             return GROUP_STREAM_MODE_INDEPENDENT
         if raw_mode not in (GROUP_STREAM_MODE_REDIRECT, GROUP_STREAM_MODE_INDEPENDENT):
             self.logger.warning("Unknown stream delivery mode %r; using redirect", raw_mode)

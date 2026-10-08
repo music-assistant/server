@@ -145,7 +145,21 @@ class AudioPipeline:
             )
         )
         transport = getattr(request, "transport", None)
-        await self.run_stream_task(player_id, stream_task, transport)
+        try:
+            await self.run_stream_task(player_id, stream_task, transport)
+        except MusicAssistantError, OSError:
+            if not response.prepared:
+                raise web.HTTPServiceUnavailable(text="Unable to start audio stream") from None
+            raise
+        finally:
+            if (
+                response.prepared
+                and stream_task.done()
+                and not stream_task.cancelled()
+                and stream_task.exception() is not None
+                and transport is not None
+            ):
+                transport.abort()
         return response
 
     async def stream_with_prebuffer(
@@ -183,7 +197,7 @@ class AudioPipeline:
         total_bytes = 0
         try:
             producer_task = asyncio.create_task(producer())
-            pre_buffer, ended = await _collect_prebuffer(chunk_queue, producer_done)
+            pre_buffer, ended = await _collect_prebuffer(chunk_queue, producer_done, producer_task)
 
             if not player.current_media and not pre_buffer:
                 return
@@ -244,6 +258,7 @@ class AudioPipeline:
             raise
         except MusicAssistantError, OSError:
             logger.exception("Stream error for player %s", player_id)
+            raise
         finally:
             self.unregister_stream(player_id, stream_task, transport)
 
@@ -305,10 +320,12 @@ def rewrite_stream_host(request: web.Request, url: str) -> str:
 async def _collect_prebuffer(
     chunk_queue: asyncio.Queue[bytes | None],
     done: asyncio.Event | None = None,
+    producer_task: asyncio.Task[None] | None = None,
 ) -> tuple[list[bytes], bool]:
-    """Collect chunks until PRE_BUFFER_BYTES or EOF. Returns (chunks, ended)."""
+    """Collect audio until the buffer threshold or EOF, propagating producer failures."""
     pre_buffer: list[bytes] = []
     pre_buffer_size = 0
+    ended = False
     while pre_buffer_size < PRE_BUFFER_BYTES:
         if done is None:
             chunk = await chunk_queue.get()
@@ -317,13 +334,17 @@ async def _collect_prebuffer(
                 chunk = await asyncio.wait_for(chunk_queue.get(), timeout=0.2)
             except TimeoutError:
                 if done.is_set() and chunk_queue.empty():
-                    return pre_buffer, True
+                    ended = True
+                    break
                 continue
         if chunk is None:
-            return pre_buffer, True
+            ended = True
+            break
         pre_buffer.append(chunk)
         pre_buffer_size += len(chunk)
-    return pre_buffer, False
+    if producer_task is not None and producer_task.done():
+        producer_task.result()
+    return pre_buffer, ended
 
 
 def build_audio_params(
@@ -360,8 +381,7 @@ def build_audio_params(
         "Accept-Ranges": "none",
     }
     if include_content_length and duration and bytes_per_sec:
-        capped_duration = min(float(duration), 43200)
-        headers["Content-Length"] = str(int(capped_duration * bytes_per_sec))
+        headers["Content-Length"] = str(duration * bytes_per_sec)
     return pcm_format, out_format, headers
 
 

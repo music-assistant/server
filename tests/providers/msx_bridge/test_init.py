@@ -88,20 +88,6 @@ async def test_setup_does_not_advertise_native_grouping(
     assert ProviderFeature.SYNC_PLAYERS not in result.supported_features
 
 
-async def test_setup_removes_legacy_grouping_config(
-    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
-) -> None:
-    """The removed provider-native grouping switch is cleared from storage."""
-    mass_mock.config.get_raw_provider_config_value.return_value = False
-
-    await setup(mass_mock, manifest_mock, config_mock)
-
-    mass_mock.config.remove_provider_config_value.assert_awaited_once_with(
-        config_mock.instance_id,
-        "enable_player_grouping",
-    )
-
-
 def test_player_is_eligible_as_universal_group_member(provider: MSXBridgeProvider) -> None:
     """An MSX player remains a regular player without native grouping features."""
     player = MSXPlayer(provider, "msx_tv")

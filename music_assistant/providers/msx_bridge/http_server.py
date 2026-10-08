@@ -283,6 +283,13 @@ class MSXHTTPServer:
         """Cancel stream tasks and abort connections for the given player."""
         self.audio.cancel_streams_for_player(player_id)
 
+    def broadcast_clock_reset(self, player_id: str) -> None:
+        """Notify native playback of a new item without changing the TV playlist."""
+        msg = json.dumps({"type": "clock_reset"})
+        for ws in list(self._ws_clients.get(player_id, set())):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
     def broadcast_pause(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to pause playback."""
         clients = self._ws_clients.get(player_id, set())

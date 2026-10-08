@@ -1266,7 +1266,8 @@ async def test_run_stream_task_logs_expected_errors_and_unregisters(
         raise error_type("stream failed")
 
     stream_task = asyncio.create_task(_fail())
-    await server.audio.run_stream_task("msx_test", stream_task, None)
+    with pytest.raises(error_type, match="stream failed"):
+        await server.audio.run_stream_task("msx_test", stream_task, None)
 
     assert "Stream error for player msx_test" in caplog.text
     assert "msx_test" not in server._active_stream_tasks
@@ -1437,6 +1438,79 @@ async def test_msx_audio_does_not_hide_programming_errors(
             response = await client.get(f"/msx/audio/msx_test?uri=library://track/1&token={token}")
 
         assert response.status == 500
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("error_type", [MusicAssistantError, OSError])
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_independent_audio_startup_failure_returns_503(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+    error_type: type[Exception],
+    buffered: bool,
+) -> None:
+    """Encoder/source failure before headers must not look like successful audio."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    _make_audio_player(mass_mock)
+    _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
+    mass_mock.streams = Mock()
+    mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
+
+    async def failed_encoder() -> AsyncGenerator[bytes]:
+        if buffered:
+            yield b"incomplete audio"
+        raise error_type("encoder failed before headers")
+
+    try:
+        with patch(
+            "music_assistant.providers.msx_bridge.audio_stream.get_ffmpeg_stream",
+            return_value=failed_encoder(),
+        ):
+            response = await client.get(
+                f"/msx/audio/msx_test?uri=library://track/1&token={provider.get_stream_token('msx_test')}"
+            )
+            assert response.status == 503
+        assert "msx_test" not in server.audio.active_stream_tasks
+    finally:
+        await client.close()
+
+
+async def test_independent_audio_failure_after_headers_aborts_response(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+) -> None:
+    """A failed chunked stream must not end as a clean successful response."""
+    provider.include_content_length = False
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    player, _media = _make_audio_player(mass_mock)
+    _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
+    mass_mock.streams = Mock()
+    mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
+
+    async def failed_encoder() -> AsyncGenerator[bytes]:
+        yield b"a" * PRE_BUFFER_BYTES
+        await asyncio.sleep(0.05)
+        raise OSError("encoder failed during playback")
+
+    try:
+        with patch(
+            "music_assistant.providers.msx_bridge.audio_stream.get_ffmpeg_stream",
+            return_value=failed_encoder(),
+        ):
+            response = await client.get(
+                f"/msx/audio/{player.player_id}?uri=library://track/1&token={provider.get_stream_token(player.player_id)}"
+            )
+            assert response.status == 200
+            with pytest.raises(aiohttp.ClientPayloadError):
+                await response.read()
+        assert player.player_id not in server.audio.active_stream_tasks
     finally:
         await client.close()
 
@@ -2210,6 +2284,13 @@ async def test_msx_audio_arms_wait_before_enqueue(
 
 
 # --- Served audio length (Content-Length) ---
+
+
+@pytest.mark.parametrize(("codec", "expected"), [("mp3", "1872000000"), ("aac", "1497600000")])
+def test_long_audio_content_length_covers_the_full_item(codec: str, expected: str) -> None:
+    """A thirteen-hour item must not be truncated to twelve hours by its headers."""
+    _pcm, _out, headers = build_audio_params(codec, 46800)
+    assert headers["Content-Length"] == expected
 
 
 def test_audio_params_include_content_length_by_default() -> None:
