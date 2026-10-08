@@ -15,6 +15,7 @@ import pytest
 from music_assistant.helpers import process as process_module
 from music_assistant.helpers.process import (
     AsyncProcess,
+    check_output,
     collect_child_process_counts,
     parse_child_process_name,
 )
@@ -405,3 +406,22 @@ def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) ->
     counts = collect_child_process_counts(tmp_path, parent_pid=100)
     assert counts is not None
     assert sum(counts.values()) == 1
+
+
+async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> None:
+    """A command that does not finish in time is killed with everything it started."""
+    pid_file = tmp_path / "child.pid"
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await check_output("sh", "-c", f"sleep 30 & echo $! > {pid_file}; wait", timeout=0.5)
+    assert time.monotonic() - start < 10
+
+    child_pid = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail("the child process outlived the timeout")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 from urllib.parse import quote
 
@@ -198,7 +199,7 @@ def error_summary(output: str) -> str:
     return ""
 
 
-async def unmount(path: str, logger: Logger) -> None:
+async def unmount(path: str, logger: Logger, is_mount: Callable[[str], bool] | None = None) -> None:
     """
     Unmount the given path, ensuring it is free for a new mount afterwards.
 
@@ -206,9 +207,11 @@ async def unmount(path: str, logger: Logger) -> None:
 
     :param path: The (local) mountpoint to unmount.
     :param logger: Logger to report a failed (regular) unmount on.
+    :param is_mount: Returns whether a path is mounted (blocking), os.path.ismount by default.
     :raises SetupFailedError: If the path could not be freed.
     """
-    if not await _is_mount(path):
+    is_mount = is_mount or os.path.ismount
+    if not await _is_mount(path, is_mount):
         return
     returncode, output = await _umount(path)
     if returncode == 0:
@@ -220,7 +223,7 @@ async def unmount(path: str, logger: Logger) -> None:
     # and the forced variant on macOS, which has no lazy equivalent.
     detach_flag = "-f" if platform.system() == "Darwin" else "-l"
     returncode, output = await _umount(detach_flag, path)
-    if returncode != 0 and await _is_mount(path):
+    if returncode != 0 and await _is_mount(path, is_mount):
         error = output.decode().strip()
         msg = f"Unable to unmount {path}: {error}"
         raise SetupFailedError(
@@ -230,15 +233,16 @@ async def unmount(path: str, logger: Logger) -> None:
         )
 
 
-async def _is_mount(path: str) -> bool:
+async def _is_mount(path: str, is_mount: Callable[[str], bool]) -> bool:
     """
     Return whether a path is a mountpoint; a mount that does not answer in time counts as one.
 
     :param path: The (local) path to check.
+    :param is_mount: Returns whether a path is mounted (blocking).
     """
     try:
         async with asyncio.timeout(UNMOUNT_TIMEOUT):
-            return await asyncio.to_thread(os.path.ismount, path)
+            return await asyncio.to_thread(is_mount, path)
     except TimeoutError:
         return True
 
