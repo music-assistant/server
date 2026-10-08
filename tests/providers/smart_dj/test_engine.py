@@ -284,7 +284,7 @@ def test_artist_repeat_limit_is_enforced() -> None:
 
 def test_beam_optimize_preserves_every_track() -> None:
     """The optimiser reorders without losing or duplicating a queue item."""
-    tracks = [
+    tracks: list[dict[str, Any]] = [
         {"queue_item_id": str(i), "artist": f"artist-{i}", "analysis": _track(bpm=120.0 + i)}
         for i in range(5)
     ]
@@ -295,7 +295,7 @@ def test_beam_optimize_preserves_every_track() -> None:
 
 def test_beam_optimize_rejects_conflicting_constraints() -> None:
     """A track cannot be both required and excluded."""
-    tracks = [{"queue_item_id": "a", "analysis": _track()}]
+    tracks: list[dict[str, Any]] = [{"queue_item_id": "a", "analysis": _track()}]
     controls = DJControls(
         required_ids=frozenset({"a"}),
         excluded_ids=frozenset({"a"}),
@@ -306,7 +306,7 @@ def test_beam_optimize_rejects_conflicting_constraints() -> None:
 
 def test_beam_optimize_reports_a_missing_required_track() -> None:
     """A required track absent from the queue is an error, not a silent skip."""
-    tracks = [{"queue_item_id": "a", "analysis": _track()}]
+    tracks: list[dict[str, Any]] = [{"queue_item_id": "a", "analysis": _track()}]
     controls = DJControls(required_ids=frozenset({"zzz"}))
     with pytest.raises(RuntimeError, match="Required tracks are missing"):
         beam_optimize(tracks, _track(), MODES["ai_dj"], controls=controls)
@@ -314,7 +314,7 @@ def test_beam_optimize_reports_a_missing_required_track() -> None:
 
 def test_beam_optimize_pins_fixed_tracks() -> None:
     """A fixed queue item keeps its position."""
-    tracks = [
+    tracks: list[dict[str, Any]] = [
         {"queue_item_id": "a", "artist": "x", "analysis": _track()},
         {"queue_item_id": "b", "artist": "y", "analysis": _track()},
         {"queue_item_id": "c", "artist": "z", "analysis": _track()},
