@@ -20,6 +20,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 from .dsp import ComplexFilter, ComplexFilterInput
+from .json import json_loads
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -32,6 +33,8 @@ CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
+# Maximum seconds to spend detecting the format of a source before it is decoded.
+AUDIO_PROBE_TIMEOUT: Final[int] = 5
 
 # FFmpeg's mono->stereo rematrix spreads a source at 1/sqrt(2) per channel; this factor
 # restores its original level. _get_channel_conform_filter avoids the same loss on the
@@ -84,12 +87,13 @@ _SAMPLE_FMT_BIT_DEPTH: Final[dict[str, int]] = {
 
 @dataclass
 class FFMpegStreamInfo:
-    """Audio format details parsed from an ffmpeg 'Stream #' log line."""
+    """Audio format details detected by ffmpeg or ffprobe."""
 
     codec: ContentType
     sample_rate: int | None = None
     bit_depth: int | None = None
     bit_rate: int | None = None
+    channels: int | None = None
 
 
 class FFMpeg(AsyncProcess):
@@ -247,7 +251,7 @@ class FFMpeg(AsyncProcess):
                 if stream_info := parse_ffmpeg_stream_info(line):
                     self.input_stream_info = stream_info
                     self._log_stream_info("input", stream_info)
-                    self._apply_input_stream_info(stream_info)
+                    apply_stream_info(self.input_format, stream_info)
             elif self._current_log_section == "output" and self.output_stream_info is None:
                 if stream_info := parse_ffmpeg_stream_info(line):
                     self.output_stream_info = stream_info
@@ -313,22 +317,6 @@ class FFMpeg(AsyncProcess):
             if not generator_exhausted:
                 await close_async_generator(self.audio_input)
 
-    def _apply_input_stream_info(self, info: FFMpegStreamInfo) -> None:
-        """Mirror values from a parsed ffmpeg input stream line onto self.input_format."""
-        # content_type is the container format; only fill it in if the provider didn't
-        # specify one. codec_type is the audio codec ffmpeg detected; only override
-        # if we actually parsed a known codec (don't clobber a provider value with UNKNOWN).
-        if info.codec != ContentType.UNKNOWN:
-            if self.input_format.content_type == ContentType.UNKNOWN:
-                self.input_format.content_type = info.codec
-            self.input_format.codec_type = info.codec
-        if info.sample_rate:
-            self.input_format.sample_rate = info.sample_rate
-        if info.bit_depth:
-            self.input_format.bit_depth = info.bit_depth
-        if info.bit_rate:
-            self.input_format.bit_rate = info.bit_rate
-
     def _log_stream_info(self, label: str, info: FFMpegStreamInfo) -> None:
         """Log a parsed FFMpegStreamInfo object at debug level."""
         self.logger.debug(
@@ -378,6 +366,80 @@ def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(match.group(1))
 
     return info
+
+
+def apply_stream_info(audio_format: AudioFormat, info: FFMpegStreamInfo) -> None:
+    """
+    Mirror detected stream details onto an AudioFormat, in place.
+
+    :param audio_format: The format to update; anything sharing it sees the detected values.
+    :param info: The detected stream details.
+    """
+    # content_type is the container format; only fill it in if the provider didn't
+    # specify one. codec_type is the audio codec ffmpeg detected; only override
+    # if we actually parsed a known codec (don't clobber a provider value with UNKNOWN).
+    # A PCM codec never fills in the container: a PCM content_type makes ffmpeg read
+    # the source as headerless raw samples, which turns a WAV/AIFF header into noise.
+    if info.codec != ContentType.UNKNOWN:
+        if audio_format.content_type == ContentType.UNKNOWN and not info.codec.is_pcm():
+            audio_format.content_type = info.codec
+        audio_format.codec_type = info.codec
+    if info.sample_rate:
+        audio_format.sample_rate = info.sample_rate
+    if info.bit_depth:
+        audio_format.bit_depth = info.bit_depth
+    if info.bit_rate:
+        audio_format.bit_rate = info.bit_rate
+    if info.channels:
+        audio_format.channels = info.channels
+
+
+async def probe_audio_stream(
+    input_path: str,
+    extra_input_args: Sequence[str] = (),
+    timeout: float = AUDIO_PROBE_TIMEOUT,
+) -> FFMpegStreamInfo | None:
+    """
+    Detect the format of the first audio stream of a file or URL.
+
+    :param input_path: Local file path or URL of the source.
+    :param extra_input_args: Input arguments needed to open the source (e.g. headers).
+    :param timeout: Maximum seconds the probe may take.
+    :returns: The detected stream details, or None if the source could not be probed.
+    """
+    args = [
+        "ffprobe",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *_INPUT_READ_ARGS,
+        *extra_input_args,
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name,sample_rate,channels,sample_fmt,bits_per_raw_sample",
+        "-of",
+        "json",
+        "-i",
+        input_path,
+    ]
+    proc = AsyncProcess(args, stdout=True)
+    try:
+        await proc.start()
+        stdout, _ = await proc.communicate(timeout=timeout)
+    except TimeoutError:
+        LOGGER.debug("ffprobe gave up after %s seconds", timeout)
+        return None
+    except OSError as err:
+        LOGGER.debug("Unable to run ffprobe: %s", err)
+        return None
+    finally:
+        # also reached on cancellation, so ffprobe never outlives its caller
+        await proc.kill()
+    if proc.returncode != 0:
+        LOGGER.debug("ffprobe exited with code %s", proc.returncode)
+        return None
+    return _parse_ffprobe_stream_info(stdout)
 
 
 def parse_ffmpeg_duration(line: str) -> int | None:
@@ -976,3 +1038,29 @@ def _add_input_fflag(input_args: list[str], flag: str) -> None:
         input_args[idx] += flag
     else:
         input_args += ["-fflags", flag]
+
+
+def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
+    """
+    Extract audio format details from ffprobe's json output for a single stream.
+
+    :param output: The json ffprobe wrote to stdout.
+    """
+    try:
+        stream = json_loads(output)["streams"][0]
+        codec = ContentType.try_parse(stream["codec_name"])
+        info = FFMpegStreamInfo(
+            codec=codec,
+            sample_rate=int(stream.get("sample_rate") or 0) or None,
+            channels=int(stream.get("channels") or 0) or None,
+        )
+        raw_bit_depth = int(stream.get("bits_per_raw_sample") or 0)
+    except KeyError, IndexError, TypeError, ValueError:
+        return None
+    # same precedence as parse_ffmpeg_stream_info: the raw sample depth wins, the sample
+    # format only counts for lossless codecs as lossy decoders report their own precision
+    if raw_bit_depth:
+        info.bit_depth = raw_bit_depth
+    elif codec.is_lossless():
+        info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(stream.get("sample_fmt", ""))
+    return info
