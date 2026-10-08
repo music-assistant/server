@@ -67,17 +67,18 @@ EXPOSE 18095 18097
 # settings and provider tokens live in other files and are NOT touched.
 # Flip the option off (or on->off->on for a later reset) to re-arm.
 #
-# Provider-credentials hook: any entries in the add-on option
+# Provider-credentials hook: any string entries in the add-on option
 # app_var_overrides whose key matches a known Music Assistant app var name
-# (e.g. "spotify_client_id") are exported as MASS_APP_VAR_<NAME> environment
-# variables before the server starts; app_var() resolves env overrides ahead
-# of the bundled app_secrets.json, so these take effect immediately. Unknown
-# keys are logged and ignored. Values are never printed to the log.
+# (e.g. "spotify_client_id") are placed directly into the process environment
+# as MASS_APP_VAR_<NAME> before the server starts; app_var() resolves env
+# overrides ahead of the bundled app_secrets.json, so these take effect
+# immediately. Unknown/non-string entries are logged and ignored. Values are
+# never printed to the log. No shell evaluation is used for credential values.
 RUN mv /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-orig.sh
 COPY <<'EOF' /usr/local/bin/entrypoint.sh
 #!/bin/sh
-_exports=$(/app/venv/bin/python - <<'PY'
-import json, os, shlex, shutil, sys, time
+/app/venv/bin/python - "$@" <<'PY'
+import json, os, shutil, sys, time
 
 VALID = {
     "qobuz_app_id", "qobuz_app_secret", "spotify_client_id",
@@ -106,9 +107,13 @@ for name, value in overrides.items():
         print(f"[smartdj] app_var_overrides: unknown key '{name}' ignored "
               "(valid: " + ", ".join(sorted(VALID)) + ")", file=sys.stderr, flush=True)
         continue
+    if not isinstance(value, str):
+        print(f"[smartdj] app_var_overrides: non-string value for '{name}' ignored",
+              file=sys.stderr, flush=True)
+        continue
     var = f"MASS_APP_VAR_{name.upper()}"
+    os.environ[var] = value
     print(f"[smartdj] app var override applied: {name}", file=sys.stderr, flush=True)
-    print(f"export {var}={shlex.quote(str(value))}")
 
 marker = os.path.join(data_dir, ".auth_reset_done")
 if not opts.get("reset_admin"):
@@ -124,11 +129,10 @@ elif not os.path.exists(marker):
     with open(marker, "w") as f:
         f.write(ts)
     print("[smartdj] reset_admin: auth database archived, onboarding will be offered", file=sys.stderr, flush=True)
+os.execvpe("/usr/local/bin/entrypoint-orig.sh",
+             ["/usr/local/bin/entrypoint-orig.sh", *sys.argv[1:]],
+             os.environ)
 PY
-)
-# shellcheck disable=SC2046
-eval "${_exports:-true}"
-exec /usr/local/bin/entrypoint-orig.sh "$@"
 EOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

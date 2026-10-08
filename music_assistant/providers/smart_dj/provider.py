@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
-from music_assistant_models.auth import Scope
 
 from .engine import (
     MODES,
@@ -292,9 +292,7 @@ class SmartDJProvider(PluginProvider):
         )
         for command, handler, required_scope in handlers:
             self._handles.append(
-                self.mass.register_api_command(
-                    command, handler, required_scope=required_scope
-                )
+                self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
 
     async def unload(self, is_removed: bool = False) -> None:
