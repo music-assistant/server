@@ -471,12 +471,12 @@ async def _fetch_source_image(
         # unknown provider does fall through - it is gone for good, so missing is honest.
         msg = f"{provider} is not available to resolve image {path_or_url}"
         raise ProviderUnavailableError(msg)
+    # a provider may have resolved the path to anything, so check its result as well
+    if has_control_chars(path_or_url):
+        msg = f"Invalid image reference: {path_or_url!r}"
+        raise FileNotFoundError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
-        # a provider may have resolved the path to anything, so check its result as well
-        if has_control_chars(path_or_url):
-            msg = f"Invalid image reference: {path_or_url!r}"
-            raise FileNotFoundError(msg)
         # handle imageproxy URLs pointing to our own server
         if resolved := await _resolve_own_imageproxy_url(mass, path_or_url):
             extracted_provider, extracted_path = resolved
