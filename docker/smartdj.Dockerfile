@@ -66,11 +66,25 @@ EXPOSE 18095 18097
 # the /setup onboarding page comes back on next start. Library, players,
 # settings and provider tokens live in other files and are NOT touched.
 # Flip the option off (or on->off->on for a later reset) to re-arm.
+#
+# Provider-credentials hook: any entries in the add-on option
+# app_var_overrides whose key matches a known Music Assistant app var name
+# (e.g. "spotify_client_id") are exported as MASS_APP_VAR_<NAME> environment
+# variables before the server starts; app_var() resolves env overrides ahead
+# of the bundled app_secrets.json, so these take effect immediately. Unknown
+# keys are logged and ignored. Values are never printed to the log.
 RUN mv /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-orig.sh
 COPY <<'EOF' /usr/local/bin/entrypoint.sh
 #!/bin/sh
-/app/venv/bin/python - <<'PY'
-import json, os, shutil, time
+_exports=$(/app/venv/bin/python - <<'PY'
+import json, os, shlex, shutil, sys, time
+
+VALID = {
+    "qobuz_app_id", "qobuz_app_secret", "spotify_client_id",
+    "theaudiodb_api_key", "fanarttv_api_key", "deezer_decrypt_key",
+    "apple_music_token", "tidal_client_id_v2", "tidal_client_secret_v2",
+    "lastfm_api_key", "lastfm_api_secret", "acoustid_api_key",
+}
 data_dir = "/data"
 opts_path = os.path.join(data_dir, "options.json")
 opts = {}
@@ -80,11 +94,27 @@ if os.path.exists(opts_path):
             opts = json.load(f)
     except Exception:
         opts = {}
+
+overrides = opts.get("app_var_overrides") or {}
+if not isinstance(overrides, dict):
+    print("[smartdj] app_var_overrides is not a map; ignored", file=sys.stderr, flush=True)
+    overrides = {}
+for name, value in overrides.items():
+    if not value:
+        continue
+    if name not in VALID:
+        print(f"[smartdj] app_var_overrides: unknown key '{name}' ignored "
+              "(valid: " + ", ".join(sorted(VALID)) + ")", file=sys.stderr, flush=True)
+        continue
+    var = f"MASS_APP_VAR_{name.upper()}"
+    print(f"[smartdj] app var override applied: {name}", file=sys.stderr, flush=True)
+    print(f"export {var}={shlex.quote(str(value))}")
+
 marker = os.path.join(data_dir, ".auth_reset_done")
 if not opts.get("reset_admin"):
     if os.path.exists(marker):
         os.remove(marker)
-        print("[smartdj] reset_admin off: re-armed for next time", flush=True)
+        print("[smartdj] reset_admin off: re-armed for next time", file=sys.stderr, flush=True)
 elif not os.path.exists(marker):
     ts = time.strftime("%Y%m%d-%H%M%S")
     for name in ("auth.db", "auth.db-wal", "auth.db-shm"):
@@ -93,8 +123,11 @@ elif not os.path.exists(marker):
             shutil.move(fp, fp + ".bak-" + ts)
     with open(marker, "w") as f:
         f.write(ts)
-    print("[smartdj] reset_admin: auth database archived, onboarding will be offered", flush=True)
+    print("[smartdj] reset_admin: auth database archived, onboarding will be offered", file=sys.stderr, flush=True)
 PY
+)
+# shellcheck disable=SC2046
+eval "${_exports:-true}"
 exec /usr/local/bin/entrypoint-orig.sh "$@"
 EOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
