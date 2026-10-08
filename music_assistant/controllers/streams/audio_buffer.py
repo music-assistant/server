@@ -756,7 +756,7 @@ class AudioBuffer:
         keep_from = read
         if self.playback_position and (position := self.playback_position(self)) is not None:
             keep_from = min(read, int(position))
-        min_ahead = max(self._retain_seconds, 1)
+        min_ahead = max(self._retain_seconds, self.max_size_seconds - 2 * self._retain_seconds, 1)
         # the second term keeps room ahead of the reader however far it runs ahead of
         # playback, so a reader waiting on the producer is never deadlocked
         return max(keep_from - self._retain_seconds, read - self.max_size_seconds + min_ahead)
