@@ -43,6 +43,7 @@ from music_assistant.helpers.throttle_retry import RequestPriority, set_request_
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
+    is_request_from_ingress_proxy,
     player_access_filter,
     resolve_command_impersonation,
     resolve_ingress_user,
@@ -83,6 +84,7 @@ class WebsocketClientHandler:
         self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
+        self._is_ingress_proxy = is_request_from_ingress_proxy(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
@@ -176,7 +178,7 @@ class WebsocketClientHandler:
             # For Ingress connections, auto-create/link user and subscribe to events immediately
             # For regular connections (and Ingress without a signed-in user), events will be
             # subscribed after successful authentication
-            if self._is_ingress:
+            if self._is_ingress_proxy:
                 await self._handle_ingress_auth()
 
             while not wsock.closed:
