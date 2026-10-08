@@ -452,23 +452,6 @@ async def test_ingress_does_not_link_a_username_match_unconfirmed_by_home_assist
     assert len(await auth_manager.list_users()) == user_count
 
 
-async def test_ingress_creates_a_user_for_an_ha_account_without_local_credential(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """An HA account that HA knows but reports no username for is created under the header name."""
-    mass = auth_manager.mass
-    hass_provider = _ready_hass_provider(mass, "ha_carol", admin=False)
-    headers = {"X-Remote-User-ID": "ha_carol", "X-Remote-User-Name": "carol"}
-
-    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
-        user = await get_authenticated_user(request)
-
-    assert user is not None
-    assert user.username == "carol"
-    assert user.role == UserRole.USER
-    assert await _get_ha_link(auth_manager, "ha_carol") is not None
-
-
 async def test_ingress_links_the_username_home_assistant_confirms(
     auth_manager: AuthenticationManager,
 ) -> None:

@@ -133,7 +133,6 @@ async def get_or_create_ha_user(
     avatar_url: str | None,
     *,
     allow_create: bool,
-    match_username: bool = True,
 ) -> User | None:
     """
     Get the user of a Home Assistant account, linking or creating it as needed.
@@ -148,10 +147,8 @@ async def get_or_create_ha_user(
     :param display_name: Display name from Home Assistant, if any.
     :param avatar_url: Avatar URL from Home Assistant, if any.
     :param allow_create: Whether to create a user when none matches.
-    :param match_username: Whether an existing unlinked user may be claimed by username.
-        When False, a username that is already taken refuses the sign-in instead.
     :return: The user, which may be a disabled one, or None if none matches and
-        allow_create is False, or the username is taken and may not be matched.
+        allow_create is False.
     :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
     """
     auth = mass.webserver.auth
@@ -163,13 +160,6 @@ async def get_or_create_ha_user(
     if not user:
         # Check if a user with this username already exists (from built-in provider)
         user = await auth.get_user_by_username(username, include_disabled=True)
-        if user and not match_username:
-            LOGGER.warning(
-                "Refused Home Assistant sign-in as %s: the username belongs to an existing "
-                "account that Home Assistant did not vouch for",
-                username,
-            )
-            return None
     if user:
         # A disabled user is left untouched, the caller refuses its sign-in
         if not user.enabled:

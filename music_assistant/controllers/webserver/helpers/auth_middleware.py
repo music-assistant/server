@@ -159,9 +159,8 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
 
     :param mass: The MusicAssistant instance.
     :param headers: The request headers Home Assistant Ingress sets.
-    :return: The user, or None when the headers name no Home Assistant user, the header
-        username belongs to an existing account Home Assistant can not vouch for, or the
-        account is disabled.
+    :return: The user, or None when the headers name no Home Assistant user, the user is not
+        linked yet and Home Assistant can not confirm it, or its account is disabled.
     """
     ingress_user_id = headers.get("X-Remote-User-ID")
     ingress_username = headers.get("X-Remote-User-Name")
@@ -172,9 +171,18 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         return None
 
     ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-    # HA only reports a username for accounts with a local HA credential; without one the
-    # header name may create an account (creation confirms the id with HA) but never claim
-    # an existing one. Ingress users are created on first sign-in, as HA authenticated them.
+    linked_user = await mass.webserver.auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
+    )
+    # an account not linked yet may only be matched or created under a username HA confirms
+    if linked_user is None and ha_username is None:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "Home Assistant could not confirm the user",
+            ingress_username,
+        )
+        return None
+    # Ingress users are created on first sign-in, as HA already authenticated them
     user = await get_or_create_ha_user(
         mass,
         ingress_user_id,
@@ -182,7 +190,6 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         ha_display_name or ingress_display_name,
         avatar_url,
         allow_create=True,
-        match_username=ha_username is not None,
     )
     if user and not user.enabled:
         LOGGER.warning(
