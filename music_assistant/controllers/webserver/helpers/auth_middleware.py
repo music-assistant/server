@@ -172,24 +172,9 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         return None
 
     ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-    linked_user = await mass.webserver.auth.get_user_by_provider_link(
-        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
-    )
     # HA only reports a username for accounts with a local HA credential; without one the
     # header name may create an account (creation confirms the id with HA) but never claim
-    # an existing one
-    if (
-        linked_user is None
-        and ha_username is None
-        and await mass.webserver.auth.get_user_by_username(ingress_username, include_disabled=True)
-    ):
-        LOGGER.warning(
-            "Refused Home Assistant Ingress sign-in for %s: "
-            "Home Assistant could not confirm the user",
-            ingress_username,
-        )
-        return None
-    # Ingress users are created on first sign-in, as HA already authenticated them
+    # an existing one. Ingress users are created on first sign-in, as HA authenticated them.
     user = await get_or_create_ha_user(
         mass,
         ingress_user_id,
@@ -197,6 +182,7 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         ha_display_name or ingress_display_name,
         avatar_url,
         allow_create=True,
+        match_username=ha_username is not None,
     )
     if user and not user.enabled:
         LOGGER.warning(
