@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.auth import Scope
 
 from music_assistant.models.plugin import PluginProvider
+from music_assistant_models.auth import Scope
 
 from .engine import (
     MODES,
