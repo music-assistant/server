@@ -52,3 +52,27 @@ async def test_current_msx_settings_are_unchanged(values: Any) -> None:
     expected = deepcopy(data)
     assert await migrate(data) is False
     assert data == expected
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("legacy_value", [True, False, None])
+async def test_retired_msx_sendspin_setting_is_removed(
+    enabled: bool, legacy_value: bool | None
+) -> None:
+    """Clear persisted bridge switches before loading enabled or disabled providers."""
+    data: dict[str, Any] = {
+        "providers": {
+            "msx": {
+                "domain": "msx_bridge",
+                "enabled": enabled,
+                "values": {"enable_sendspin_bridge": legacy_value, "port": 8099},
+            },
+            "other": {"domain": "other", "values": {"enable_sendspin_bridge": False}},
+        }
+    }
+    expected = deepcopy(data)
+    expected["providers"]["msx"]["values"] = {"port": 8099}
+    assert await migrate(data) is True
+    assert data == expected
+    assert await migrate(data) is False
+    assert data == expected

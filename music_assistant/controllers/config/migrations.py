@@ -673,9 +673,10 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
         values = config.get("values")
         if not isinstance(values, dict):
             continue
-        if "enable_player_grouping" in values:
-            del values["enable_player_grouping"]
-            changed = True
+        for key in ("enable_player_grouping", "enable_sendspin_bridge"):
+            if key in values:
+                del values[key]
+                changed = True
         if values.get("group_stream_mode") == "shared":
             values["group_stream_mode"] = "independent"
             changed = True
