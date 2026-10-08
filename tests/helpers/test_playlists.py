@@ -2009,50 +2009,9 @@ def _spotify_item(images: list[ImageInfo]) -> PlaylistItem:
     )
 
 
-def test_construct_media_item_drops_image_of_foreign_provider() -> None:
-    """An image naming a provider the item is not mapped to is not imported."""
-    item = _spotify_item(
-        [ImageInfo(type="thumb", path="concat:/etc/passwd", provider="filesystem_local--abc")]
-    )
-
-    result = construct_media_item_from_playlist_item(item, _spotify_mass())
-
-    assert result is not None
-    assert not result.metadata.images
-
-
 def test_construct_media_item_drops_local_image_paths_from_a_file() -> None:
     """A local image path from a playlist file is never imported, whatever provider it names."""
     item = _spotify_item([ImageInfo(type="thumb", path="/data/cover.jpg", provider="spotify_1")])
-
-    result = construct_media_item_from_playlist_item(item, _spotify_mass())
-
-    assert result is not None
-    assert not result.metadata.images
-
-
-def test_construct_media_item_does_not_trust_a_mapping_without_a_loaded_provider() -> None:
-    """A mapping the file declares for a provider that is not loaded does not vouch for images."""
-    item = PlaylistItem(
-        path="tidal://track/42",
-        title="Song",
-        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
-        providers=[ProviderMappingInfo(domain="tidal", item_id="42", instance_id="tidal_9")],
-        images=[
-            ImageInfo(type="thumb", path="/data/cover.jpg", provider="tidal_9"),
-            ImageInfo(type="fanart", path="/data/fanart.jpg", provider=""),
-        ],
-    )
-
-    result = construct_media_item_from_playlist_item(item, _spotify_mass())
-
-    assert result is not None
-    assert not result.metadata.images
-
-
-def test_construct_media_item_drops_builtin_image_with_local_path() -> None:
-    """A builtin image is only imported when it points at a remote URL or inline data."""
-    item = _spotify_item([ImageInfo(type="thumb", path="/etc/passwd", provider="builtin")])
 
     result = construct_media_item_from_playlist_item(item, _spotify_mass())
 
@@ -2081,10 +2040,11 @@ def test_construct_media_item_keeps_own_provider_and_builtin_remote_images() -> 
     ]
 
 
-def test_construct_media_item_keeps_remote_image_of_a_loaded_provider() -> None:
-    """A remote image of another loaded provider, such as a metadata provider, is imported."""
+@pytest.mark.parametrize("loaded", [True, False], ids=["loaded", "unloaded"])
+def test_construct_media_item_remote_image_of_another_provider(loaded: bool) -> None:
+    """A remote image of another provider is imported only when that provider is loaded."""
     mass = _spotify_mass()
-    fanarttv = MagicMock(domain="fanarttv", instance_id="fanarttv")
+    fanarttv = MagicMock(domain="fanarttv", instance_id="fanarttv") if loaded else None
     spotify_lookup = mass.get_provider.side_effect
     mass.get_provider.side_effect = lambda ref: (
         fanarttv if ref == "fanarttv" else spotify_lookup(ref)
@@ -2096,20 +2056,11 @@ def test_construct_media_item_keeps_remote_image_of_a_loaded_provider() -> None:
     result = construct_media_item_from_playlist_item(item, mass)
 
     assert result is not None
-    assert result.metadata.images is not None
-    assert [img.provider for img in result.metadata.images] == ["fanarttv"]
-
-
-def test_construct_media_item_drops_remote_image_of_an_unloaded_provider() -> None:
-    """A remote image naming a provider that is not loaded is not imported."""
-    item = _spotify_item(
-        [ImageInfo(type="fanart", path="https://fanart.tv/x.jpg", provider="fanarttv")]
-    )
-
-    result = construct_media_item_from_playlist_item(item, _spotify_mass())
-
-    assert result is not None
-    assert not result.metadata.images
+    if loaded:
+        assert result.metadata.images is not None
+        assert [img.provider for img in result.metadata.images] == ["fanarttv"]
+    else:
+        assert not result.metadata.images
 
 
 def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> None:

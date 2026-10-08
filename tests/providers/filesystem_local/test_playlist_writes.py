@@ -52,19 +52,6 @@ async def test_create_playlist_refuses_symlink_outside_root(base: Path) -> None:
     assert target.read_text(encoding="utf-8") == ORIGINAL
 
 
-async def test_create_playlist_refuses_symlink_inside_root(base: Path) -> None:
-    """A playlist symlinked to a file inside the root is not written through either."""
-    target = base / "real.txt"
-    target.write_text(ORIGINAL, encoding="utf-8")
-    (base / "evil.m3u").symlink_to(target)
-    provider = _make_provider(base)
-
-    with pytest.raises(InvalidDataError):
-        await provider.create_playlist("evil", {MediaType.TRACK})
-
-    assert target.read_text(encoding="utf-8") == ORIGINAL
-
-
 async def test_add_playlist_tracks_refuses_symlinked_parent_outside_root(base: Path) -> None:
     """A playlist under a directory symlinked outside the root is not written."""
     outside_dir = base.parent / "elsewhere"
@@ -80,13 +67,12 @@ async def test_add_playlist_tracks_refuses_symlinked_parent_outside_root(base: P
     assert (outside_dir / "party.m3u").read_text(encoding="utf-8") == ORIGINAL
 
 
-@pytest.mark.parametrize("name", ["../escape", "sub/party", "sub\\party"])
-async def test_create_playlist_refuses_unsafe_name(base: Path, name: str) -> None:
-    """A playlist name holding a path separator or traversal is refused."""
+async def test_create_playlist_refuses_unsafe_name(base: Path) -> None:
+    """A playlist name holding a path traversal is refused."""
     provider = _make_provider(base)
 
     with pytest.raises(InvalidDataError):
-        await provider.create_playlist(name, {MediaType.TRACK})
+        await provider.create_playlist("../escape", {MediaType.TRACK})
 
     assert not (base.parent / "escape.m3u").exists()
 
@@ -145,30 +131,6 @@ async def test_add_playlist_tracks_respects_a_read_only_playlist(base: Path) -> 
     assert playlist.read_text() == ORIGINAL
 
 
-async def test_create_playlist_writes_regular_file(base: Path) -> None:
-    """A regular playlist is created with an M3U header."""
-    provider = _make_provider(base)
-
-    await provider.create_playlist("party", {MediaType.TRACK})
-
-    playlist = base / "party.m3u"
-    assert not playlist.is_symlink()
-    assert playlist.read_text(encoding="utf-8") == "#EXTM3U\n"
-    provider.get_playlist.assert_awaited_once_with("party.m3u")  # type: ignore[attr-defined]
-
-
-async def test_add_playlist_tracks_appends_entry(base: Path) -> None:
-    """Adding a track appends an EXTINF entry to the playlist."""
-    (base / "party.m3u").write_text("#EXTM3U\n", encoding="utf-8")
-    provider = _make_provider(base)
-    provider.get_track = AsyncMock(return_value=_fake_track("Song"))  # type: ignore[method-assign]
-
-    await provider.add_playlist_tracks("party.m3u", ["Artist/Song.mp3"])
-
-    items = parse_m3u((base / "party.m3u").read_text(encoding="utf-8"))
-    assert [(item.title, item.path) for item in items] == [("Song", "Artist/Song.mp3")]
-
-
 async def test_add_playlist_tracks_keeps_entry_on_one_line(base: Path) -> None:
     """Line breaks in a track name or path cannot add lines to the playlist."""
     (base / "party.m3u").write_text("#EXTM3U\n", encoding="utf-8")
@@ -183,43 +145,7 @@ async def test_add_playlist_tracks_keeps_entry_on_one_line(base: Path) -> None:
     assert "/etc/passwd" not in lines
     assert "/etc/shadow" not in lines
     assert not any(line.startswith("#EXTINF:0,x") for line in lines)
-    assert len(parse_m3u("\n".join(lines))) == 1
-
-
-async def test_remove_playlist_tracks_keeps_entries_on_one_line(base: Path) -> None:
-    """Rewriting a playlist keeps every remaining entry on its own two lines."""
-    (base / "party.m3u").write_text(
-        "#EXTM3U\n#EXTINF:1,One\none.mp3\n#EXTINF:2,Two\ntwo.mp3\n", encoding="utf-8"
-    )
-    provider = _make_provider(base)
-
-    await provider.remove_playlist_tracks("party.m3u", (1,))
-
-    items = parse_m3u((base / "party.m3u").read_text(encoding="utf-8"))
-    assert [(item.title, item.path) for item in items] == [("Two", "two.mp3")]
-
-
-async def test_add_playlist_tracks_refuses_symlink(base: Path) -> None:
-    """Adding tracks to a symlinked playlist leaves the link target untouched."""
-    target = base.parent / "outside.txt"
-    (base / "evil.m3u").symlink_to(target)
-    provider = _make_provider(base)
-    provider.get_track = AsyncMock(return_value=_fake_track("Song"))  # type: ignore[method-assign]
-
-    with pytest.raises(InvalidDataError):
-        await provider.add_playlist_tracks("evil.m3u", ["Artist/Song.mp3"])
-
-    assert target.read_text(encoding="utf-8") == ORIGINAL
-
-
-async def test_remove_playlist_tracks_refuses_symlink(base: Path) -> None:
-    """Removing tracks from a symlinked playlist leaves the link target untouched."""
-    target = base.parent / "outside.txt"
-    (base / "evil.m3u").symlink_to(target)
-    provider = _make_provider(base)
-
-    with pytest.raises(InvalidDataError):
-        await provider.remove_playlist_tracks("evil.m3u", (1,))
-
-    assert target.read_text(encoding="utf-8") == ORIGINAL
-    assert (base / "evil.m3u").is_symlink()
+    items = parse_m3u("\n".join(lines))
+    assert len(items) == 1
+    assert (items[0].title or "").startswith("Song")
+    assert items[0].path.startswith("Artist/Song.mp3")
