@@ -63,12 +63,16 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     )
     check_output = MagicMock(side_effect=process_error)
     monkeypatch.setattr(subprocess, "check_output", check_output)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
 
     with pytest.raises(InvalidDataError) as err:
         tags.parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    kwargs = check_output.call_args.kwargs
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert "SUPERVISOR_TOKEN" not in kwargs["env"] and "HASSIO_TOKEN" not in kwargs["env"]
     args = check_output.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
 
@@ -1305,6 +1309,7 @@ async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
     assert img_data.startswith(b"\xff\xd8")
     args = spy.call_args.args[0]
     assert args.index("-protocol_whitelist") < args.index("-i")
+    assert args[args.index("-protocol_whitelist") + 1] == "file"
     assert args[args.index("-i") + 1] == track_path
 
 
