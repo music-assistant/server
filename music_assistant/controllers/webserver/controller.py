@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
 
-DEFAULT_SERVER_PORT = 8095
+DEFAULT_SERVER_PORT = 18095
 CONF_BASE_URL = "base_url"
 CONF_SERVER_NAME = "server_name"
 CONF_EXTERNAL_URL = "external_url"

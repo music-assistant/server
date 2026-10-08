@@ -1,0 +1,60 @@
+name: Build Smart DJ image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["dev"]
+    paths:
+      - "music_assistant/providers/smart_dj/**"
+      - "docker/smartdj.Dockerfile"
+      - "music_assistant/mass.py"
+      - "music_assistant/controllers/webserver/**"
+      - "smartdj-addon/config.yaml"
+      - ".github/workflows/smartdj-image.yml"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/mattamays-ai/server
+concurrency:
+  group: smartdj-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read add-on version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' smartdj-addon/config.yaml | head -n1)
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not parse version from smartdj-addon/config.yaml"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building add-on version: $VERSION"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/smartdj.Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}

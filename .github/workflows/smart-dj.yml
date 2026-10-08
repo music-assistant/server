@@ -1,0 +1,27 @@
+name: Smart DJ validation
+
+on:
+  push:
+    branches: ["feat/smart-dj"]
+  pull_request:
+
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
+jobs:
+  test-smart-dj:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - name: Install project + test extras
+        run: uv sync --extra test
+      - name: Install full runtime deps (hass_client etc.)
+        # requirements_all.txt is not covered by [project.optional-dependencies].test;
+        # conftest imports through music_assistant.mass which needs hass_client.
+        run: uv pip install --index-strategy unsafe-best-match -r requirements_all.txt
+      - run: uv run pytest tests/providers/smart_dj -q
+      - run: uv run ruff check music_assistant/providers/smart_dj tests/providers/smart_dj
+      - run: uv run mypy music_assistant/providers/smart_dj

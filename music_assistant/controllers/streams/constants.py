@@ -182,7 +182,7 @@ STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
 SEEK_WAIT_THRESHOLD: Final[int] = 20
 
 # Streams webserver default port
-DEFAULT_PORT: Final[int] = 8097
+DEFAULT_PORT: Final[int] = 18097
 
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100

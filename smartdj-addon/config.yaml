@@ -1,0 +1,38 @@
+name: Music Assistant Smart DJ
+version: "0.0.11"
+slug: music_assistant_smartdj
+description: Music Assistant built from the mattamays-ai Smart DJ fork. Prebuilt image, fast starts.
+url: https://github.com/mattamays-ai/server
+arch:
+  - amd64
+  - aarch64
+image: ghcr.io/mattamays-ai/server
+homeassistant_api: true
+hassio_api: true
+hassio_role: manager
+discovery:
+  - music_assistant
+auth_api: true
+host_network: true
+ingress: true
+ingress_port: 18094
+audio: true
+map:
+  - media:rw
+  - ssl:ro
+init: false
+tmpfs: true
+backup_exclude:
+  - cache.db
+  - collage_images/*
+  - .cache/*
+options:
+  log_level: info
+  safe_mode: false
+  reset_admin: false
+  app_var_overrides: {}
+schema:
+  log_level: list(debug|info|warning|error)
+  safe_mode: bool
+  reset_admin: bool
+  app_var_overrides: dict

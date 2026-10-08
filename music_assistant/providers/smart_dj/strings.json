@@ -1,0 +1,7 @@
+{
+  "config_entries": {
+    "rapidapi_key": {
+      "label": "RapidAPI key"
+    }
+  }
+}
