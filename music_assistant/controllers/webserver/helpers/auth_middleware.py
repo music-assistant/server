@@ -159,8 +159,9 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
 
     :param mass: The MusicAssistant instance.
     :param headers: The request headers Home Assistant Ingress sets.
-    :return: The user, or None when the headers name no Home Assistant user, the user is not
-        linked yet and Home Assistant can not confirm it, or its account is disabled.
+    :return: The user, or None when the headers name no Home Assistant user, the header
+        username belongs to an existing account Home Assistant can not vouch for, or the
+        account is disabled.
     """
     ingress_user_id = headers.get("X-Remote-User-ID")
     ingress_username = headers.get("X-Remote-User-Name")
@@ -174,8 +175,14 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
     linked_user = await mass.webserver.auth.get_user_by_provider_link(
         AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
     )
-    # an account not linked yet may only be matched or created under a username HA confirms
-    if linked_user is None and ha_username is None:
+    # HA only reports a username for accounts with a local HA credential; without one the
+    # header name may create an account (creation confirms the id with HA) but never claim
+    # an existing one
+    if (
+        linked_user is None
+        and ha_username is None
+        and await mass.webserver.auth.get_user_by_username(ingress_username, include_disabled=True)
+    ):
         LOGGER.warning(
             "Refused Home Assistant Ingress sign-in for %s: "
             "Home Assistant could not confirm the user",
