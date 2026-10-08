@@ -137,7 +137,8 @@ Manages WebRTC-based remote access for external connectivity:
 ### 4. WebSocket Client Handler ([websocket_client.py](websocket_client.py))
 
 Manages individual WebSocket connections:
-- Authentication enforcement (only public commands run before a successful `auth` command)
+- Authentication enforcement (Ingress connections are signed in from the HA headers; on others
+  only public commands run before a successful `auth` command)
 - Command routing and response handling
 - Event subscription and broadcasting
 - Connection lifecycle management
@@ -220,7 +221,8 @@ When running as a Home Assistant add-on:
 
 1. **Connection Established**: Client connects to `/ws`
 2. **Auth Command Required**: Until an `auth` command with a valid token succeeds, only public
-   commands (such as `auth/login`) are accepted
+   commands (such as `auth/login`) are accepted. Ingress connections skip this step: they are
+   signed in from the HA headers on connect
 3. **Token Validation**: Token validated and user context set
 4. **Authenticated Session**: All subsequent commands executed in user context
 5. **Auto-Disconnect**: Connection closed on token revocation or user disable
