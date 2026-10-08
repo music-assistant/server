@@ -68,6 +68,7 @@ class _StubCoreConfig:
     def __init__(self) -> None:
         self.updates: list[tuple[str, str, Any, bool]] = []
         self._raw: dict[tuple[str, str], Any] = {}
+        self._setup_data: dict[str, Any] = {}
 
     def set_raw_provider_config_value(
         self,
@@ -89,12 +90,12 @@ class _StubCoreConfig:
         """
         Serve config paths used by Provider.get_setup_value / _update_setup_data.
 
-        Returns an empty setup_data dict so setup-data reads fall through to the
-        config entry value (config.get_value, via get_config_value), and a truthy
-        marker for the provider-exists precondition in _update_setup_data.
+        Returns persisted setup data when present, otherwise an empty dict so
+        reads fall through to the config entry value. Other paths return a
+        truthy marker for the provider-exists precondition in _update_setup_data.
         """
         if path.endswith("/setup_data"):
-            return {}
+            return self._setup_data
         return {"exists": True}
 
     def set(self, path: str, value: Any, immediate: bool = False) -> None:
@@ -104,6 +105,7 @@ class _StubCoreConfig:
         instance_id, key = parts[1], parts[-1]
         self.updates.append((instance_id, key, value, True))
         self._raw[(instance_id, key)] = value
+        self._setup_data[key] = value
 
     def encrypt_string(self, value: str) -> str:
         """Identity encrypt for tests."""
@@ -129,8 +131,8 @@ def _updates(provider: YandexStationProvider) -> list[tuple[str, str, Any, bool]
 def _make_provider(config_values: dict[str, Any]) -> YandexStationProvider:
     """Instantiate a provider with a stub mass and config for cascade tests."""
     provider = YandexStationProvider.__new__(YandexStationProvider)
-    provider.mass = _StubMass()  # type: ignore[assignment]
-    provider.config = _StubConfig(config_values)  # type: ignore[assignment]
+    object.__setattr__(provider, "mass", _StubMass())
+    object.__setattr__(provider, "config", _StubConfig(config_values))
     # NB: ``instance_id`` is a read-only @property on the real Provider that
     # delegates to ``config.instance_id`` — we set it on the stub config above.
     provider.logger = logging.getLogger("test_provider")
