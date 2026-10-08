@@ -37,6 +37,7 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     provider_mappings_from_urls,
     search_name_match_clause,
+    update_moves_single_source_item,
 )
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
@@ -850,8 +851,11 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set album artist(s)
-        artists = update.artists if overwrite else cur_item.artists + update.artists
-        await self._set_album_artists(db_id, artists, overwrite=overwrite)
+        replace_artists = overwrite or update_moves_single_source_item(
+            cur_item.provider_mappings, update.provider_mappings
+        )
+        artists = update.artists if replace_artists else cur_item.artists + update.artists
+        await self._set_album_artists(db_id, artists, overwrite=overwrite, replace=replace_artists)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_album_tracks(
@@ -1315,12 +1319,18 @@ class AlbumsController(MediaControllerBase[Album]):
         db_id: int,
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
+        replace: bool = False,
     ) -> None:
         """
         Store Album Artists.
 
         An empty set of artists never clears the stored rows: an album that lost its
         artists disappears from their discography and is skipped by provider matching.
+
+        :param db_id: The library id of the album.
+        :param artists: The artists to link to the album.
+        :param overwrite: Replace the album's artist links and overwrite the artists themselves.
+        :param replace: Replace the album's artist links, but keep the stored artists as they are.
         """
         all_artists = list(artists)
         if not all_artists:
@@ -1329,8 +1339,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 # so keep the stored rows and make the attempt visible
                 self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
             return
-        if overwrite:
-            # on overwrite, clear the album_artists table first
+        if overwrite or replace:
+            # clear the album_artists table first
             await self.mass.music.database.delete(
                 DB_TABLE_ALBUM_ARTISTS,
                 {
