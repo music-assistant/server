@@ -1615,6 +1615,12 @@ def _declare_format(details: StreamDetails) -> None:
     details.audio_format = AudioFormat(content_type=ContentType.FLAC)
 
 
+def _declare_codec(details: StreamDetails) -> None:
+    details.audio_format = AudioFormat(
+        content_type=ContentType.UNKNOWN, codec_type=ContentType.FLAC
+    )
+
+
 def _declare_decoded_format(details: StreamDetails) -> None:
     details.decoded_audio_format = AudioFormat(content_type=ContentType.PCM_S32LE, bit_depth=32)
 
@@ -1644,6 +1650,7 @@ def _make_dff(details: StreamDetails) -> None:
     "adjust",
     [
         _declare_format,
+        _declare_codec,
         _declare_decoded_format,
         _make_radio,
         _make_realtime,
@@ -1651,7 +1658,7 @@ def _make_dff(details: StreamDetails) -> None:
         _make_multipart,
         _make_dff,
     ],
-    ids=["known", "decoded", "radio", "realtime", "custom", "multipart", "dff"],
+    ids=["known", "codec", "decoded", "radio", "realtime", "custom", "multipart", "dff"],
 )
 async def test_get_buffer_only_probes_an_unknown_on_demand_source(
     adjust: Callable[[StreamDetails], None],

@@ -378,8 +378,10 @@ def apply_stream_info(audio_format: AudioFormat, info: FFMpegStreamInfo) -> None
     # content_type is the container format; only fill it in if the provider didn't
     # specify one. codec_type is the audio codec ffmpeg detected; only override
     # if we actually parsed a known codec (don't clobber a provider value with UNKNOWN).
+    # A PCM codec never fills in the container: a PCM content_type makes ffmpeg read
+    # the source as headerless raw samples, which turns a WAV/AIFF header into noise.
     if info.codec != ContentType.UNKNOWN:
-        if audio_format.content_type == ContentType.UNKNOWN:
+        if audio_format.content_type == ContentType.UNKNOWN and not info.codec.is_pcm():
             audio_format.content_type = info.codec
         audio_format.codec_type = info.codec
     if info.sample_rate:

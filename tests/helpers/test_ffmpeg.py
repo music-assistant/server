@@ -1734,6 +1734,53 @@ async def test_probe_audio_stream_kills_ffprobe_on_cancellation(
     assert proc.killed
 
 
+@pytest.fixture
+def tagged_wav(tmp_path: Path) -> Path:
+    """Return a 24-bit stereo WAV whose data chunk does not start on a whole frame."""
+    source = tmp_path / "tagged.wav"
+    # a title tag shifts the data chunk off a whole 24-bit stereo frame
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=1:sample_rate=48000",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s24le",
+            "-metadata",
+            "title=x",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return source
+
+
+async def test_probed_wav_is_not_decoded_as_raw_pcm(tagged_wav: Path) -> None:
+    """A probed WAV keeps its container auto-detected, so its header never plays as audio."""
+    audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+
+    stream_info = await probe_audio_stream(str(tagged_wav))
+    assert stream_info is not None
+    apply_stream_info(audio_format, stream_info)
+
+    assert audio_format.content_type == ContentType.UNKNOWN
+    assert audio_format.codec_type == ContentType.PCM_S24LE
+    assert (audio_format.sample_rate, audio_format.bit_depth) == (48000, 24)
+    output_format = AudioFormat(
+        content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24, channels=2
+    )
+    args = get_ffmpeg_args(audio_format, output_format, [], input_path=str(tagged_wav))
+    input_args = args[: args.index("-i")]
+    assert "-f" not in input_args
+    assert input_args[input_args.index("-acodec") + 1] == "pcm_s24le"
+
+
 def test_apply_stream_info_keeps_a_declared_content_type() -> None:
     """Detected values land in place, without replacing the container the provider set."""
     audio_format = AudioFormat(content_type=ContentType.MP4)

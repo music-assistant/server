@@ -961,8 +961,10 @@ def _has_single_source_slot(mass: MusicAssistant, streamdetails: StreamDetails) 
 
 def _needs_format_probe(streamdetails: StreamDetails) -> bool:
     """Return whether the source must be probed before a buffer format can be chosen for it."""
+    arriving_format = arriving_audio_format(streamdetails)
     return (
-        arriving_audio_format(streamdetails).content_type == ContentType.UNKNOWN
+        arriving_format.content_type == ContentType.UNKNOWN
+        and arriving_format.codec_type == ContentType.UNKNOWN
         and streamdetails.stream_type in (StreamType.HTTP, StreamType.HLS, StreamType.LOCAL_FILE)
         # the parts of a multi-part stream are opened by a concat demuxer of their own
         and isinstance(streamdetails.path, str)
