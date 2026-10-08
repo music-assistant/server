@@ -1978,3 +1978,138 @@ async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
     # the entry sits past the read limit, so nothing is left to parse
     with pytest.raises(InvalidDataError, match="Empty playlist"):
         await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+# --------------------------------------------------------------------------- #
+#  EXTIMG provider trust on import                                             #
+# --------------------------------------------------------------------------- #
+
+
+def _spotify_mass() -> MagicMock:
+    """Return a mass mock with one loaded Spotify instance."""
+    spotify = MagicMock(domain="spotify", instance_id="spotify_1")
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify,
+        "spotify_1": spotify,
+    }.get(ref)
+    return mass
+
+
+def _spotify_item(images: list[ImageInfo]) -> PlaylistItem:
+    """Return a playlist item mapped to the Spotify instance with the given images."""
+    return PlaylistItem(
+        path="spotify://track/abc123",
+        title="Song",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[
+            ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify_1")
+        ],
+        images=images,
+    )
+
+
+def test_construct_media_item_drops_image_of_foreign_provider() -> None:
+    """An image naming a provider the item is not mapped to is not imported."""
+    item = _spotify_item(
+        [ImageInfo(type="thumb", path="concat:/etc/passwd", provider="filesystem_local--abc")]
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
+def test_construct_media_item_drops_builtin_image_with_local_path() -> None:
+    """A builtin image is only imported when it points at a remote URL or inline data."""
+    item = _spotify_item([ImageInfo(type="thumb", path="/etc/passwd", provider="builtin")])
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
+def test_construct_media_item_keeps_own_provider_and_builtin_remote_images() -> None:
+    """Images of the item's own provider (instance or domain) and builtin URLs are imported."""
+    item = _spotify_item(
+        [
+            ImageInfo(type="thumb", path="https://i.scdn.co/thumb.jpg", provider="spotify_1"),
+            ImageInfo(type="fanart", path="https://i.scdn.co/fanart.jpg", provider="spotify"),
+            ImageInfo(type="logo", path="https://example.com/logo.png", provider="builtin"),
+        ]
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert result.metadata.images is not None
+    assert [(img.path, img.provider) for img in result.metadata.images] == [
+        ("https://i.scdn.co/thumb.jpg", "spotify_1"),
+        ("https://i.scdn.co/fanart.jpg", "spotify"),
+        ("https://example.com/logo.png", "builtin"),
+    ]
+
+
+def test_construct_media_item_keeps_remote_image_of_a_loaded_provider() -> None:
+    """A remote image of another loaded provider, such as a metadata provider, is imported."""
+    mass = _spotify_mass()
+    fanarttv = MagicMock(domain="fanarttv", instance_id="fanarttv")
+    spotify_lookup = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda ref: (
+        fanarttv if ref == "fanarttv" else spotify_lookup(ref)
+    )
+    item = _spotify_item(
+        [ImageInfo(type="fanart", path="https://fanart.tv/x.jpg", provider="fanarttv")]
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert result is not None
+    assert result.metadata.images is not None
+    assert [img.provider for img in result.metadata.images] == ["fanarttv"]
+
+
+def test_construct_media_item_drops_remote_image_of_an_unloaded_provider() -> None:
+    """A remote image naming a provider that is not loaded is not imported."""
+    item = _spotify_item(
+        [ImageInfo(type="fanart", path="https://fanart.tv/x.jpg", provider="fanarttv")]
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> None:
+    """A track's own image survives export, generate and re-parse."""
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://i.scdn.co/abc.jpg",
+        provider="spotify_1",
+        remotely_accessible=True,
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify_1",
+        name="Song",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(content_type=ContentType.OGG),
+            ),
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Mix", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], _spotify_mass())
+
+    assert reconstructed is not None
+    assert reconstructed.metadata.images == UniqueList([image])

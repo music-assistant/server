@@ -53,6 +53,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
+# mirrors builtin's REMOTE_IMAGE_PREFIXES, which cannot be imported here (builtin imports us)
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -601,10 +603,21 @@ def construct_media_item_from_playlist_item(
             mass,
         )
 
+    trusted_providers = {pm.provider_instance for pm in provider_mappings} | {
+        pm.provider_domain for pm in provider_mappings
+    }
     for img in item.images:
         try:
             image_type = ImageType(img.type)
         except ValueError:
+            continue
+        # the image provider resolves the path, so an arbitrary path is only trusted from the
+        # item's own providers; a remote URL also from builtin or any loaded provider
+        if img.provider not in trusted_providers and not (
+            img.path.startswith(_REMOTE_IMAGE_PREFIXES)
+            and (img.provider == "builtin" or mass.get_provider(img.provider) is not None)
+        ):
+            LOGGER.debug("Skipping playlist image of untrusted provider %s", img.provider)
             continue
         media_item.metadata.add_image(
             MediaItemImage(

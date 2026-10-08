@@ -82,8 +82,9 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_m3u_value
 from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -1113,11 +1114,13 @@ class LocalFileSystemProvider(MusicProvider):
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
-            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
+            title = sanitize_m3u_value(track.name)
+            playlist_data += (
+                f"\n#EXTINF:{track.duration or 0},{title}\n{sanitize_m3u_value(file_path)}\n"
+            )
 
         # write playlist file (always in utf-8)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
+        await self._write_playlist_file(prov_playlist_id, playlist_data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -1143,19 +1146,22 @@ class LocalFileSystemProvider(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(new_playlist_data)
+            title = sanitize_m3u_value(item.title or "")
+            new_playlist_data += (
+                f"\n#EXTINF:{item.length or 0},{title}\n{sanitize_m3u_value(item.path)}\n"
+            )
+        await self._write_playlist_file(prov_playlist_id, new_playlist_data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         # filename = await self.resolve(f"{name}.m3u")
+        if not is_safe_name(name):
+            msg = f"Invalid playlist name: {name}"
+            raise InvalidDataError(msg)
         filename = f"{name}.m3u"
-        playlist_filename = self.get_absolute_path(filename)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write("#EXTM3U\n")
+        await self._write_playlist_file(filename, "#EXTM3U\n")
         return await self.get_playlist(filename)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -3890,3 +3896,23 @@ class LocalFileSystemProvider(MusicProvider):
         """Read file contents. Override for network storage."""
         async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
             return cast("bytes", await f.read())
+
+    async def _write_playlist_file(self, file_path: str, data: str) -> None:
+        """Write playlist data to a regular (non-symlink) file inside the library root."""
+        absolute_path = self.get_absolute_path(file_path)
+
+        def _write() -> None:
+            # get_absolute_path is lexical only: a symlink could still lead the write elsewhere
+            real_base = os.path.realpath(self.base_path)
+            real_path = os.path.realpath(absolute_path)
+            if (
+                os.path.commonpath([real_base, real_path]) != real_base
+                or Path(absolute_path).is_symlink()
+            ):
+                msg = f"Playlist is not a regular file inside the library: {file_path}"
+                raise InvalidDataError(msg)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+            with os.fdopen(os.open(absolute_path, flags, 0o644), "w", encoding="utf-8") as _file:
+                _file.write(data)
+
+        await asyncio.to_thread(_write)
