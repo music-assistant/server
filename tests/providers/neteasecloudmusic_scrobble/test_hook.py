@@ -18,7 +18,6 @@ from music_assistant.providers.neteasecloudmusic_scrobble import (
 
 INSTANCE_A = "neteasecloudmusic--aaaa"
 INSTANCE_B = "neteasecloudmusic--bbbb"
-DOMAIN = "neteasecloudmusic"
 
 
 def _album_detail_client() -> Mock:
@@ -37,7 +36,6 @@ def _ncm_provider(instance_id: str = INSTANCE_A) -> Mock:
     provider = Mock(spec=NeteaseCloudMusicProvider)
     provider.instance_id = instance_id
     provider.name = instance_id
-    provider.domain = DOMAIN
     provider.available = True
     provider.cookie = "MUSIC_U=secret"
     provider.api_client = _album_detail_client()
@@ -49,6 +47,12 @@ def _mass(*providers: Mock) -> Mock:
     mass = Mock()
     mass.config.get.return_value = {}
     mass.providers = list(providers)
+
+    def _get_provider(instance_id: str, **_kwargs: object) -> Mock | None:
+        """Return the provider with exactly this instance id, if any."""
+        return next((prov for prov in providers if prov.instance_id == instance_id), None)
+
+    mass.get_provider = Mock(side_effect=_get_provider)
     stored: dict[str, str] = {}
 
     async def cache_get(key: str, default: str | None = None, **_kwargs: object) -> str | None:
@@ -220,8 +224,8 @@ async def test_transient_failure_does_not_mark_the_play() -> None:
     assert provider._handler._scrobbled_plays
 
 
-async def test_direct_uri_reports_through_that_instance() -> None:
-    """A direct provider-track uri is checked in to the instance named in its scheme."""
+async def test_direct_uri_falls_back_to_the_scheme_instance() -> None:
+    """Without queue streamdetails a direct uri reports through its scheme instance."""
     inst_a = _ncm_provider(INSTANCE_A)
     inst_b = _ncm_provider(INSTANCE_B)
     handler = _handler(_mass(inst_a, inst_b))
@@ -242,14 +246,24 @@ async def test_direct_uri_reports_through_that_instance() -> None:
     assert inst_a.api_client.get.await_args_list == []
 
 
-async def test_domain_scheme_uri_is_accepted() -> None:
-    """A direct provider-track uri may use the provider domain as its scheme."""
-    inst = _ncm_provider(INSTANCE_A)
-    handler = _handler(_mass(inst))
+async def test_direct_uri_prefers_the_streaming_instance() -> None:
+    """A direct uri is reported to the instance that streamed it, not its scheme."""
+    inst_a = _ncm_provider(INSTANCE_A)
+    inst_b = _ncm_provider(INSTANCE_B)
+    mass = _mass(inst_a, inst_b)
+    # the item sits on A (its uri scheme) but MA served the stream from B (failover)
+    mass.player_queues.items.return_value = [
+        Mock(
+            uri=f"{INSTANCE_A}://track/123",
+            streamdetails=Mock(provider=INSTANCE_B, item_id="123"),
+        )
+    ]
+    handler = _handler(mass)
 
-    await handler._scrobble(_report(uri=f"{DOMAIN}://track/123", seconds_played=42))
+    await handler._scrobble(_report(uri=f"{INSTANCE_A}://track/123", seconds_played=42))
 
-    assert "/scrobble" in {call.args[0] for call in inst.api_client.get.await_args_list}
+    assert "/scrobble" in {call.args[0] for call in inst_b.api_client.get.await_args_list}
+    assert inst_a.api_client.get.await_args_list == []
 
 
 async def test_library_track_reports_through_the_streaming_instance() -> None:

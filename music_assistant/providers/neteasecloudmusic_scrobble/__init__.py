@@ -6,8 +6,13 @@ from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final
 
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ResourceTemporarilyUnavailable,
+    SetupFailedError,
+)
 
+from music_assistant.helpers.provider_access import exact_provider
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -23,6 +28,7 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
+NETEASE_DOMAIN: Final[str] = "neteasecloudmusic"
 # a track's album (the scrobble source id) is stable catalog data
 _SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 _CACHE_CATEGORY_SCROBBLE: Final[int] = 1
@@ -37,6 +43,9 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
+    ncm = mass.get_provider(NETEASE_DOMAIN)
+    if not isinstance(ncm, NeteaseCloudMusicProvider):
+        raise SetupFailedError("A NetEase Cloud Music source must be configured first.")
     return NeteaseScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -105,8 +114,11 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         """
         key = (report.player_id or "", report.uri)
         if len(self._last_progress) > 128:
-            # opportunistic cleanup of long radio sessions
+            # opportunistic cleanup of long radio sessions; never drop the key being
+            # evaluated here or its replay detection would be lost
             for stale in list(self._last_progress)[:64]:
+                if stale == key:
+                    continue
                 del self._last_progress[stale]
                 self._scrobbled_plays.discard(stale)
         last_progress = self._last_progress.get(key)
@@ -182,19 +194,20 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
 
         :param report: The playback progress report of the played item.
         """
-        scheme, _, rest = report.uri.partition("://")
-        if rest.startswith("track/") and self._find_ncm(scheme) is not None:
-            # a direct provider track uri names the NetEase instance in its scheme
-            instance_id = scheme
-            track_id = rest.removeprefix("track/")
-        else:
-            # library items may have been linked to any provider: only check in when the
-            # queue shows the track actually streamed from a NetEase instance
-            streamed = await self._lookup_queue_stream_track(report)
-            if streamed is None:
-                return None
+        # prefer the instance the play actually streamed from (the queue item's
+        # streamdetails): under failover between accounts of the same service the
+        # streaming instance differs from the one the item uri's scheme names
+        streamed = await self._lookup_queue_stream_track(report)
+        if streamed is not None:
             instance_id, track_id = streamed
-        ncm = self._find_ncm(instance_id)
+        else:
+            # no queue item/streamdetails (yet): fall back to the uri's scheme, which is
+            # the instance the item sits on
+            scheme, _, rest = report.uri.partition("://")
+            if not rest.startswith("track/"):
+                return None
+            instance_id, track_id = scheme, rest.removeprefix("track/")
+        ncm = self._ncm_for_instance(instance_id)
         if ncm is None or not track_id:
             return None
         return ncm, track_id
@@ -222,24 +235,18 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
                         "Skipping scrobble: queue item %s has no streamdetails yet", report.uri
                     )
                     return None
-                if self._find_ncm(str(streamdetails.provider)) is None:
+                if self._ncm_for_instance(str(streamdetails.provider)) is None:
                     return None
                 return str(streamdetails.provider), str(streamdetails.item_id)
         self.logger.debug("Skipping scrobble: queue item %s no longer present", report.uri)
         return None
 
-    def _find_ncm(self, instance_id_or_domain: str) -> NeteaseCloudMusicProvider | None:
-        """Return the loaded NetEase instance matching the given instance id or domain."""
-        return next(
-            (
-                prov
-                for prov in self._plugin.mass.providers
-                if isinstance(prov, NeteaseCloudMusicProvider)
-                and prov.available
-                and instance_id_or_domain in (prov.instance_id, prov.domain)
-            ),
-            None,
-        )
+    def _ncm_for_instance(self, instance_id: str) -> NeteaseCloudMusicProvider | None:
+        """Return the loaded, available NetEase instance with exactly this instance id."""
+        provider = exact_provider(self._plugin.mass, instance_id)
+        if isinstance(provider, NeteaseCloudMusicProvider):
+            return provider
+        return None
 
     async def _get_source_id(self, ncm: NeteaseCloudMusicProvider, track_id: str) -> str | None:
         """Return the album id of a NetEase track (cached), used as the scrobble source id."""
