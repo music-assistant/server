@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from functools import partial
 from itertools import batched
+from string import ascii_letters, digits
 from sys import intern
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
@@ -105,8 +105,8 @@ AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
 
-# a tts_proxy token is a single file name (url-safe token plus extension), never a path
-TTS_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9]+")
+# a tts_proxy token is a url-safe token plus an extension, never a path
+TTS_TOKEN_CHARS = frozenset(ascii_letters + digits + "-_")
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -972,7 +972,10 @@ class HomeAssistantProvider(PluginProvider):
         """Stream a TTS clip from Home Assistant's tts_proxy by its token."""
         if not (token := request.query.get("id")):
             return web.Response(status=400, text="Missing id")
-        if not TTS_TOKEN_PATTERN.fullmatch(token):
+        stem, _, extension = token.partition(".")
+        if not (
+            stem and set(stem) <= TTS_TOKEN_CHARS and extension.isascii() and extension.isalnum()
+        ):
             return web.Response(status=400, text="Invalid id")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}/api/tts_proxy/{token}", headers=headers) as response:
