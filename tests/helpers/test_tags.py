@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import mutagen
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from music_assistant_models.errors import InvalidDataError
 from mutagen.apev2 import APEv2
 from mutagen.flac import FLAC
@@ -1312,6 +1314,25 @@ async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
     assert args.index("-protocol_whitelist") < args.index("-i")
     assert args[args.index("-protocol_whitelist") + 1] == "file"
     assert args[args.index("-i") + 1] == track_path
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_get_embedded_image_extracts_cover_over_http_with_network_only_whitelist(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Embedded art from an http URL is extracted with a whitelist that excludes local files."""
+    track_path = str(tmp_path / "track.mp3")
+    _create_mp3_with_cover(tmp_path, track_path)
+    app = web.Application()
+    app.router.add_static("/", str(tmp_path))
+    async with TestServer(app) as server:
+        with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
+            img_data = await get_embedded_image(str(server.make_url("/track.mp3")))
+
+    assert img_data
+    assert img_data.startswith(b"\xff\xd8")
+    args = spy.call_args.args[0]
+    assert args[args.index("-protocol_whitelist") + 1] == "http,https,tcp,tls"
 
 
 def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:

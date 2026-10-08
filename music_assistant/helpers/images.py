@@ -295,6 +295,9 @@ async def get_image_data(
     if _depth >= _MAX_IMAGEPROXY_RECURSION_DEPTH:
         msg = f"Maximum recursion depth exceeded when fetching image: {path_or_url}"
         raise FileNotFoundError(msg)
+    if has_control_chars(path_or_url):
+        msg = f"Invalid image reference: {path_or_url!r}"
+        raise FileNotFoundError(msg)
     # base64 data URIs carry their content inline; just decode them
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.rsplit(",", maxsplit=1)[-1])
@@ -470,8 +473,9 @@ async def _fetch_source_image(
         raise ProviderUnavailableError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
+        # a provider may have resolved the path to anything, so check its result as well
         if has_control_chars(path_or_url):
-            msg = f"Invalid image URL: {path_or_url!r}"
+            msg = f"Invalid image reference: {path_or_url!r}"
             raise FileNotFoundError(msg)
         # handle imageproxy URLs pointing to our own server
         if resolved := await _resolve_own_imageproxy_url(mass, path_or_url):

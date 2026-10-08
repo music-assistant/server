@@ -336,8 +336,44 @@ async def test_image_url_with_control_chars_is_not_fetched(
     fetch_remote = AsyncMock(return_value=b"never")
     monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
 
-    with pytest.raises(FileNotFoundError, match="Invalid image URL"):
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
         await get_image_data(mass_minimal, "http://host/a.jpg\r\nX-Injected: 1\r\n", "x")
+    fetch_remote.assert_not_called()
+
+
+async def test_own_imageproxy_url_with_control_chars_is_refused_before_resolving(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An own image-proxy URL carrying CR/LF is refused before its id is resolved."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    resolve_id = AsyncMock(return_value=("builtin", "logo.png"))
+    monkeypatch.setattr(
+        mass_minimal, "metadata", MagicMock(resolve_image_id=resolve_id), raising=False
+    )
+    image_id = "a" * 64
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(
+            mass_minimal, f"http://127.0.0.1:8095/imageproxy/{image_id}?size=0\r\nX: 1", "builtin"
+        )
+    resolve_id.assert_not_awaited()
+
+
+async def test_provider_resolved_url_with_control_chars_is_not_fetched(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider resolving a clean path to a URL with CR/LF does not trigger a fetch."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="http://host/a.jpg\r\nX-Injected: 1")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    fetch_remote = AsyncMock(return_value=b"never")
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
     fetch_remote.assert_not_called()
 
 
