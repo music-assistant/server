@@ -1,6 +1,7 @@
 """Tests that the filesystem provider writes playlists only to regular files inside its root."""
 
 import os
+import stat
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -113,6 +114,20 @@ async def test_create_playlist_leaves_a_hard_linked_target_alone(
     assert outside.read_text() == "keep me"
     assert (base / "linked.m3u").read_text() == "#EXTM3U\n"
     assert not [p for p in base.iterdir() if p.name.endswith(".tmp")]
+
+
+async def test_add_playlist_tracks_keeps_the_playlist_permissions(base: Path) -> None:
+    """Rewriting a playlist keeps the permission bits the file had."""
+    playlist = base / "private.m3u"
+    playlist.write_text(ORIGINAL)
+    playlist.chmod(0o600)
+    provider = _make_provider(base)
+    provider.get_track = AsyncMock(return_value=_fake_track("Added"))  # type: ignore[method-assign]
+
+    await provider.add_playlist_tracks("private.m3u", ["some/added.mp3"])
+
+    assert stat.S_IMODE(playlist.stat().st_mode) == 0o600
+    assert "Added" in playlist.read_text()
 
 
 async def test_create_playlist_writes_regular_file(base: Path) -> None:

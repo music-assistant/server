@@ -8,6 +8,7 @@ import logging
 import os
 import os.path
 import posixpath
+import secrets
 import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
@@ -3926,10 +3927,12 @@ class LocalFileSystemProvider(MusicProvider):
                     raise InvalidDataError(msg)
                 # written to a new file and renamed into place, so no existing inode is opened
                 # or truncated, whatever else links to it
-                temp_name = f".{name}.{os.getpid()}.tmp"
+                temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 temp_fd = os.open(temp_name, flags, 0o644, dir_fd=dir_fd)
                 try:
+                    if existing is not None:
+                        os.fchmod(temp_fd, stat.S_IMODE(existing.st_mode))
                     with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
                         _file.write(data)
                     os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
