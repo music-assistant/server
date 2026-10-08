@@ -72,7 +72,8 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
     kwargs = check_output.call_args.kwargs
     assert kwargs["stderr"] == subprocess.PIPE
-    assert "SUPERVISOR_TOKEN" not in kwargs["env"] and "HASSIO_TOKEN" not in kwargs["env"]
+    assert "SUPERVISOR_TOKEN" not in kwargs["env"]
+    assert "HASSIO_TOKEN" not in kwargs["env"]
     args = check_output.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
 
