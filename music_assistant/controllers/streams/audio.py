@@ -1902,9 +1902,6 @@ class StreamsAudio:
         crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
         # Round down to nearest frame boundary
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
-        fade_wait_slice_size = (
-            int(pcm_format.pcm_sample_size * FADE_WAIT_SLICE_MS / 1000) // frame_size * frame_size
-        )
         fade_out_data: bytes | None = None
         uncredited_tail_bytes = 0
 
@@ -2045,11 +2042,15 @@ class StreamsAudio:
                     preparation = self.mass.player_queues.prepare_next_audio_buffer(
                         queue.queue_id, queue_item.queue_item_id
                     )
-                    while tail_window and self._fade_source_pending(next_queue_item, preparation):
-                        pcm_slice = bytes(tail_window[:fade_wait_slice_size])
-                        yield pcm_slice
-                        bytes_written += len(pcm_slice)
-                        del tail_window[: len(pcm_slice)]
+                    played_out = 0
+                    async with aclosing(
+                        self._play_tail_out(tail_window, pcm_format, next_queue_item, preparation)
+                    ) as tail_play_out:
+                        async for pcm_slice in tail_play_out:
+                            yield pcm_slice
+                            played_out += len(pcm_slice)
+                            bytes_written += len(pcm_slice)
+                    del tail_window[:played_out]
                     transition_mode, fade_in_buffer_duration = self._select_buffered_crossfade(
                         next_queue_item.streamdetails,
                         crossfade_mode,
@@ -2495,11 +2496,6 @@ class StreamsAudio:
                 crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
                 # Round down to nearest frame boundary
                 crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
-                fade_wait_slice_size = (
-                    int(pcm_format.pcm_sample_size * FADE_WAIT_SLICE_MS / 1000)
-                    // frame_size
-                    * frame_size
-                )
 
                 # raw_seek_position feeds the PCM buffer; streamdetails.seek_position
                 # (overwritten below) only drives reported elapsed time.
@@ -2529,18 +2525,17 @@ class StreamsAudio:
                             else None
                         )
                         played_out = 0
-                        while played_out < len(last_fadeout_part) and self._fade_source_pending(
-                            queue_track, preparation
-                        ):
-                            if _superseded():
-                                return
-                            pcm_slice = last_fadeout_part[
-                                played_out : played_out + fade_wait_slice_size
-                            ]
-                            yield pcm_slice
-                            played_out += len(pcm_slice)
-                        if played_out:
-                            last_fadeout_part = last_fadeout_part[played_out:]
+                        async with aclosing(
+                            self._play_tail_out(
+                                last_fadeout_part, pcm_format, queue_track, preparation
+                            )
+                        ) as tail_play_out:
+                            async for pcm_slice in tail_play_out:
+                                if _superseded():
+                                    return
+                                yield pcm_slice
+                                played_out += len(pcm_slice)
+                        last_fadeout_part = last_fadeout_part[played_out:]
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
                             item_crossfade_mode,
@@ -4323,9 +4318,53 @@ class StreamsAudio:
         audio_buffer = cast("AudioBuffer | None", streamdetails.buffer if streamdetails else None)
         if audio_buffer is not None:
             return not audio_buffer.has_error and not audio_buffer.ready.is_set()
-        # the buffer appears once the preparation starts producing; a preparation
+        # the buffer is attached once the preparation has its source; a preparation
         # that is over without one has given up
         return preparation is not None and not preparation.done()
+
+    async def _play_tail_out(
+        self,
+        tail: bytes | bytearray,
+        pcm_format: AudioFormat,
+        queue_item: QueueItem,
+        preparation: asyncio.Task[None] | None,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield the head of a held tail while the incoming track's audio is on its way.
+
+        Stops as soon as that audio is ready or will never be, leaving the rest of the
+        tail to the fade; the caller trims what was yielded. Never runs ahead of
+        playback speed, so a player reading ahead cannot take the whole tail before
+        the fade.
+
+        :param tail: The held tail of the outgoing track.
+        :param pcm_format: PCM format of the tail.
+        :param queue_item: The incoming (fade-in) queue item.
+        :param preparation: The preparation of its audio, if one was started.
+        """
+        frame_size = pcm_format.bit_depth // 8 * pcm_format.channels
+        slice_size = (
+            int(pcm_format.pcm_sample_size * FADE_WAIT_SLICE_MS / 1000) // frame_size * frame_size
+        )
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        played = 0
+        while played < len(tail) and self._fade_source_pending(queue_item, preparation):
+            if (delay := started + played / pcm_format.pcm_sample_size - loop.time()) > 0:
+                # a player still in its opening burst reads as fast as it is served:
+                # hold each slice until playback is due to reach it
+                await asyncio.sleep(delay)
+                if not self._fade_source_pending(queue_item, preparation):
+                    break
+            pcm_slice = bytes(tail[played : played + slice_size])
+            yield pcm_slice
+            played += len(pcm_slice)
+        if played:
+            self.logger.debug(
+                "Played %.2fs of the outgoing tail out while %s was on its way",
+                played / pcm_format.pcm_sample_size,
+                queue_item.name,
+            )
 
     def _select_buffered_crossfade(
         self,

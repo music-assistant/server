@@ -1002,6 +1002,25 @@ async def _fade_sized_on_its_tail(
     )
 
 
+def _skip_the_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the tail play-out run at once instead of at playback speed."""
+    real_sleep = asyncio.sleep
+
+    async def _no_wait(_delay: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _no_wait)
+
+
+async def _drain(stream: AsyncGenerator[bytes]) -> bytes:
+    """Collect a stream, giving the event loop a turn after every chunk."""
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        await asyncio.sleep(0)
+    return bytes(output)
+
+
 def _smartfade_waiting_for_its_source(
     monkeypatch: pytest.MonkeyPatch,
     audio: StreamsAudio,
@@ -1108,19 +1127,24 @@ async def test_smartfade_plays_its_tail_out_while_the_incoming_audio_is_on_its_w
     stream, current_item, build = _smartfade_waiting_for_its_source(
         monkeypatch, audio, pcm_format, incoming_buffer, None
     )
+    # the item's first 8 seconds pass straight through, its last 8 are held for the fade
+    held_tail = pcm_format.pcm_sample_size * 8
 
+    played_out = 0
     output = bytearray()
     async for chunk in stream:
         output.extend(chunk)
-        # the incoming audio turns up once a second of the 8 second tail played out
-        if len(output) >= pcm_format.pcm_sample_size * 9:
+        # the incoming audio turns up right after the first slice of the tail played out
+        if not played_out and len(output) > held_tail:
+            played_out = len(output) - held_tail
             incoming_buffer.ready.set()
 
+    assert played_out > 0
     assert bytes(output) == b"".join(_ramp(pcm_format, 0x01, 16))
     build.assert_awaited_once()
     assert build.await_args is not None
-    assert len(build.await_args.kwargs["fade_out_data"]) == pcm_format.pcm_sample_size * 7
-    # the played-out second counts as streamed audio of the item
+    assert len(build.await_args.kwargs["fade_out_data"]) == held_tail - played_out
+    # the played-out slice counts as streamed audio of the item
     assert current_item.streamdetails.seconds_streamed == 16
     await audio._crossfade_handover.pop("queue-1").close()
 
@@ -1138,22 +1162,61 @@ async def test_smartfade_without_incoming_audio_plays_its_whole_tail_out(
     stream, current_item, build = _smartfade_waiting_for_its_source(
         monkeypatch, audio, pcm_format, None, preparation
     )
+    # the play-out paces itself at playback speed; this test is about the loop ending
+    _skip_the_pacing(monkeypatch)
 
-    async def _drain() -> bytes:
-        output = bytearray()
-        async for chunk in stream:
-            output.extend(chunk)
-            # lets the timeout below fire should the stream never end
-            await asyncio.sleep(0)
-        return bytes(output)
-
-    output = await asyncio.wait_for(_drain(), 5)
+    # the timeout fails the test should the stream never end
+    output = await asyncio.wait_for(_drain(stream), 5)
     await _cancel(preparation)
 
     assert output == b"".join(_ramp(pcm_format, 0x01, 16))
     build.assert_not_awaited()
     assert current_item.streamdetails.seconds_streamed == 16
     assert "queue-1" not in audio._crossfade_handover
+
+
+async def test_the_tail_is_not_played_out_faster_than_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player reading ahead cannot take the whole tail while the fade waits.
+
+    A player still in its opening burst pulls as fast as it is served, so the tail
+    has to pace itself: a short wait then costs the fade about as much of its window.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    incoming_buffer = _buffer(16, ready=False)
+    stream, _current_item, build = _smartfade_waiting_for_its_source(
+        monkeypatch, audio, pcm_format, incoming_buffer, None
+    )
+    # the item's first 8 seconds pass straight through, its last 8 are held for the fade
+    held_tail = pcm_format.pcm_sample_size * 8
+
+    async def _ready_after(delay: float) -> None:
+        await asyncio.sleep(delay)
+        incoming_buffer.ready.set()
+
+    becoming_ready: asyncio.Task[None] | None = None
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        if becoming_ready is None and len(output) > held_tail:
+            # the incoming audio shows up 0.3 seconds into the play-out
+            becoming_ready = asyncio.create_task(_ready_after(0.3))
+    assert becoming_ready is not None
+    await becoming_ready
+
+    build.assert_awaited_once()
+    assert build.await_args is not None
+    faded_tail = len(build.await_args.kwargs["fade_out_data"]) / pcm_format.pcm_sample_size
+    # loose bounds keep a loaded machine from failing this; an unpaced play-out
+    # leaves no tail at all
+    assert 6.75 <= faded_tail <= 7.75
+    await audio._crossfade_handover.pop("queue-1").close()
 
 
 async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
@@ -1872,18 +1935,21 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
     assert seconds_before_transition <= SMART_CROSSFADE_DURATION / 2
 
 
-async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
+def _flow_waiting_for_its_source(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    pcm_format: AudioFormat,
+    incoming_buffer: AudioBuffer | None,
+    preparation: asyncio.Task[None] | None,
+) -> tuple[AsyncGenerator[bytes], SimpleNamespace, AsyncMock]:
     """
-    A flow fade waiting for the incoming audio keeps the player fed from the tail.
+    Stream a flow from a 16 second item that holds its last 8 seconds for a fade.
 
-    The fade is sized on what is left of the tail once that audio shows up, nothing is
-    lost or played twice, and the played-out part stays credited to the outgoing track.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param pcm_format: PCM format of the flow.
+    :param incoming_buffer: Audio attached to the incoming item at the boundary.
+    :param preparation: What the boundary is handed as the incoming item's preparation.
+    :return: The flow stream, the queue's data holding its play log, and the mixer's build.
     """
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
-    )
     first_details = SimpleNamespace(
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
@@ -1895,7 +1961,6 @@ async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
         duration=16,
         is_realtime=True,
     )
-    incoming_buffer = _buffer(16, ready=False)
     second_details = SimpleNamespace(
         audio_format=pcm_format,
         buffer=incoming_buffer,
@@ -1940,7 +2005,7 @@ async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
     mass.player_queues.queue_data.return_value = queue_data
     mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[second_item, QueueEmpty])
     mass.player_queues.get.return_value = queue
-    mass.player_queues.prepare_next_audio_buffer.return_value = None
+    mass.player_queues.prepare_next_audio_buffer.return_value = preparation
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock()
@@ -1967,18 +2032,65 @@ async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
     stream = audio.get_queue_flow_stream(
         cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
     )
+    return stream, queue_data, build
 
+
+async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A flow fade waiting for the incoming audio keeps the player fed from the tail.
+
+    The fade is sized on what is left of the tail once that audio shows up, nothing is
+    lost or played twice, and the played-out part stays credited to the outgoing track.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    incoming_buffer = _buffer(16, ready=False)
+    stream, queue_data, build = _flow_waiting_for_its_source(
+        monkeypatch, pcm_format, incoming_buffer, None
+    )
+    # the first item's first 8 seconds pass straight through, its last 8 are held
+    held_tail = pcm_format.pcm_sample_size * 8
+
+    played_out = 0
     output = bytearray()
     async for chunk in stream:
         output.extend(chunk)
-        # the incoming audio turns up once a second of the 8 second tail played out
-        if len(output) >= pcm_format.pcm_sample_size * 9:
+        # the incoming audio turns up right after the first slice of the tail played out
+        if not played_out and len(output) > held_tail:
+            played_out = len(output) - held_tail
             incoming_buffer.ready.set()
 
+    assert played_out > 0
     assert bytes(output) == b"".join(_ramp(pcm_format, 0x01, 16) + _ramp(pcm_format, 0x40, 24))
     build.assert_awaited_once()
     assert build.await_args is not None
-    assert len(build.await_args.kwargs["fade_out_data"]) == pcm_format.pcm_sample_size * 7
+    assert len(build.await_args.kwargs["fade_out_data"]) == held_tail - played_out
+    assert queue_data.flow_mode_stream_log[0].seconds_streamed == 16
+
+
+async def test_flow_without_incoming_audio_plays_its_whole_tail_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incoming source that never shows up costs the flow its fade, not the tail."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    preparation = _running_preparation()
+    stream, queue_data, build = _flow_waiting_for_its_source(
+        monkeypatch, pcm_format, None, preparation
+    )
+    # the play-out paces itself at playback speed; this test is about the loop ending
+    _skip_the_pacing(monkeypatch)
+
+    # the timeout fails the test should the stream never end
+    output = await asyncio.wait_for(_drain(stream), 5)
+    await _cancel(preparation)
+
+    assert output == b"".join(_ramp(pcm_format, 0x01, 16) + _ramp(pcm_format, 0x40, 24))
+    build.assert_not_awaited()
     assert queue_data.flow_mode_stream_log[0].seconds_streamed == 16
 
 
