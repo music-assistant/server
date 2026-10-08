@@ -603,26 +603,17 @@ def construct_media_item_from_playlist_item(
             mass,
         )
 
-    # the mappings come from the file as well, so only those backed by a loaded provider count
-    trusted_providers = {
-        name
-        for pm in provider_mappings
-        if pm.available
-        for name in (pm.provider_instance, pm.provider_domain)
-        if name
-    }
     for img in item.images:
         try:
             image_type = ImageType(img.type)
         except ValueError:
             continue
-        # the image provider resolves the path, so an arbitrary path is only trusted from the
-        # item's own providers; a remote URL also from builtin or any loaded provider
-        if img.provider not in trusted_providers and not (
-            img.path.startswith(_REMOTE_IMAGE_PREFIXES)
-            and (img.provider == "builtin" or mass.get_provider(img.provider) is not None)
+        # nothing in the file proves who owns a local path, so only remote references are
+        # imported, and only from builtin or a provider that is loaded
+        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
+            img.provider == "builtin" or mass.get_provider(img.provider) is not None
         ):
-            LOGGER.debug("Skipping playlist image of untrusted provider %s", img.provider)
+            LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
             continue
         media_item.metadata.add_image(
             MediaItemImage(

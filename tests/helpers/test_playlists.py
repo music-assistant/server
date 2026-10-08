@@ -2021,6 +2021,16 @@ def test_construct_media_item_drops_image_of_foreign_provider() -> None:
     assert not result.metadata.images
 
 
+def test_construct_media_item_drops_local_image_paths_from_a_file() -> None:
+    """A local image path from a playlist file is never imported, whatever provider it names."""
+    item = _spotify_item([ImageInfo(type="thumb", path="/data/cover.jpg", provider="spotify_1")])
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
 def test_construct_media_item_does_not_trust_a_mapping_without_a_loaded_provider() -> None:
     """A mapping the file declares for a provider that is not loaded does not vouch for images."""
     item = PlaylistItem(

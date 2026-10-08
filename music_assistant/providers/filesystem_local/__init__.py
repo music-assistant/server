@@ -3917,17 +3917,29 @@ class LocalFileSystemProvider(MusicProvider):
                     )
                     os.close(dir_fd)
                     dir_fd = next_fd
-                # O_NONBLOCK makes opening a FIFO fail instead of waiting for a reader
-                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
-                file_fd = os.open(parts[-1], flags, 0o644, dir_fd=dir_fd)
+                name = parts[-1]
+                try:
+                    existing = os.lstat(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    existing = None
+                if existing is not None and not stat.S_ISREG(existing.st_mode):
+                    raise InvalidDataError(msg)
+                # written to a new file and renamed into place, so no existing inode is opened
+                # or truncated, whatever else links to it
+                temp_name = f".{name}.{os.getpid()}.tmp"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                temp_fd = os.open(temp_name, flags, 0o644, dir_fd=dir_fd)
+                try:
+                    with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                        _file.write(data)
+                    os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                except BaseException:
+                    with contextlib.suppress(OSError):
+                        os.unlink(temp_name, dir_fd=dir_fd)
+                    raise
             except OSError as err:
                 raise InvalidDataError(msg) from err
             finally:
                 os.close(dir_fd)
-            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                os.close(file_fd)
-                raise InvalidDataError(msg)
-            with os.fdopen(file_fd, "w", encoding="utf-8") as _file:
-                _file.write(data)
 
         await asyncio.to_thread(_write)

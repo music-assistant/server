@@ -99,6 +99,22 @@ async def test_create_playlist_refuses_a_non_regular_file(base: Path) -> None:
         await provider.create_playlist("pipe", {MediaType.TRACK})
 
 
+async def test_create_playlist_leaves_a_hard_linked_target_alone(
+    base: Path, tmp_path: Path
+) -> None:
+    """Writing over a hard link replaces the directory entry and leaves the linked file as is."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep me")
+    os.link(outside, base / "linked.m3u")
+    provider = _make_provider(base)
+
+    await provider.create_playlist("linked", {MediaType.TRACK})
+
+    assert outside.read_text() == "keep me"
+    assert (base / "linked.m3u").read_text() == "#EXTM3U\n"
+    assert not [p for p in base.iterdir() if p.name.endswith(".tmp")]
+
+
 async def test_create_playlist_writes_regular_file(base: Path) -> None:
     """A regular playlist is created with an M3U header."""
     provider = _make_provider(base)
