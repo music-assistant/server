@@ -66,9 +66,9 @@ Handles all authentication and user management:
 - **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
 
 Tokens are HS256-signed JWTs ([helpers/jwt_auth.py](../../helpers/jwt_auth.py)), each backed by
-a row in `auth_tokens`. That row decides expiration and revocation; the JWT's own `exp` only
-carries the hard limit (the 90-day cap for short-lived tokens). Older non-JWT tokens are still
-accepted through their hash.
+a row in `auth_tokens`. The JWT's `exp` holds the token's hard limit (the fixed expiry of guest
+and long-lived tokens, the 90-day cap of short-lived ones); the row adds the sliding expiration
+and revocation. Older non-JWT tokens are still accepted through their hash.
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
@@ -198,9 +198,9 @@ Manages individual WebSocket connections:
 6. **Token Generation**: A short-lived MA token is created and the callback answers with
    [oauth_callback.html](../../helpers/resources/oauth_callback.html), which carries the token and
    the `return_url` with the token appended as `code` parameter
-7. **Client Handling**: The page asks for consent first unless `return_url` is trusted: the same
-   origin, localhost, a private network address, the configured base URL or an allowlisted Home
-   Assistant or app URL (see `is_allowed_redirect_url` in
+7. **Client Handling**: The page asks for consent first when `return_url` is valid but not
+   trusted. Trusted are the same origin, localhost, a private network address, the configured
+   base URL and the allowlisted Home Assistant and app URLs (see `is_allowed_redirect_url` in
    [redirect_validation.py](../../helpers/redirect_validation.py)). A popup whose `return_url`
    is an absolute URL on the server's own origin posts the token to its opener (an
    `oauth_success` message) and closes; otherwise the page navigates to `return_url` (`/` when
