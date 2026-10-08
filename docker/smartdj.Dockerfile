@@ -93,8 +93,9 @@ if os.path.exists(opts_path):
     try:
         with open(opts_path) as f:
             opts = json.load(f)
-    except Exception:
-        opts = {}
+    except (OSError, json.JSONDecodeError) as err:
+        print(f"[smartdj] Could not read add-on options: {err}", file=sys.stderr, flush=True)
+        raise
 
 overrides = opts.get("app_var_overrides") or {}
 if not isinstance(overrides, dict):
