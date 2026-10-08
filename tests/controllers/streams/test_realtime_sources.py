@@ -661,17 +661,6 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
 
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
-
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
     async def _item_stream(
@@ -767,17 +756,6 @@ async def _run_smartfade_boundary(
             )
         ),
     )
-
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
@@ -879,17 +857,6 @@ async def test_the_live_post_handover_streams_into_the_next_request(
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
-
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
@@ -1336,17 +1303,6 @@ async def test_smartfade_a_source_still_delivering_hands_over_gapless(
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
-
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
