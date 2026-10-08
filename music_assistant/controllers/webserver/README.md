@@ -67,7 +67,7 @@ Handles all authentication and user management:
 
 Tokens are HS256-signed JWTs ([helpers/jwt_auth.py](../../helpers/jwt_auth.py)), each backed by
 a row in `auth_tokens`. That row, not the JWT payload, is the source of truth for expiration
-and revocation.
+and revocation. Older non-JWT tokens are still accepted through their hash.
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
@@ -136,7 +136,7 @@ Manages WebRTC-based remote access for external connectivity:
 ### 4. WebSocket Client Handler ([websocket_client.py](websocket_client.py))
 
 Manages individual WebSocket connections:
-- Authentication enforcement (auth or login command must be first)
+- Authentication enforcement (only public commands run before a successful `auth` command)
 - Command routing and response handling
 - Event subscription and broadcasting
 - Connection lifecycle management
@@ -198,9 +198,10 @@ Manages individual WebSocket connections:
    [oauth_callback.html](../../helpers/resources/oauth_callback.html), which carries the token and
    the `return_url` with the token appended as `code` parameter
 7. **Client Handling**: The page asks for consent first when `return_url` is on an external
-   domain. A popup returning to the server's own origin posts the token to its opener (an
-   `oauth_success` message) and closes; otherwise the page navigates to `return_url`, where the
-   client reads the token from the `code` parameter
+   domain. A popup whose `return_url` is an absolute URL on the server's own origin posts the
+   token to its opener (an `oauth_success` message) and closes; otherwise the page navigates to
+   `return_url` (`/` when none or an invalid one was given), where the client reads the token
+   from the `code` parameter
 
 ### Ingress Authentication (Home Assistant Add-on)
 
@@ -215,7 +216,8 @@ When running as a Home Assistant add-on:
 ### WebSocket Authentication
 
 1. **Connection Established**: Client connects to `/ws`
-2. **Auth Command Required**: First command must be `auth` with token
+2. **Auth Command Required**: Until an `auth` command with a valid token succeeds, only public
+   commands (such as `auth/login`) are accepted
 3. **Token Validation**: Token validated and user context set
 4. **Authenticated Session**: All subsequent commands executed in user context
 5. **Auto-Disconnect**: Connection closed on token revocation or user disable
@@ -417,7 +419,8 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 ### Authentication
 
-- **Mandatory authentication**: All API access requires authentication (except Ingress)
+- **Mandatory authentication**: All API access requires authentication, except Ingress and the
+  few public commands marked `authenticated=False` (such as `auth/login`)
 - **Signed tokens**: HS256 JWTs signed with a random per-server secret, each backed by an `auth_tokens` row so it can be revoked
 - **Password hashing**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
@@ -450,7 +453,8 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 - **Token storage**: `auth_tokens` stores only a SHA-256 hash of each token; the Home Assistant
   integration token is kept in plain text in `settings`, so it can be announced again
 - **Password storage**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
-- **Session cleanup**: Expired tokens automatically deleted
+- **Session cleanup**: Expired tokens are deleted when used, and a daily cleanup removes expired
+  short-lived tokens
 - **User disable**: Immediate disconnect of all user sessions
 
 ## Development Guide
@@ -462,8 +466,8 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
    `requires_redirect` property and `authenticate(credentials)`, which returns an `AuthResult`
 3. Override the optional members where needed: `get_authorization_url(redirect_uri, return_url)`
    and `handle_oauth_callback(code, state, redirect_uri)` for a redirect (OAuth) provider, and
-   `allow_self_registration` (default `False`) for one that may create an account for a user
-   signing in for the first time
+   `allow_self_registration` (default `False`), which the provider checks itself before it
+   creates an account for a user signing in for the first time
 4. Register provider in `AuthenticationManager._setup_login_providers()`, passing its
    configuration as a `LoginProviderConfig` (subclass it for provider-specific keys, see
    `HomeAssistantProviderConfig`)
