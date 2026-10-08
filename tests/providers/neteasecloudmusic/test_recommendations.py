@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
+from tests.common import use_real_create_task
 
 _SONG = {
     "id": 1001,
@@ -29,6 +30,15 @@ PLAYLISTS_PAYLOAD = {
     "code": 200,
     "result": [{"id": 3003, "name": "Rec Playlist", "picUrl": "https://p1.music.126.net/r.jpg"}],
 }
+PLAYLIST_DETAIL_PAYLOAD = {
+    "code": 200,
+    "playlist": {
+        "id": 2002,
+        "name": "My Playlist",
+        "coverImgUrl": "https://p1.music.126.net/p.jpg",
+    },
+}
+PLAYLIST_TRACKS_PAYLOAD = {"code": 200, "songs": [_SONG]}
 
 
 def _stub_client_get(provider: NeteaseCloudMusicProvider) -> AsyncMock:
@@ -41,6 +51,8 @@ def _stub_client_get(provider: NeteaseCloudMusicProvider) -> AsyncMock:
             "/user/playlist": USER_PLAYLIST_PAYLOAD,
             "/personalized/newsong": NEWSONG_PAYLOAD,
             "/personalized": PLAYLISTS_PAYLOAD,
+            "/playlist/detail": PLAYLIST_DETAIL_PAYLOAD,
+            "/playlist/track/all": PLAYLIST_TRACKS_PAYLOAD,
         }[path]
 
     mock = AsyncMock(side_effect=_fake)
@@ -85,6 +97,14 @@ async def test_get_recommendation_items_radios(
 
     called_paths = {call.args[0] for call in client_mock.call_args_list}
     assert called_paths == {"/personal_fm", "/recommend/songs", "/user/playlist"}
+    fm_call = next(call for call in client_mock.call_args_list if call.args[0] == "/personal_fm")
+    assert fm_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert fm_call.kwargs["cookie"] == "MUSIC_U=test"
+    user_playlist_call = next(
+        call for call in client_mock.call_args_list if call.args[0] == "/user/playlist"
+    )
+    assert user_playlist_call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert user_playlist_call.kwargs["cookie"] == "MUSIC_U=test"
     assert [item.item_id for item in result] == [
         "personal_fm_dynamic",
         "heart_mode_dynamic:1001:2002",
@@ -104,6 +124,9 @@ async def test_get_recommendation_items_daily_songs(
     called_paths = [call.args[0] for call in client_mock.call_args_list]
     assert called_paths == ["/recommend/songs"]
     assert [item.item_id for item in result] == ["1001"]
+    call = client_mock.call_args_list[0]
+    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert call.kwargs["cookie"] == "MUSIC_U=test"
 
 
 @pytest.mark.asyncio
@@ -133,6 +156,9 @@ async def test_get_recommendation_items_playlists(
 
     called_paths = [call.args[0] for call in client_mock.call_args_list]
     assert called_paths == ["/personalized"]
+    call = client_mock.call_args_list[0]
+    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert call.kwargs["cookie"] == "MUSIC_U=test"
     assert [item.item_id for item in result] == ["3003"]
 
 
@@ -147,3 +173,77 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert client_mock.call_args_list == []
     assert not result
+
+
+@pytest.mark.asyncio
+async def test_recommendation_cache_key_excludes_login_cookie(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """The login cookie sent as a query param never reaches the persisted cache key."""
+    provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cache_set = AsyncMock()
+    provider.mass.cache.set = cache_set  # type: ignore[method-assign]
+    _stub_client_get(provider)
+
+    await provider.get_recommendation_items("daily_songs")
+
+    assert cache_set.await_count == 1
+    cache_key = cache_set.call_args.kwargs["key"]
+    assert cache_key.endswith("daily_songs:{}")
+    assert "MUSIC_U=test" not in cache_key
+
+
+@pytest.mark.asyncio
+async def test_pick_personal_fm_fresh_sends_cookie_in_params(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """The fresh-FM path passes the login cookie as a query param alongside the header."""
+    client_mock = _stub_client_get(provider)
+
+    await provider._pick_personal_fm_tracks(fresh=True, target_count=1)
+
+    assert client_mock.call_args_list
+    for call in client_mock.call_args_list:
+        assert call.args[0] == "/personal_fm"
+        assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+        assert call.kwargs["cookie"] == "MUSIC_U=test"
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_sends_cookie_in_params(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """Playlist detail passes the login cookie as a query param alongside the header."""
+    use_real_create_task(provider.mass)
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    client_mock = _stub_client_get(provider)
+
+    await provider.get_playlist("2002")
+
+    call = client_mock.call_args_list[0]
+    assert call.args[0] == "/playlist/detail"
+    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert call.kwargs["cookie"] == "MUSIC_U=test"
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_sends_cookie_in_params(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """Playlist track listing passes the login cookie as a query param alongside the header."""
+    use_real_create_task(provider.mass)
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    client_mock = _stub_client_get(provider)
+
+    await provider._get_playlist_tracks_cached("2002")
+
+    call = client_mock.call_args_list[0]
+    assert call.args[0] == "/playlist/track/all"
+    assert call.kwargs["params"]["cookie"] == "MUSIC_U=test"
+    assert call.kwargs["cookie"] == "MUSIC_U=test"

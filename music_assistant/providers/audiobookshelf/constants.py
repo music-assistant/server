@@ -48,7 +48,6 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     AUTHORS = "authors"
     NARRATORS = "narrators"
     SERIES = "series_plural"
-    SERIES_ENTRY = "series_entry"
     COLLECTIONS = "collections"
     PLAYLISTS = "playlists"  # not abs specific
     AUDIOBOOKS = "audiobooks"  # not abs specific
@@ -67,7 +66,6 @@ ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
-    AbsBrowseItemsBookTranslationKey.SERIES_ENTRY: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS_LIBRARY: AbsBrowsePaths.AUDIOBOOKS,

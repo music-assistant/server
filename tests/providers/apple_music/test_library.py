@@ -711,6 +711,76 @@ async def test_get_library_albums_keeps_album_when_song_check_fails() -> None:
     assert [album.item_id for album in albums] == ["l.album1"]
 
 
+def _catalog_album(album_id: str) -> dict[str, Any]:
+    """Build a catalog album as Apple nests it under a catalog song's albums relation."""
+    return {
+        "id": album_id,
+        "type": "albums",
+        "attributes": {
+            "name": f"Catalog album {album_id}",
+            "artistName": "Nick Cave & The Bad Seeds",
+            "releaseDate": "2004-09-20",
+            "artwork": {"url": "https://is1-ssl.mzstatic.com/{w}x{h}bb.jpg"},
+            "playParams": {"id": album_id, "kind": "album"},
+        },
+    }
+
+
+def _album_song_on(idx: int, *, catalog_id: str, catalog_album_id: str) -> dict[str, Any]:
+    """Build a resolving me/library/albums/{id}/tracks item whose catalog song sits on an album."""
+    song = _album_song(idx, catalog_id=catalog_id, resolves=True)
+    song["relationships"]["catalog"]["data"][0]["relationships"] = {
+        "albums": {"data": [_catalog_album(catalog_album_id)]}
+    }
+    return song
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_resolves_catalog_less_album_via_its_songs() -> None:
+    """A catalog-less album whose songs all sit on one catalog album yields that catalog album."""
+    manager, api = _make_albums_manager(
+        [_library_album(1, date_added="2026-10-02T14:29:00Z"), _library_album(2)]
+    )
+    _stream_album_songs(
+        api,
+        {
+            "l.album1": [
+                _album_song_on(1, catalog_id="100", catalog_album_id="1436115797"),
+                _album_song_on(2, catalog_id="101", catalog_album_id="1436115797"),
+            ],
+            "l.album2": [_album_song_on(3, catalog_id="102", catalog_album_id="1436115797")],
+        },
+    )
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["1436115797", "1436115797"]
+    album = albums[0]
+    assert [artist.name for artist in album.artists] == ["Nick Cave & The Bad Seeds"]
+    assert album.year == 2004
+    assert album.metadata.images
+    assert album.date_added == datetime(2026, 10, 2, 14, 29, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_keeps_catalog_less_album_spread_over_catalog_albums() -> None:
+    """Songs that sit on different catalog albums leave the library album as it is."""
+    manager, api = _make_albums_manager([_library_album(1)])
+    _stream_album_songs(
+        api,
+        {
+            "l.album1": [
+                _album_song_on(1, catalog_id="100", catalog_album_id="200"),
+                _album_song_on(2, catalog_id="101", catalog_album_id="201"),
+            ]
+        },
+    )
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["l.album1"]
+
+
 @pytest.mark.asyncio
 async def test_get_library_playlists_sets_date_added_without_catalog() -> None:
     """A non-catalog library playlist row's dateAdded ends up on the yielded Playlist."""

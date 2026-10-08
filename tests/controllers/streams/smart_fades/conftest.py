@@ -93,12 +93,8 @@ def _analysis_with_bands(
         rms_energy=np.full(1800, 0.5, dtype=np.float32).tolist(),
         key=key,
         mode=mode,
-        extra_data={
-            "band_rms": {
-                "low": _envelope(low),
-                "low_mid": _envelope(low_mid),
-                "mid": _envelope(mid),
-                "high": _envelope(high),
-            }
-        },
+        band_rms_low=_envelope(low),
+        band_rms_low_mid=_envelope(low_mid),
+        band_rms_mid=_envelope(mid),
+        band_rms_high=_envelope(high),
     )

@@ -73,6 +73,26 @@ UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 class PlaybackTrackerMixin(_PlayerQueuesBase):
     """Reconcile a queue's state against its player and drive playback-progress reporting."""
 
+    def is_playing_queue(self, queue_id: str, player: Player) -> bool:
+        """
+        Return whether the player renders the given queue, as far as the server can tell.
+
+        True when the queue has a stream session and the media the player reports names
+        it; a player that reports no usable media counts as rendering the queue when the
+        queue is playing.
+
+        :param queue_id: The queue to check against.
+        :param player: The player whose reported media is checked.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or queue_data.session_id is None:
+            return False
+        if (reported := self._reported_queue_id(player)) is not None:
+            # the player's own report is fresher than the queue state, which follows the
+            # player with a delay and can still read idle on the first playing update
+            return reported == queue_id
+        return queue_data.queue.state == PlaybackState.PLAYING
+
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
         Update the current item/index/elapsed time on the queue from the player state.
@@ -400,14 +420,20 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             protocol_player.current_media.source_id == queue_id
             and protocol_player.current_media.queue_item_id
         ):
-            return protocol_player.current_media.queue_item_id
+            current_item_id = protocol_player.current_media.queue_item_id
+            # After a queue replace, the player may still report the removed item.
+            # Ignore it to preserve the new queue position.
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
+            return None
         # special case for sonos players
         if protocol_player.current_media.uri and protocol_player.current_media.uri.startswith(
             f"mass:{queue_id}"
         ):
-            if protocol_player.current_media.queue_item_id:
-                return protocol_player.current_media.queue_item_id
-            current_item_id = protocol_player.current_media.uri.split(":")[-1]
+            current_item_id = (
+                protocol_player.current_media.queue_item_id
+                or protocol_player.current_media.uri.split(":")[-1]
+            )
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
             return None
@@ -427,6 +453,27 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     return current_item_id
 
         return None
+
+    def _reported_queue_id(self, player: Player) -> str | None:
+        """Return the known queue the player's reported media names, if it names one."""
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        if not (current_media := protocol_player.current_media):
+            return None
+        candidates: list[str | None] = [current_media.source_id]
+        uri = current_media.uri or ""
+        if uri.startswith("mass:"):
+            # the sonos container id: mass:{queue_id}[:{queue_item_id}]
+            candidates.append(uri.split(":")[1])
+        base_url = self.mass.streams.base_url
+        if base_url and uri.startswith(base_url):
+            path_parts = uri[len(base_url) :].strip("/").split("/")
+            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            if len(path_parts) >= 5:
+                candidates.append(path_parts[2])
+        # only a queue this server has can be evidence; anything else is unknown media
+        return next((x for x in candidates if x and x in self._queue_data), None)
 
     def _handle_end_of_queue(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
@@ -621,7 +668,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # report on current item
             is_current_item = True
             item_to_report = self.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
-            seconds_played = int(new_state["elapsed_time"])
+            if new_state["state"] == PlaybackState.PLAYING:
+                seconds_played = int(new_state["elapsed_time"])
+            else:
+                # a player may reset its position on pause/stop, never report less than it played
+                seconds_played = max(
+                    int(new_state["elapsed_time"]), int(new_state["last_playing_elapsed_time"])
+                )
 
         if not item_to_report:
             return  # guard against invalid items

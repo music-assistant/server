@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,9 +16,10 @@ from music_assistant_models.enums import ContentType, MediaType, PlaybackState, 
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
+import music_assistant.controllers.streams.audio_buffer as audio_buffer_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
@@ -37,13 +38,14 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.ffmpeg import FFMpegStreamInfo
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     current_priority,
     request_priority,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -1797,3 +1799,249 @@ async def test_audio_source_stream_error_reset_on_retry(mass_minimal: MusicAssis
 
 
 # -- Provider-filled buffers --
+
+
+# -- Format probe --
+
+PROBED_FLAC = FFMpegStreamInfo(codec=ContentType.FLAC, sample_rate=48000, bit_depth=24, channels=2)
+
+
+def _make_unknown_format_details() -> StreamDetails:
+    """Build stream details for a track whose provider did not declare its format."""
+    details = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+    details.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+    return details
+
+
+def _make_slot_limited_provider(
+    acquire_stream_slot: Callable[[float | None], Any],
+) -> MagicMock:
+    """Build a slot-limited music provider that hands out slots as given."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Test"
+    provider.instance_id = "test--1"
+    provider.max_concurrent_streams = 1
+    provider.acquire_stream_slot = acquire_stream_slot
+    return provider
+
+
+async def test_get_buffer_decodes_an_unknown_source_at_its_probed_format() -> None:
+    """A source without a declared format is buffered at the format it turns out to have."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    requested_formats: list[AudioFormat] = []
+
+    def _get_media_stream(
+        _details: StreamDetails, pcm_format: AudioFormat, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        requested_formats.append(pcm_format)
+        return _make_source(1)
+
+    mass.streams.audio.get_media_stream = _get_media_stream
+    details = _make_unknown_format_details()
+    details.extra_input_args = ["-user_agent", "test"]
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        probe.assert_awaited_once_with(details.path, ["-user_agent", "test"])
+        assert buffer.pcm_format.content_type == ContentType.PCM_S24LE
+        assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (48000, 24)
+        assert requested_formats == [buffer.pcm_format]
+        assert details.audio_format.content_type == ContentType.FLAC
+        assert details.audio_format.codec_type == ContentType.FLAC
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+def _declare_format(details: StreamDetails) -> None:
+    details.audio_format = AudioFormat(content_type=ContentType.FLAC)
+
+
+def _declare_codec(details: StreamDetails) -> None:
+    details.audio_format = AudioFormat(
+        content_type=ContentType.UNKNOWN, codec_type=ContentType.FLAC
+    )
+
+
+def _declare_decoded_format(details: StreamDetails) -> None:
+    details.decoded_audio_format = AudioFormat(content_type=ContentType.PCM_S32LE, bit_depth=32)
+
+
+def _make_radio(details: StreamDetails) -> None:
+    details.media_type = MediaType.RADIO
+
+
+def _make_realtime(details: StreamDetails) -> None:
+    details.is_realtime = True
+
+
+def _make_custom(details: StreamDetails) -> None:
+    details.stream_type = StreamType.CUSTOM
+
+
+def _make_multipart(details: StreamDetails) -> None:
+    details.path = [MultiPartPath(path="http://example.com/part1.mp3")]
+
+
+def _make_dff(details: StreamDetails) -> None:
+    details.stream_type = StreamType.LOCAL_FILE
+    details.path = "/music/track.dff"
+
+
+@pytest.mark.parametrize(
+    "adjust",
+    [
+        _declare_format,
+        _declare_codec,
+        _declare_decoded_format,
+        _make_radio,
+        _make_realtime,
+        _make_custom,
+        _make_multipart,
+        _make_dff,
+    ],
+    ids=["known", "codec", "decoded", "radio", "realtime", "custom", "multipart", "dff"],
+)
+async def test_get_buffer_only_probes_an_unknown_on_demand_source(
+    adjust: Callable[[StreamDetails], None],
+) -> None:
+    """Known formats and sources that can not be opened twice are not probed."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+    adjust(details)
+
+    with patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock()) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        probe.assert_not_awaited()
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_keeps_the_defaults_when_the_probe_fails() -> None:
+    """A source that can not be probed is still played, at the default format."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+
+    with patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=None)):
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (44100, 16)
+        assert details.audio_format == AudioFormat(content_type=ContentType.UNKNOWN)
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_probes_while_holding_a_source_stream_slot() -> None:
+    """The probe opens the source, so it is charged a slot on the issuing provider."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    slot_waits: list[float | None] = []
+    slot_held = False
+
+    @asynccontextmanager
+    async def _acquire_stream_slot(wait_timeout: float | None) -> AsyncGenerator[None]:
+        nonlocal slot_held
+        slot_waits.append(wait_timeout)
+        slot_held = True
+        try:
+            yield
+        finally:
+            slot_held = False
+
+    mass.get_provider.return_value = _make_slot_limited_provider(_acquire_stream_slot)
+    held_during_probe: list[bool] = []
+
+    async def _probe(*_args: Any) -> FFMpegStreamInfo:
+        held_during_probe.append(slot_held)
+        return PROBED_FLAC
+
+    details = _make_unknown_format_details()
+    with patch.object(audio_buffer_mod, "probe_audio_stream", _probe):
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=7.0)
+    try:
+        mass.get_provider.assert_called_with(details.provider, return_unavailable=True)
+        assert held_during_probe == [True]
+        assert slot_waits == [7.0]
+        assert not slot_held
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_surfaces_a_saturated_provider_before_probing() -> None:
+    """Without a free slot the typed capacity error surfaces, as it would from the producer."""
+    mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
+    provider = _make_slot_limited_provider(MagicMock())
+    provider.acquire_stream_slot.return_value.__aenter__.side_effect = ProviderStreamLimitError(
+        provider, 0
+    )
+    mass.get_provider.return_value = provider
+    details = _make_unknown_format_details()
+
+    with (
+        patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock()) as probe,
+        pytest.raises(ProviderStreamLimitError),
+    ):
+        await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=0)
+
+    provider.acquire_stream_slot.assert_called_once_with(0)
+    probe.assert_not_awaited()
+    assert details.buffer is None
+
+
+async def test_get_buffer_probes_a_source_only_once() -> None:
+    """A later buffer for the same source, e.g. after a seek, reuses the probed format."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        first = await AudioBuffer.get_buffer(mass, details, reason="test")
+        await first.clear()
+        details.buffer = None
+        second = await AudioBuffer.get_buffer(mass, details, 120_000, reason="test")
+    try:
+        probe.assert_awaited_once()
+        assert second.pcm_format == first.pcm_format
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await second.clear()
+
+
+@pytest.mark.parametrize("resolves", [True, False], ids=["resolved", "unreachable"])
+async def test_get_buffer_probes_the_hls_substream_the_producer_plays(resolves: bool) -> None:
+    """An HLS source is probed on the substream it is decoded from, or not at all."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    mass.streams.audio.get_hls_substream = AsyncMock(
+        return_value=SimpleNamespace(path="https://cdn.example.com/variant.m3u8")
+        if resolves
+        else None,
+        side_effect=None if resolves else AudioError("playlist unavailable"),
+    )
+    details = _make_unknown_format_details()
+    details.stream_type = StreamType.HLS
+    details.path = "https://example.com/master.m3u8"
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        mass.streams.audio.get_hls_substream.assert_awaited_once_with(
+            "https://example.com/master.m3u8"
+        )
+        if resolves:
+            probe.assert_awaited_once_with("https://cdn.example.com/variant.m3u8", [])
+            assert buffer.pcm_format.sample_rate == 48000
+        else:
+            probe.assert_not_awaited()
+            assert buffer.pcm_format.sample_rate == 44100
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()

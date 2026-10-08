@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -507,6 +508,33 @@ async def test_barcode_lookup_failures_fall_back_to_search() -> None:
     assert matches == []
     assert harness.provider.get_album_by_external_id.await_count == 2
     harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_transport_failure_falls_back_to_search() -> None:
+    """A barcode lookup that fails on the connection is skipped for the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[],
+        provider_items={},
+        barcode_lookups={BASE_BARCODE: aiohttp.ClientConnectionError("connection reset")},
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_status_error_is_not_skipped() -> None:
+    """An HTTP status error the provider did not translate is not a lookup failure to skip."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    error = aiohttp.ClientResponseError(Mock(), (), status=500, message="Internal Server Error")
+    with (
+        _harness(
+            search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: error}
+        ) as harness,
+        pytest.raises(aiohttp.ClientResponseError),
+    ):
+        await harness.match(base)
 
 
 async def test_barcode_lookups_are_capped_per_provider() -> None:
@@ -1036,10 +1064,20 @@ async def test_musicbrainz_unresolved_barcode_abstains() -> None:
         assert await harness.match(base) == []
 
 
-async def test_musicbrainz_transport_error_abstains() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        aiohttp.ClientConnectionError("connection reset"),
+        # MusicBrainz has no account to fail, so even an untranslated HTTP status error
+        # only costs the optional evidence
+        aiohttp.ClientResponseError(Mock(), (), status=500, message="Internal Server Error"),
+    ],
+)
+async def test_musicbrainz_transport_error_abstains(error: Exception) -> None:
     """A MusicBrainz outage abstains rather than aborting the whole match."""
     musicbrainz = Mock()
-    musicbrainz.get_releases_by_barcode = AsyncMock(side_effect=TimeoutError())
+    musicbrainz.get_releases_by_barcode = AsyncMock(side_effect=error)
     with _mb_harness(musicbrainz) as (harness, base):
         assert await harness.match(base) == []
 
