@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import subprocess
 from array import array
@@ -26,6 +27,8 @@ from music_assistant.helpers.ffmpeg import (
     _build_filtergraph_args,
     _build_overlay_mixer,
     _get_overlay_volume_filter,
+    _parse_ffprobe_stream_info,
+    apply_stream_info,
     check_ffmpeg_version,
     get_ffmpeg_args,
     get_ffmpeg_hls_cmaf_input_args,
@@ -33,6 +36,7 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
+    probe_audio_stream,
 )
 from music_assistant.models.music_provider import ProviderStreamLimitError
 
@@ -1581,3 +1585,168 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero
     await check_ffmpeg_version()
 
     assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+# -- probe_audio_stream --
+
+
+class _FakeProbeProcess:
+    """Stand-in for the ffprobe AsyncProcess that records how it was run."""
+
+    def __init__(self, output: bytes = b"", exit_code: int = 0, hang: bool = False) -> None:
+        """Initialize the fake with the output and exit code ffprobe should produce."""
+        self.output = output
+        self.exit_code = exit_code
+        self.hang = hang
+        self.args: list[str] = []
+        self.returncode: int | None = None
+        self.killed = False
+
+    def __call__(self, args: list[str], **_kwargs: object) -> _FakeProbeProcess:
+        """Act as the AsyncProcess constructor."""
+        self.args = args
+        return self
+
+    async def start(self) -> None:
+        """Start the fake process."""
+
+    async def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        """Return the configured output, or never finish when hanging."""
+        if self.hang:
+            await asyncio.wait_for(asyncio.Event().wait(), timeout)
+        self.returncode = self.exit_code
+        return self.output, b""
+
+    async def kill(self) -> None:
+        """Record that the process was killed."""
+        self.killed = True
+
+
+def _probe_output(**stream: object) -> bytes:
+    """Return ffprobe json output describing a single stream."""
+    return json.dumps({"programs": [], "streams": [stream]}).encode()
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (
+            {
+                "codec_name": "flac",
+                "sample_fmt": "s32",
+                "sample_rate": "48000",
+                "channels": 2,
+                "bits_per_raw_sample": "24",
+            },
+            FFMpegStreamInfo(codec=ContentType.FLAC, sample_rate=48000, bit_depth=24, channels=2),
+        ),
+        (
+            {
+                "codec_name": "alac",
+                "sample_fmt": "s16p",
+                "sample_rate": "44100",
+                "channels": 2,
+                "bits_per_raw_sample": "16",
+            },
+            FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=44100, bit_depth=16, channels=2),
+        ),
+        (
+            {"codec_name": "alac", "sample_fmt": "s16p", "sample_rate": "44100", "channels": 2},
+            FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=44100, bit_depth=16, channels=2),
+        ),
+        (
+            {"codec_name": "aac", "sample_fmt": "fltp", "sample_rate": "48000", "channels": 1},
+            FFMpegStreamInfo(codec=ContentType.AAC, sample_rate=48000, channels=1),
+        ),
+    ],
+    ids=["flac-24-48", "alac-16-44", "alac-from-sample-fmt", "aac-lossy"],
+)
+def test_parse_ffprobe_stream_info(stream: dict[str, object], expected: FFMpegStreamInfo) -> None:
+    """The raw sample depth wins; the sample format only counts for lossless codecs."""
+    assert _parse_ffprobe_stream_info(_probe_output(**stream)) == expected
+
+
+@pytest.mark.parametrize(
+    "output",
+    [b"", b"not json", b'{"programs": [], "streams": []}', b'{"streams": [{"channels": 2}]}'],
+    ids=["empty", "garbage", "no-audio-stream", "no-codec"],
+)
+def test_parse_ffprobe_stream_info_rejects_unusable_output(output: bytes) -> None:
+    """Output that does not describe an audio stream yields nothing."""
+    assert _parse_ffprobe_stream_info(output) is None
+
+
+async def test_probe_audio_stream_opens_the_input_like_the_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe reads with the decoder's input options plus the source's own args."""
+    proc = _FakeProbeProcess(
+        _probe_output(codec_name="flac", sample_rate="96000", channels=2, bits_per_raw_sample="24")
+    )
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    info = await probe_audio_stream("https://example.com/a.flac", ["-user_agent", "test"])
+
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC, sample_rate=96000, bit_depth=24, channels=2
+    )
+    assert proc.args[0] == "ffprobe"
+    read_args_start = proc.args.index(_INPUT_READ_ARGS[0])
+    assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
+    assert proc.args.index("-user_agent") < proc.args.index("-i")
+    assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+async def test_probe_audio_stream_returns_nothing_on_a_failed_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source ffprobe can not open yields nothing instead of an error."""
+    monkeypatch.setattr(
+        "music_assistant.helpers.ffmpeg.AsyncProcess", _FakeProbeProcess(exit_code=1)
+    )
+
+    assert await probe_audio_stream("https://example.com/missing.flac") is None
+
+
+async def test_probe_audio_stream_kills_ffprobe_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that never answers is given up on and its ffprobe killed."""
+    proc = _FakeProbeProcess(hang=True)
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    assert await probe_audio_stream("https://example.com/stalled.flac", timeout=0.01) is None
+    assert proc.killed
+
+
+async def test_probe_audio_stream_kills_ffprobe_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that goes away takes its ffprobe with it."""
+    proc = _FakeProbeProcess(hang=True)
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    task = asyncio.create_task(probe_audio_stream("https://example.com/stalled.flac"))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.killed
+
+
+def test_apply_stream_info_keeps_a_declared_content_type() -> None:
+    """Detected values land in place, without replacing the container the provider set."""
+    audio_format = AudioFormat(content_type=ContentType.MP4)
+
+    apply_stream_info(
+        audio_format,
+        FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=48000, bit_depth=24, channels=1),
+    )
+
+    assert audio_format.content_type == ContentType.MP4
+    assert audio_format.codec_type == ContentType.ALAC
+    assert (audio_format.sample_rate, audio_format.bit_depth, audio_format.channels) == (
+        48000,
+        24,
+        1,
+    )
