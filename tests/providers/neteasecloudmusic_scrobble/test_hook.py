@@ -196,6 +196,19 @@ async def test_state_is_keyed_per_player() -> None:
     )
 
 
+def test_in_flight_is_keyed_per_player() -> None:
+    """An in-flight check-in on one player does not suppress the same track on another."""
+    handler = _handler(_mass())
+    p1 = _report(uri=f"{INSTANCE_A}://track/123", fully_played=True, player_id="p1")
+    # a submission for p1 is still running
+    handler._scrobbles_in_flight.add(handler._in_flight_key(p1))
+
+    assert handler.should_scrobble(p1) is False
+    # the same track finishing on another player is a separate check-in
+    p2 = _report(uri=f"{INSTANCE_A}://track/123", fully_played=True, player_id="p2")
+    assert handler.should_scrobble(p2) is True
+
+
 async def test_transient_failure_does_not_mark_the_play() -> None:
     """A failed /scrobble leaves the play unmarked so a later report can retry it."""
     inst = _ncm_provider(INSTANCE_A)

@@ -127,8 +127,8 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
             # so its previous play is done and may be checked in again
             self._scrobbled_plays.discard(key)
         self._last_progress[key] = report.seconds_played
-        if report.uri in self._scrobbles_in_flight:
-            # a check-in for this track is already running
+        if self._in_flight_key(report) in self._scrobbles_in_flight:
+            # a check-in for this track is already running on this player
             return False
         if key in self._scrobbled_plays:
             # already checked in for this play
@@ -137,6 +137,10 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         # not marked as done here on purpose: only a successful /scrobble marks the
         # play, so a transient api failure is retried on the next completion report
         return bool(report.fully_played)
+
+    def _in_flight_key(self, report: MediaItemPlaybackProgressReport) -> str:
+        """Track in-flight check-ins per player, so two players on one track do not clash."""
+        return f"{report.player_id or ''}::{report.uri}"
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         """Scrobble a track to the NetEase instance it streamed from."""
