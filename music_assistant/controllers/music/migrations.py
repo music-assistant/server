@@ -1457,12 +1457,16 @@ async def _move_classical_genre_aliases(
                     {"genre_id": row["item_id"]},
                     limit=0,
                 ):
-                    if create_safe_string(mapping_row["alias"], True, True) not in removed_norms:
+                    mapping_alias = mapping_row["alias"]
+                    if (
+                        not isinstance(mapping_alias, str)
+                        or create_safe_string(mapping_alias, True, True) not in removed_norms
+                    ):
                         continue
                     await database.execute(
                         f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
                         "WHERE genre_id = :genre_id AND is_manual = 0 AND alias = :alias",
-                        {"genre_id": row["item_id"], "alias": mapping_row["alias"]},
+                        {"genre_id": row["item_id"], "alias": mapping_alias},
                     )
 
         for translation_key, new_aliases in moved_aliases.items():
