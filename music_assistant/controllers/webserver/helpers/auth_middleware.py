@@ -15,7 +15,12 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    HASSIO_SUPERVISOR_IP,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
+)
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
 
@@ -90,7 +95,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     mass: MusicAssistant = request.app["mass"]
 
     # Check for Home Assistant Ingress connections
-    if is_request_from_ingress(request):
+    if is_request_from_ingress_proxy(request):
         ingress_user_id = request.headers.get("X-Remote-User-ID")
         ingress_username = request.headers.get("X-Remote-User-Name")
         ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
@@ -103,16 +108,23 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         user = await mass.webserver.auth.get_user_by_provider_link(
             AuthProviderType.HOME_ASSISTANT, ingress_user_id
         )
+        # HA is the source of truth for the user details
+        ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
         if not user:
-            user = await mass.webserver.auth.get_user_by_username(ingress_username)
-            if not user:
-                # New user - fetch details from HA
-                ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                    mass, ingress_user_id
+            # an account not linked yet may only be matched or created under a username
+            # HA confirms, never under the one the headers carry
+            if ha_username is None:
+                LOGGER.warning(
+                    "Refused Home Assistant Ingress sign-in for %s: "
+                    "Home Assistant could not confirm the user",
+                    ingress_username,
                 )
+                return None
+            user = await mass.webserver.auth.get_user_by_username(ha_username)
+            if not user:
                 role = await get_ha_user_role(mass, ingress_user_id)
                 user = await mass.webserver.auth.create_user(
-                    username=ha_username or ingress_username,
+                    username=ha_username,
                     role=role,
                     display_name=ha_display_name or ingress_display_name,
                     avatar_url=avatar_url,
@@ -125,7 +137,6 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
         # Update user with HA details if available (HA is source of truth)
         # Fall back to ingress headers if API lookup doesn't return values
-        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
         final_display_name = ha_display_name or ingress_display_name
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
@@ -396,12 +407,27 @@ def set_current_peer_address(peer_address: str | None) -> None:
     current_peer_address.set(peer_address)
 
 
+def is_request_from_ingress_proxy(request: web.Request) -> bool:
+    """
+    Check if request was relayed by the Home Assistant Ingress proxy.
+
+    Only such a request may carry trusted X-Remote-User headers: it must arrive on the
+    internal ingress TCP site from the Supervisor's address.
+
+    :param request: The aiohttp request.
+    """
+    if not is_request_from_ingress(request):
+        return False
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    return bool(peername and peername[0] == HASSIO_SUPERVISOR_IP)
+
+
 def is_request_from_ingress(request: web.Request) -> bool:
     """
-    Check if request is coming from Home Assistant Ingress (internal network).
+    Check if request arrived on the internal ingress TCP site (172.30.32.x:8094).
 
-    Security is enforced by socket-level verification (IP/port binding), not headers.
-    Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
+    The site is only reachable from the host network, which is where the Home Assistant
+    integration connects with the system user token.
 
     :param request: The aiohttp request.
     """
