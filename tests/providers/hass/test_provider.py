@@ -125,6 +125,7 @@ def _mass() -> MagicMock:
     mass.cache = _Cache()
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
+    mass.closing = False
     mass.streams.base_url = "http://ma.local:8097"
     mass.streams.register_dynamic_route.return_value = MagicMock()
     use_real_create_task(mass)
@@ -841,17 +842,11 @@ def _mock_tts_proxy_response(
     http_session: Any, chunks: list[bytes], status: int = 200
 ) -> MagicMock:
     """Let the Home Assistant tts_proxy endpoint serve the given chunks and return the get mock."""
-
-    async def _iter_chunked(_size: int) -> AsyncIterator[bytes]:
-        for chunk in chunks:
-            yield chunk
-
     response = MagicMock()
     response.ok = status < 400
     response.status = status
     response.content_type = "audio/mpeg"
-    response.content_length = sum(len(chunk) for chunk in chunks)
-    response.content.iter_chunked = _iter_chunked
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
     get = cast("MagicMock", http_session.get)
     get.return_value.__aenter__.return_value = response
     return get
@@ -921,7 +916,6 @@ async def test_tts_route_streams_the_clip_from_home_assistant() -> None:
         )
         assert response.status == 200
         assert response.content_type == "audio/mpeg"
-        assert response.content_length == 4
         assert written == [b"ab", b"cd"]
 
 

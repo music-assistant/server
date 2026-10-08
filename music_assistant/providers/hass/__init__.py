@@ -44,6 +44,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import async_aiohttp_proxy_stream
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
@@ -104,9 +105,8 @@ AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
 
-# a tts_proxy token is a single file name, never a path
-TTS_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+")
-TTS_CHUNK_SIZE = 64 * 1024
+# a tts_proxy token is a single file name (url-safe token plus extension), never a path
+TTS_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9]+")
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -978,14 +978,9 @@ class HomeAssistantProvider(PluginProvider):
         async with http_session.get(f"{ha_url}/api/tts_proxy/{token}", headers=headers) as response:
             if not response.ok:
                 return web.Response(status=response.status)
-            stream_response = web.StreamResponse()
-            stream_response.content_type = response.content_type
-            if response.content_length is not None:
-                stream_response.content_length = response.content_length
-            await stream_response.prepare(request)
-            async for chunk in response.content.iter_chunked(TTS_CHUNK_SIZE):
-                await stream_response.write(chunk)
-        return stream_response
+            return await async_aiohttp_proxy_stream(
+                self.mass, request, response.content, response.content_type
+            )
 
     async def _raise_for_tts_error(
         self, response: ClientResponse, entity_id: str, language: str | None
