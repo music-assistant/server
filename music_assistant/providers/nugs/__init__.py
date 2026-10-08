@@ -48,7 +48,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
@@ -262,14 +261,13 @@ class NugsProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        stream_url, quality = await self._get_stream_url(item_id)
-        audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
-        if quality != QUALITY_LOSSY:
-            audio_format = await self._probe_audio_format(item_id, stream_url)
+        stream_url = await self._get_stream_url(item_id)
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            audio_format=audio_format,
+            audio_format=AudioFormat(
+                content_type=ContentType.UNKNOWN,
+            ),
             stream_type=StreamType.HTTP,
             path=stream_url,
         )
@@ -448,9 +446,9 @@ class NugsProvider(MusicProvider):
             track.duration = int(duration)
         return track
 
-    async def _get_stream_url(self, item_id: str) -> tuple[str, str]:
+    async def _get_stream_url(self, item_id: str) -> str:
         """
-        Return the stream url for a track and the quality it was served in.
+        Return the stream url for a track in the best quality available.
 
         :param item_id: The nugs.net track id.
         """
@@ -484,12 +482,12 @@ class NugsProvider(MusicProvider):
             if stream_url := await self._request_stream_link(
                 {**params, "platformID": PLATFORM_IDS[quality]}
             ):
-                return stream_url, quality
+                return stream_url
             self.logger.debug("No %s stream for track %s, falling back to lossy", quality, item_id)
         if stream_url := await self._request_stream_link(
             {**params, "platformID": PLATFORM_IDS[QUALITY_LOSSY]}
         ):
-            return stream_url, QUALITY_LOSSY
+            return stream_url
         raise MediaNotFoundError(f"No stream found for song {item_id}.")
 
     def _get_quality(self, plan: dict[str, Any]) -> str:
@@ -510,28 +508,6 @@ class NugsProvider(MusicProvider):
                 self._warned_plan_quality = True
             return QUALITY_LOSSY
         return quality
-
-    async def _probe_audio_format(self, item_id: str, stream_url: str) -> AudioFormat:
-        """
-        Return the actual audio format of a lossless stream.
-
-        :param item_id: The nugs.net track id, used for logging.
-        :param stream_url: The stream url to probe.
-        """
-        try:
-            tags = await async_parse_tags(stream_url)
-        except InvalidDataError:
-            self.logger.debug("Unable to probe the audio format of track %s", item_id)
-            return AudioFormat(content_type=ContentType.UNKNOWN)
-        codec_name = ((tags.raw or {}).get("streams") or [{}])[0].get("codec_name")
-        return AudioFormat(
-            content_type=ContentType.try_parse(tags.format),
-            codec_type=ContentType.try_parse(codec_name or ""),
-            sample_rate=tags.sample_rate,
-            bit_depth=tags.bits_per_sample,
-            channels=tags.channels,
-            bit_rate=tags.bit_rate,
-        )
 
     async def _request_stream_link(self, params: dict[str, Any]) -> str | None:
         """

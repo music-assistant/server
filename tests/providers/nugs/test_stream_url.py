@@ -6,8 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.errors import AudioError, InvalidDataError
+from music_assistant_models.errors import AudioError
 
 from music_assistant.providers.nugs import CONF_QUALITY, NugsProvider
 
@@ -54,7 +53,7 @@ async def test_stream_url_uses_regular_plan(provider: NugsProvider) -> None:
     _stub_get_data(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "plan-42"}})
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == ("https://stream.test/track.m3u8", "lossy")
+    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
     assert session_get.call_args.kwargs["params"]["subCostplanIDAccessList"] == "plan-42"
 
 
@@ -67,7 +66,7 @@ async def test_stream_url_falls_back_to_promo_plan(provider: NugsProvider) -> No
     )
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == ("https://stream.test/track.m3u8", "lossy")
+    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
     assert session_get.call_args.kwargs["params"]["subCostplanIDAccessList"] == "promo-7"
 
 
@@ -123,57 +122,5 @@ async def test_stream_url_falls_back_to_lossy(provider: NugsProvider) -> None:
         provider, '{"streamLink": ""}', '{"streamLink": "https://stream.test/lossy.m3u8"}'
     )
 
-    assert await provider._get_stream_url("123") == ("https://stream.test/lossy.m3u8", "lossy")
+    assert await provider._get_stream_url("123") == "https://stream.test/lossy.m3u8"
     assert [c.kwargs["params"]["platformID"] for c in session_get.call_args_list] == [2, -1]
-
-
-@pytest.mark.asyncio
-async def test_stream_details_use_probed_format(
-    provider: NugsProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lossless stream reports the sample rate and bit depth the stream actually has."""
-    tags = MagicMock(format="flac", sample_rate=48000, bits_per_sample=24, channels=2)
-    tags.bit_rate = 2000
-    tags.raw = {"streams": [{"codec_name": "flac"}]}
-    probe = AsyncMock(return_value=tags)
-    monkeypatch.setattr("music_assistant.providers.nugs.async_parse_tags", probe)
-    provider._get_stream_url = AsyncMock(  # type: ignore[method-assign]
-        return_value=("https://stream.test/track.flac", "mqa")
-    )
-
-    details = await provider.get_stream_details("123", MediaType.TRACK)
-    assert details.audio_format.content_type == ContentType.FLAC
-    assert details.audio_format.sample_rate == 48000
-    assert details.audio_format.bit_depth == 24
-
-
-@pytest.mark.asyncio
-async def test_stream_details_skip_probe_for_lossy(
-    provider: NugsProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lossy stream is not probed."""
-    probe = AsyncMock()
-    monkeypatch.setattr("music_assistant.providers.nugs.async_parse_tags", probe)
-    provider._get_stream_url = AsyncMock(  # type: ignore[method-assign]
-        return_value=("https://stream.test/track.m3u8", "lossy")
-    )
-
-    details = await provider.get_stream_details("123", MediaType.TRACK)
-    probe.assert_not_called()
-    assert details.audio_format.content_type == ContentType.UNKNOWN
-
-
-@pytest.mark.asyncio
-async def test_stream_details_survive_probe_failure(
-    provider: NugsProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A stream that cannot be probed still plays with an unknown format."""
-    probe = AsyncMock(side_effect=InvalidDataError("boom"))
-    monkeypatch.setattr("music_assistant.providers.nugs.async_parse_tags", probe)
-    provider._get_stream_url = AsyncMock(  # type: ignore[method-assign]
-        return_value=("https://stream.test/track.m4a", "lossless")
-    )
-
-    details = await provider.get_stream_details("123", MediaType.TRACK)
-    assert details.audio_format.content_type == ContentType.UNKNOWN
-    assert details.path == "https://stream.test/track.m4a"
