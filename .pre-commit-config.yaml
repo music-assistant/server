@@ -110,7 +110,7 @@ repos:
         name: 🐶 Ruff Formatter
         language: system
         types: [python]
-        entry: scripts/run-in-env.sh ruff format
+        entry: scripts/run-in-env.sh ruff format --diff
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 
