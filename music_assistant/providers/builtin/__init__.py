@@ -132,9 +132,9 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
-# accepted prefixes for a manual item image: a remote stream URL (embedded art carries
-# the track's own stream URL as its path) or an inline data URI, never a local file path
-REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
+# accepted prefixes for a manual item image: an http(s) URL or an inline data URI, never a
+# local file path or a stream-only scheme the image loader does not fetch
+REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 # maximum number of detail rows rendered per table in the import matching report
 _IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
@@ -841,7 +841,9 @@ class BuiltinProvider(MusicProvider):
                 provider_mappings=provider_mappings,
             )
 
-        if media_info.has_cover_image:
+        # embedded art is served from the stream's own URL, which the image loader
+        # only fetches over http(s)
+        if media_info.has_cover_image and url.startswith(("http://", "https://")):
             media_item.metadata.images = UniqueList(
                 [
                     MediaItemImage(

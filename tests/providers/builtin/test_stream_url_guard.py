@@ -151,22 +151,26 @@ def _track_with_image(item_id: str, image_path: str) -> Track:
 
 @pytest.mark.parametrize(
     "image_url",
-    [
-        "http://x/a.jpg",
-        "https://x/a.jpg",
-        "rtsp://x/stream",
-        "rtmp://x/stream",
-        "data:image/png;base64,AAAA",
-    ],
+    ["http://x/a.jpg", "https://x/a.jpg", "data:image/png;base64,AAAA"],
 )
 def test_ensure_remote_image_url_accepts_remote(image_url: str) -> None:
-    """Remote URLs (including stream schemes for embedded art) and data URIs pass."""
+    """An http(s) URL or a data URI passes."""
     BuiltinProvider._ensure_remote_image_url(image_url)
 
 
-@pytest.mark.parametrize("image_url", ["/etc/passwd", "/x/cover.jpg", "file:///x.jpg", "cover.jpg"])
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        "/etc/passwd",
+        "/x/cover.jpg",
+        "file:///x.jpg",
+        "cover.jpg",
+        "rtsp://x/stream",
+        "rtmp://x/stream",
+    ],
+)
 def test_ensure_remote_image_url_rejects_local(image_url: str) -> None:
-    """A local image reference is refused."""
+    """A local path or a stream-only scheme is refused as an image."""
     with pytest.raises(MediaNotFoundError):
         BuiltinProvider._ensure_remote_image_url(image_url)
 
@@ -174,24 +178,27 @@ def test_ensure_remote_image_url_rejects_local(image_url: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path",
-    [
-        "http://x/a.jpg",
-        "https://x/a.jpg",
-        "rtsp://x/stream",
-        "rtmp://x/stream",
-        "data:image/png;base64,AAAA",
-    ],
+    ["http://x/a.jpg", "https://x/a.jpg", "data:image/png;base64,AAAA"],
 )
 async def test_resolve_image_returns_remote_reference(path: str) -> None:
-    """resolve_image passes through a remote image reference (stream schemes included)."""
+    """resolve_image passes through an http(s) URL or data URI."""
     provider = _make_provider()
     assert await provider.resolve_image(path) == path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/etc/passwd", "/srv/other/cover.jpg", "file:///etc/passwd"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/etc/passwd",
+        "/srv/other/cover.jpg",
+        "file:///etc/passwd",
+        "rtsp://x/stream",
+        "rtmp://x/stream",
+    ],
+)
 async def test_resolve_image_rejects_local_path(path: str) -> None:
-    """resolve_image refuses a local filesystem path."""
+    """resolve_image refuses a local filesystem path or a stream-only scheme."""
     provider = _make_provider()
     with pytest.raises(FileNotFoundError):
         await provider.resolve_image(path)
@@ -257,18 +264,51 @@ async def test_library_add_rejects_local_image_without_storing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_library_add_keeps_embedded_art_stream_scheme() -> None:
-    """
-    A stream track whose embedded-art image is its own source URL stays addable.
+async def test_library_add_rejects_stream_scheme_image_without_storing() -> None:
+    """library_add refuses a track whose image is its own rtsp stream URL."""
+    provider = _make_provider()
+    track = _track_with_image("rtsp://host/stream", "rtsp://host/stream")
+    with pytest.raises(MediaNotFoundError):
+        await provider.library_add(track)
+    cast("Any", provider.mass).config.set.assert_not_called()
 
-    The image guard on the direct add commands must not leak into library_add, where
-    a probed rtsp/rtmp item carries its own URL as the cover-art path.
-    """
+
+@pytest.mark.asyncio
+async def test_add_radio_rejects_stream_scheme_image_without_storing() -> None:
+    """add_radio refuses an rtsp image URL for a manual item."""
+    provider = _make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.add_radio("http://ok/stream", "Radio", image_url="rtsp://x/stream")
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "has_image"),
+    [("http://host/stream", True), ("rtsp://host/stream", False)],
+)
+async def test_parse_item_stores_embedded_art_for_http_streams_only(
+    url: str, has_image: bool
+) -> None:
+    """A probed stream carries its own URL as cover art only when that URL is http(s)."""
     provider = _make_provider()
     cast("Any", provider.mass).config.get.return_value = []
-    track = _track_with_image("rtsp://host/stream", "rtsp://host/stream")
-    assert await provider.library_add(track) is True
-    cast("Any", provider.mass).config.set.assert_called_once()
+    media_info = MagicMock(
+        duration=120,
+        format="mp3",
+        sample_rate=44100,
+        bits_per_sample=16,
+        bit_rate=192,
+        title="Song",
+        artists=[],
+        has_cover_image=True,
+    )
+    media_info.get.return_value = None
+    provider._get_media_info = AsyncMock(return_value=media_info)  # type: ignore[method-assign]
+
+    item = await provider.parse_item(url, requested_media_type=MediaType.TRACK)
+
+    assert bool(item.metadata.images) is has_image
 
 
 @pytest.mark.asyncio
