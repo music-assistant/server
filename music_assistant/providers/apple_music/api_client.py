@@ -72,7 +72,7 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
 
 def _match_language_tag(locale: str, supported_tags: list[str]) -> str | None:
     """Return the storefront language tag closest to the locale, if any."""
-    # Apple silently falls back to the storefront default for an unsupported tag.
+    # Apple ignores a valid tag the storefront lacks, but rejects a malformed one with a 400.
     language = locale.split("-", maxsplit=1)[0].lower()
     for tag in supported_tags:
         if tag.lower() == locale.lower():
