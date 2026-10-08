@@ -15,7 +15,11 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    HASSIO_SUPERVISOR_IP,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 
 from .auth_providers import get_ha_user_details, get_or_create_ha_user
 
@@ -155,8 +159,8 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
 
     :param mass: The MusicAssistant instance.
     :param headers: The request headers Home Assistant Ingress sets.
-    :return: The user, or None when the headers name no Home Assistant user or its
-        account is disabled.
+    :return: The user, or None when the headers name no Home Assistant user, the user is not
+        linked yet and Home Assistant can not confirm it, or its account is disabled.
     """
     ingress_user_id = headers.get("X-Remote-User-ID")
     ingress_username = headers.get("X-Remote-User-Name")
@@ -166,8 +170,18 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
     if not (ingress_user_id and ingress_username):
         return None
 
-    # HA is the source of truth for the user details, the ingress headers are the fallback
     ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+    linked_user = await mass.webserver.auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
+    )
+    # an account not linked yet may only be matched or created under a username HA confirms
+    if linked_user is None and ha_username is None:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "Home Assistant could not confirm the user",
+            ingress_username,
+        )
+        return None
     # Ingress users are created on first sign-in, as HA already authenticated them
     user = await get_or_create_ha_user(
         mass,
@@ -491,8 +505,8 @@ def is_request_from_ingress(request: web.Request) -> bool:
     """
     Check if request is coming from Home Assistant Ingress (internal network).
 
-    Security is enforced by socket-level verification (IP/port binding), not headers.
-    Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
+    Trust comes from the socket pair, not from headers: the request must arrive on the
+    internal ingress TCP site (172.30.32.x:8094) from the HA Supervisor's address.
 
     :param request: The aiohttp request.
     """
@@ -508,11 +522,16 @@ def is_request_from_ingress(request: web.Request) -> bool:
         transport = request.transport
         if transport:
             sockname = transport.get_extra_info("sockname")
-            if sockname and len(sockname) >= 2:
+            peername = transport.get_extra_info("peername")
+            if sockname and len(sockname) >= 2 and peername:
                 server_ip, server_port = sockname[0], sockname[1]
                 expected_ip, expected_port = ingress_site_params
                 # Request must match the ingress site's bind address and port
-                return bool(server_ip == expected_ip and server_port == expected_port)
+                return bool(
+                    server_ip == expected_ip
+                    and server_port == expected_port
+                    and peername[0] == HASSIO_SUPERVISOR_IP
+                )
     except Exception:  # noqa: S110
         pass
 
