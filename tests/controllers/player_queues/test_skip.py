@@ -216,6 +216,22 @@ async def test_failed_seek_does_not_carry_into_the_next_skip() -> None:
     assert ctrl._queue_data[QUEUE_ID].pending_skip_item_id is None
 
 
+async def test_cancelled_skip_does_not_carry_into_the_next_skip() -> None:
+    """A press cancelled while waiting for its turn must not add its offset to a later one."""
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
+        press = asyncio.create_task(ctrl.skip(QUEUE_ID, -30))
+        await asyncio.sleep(0.01)
+        press.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await press
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert positions == [110]
+
+
 async def test_skip_requires_an_item_with_a_duration() -> None:
     """Radio and not-yet-probed items have no range to skip within."""
     ctrl, _queue, seek = _controller(duration=None)

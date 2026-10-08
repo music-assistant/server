@@ -894,7 +894,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.pending_skip_seconds = 0
         queue_data.pending_skip_item_id = current_item.queue_item_id
         queue_data.pending_skip_seconds += seconds
-        await self._apply_pending_skip(queue_id)
+        try:
+            await self._apply_pending_skip(queue_id)
+        except asyncio.CancelledError:
+            # a press cancelled while waiting takes back its offset, unless it was already applied
+            if queue_data.pending_skip_item_id == current_item.queue_item_id:
+                queue_data.pending_skip_seconds -= seconds
+            raise
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
     async def seek(self, queue_id: str, position: int = 10) -> None:
