@@ -408,6 +408,7 @@ def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) ->
     assert sum(counts.values()) == 1
 
 
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
 async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> None:
     """A command that does not finish in time is killed with everything it started."""
     pid_file = tmp_path / "child.pid"
@@ -419,9 +420,17 @@ async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> Non
 
     child_pid = int(pid_file.read_text())
     for _ in range(50):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
+        if not _is_running(child_pid):
             return
         await asyncio.sleep(0.05)
     pytest.fail("the child process outlived the timeout")
+
+
+def _is_running(pid: int) -> bool:
+    """Return whether a process runs; a killed one nobody reaped yet (a zombie) does not."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    # the state follows the command name, which is wrapped in parentheses
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
