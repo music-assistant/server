@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import subprocess
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mutagen
 import pytest
@@ -13,15 +13,18 @@ from mutagen.apev2 import APEv2
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
+from PIL import Image
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.tags import (
     _parse_apev2_tags,
     _parse_id3_tags,
     _parse_mp4_tags,
     _parse_vorbis_tags,
     clean_mbid,
+    get_embedded_image,
     parse_tags_mutagen,
     split_artists,
     write_replaygain_track_gain,
@@ -1267,3 +1270,75 @@ async def test_audiobook_without_a_series_tag_has_none() -> None:
     _tags = await tags.async_parse_tags(FILE_M4A)
 
     assert (_tags.series, _tags.series_part) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "input_file",
+    [
+        "concat:/etc/passwd|/etc/hosts",
+        "subfile,,start,0,end,4096,,:file:/etc/passwd",
+        "cache:file:/etc/passwd",
+        "rtsp://host/x",
+        "file:///etc/passwd",
+        "https://host/cover.jpg\r\nX-Injected: 1\r\n",
+    ],
+)
+async def test_get_embedded_image_refuses_non_file_input(input_file: str) -> None:
+    """Anything other than an existing local file or a clean http(s) URL never reaches ffmpeg."""
+    with patch("music_assistant.helpers.tags.AsyncProcess") as mock_process:
+        assert await get_embedded_image(input_file) is None
+    mock_process.assert_not_called()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Embedded art is still extracted from a local file, with ffmpeg's protocols restricted."""
+    track_path = str(tmp_path / "track.mp3")
+    _create_mp3_with_cover(tmp_path, track_path)
+
+    with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
+        img_data = await get_embedded_image(track_path)
+
+    assert img_data
+    assert img_data.startswith(b"\xff\xd8")
+    args = spy.call_args.args[0]
+    assert args.index("-protocol_whitelist") < args.index("-i")
+    assert args[args.index("-i") + 1] == track_path
+
+
+def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
+    """Create a short mp3 file with a generated cover image embedded."""
+    cover_path = str(tmp_path / "cover.png")
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(cover_path, "PNG")
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-t",
+            "0.1",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-i",
+            cover_path,
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "libmp3lame",
+            "-c:v",
+            "mjpeg",
+            "-id3v2_version",
+            "3",
+            track_path,
+        ],
+        check=True,
+        capture_output=True,
+    )

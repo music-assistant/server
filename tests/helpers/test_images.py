@@ -11,7 +11,7 @@ from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientSession, web
@@ -299,6 +299,46 @@ async def test_player_provider_can_resolve_image_bytes(
 
     assert data == b"player-image-bytes"
     fake_provider.resolve_image.assert_awaited_once_with("player/artwork")
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "concat:/etc/passwd|/etc/hosts",
+        "cache:concat:subfile,,start,0,end,4096,,:file:/proc/self/environ|http://x/y",
+    ],
+)
+async def test_provider_resolved_ffmpeg_locator_never_reaches_ffmpeg(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    locator: str,
+) -> None:
+    """An ffmpeg protocol locator reported as artwork is refused without spawning ffmpeg."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=locator)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    with (
+        patch("music_assistant.helpers.tags.AsyncProcess") as mock_process,
+        pytest.raises(FileNotFoundError),
+    ):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
+    mock_process.assert_not_called()
+
+
+async def test_image_url_with_control_chars_is_not_fetched(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image URL carrying CR/LF is refused before any HTTP request is made."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    fetch_remote = AsyncMock(return_value=b"never")
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
+
+    with pytest.raises(FileNotFoundError, match="Invalid image URL"):
+        await get_image_data(mass_minimal, "http://host/a.jpg\r\nX-Injected: 1\r\n", "x")
+    fetch_remote.assert_not_called()
 
 
 async def test_local_file_read_cached_on_disk(

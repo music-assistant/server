@@ -25,7 +25,7 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import has_control_chars, is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
 
@@ -470,6 +470,9 @@ async def _fetch_source_image(
         raise ProviderUnavailableError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
+        if has_control_chars(path_or_url):
+            msg = f"Invalid image URL: {path_or_url!r}"
+            raise FileNotFoundError(msg)
         # handle imageproxy URLs pointing to our own server
         if resolved := await _resolve_own_imageproxy_url(mass, path_or_url):
             extracted_provider, extracted_path = resolved

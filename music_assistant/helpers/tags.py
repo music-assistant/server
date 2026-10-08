@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
@@ -1654,12 +1655,18 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     """
     Return embedded image data.
 
-    Input_file may be a (local) filename or URL accessible by ffmpeg.
+    Input_file may be an existing local file or an http(s) URL; any other input
+    (such as an ffmpeg protocol locator) yields None.
     """
+    if has_control_chars(input_file):
+        return None
+    is_url = input_file.startswith(("http://", "https://"))
+    if not is_url and not await asyncio.to_thread(os.path.isfile, input_file):
+        return None
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
     # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
-    if not input_file.startswith(("http://", "https://")) and Path(input_file).is_file():
+    if not is_url:
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):
@@ -1672,6 +1679,9 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         "-hide_banner",
         "-loglevel",
         "error",
+        # applies to the input it precedes; pipe is needed for the stdout output
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,pipe",
         "-i",
         input_file,
         "-an",
