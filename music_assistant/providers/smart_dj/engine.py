@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 import numpy as np
@@ -136,14 +137,28 @@ def _norm_delta(a: Any, b: Any, scale: float) -> float:
     return max(0.0, 1.0 - abs(float(a) - float(b)) / max(scale, 0.001))
 
 
+def _coerce_embedding(value: Any) -> list[float] | None:
+    """Normalise an embedding that may arrive as a list, tuple or JSON string."""
+    if isinstance(value, (list, tuple)):
+        return list(value) if value else None
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(parsed, list) and parsed:
+            return parsed
+    return None
+
+
 def clap_similarity(a: Any, b: Any) -> float:
     """Cosine similarity of two CLAP embeddings, normalised to 0.0-1.0."""
-    if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
+    emb_a = _coerce_embedding(a)
+    emb_b = _coerce_embedding(b)
+    if emb_a is None or emb_b is None or len(emb_a) != len(emb_b):
         return 0.5
-    if not a or not b or len(a) != len(b):
-        return 0.5
-    vec_a = np.asarray(a, dtype=np.float32)
-    vec_b = np.asarray(b, dtype=np.float32)
+    vec_a = np.asarray(emb_a, dtype=np.float32)
+    vec_b = np.asarray(emb_b, dtype=np.float32)
     norm_a = float(np.linalg.norm(vec_a))
     norm_b = float(np.linalg.norm(vec_b))
     if norm_a == 0.0 or norm_b == 0.0:
@@ -351,7 +366,9 @@ def _signal_values(
             effective *= 0.5 + controls.transition_aggressiveness
         total += value * effective
         total_weight += effective
-        if value >= 0.85:
+        if name == "clap":
+            reasons.append("sonic similarity strong" if value >= 0.60 else "sonic similarity weak")
+        elif value >= 0.85:
             reasons.append(f"{name.replace('_', ' ')} strong")
     if controls.instrumental == "prefer":
         if candidate.get("instrumental") is True:
@@ -595,6 +612,11 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
                 "bpm_change": bpm_change,
                 "energy_delta": energy_delta,
                 "key_affinity": key_affinity,
+                "clap_similarity": (
+                    clap_similarity(previous.get("clap_embedding"), analysis.get("clap_embedding"))
+                    if isinstance(previous, dict) and isinstance(analysis, dict)
+                    else None
+                ),
                 "transition_bars": controls.transition_bars,
             }
         )
