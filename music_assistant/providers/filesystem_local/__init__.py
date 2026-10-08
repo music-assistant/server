@@ -3934,7 +3934,7 @@ class LocalFileSystemProvider(MusicProvider):
                 # for writing or truncated, whatever else links to it
                 temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                temp_fd = os.open(temp_name, flags, 0o644, dir_fd=dir_fd)
+                temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
                 try:
                     with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
                         if old_fd >= 0:
@@ -3963,8 +3963,10 @@ def _copy_file_security(src_fd: int, dst_fd: int) -> None:
     with contextlib.suppress(PermissionError):
         os.fchown(dst_fd, src_stat.st_uid, src_stat.st_gid)
     os.fchmod(dst_fd, stat.S_IMODE(src_stat.st_mode))
-    # POSIX ACLs and other security metadata live in extended attributes on Linux
+    # POSIX ACLs and other security metadata live in extended attributes on Linux; not
+    # every filesystem supports them, which must not stop the write
     if hasattr(os, "listxattr"):
-        for attr in os.listxattr(src_fd):
-            with contextlib.suppress(OSError):
-                os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))
+        with contextlib.suppress(OSError):
+            for attr in os.listxattr(src_fd):
+                with contextlib.suppress(OSError):
+                    os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))
