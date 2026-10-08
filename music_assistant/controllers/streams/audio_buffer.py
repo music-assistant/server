@@ -870,8 +870,9 @@ def _new_buffer(
         ):
             # the first boundary comes before the player could build up a lead of its
             # own, so hand it one. A preload at a boundary never banks: with the
-            # source's slot only freed by the item that just ended, it would just
-            # widen the gap the player has to bridge there.
+            # source's slot only freed by the item that just ended, it would just take
+            # more of the tail from the fade, or widen the gap the player has to bridge
+            # where there is no fade.
             ready_threshold = max(ready_threshold, REALTIME_COLD_START_BANK)
     elif crossfade_enabled:
         ready_threshold = 8
