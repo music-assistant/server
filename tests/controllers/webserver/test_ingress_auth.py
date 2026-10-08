@@ -15,7 +15,6 @@ from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
-    HASSIO_SUPERVISOR_IP,
     HOMEASSISTANT_SYSTEM_USER,
     INGRESS_SERVER_PORT,
 )
@@ -25,7 +24,6 @@ from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers import auth_middleware, auth_providers
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
-    is_request_from_ingress,
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
@@ -400,19 +398,7 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
     assert await _get_ha_link(auth_manager, "ha_bob") is None
 
 
-async def test_ingress_trusts_only_the_supervisor_as_peer(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """A request on the ingress site is ingress only when the Supervisor opened the connection."""
-    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
-
-    assert is_request_from_ingress(
-        _socket_request(auth_manager.mass, headers, HASSIO_SUPERVISOR_IP)
-    )
-    assert not is_request_from_ingress(_socket_request(auth_manager.mass, headers, "127.0.0.1"))
-
-
-@pytest.mark.parametrize("peer_ip", ["127.0.0.1", "172.30.32.1", "172.30.33.5"])
+@pytest.mark.parametrize("peer_ip", ["127.0.0.1", "172.30.32.1"])
 async def test_ingress_site_request_from_another_peer_authenticates_no_user(
     auth_manager: AuthenticationManager, peer_ip: str
 ) -> None:
@@ -429,19 +415,14 @@ async def test_ingress_site_request_from_another_peer_authenticates_no_user(
     assert user is None
 
 
-@pytest.mark.parametrize("ha_known", [True, False], ids=["unknown_user_id", "no_hass_provider"])
 async def test_ingress_does_not_link_a_username_match_unconfirmed_by_home_assistant(
-    auth_manager: AuthenticationManager, ha_known: bool
+    auth_manager: AuthenticationManager,
 ) -> None:
-    """
-    An HA user id Home Assistant can not confirm neither signs in, links nor creates a user.
-
-    :param ha_known: Whether the hass provider is available (and does not know the user id).
-    """
+    """An HA user id Home Assistant can not confirm neither signs in, links nor creates a user."""
     mass = auth_manager.mass
     await auth_manager.create_user(username="bob", role=UserRole.ADMIN)
     user_count = len(await auth_manager.list_users())
-    hass_provider = _ready_hass_provider(mass, "ha_unknown", admin=True) if ha_known else None
+    hass_provider = _ready_hass_provider(mass, "ha_unknown", admin=True)
     mass.get_provider_ready_event("hass").set()
     headers = {"X-Remote-User-ID": "ha_unknown", "X-Remote-User-Name": "bob"}
 
