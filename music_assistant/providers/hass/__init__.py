@@ -706,6 +706,12 @@ class HomeAssistantProvider(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
+        except Exception as err:
+            # any other error would end the listener without arming the reconnect below,
+            # leaving the provider loaded but permanently disconnected
+            self.logger.warning(
+                "Home Assistant listener stopped unexpectedly: %s", err, exc_info=err
+            )
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
