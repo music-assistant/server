@@ -191,9 +191,10 @@ class StorageController(CoreController):
         Probes the locations whose state is outdated first, which takes at most about 10 seconds.
         """
         manages_all_sources = _caller_manages_all_sources()
+        measuring: asyncio.Task[None] | None = None
         if manages_all_sources:
             # the used space is only shown on the data and cache rows these callers see
-            self._request_dir_sizes()
+            measuring = self._request_dir_sizes()
             # a share may have been changed in Home Assistant since it was last looked at
             await self._refresh_share_states()
         # a drive or share mounted since the last refresh shows up right away
@@ -202,6 +203,9 @@ class StorageController(CoreController):
         # only a caller that can add a share makes the server look for a mount backend again
         mounter = await self._get_mounter() if manages_all_sources else self._find_mounter()
         share_versions = mounter.supported_versions if mounter is not None else {}
+        if measuring is not None and not self._dir_sizes:
+            # the Storage page asks once, so its first answer waits for the first measurement
+            await measuring
         locations = self.get_locations(manages_all_sources)
         if not manages_all_sources:
             # a folder picker needs no connection details, nor the sources that use a location
@@ -945,15 +949,19 @@ class StorageController(CoreController):
             state.answered_at is not None or state.overdue
         )
 
-    def _request_dir_sizes(self) -> None:
-        """Measure the data and cache directories when the last measurement is outdated."""
+    def _request_dir_sizes(self) -> asyncio.Task[None] | None:
+        """
+        Measure the data and cache directories when the last measurement is outdated.
+
+        Returns the started measurement, or None when the last one is recent enough.
+        """
         now = time.monotonic()
         if self._dir_sizes_requested is not None and (
             now - self._dir_sizes_requested < DIR_SIZE_MAX_AGE
         ):
-            return
+            return None
         self._dir_sizes_requested = now
-        self.mass.create_task(self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID)
+        return self.mass.create_task(self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID)
 
     async def _update_dir_sizes(self) -> None:
         """Measure the data and cache directories and show the result on their rows."""

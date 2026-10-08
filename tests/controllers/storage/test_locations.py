@@ -140,10 +140,26 @@ async def test_info_measures_directories_for_admins_only(
     """Only a caller that sees the data and cache rows makes the server measure them."""
     set_current_user(User(user_id="someone", username="someone", role=role))
 
-    with patch.object(storage, "_request_dir_sizes") as request_dir_sizes:
+    with patch.object(storage, "_request_dir_sizes", return_value=None) as request_dir_sizes:
         await storage.get_info()
 
     assert request_dir_sizes.called is measures
+
+
+@pytest.mark.usefixtures("mount_table", "probes")
+async def test_first_info_waits_for_the_directory_sizes(storage: StorageController) -> None:
+    """The first answer to an admin already holds the measured sizes."""
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+
+    async def slow_size(_path: str, _exclude: tuple[str, ...] = ()) -> float:
+        await asyncio.sleep(0.1)
+        return 1.5
+
+    with patch.object(controller_module, "get_folder_size", slow_size):
+        info = await storage.get_info()
+
+    data = next(loc for loc in info.locations if loc.usage == StorageUsage.DATA)
+    assert data.used_space_gb == 1.5
 
 
 @pytest.mark.usefixtures("mount_table")
