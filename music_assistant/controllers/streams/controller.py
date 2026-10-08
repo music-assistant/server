@@ -845,6 +845,10 @@ class StreamsController(CoreController):
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
+            if resume_position := self._get_rerequest_resume_position(
+                player, queue, queue_item, request
+            ):
+                queue_item.streamdetails.seek_position = resume_position
 
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
@@ -2323,6 +2327,48 @@ class StreamsController(CoreController):
             queue_item.name,
         )
         raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
+
+    def _get_rerequest_resume_position(
+        self, player: Player, queue: PlayerQueue, queue_item: QueueItem, request: web.Request
+    ) -> int | None:
+        """Return the live position to resume at when a player re-requests the item it plays."""
+        streamdetails = queue_item.streamdetails
+        if (
+            request.method != "GET"
+            or not streamdetails
+            or not streamdetails.duration
+            or queue_item.media_type == MediaType.AUDIO_SOURCE
+            or not queue.current_item
+            or queue.current_item.queue_item_id != queue_item.queue_item_id
+        ):
+            return None
+        session_id = request.match_info["session_id"]
+        player_id = request.match_info["player_id"]
+        # some players (WiiM) reopen the stream they are playing, e.g. when a follower joins
+        if not any(
+            open_session_id == session_id
+            and open_request is not request
+            and open_request.method == "GET"
+            and cast("web.Request", open_request).match_info.get("queue_item_id")
+            == queue_item.queue_item_id
+            and cast("web.Request", open_request).match_info.get("player_id") == player_id
+            for open_session_id, open_request in self._open_item_streams.get(queue.queue_id, [])
+        ):
+            return None
+        # repeat one enqueues this same url, and its prefetch arrives while this stream is open
+        next_item = self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id)
+        if next_item and next_item.queue_item_id == queue_item.queue_item_id:
+            return None
+        if (resume_position := int(queue.corrected_elapsed_time)) <= streamdetails.seek_position:
+            return None
+        self.logger.debug(
+            "Player %s re-requested %s while streaming it: resuming at %ss instead of %ss",
+            player.display_name,
+            queue_item.name,
+            resume_position,
+            streamdetails.seek_position,
+        )
+        return resume_position
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
