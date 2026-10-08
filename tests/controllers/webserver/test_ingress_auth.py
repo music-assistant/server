@@ -111,7 +111,9 @@ def _ingress_request(
     request = make_mocked_request("GET", "/", headers=headers, app=app)
     with (
         patch.object(auth_middleware, "is_request_from_ingress", return_value=from_ingress),
+        patch.object(auth_middleware, "is_request_from_ingress_proxy", return_value=from_ingress),
         patch.object(websocket_client, "is_request_from_ingress", return_value=from_ingress),
+        patch.object(websocket_client, "is_request_from_ingress_proxy", return_value=from_ingress),
         patch.object(mass, "get_provider", return_value=hass_provider),
     ):
         yield request
@@ -397,6 +399,19 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
 
     assert user is None
     assert await _get_ha_link(auth_manager, "ha_bob") is None
+
+
+async def test_system_user_token_is_accepted_on_the_ingress_site_from_the_host(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """The HA integration connects from the host with the system user token, not headers."""
+    token = await auth_manager.get_homeassistant_system_user_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    user = await get_authenticated_user(_socket_request(auth_manager.mass, headers, "172.30.32.1"))
+
+    assert user is not None
+    assert user.username == HOMEASSISTANT_SYSTEM_USER
 
 
 async def test_ingress_site_request_from_the_supervisor_authenticates_the_linked_user(

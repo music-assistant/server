@@ -121,7 +121,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     mass: MusicAssistant = request.app["mass"]
 
     # Check for Home Assistant Ingress connections
-    if is_request_from_ingress(request):
+    if is_request_from_ingress_proxy(request):
         user = await resolve_ingress_user(mass, request.headers)
         # Store in request context
         request[USER_CONTEXT_KEY] = user
@@ -501,12 +501,27 @@ def set_current_peer_address(peer_address: str | None) -> None:
     current_peer_address.set(peer_address)
 
 
+def is_request_from_ingress_proxy(request: web.Request) -> bool:
+    """
+    Check if request was relayed by the Home Assistant Ingress proxy.
+
+    Only such a request may carry trusted X-Remote-User headers: it must arrive on the
+    internal ingress TCP site from the Supervisor's address.
+
+    :param request: The aiohttp request.
+    """
+    if not is_request_from_ingress(request):
+        return False
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    return bool(peername and peername[0] == HASSIO_SUPERVISOR_IP)
+
+
 def is_request_from_ingress(request: web.Request) -> bool:
     """
-    Check if request is coming from Home Assistant Ingress (internal network).
+    Check if request arrived on the internal ingress TCP site (172.30.32.x:8094).
 
-    Trust comes from the socket pair, not from headers: the request must arrive on the
-    internal ingress TCP site (172.30.32.x:8094) from the HA Supervisor's address.
+    The site is only reachable from the host network, which is where the Home Assistant
+    integration connects with the system user token.
 
     :param request: The aiohttp request.
     """
@@ -522,16 +537,11 @@ def is_request_from_ingress(request: web.Request) -> bool:
         transport = request.transport
         if transport:
             sockname = transport.get_extra_info("sockname")
-            peername = transport.get_extra_info("peername")
-            if sockname and len(sockname) >= 2 and peername:
+            if sockname and len(sockname) >= 2:
                 server_ip, server_port = sockname[0], sockname[1]
                 expected_ip, expected_port = ingress_site_params
                 # Request must match the ingress site's bind address and port
-                return bool(
-                    server_ip == expected_ip
-                    and server_port == expected_port
-                    and peername[0] == HASSIO_SUPERVISOR_IP
-                )
+                return bool(server_ip == expected_ip and server_port == expected_port)
     except Exception:  # noqa: S110
         pass
 
