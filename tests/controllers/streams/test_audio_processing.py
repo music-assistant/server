@@ -1280,15 +1280,12 @@ async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
     """A flow request for a session whose stream already ended gets a 404 instead of audio."""
     controller, request, _ = _native_stream_handler_context(monkeypatch)
     controller.mass.player_queues.flow_stream_finished.return_value = True
-    controller.mass.player_queues.queue_data.return_value.flow_mode_stream_log = [
-        PlayLogEntry("item-1")
-    ]
 
     with pytest.raises(web.HTTPNotFound):
         await controller.serve_queue_flow_stream(request)
 
     controller.mass.player_queues.flow_stream_finished.assert_called_once_with("queue-1")
-    controller.audio.get_queue_flow_stream.assert_not_called()
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
 
 
 def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
