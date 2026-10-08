@@ -18,13 +18,19 @@ covered.
 from __future__ import annotations
 
 import json
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
 from mcp.shared.exceptions import McpError
+from music_assistant_models.access import PlaylistAccess
+from music_assistant_models.auth import UserRole
+from music_assistant_models.enums import ProviderSharing
 
+from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.controllers.webserver.helpers import auth_middleware
 from music_assistant.providers.fastmcp_server.resource_helpers import (
     to_brief_player,
     to_brief_queue,
@@ -290,3 +296,41 @@ async def test_queue_resource_returns_null_for_missing(mock_mass: MagicMock) -> 
     # ``items`` must not be queried when the queue itself is None — otherwise
     # the handler is doing wasted work and racing against a deleted queue.
     mock_mass.player_queues.items.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("access", "visible"),
+    [
+        (PlaylistAccess(owner="member-1"), True),
+        (PlaylistAccess(owner="member-2"), False),
+        (PlaylistAccess(owner="member-2", sharing=ProviderSharing.MEMBERS), True),
+        (PlaylistAccess(owner="member-2", sharing=ProviderSharing.SELECTED), False),
+        (None, True),
+    ],
+)
+async def test_playlist_resource_hides_playlists_the_member_may_not_see(
+    mock_mass: MagicMock, access: PlaylistAccess | None, visible: bool
+) -> None:
+    """A personal playlist reads as ``"null"`` for a member it is not shared with."""
+    playlist = SimpleNamespace(
+        uri="library://playlist/17",
+        access=access,
+        to_dict=lambda: {"uri": "library://playlist/17", "name": "Private"},
+    )
+    mock_mass.music.playlists.get_library_item.return_value = playlist
+    mock_mass.music.playlists.visible_to_caller = partial(
+        PlaylistController.visible_to_caller, mock_mass.music.playlists
+    )
+    member = SimpleNamespace(user_id="member-1", role=UserRole.USER)
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_library_resources(mcp, mock_mass)
+    context_token = auth_middleware.current_user.set(member)
+    try:
+        async with Client(mcp) as client:
+            contents = await client.read_resource("library://playlist/17")
+    finally:
+        auth_middleware.current_user.reset(context_token)
+
+    text_blocks = [c.text for c in contents if hasattr(c, "text")]
+    assert (text_blocks != ["null"]) is visible
