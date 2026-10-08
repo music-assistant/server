@@ -4,7 +4,6 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientError
 from music_assistant_models.errors import RetriesExhausted
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
@@ -15,6 +14,8 @@ from music_assistant.providers.coverartarchive import (
 from tests.common import use_real_create_task
 
 COVER_URL = "https://coverartarchive.org/release-group/mbid/front-1200"
+IMAGE_URL = "https://archive.org/download/mbid-release/mbid-release-1_thumb1200.jpg"
+SMALL_IMAGE_URL = "https://archive.org/download/mbid-release/mbid-release-1_thumb500.jpg"
 
 
 @pytest.fixture
@@ -44,16 +45,32 @@ def _response_cm(response: MagicMock) -> MagicMock:
     return cm
 
 
-def _answer(provider: CoverArtArchiveMetadataProvider, status: int) -> MagicMock:
-    """Have every HEAD request to the archive answered with the status, return the HEAD mock."""
+def _response(status: int, location: str | None = None) -> MagicMock:
+    """Build a fake archive response with the status and, optionally, a Location header."""
     response = MagicMock()
     response.status = status
     response.url = COVER_URL
-    if status >= 400:
-        response.raise_for_status = MagicMock(side_effect=ClientError(f"status {status}"))
-    head = MagicMock(return_value=_response_cm(response))
+    response.headers = {"Location": location} if location else {}
+    return response
+
+
+def _answer(
+    provider: CoverArtArchiveMetadataProvider, status: int, location: str | None = None
+) -> MagicMock:
+    """Have every HEAD request to the archive answered with the status, return the HEAD mock."""
+    head = MagicMock(return_value=_response_cm(_response(status, location)))
     provider.mass.http_session.head = head  # type: ignore[method-assign]
     return head
+
+
+async def test_release_group_cover_url_is_the_redirect_location(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A redirect means the cover exists: its location is returned without following it."""
+    head = _answer(provider, 307, IMAGE_URL)
+
+    assert await provider.get_release_group_cover_url("mbid") == IMAGE_URL
+    head.assert_called_once_with(COVER_URL, allow_redirects=False)
 
 
 async def test_release_group_cover_url_is_the_resolved_url_on_success(
@@ -87,6 +104,45 @@ async def test_release_group_cover_url_retries_a_transient_error(
     cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
 
 
+async def test_release_group_cover_url_retries_a_timeout(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A request that times out is retried and then surfaces, never cached as 'no cover art'."""
+    head = MagicMock(side_effect=TimeoutError)
+    provider.mass.http_session.head = head  # type: ignore[method-assign]
+
+    with pytest.raises(RetriesExhausted):
+        await provider.get_release_group_cover_url("mbid")
+
+    assert head.call_count == provider.throttler.retry_attempts
+    cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
+
+
+async def test_release_group_cover_url_retries_a_redirect_without_location(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A redirect that names no location says nothing about the cover, so it is transient."""
+    _answer(provider, 307)
+
+    with pytest.raises(RetriesExhausted):
+        await provider.get_release_group_cover_url("mbid")
+
+    cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
+
+
+async def test_release_group_cover_url_falls_back_to_the_small_cover(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """Without a large cover, the small cover's redirect location is returned."""
+    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda url, **_kwargs: _response_cm(
+            _response(404) if url.endswith("front-1200") else _response(307, SMALL_IMAGE_URL)
+        )
+    )
+
+    assert await provider.get_release_group_cover_url("mbid") == SMALL_IMAGE_URL
+
+
 async def test_release_group_cover_url_takes_a_slot_of_the_shared_throttler(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
@@ -105,14 +161,9 @@ async def test_release_group_cover_url_fallback_takes_a_slot_per_request(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """Falling back from the large to the small cover is two archive requests, two slots."""
-    missing = MagicMock()
-    missing.status = 404
-    found = MagicMock()
-    found.status = 200
-    found.url = COVER_URL
     provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
         side_effect=lambda url, **_kwargs: _response_cm(
-            missing if url.endswith("front-1200") else found
+            _response(404) if url.endswith("front-1200") else _response(200)
         )
     )
 
@@ -126,10 +177,10 @@ async def test_resolve_image_is_the_release_groups_cover_url(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """The image of a release group, given by its id, resolves to the archive's cover URL."""
-    head = _answer(provider, 200)
+    head = _answer(provider, 307, IMAGE_URL)
 
-    assert await provider.resolve_image("mbid") == COVER_URL
-    head.assert_called_once_with(COVER_URL, allow_redirects=True)
+    assert await provider.resolve_image("mbid") == IMAGE_URL
+    head.assert_called_once_with(COVER_URL, allow_redirects=False)
 
 
 async def test_resolve_image_is_none_without_a_cover(

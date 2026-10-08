@@ -25,6 +25,7 @@ SUPPORTED_FEATURES = {
 }
 
 CAA_BASE_URL = "https://coverartarchive.org"
+REDIRECT_STATUSES = (301, 302, 307, 308)
 
 
 async def setup(
@@ -99,7 +100,9 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         :param release_group_id: MusicBrainz release group ID.
         :raises RetriesExhausted: The archive could not be asked, even after retrying.
         """
-        # Try 1200px first, fall back to 500px; each request takes its own throttler slot
+        # Try 1200px first, fall back to 500px; each request takes its own throttler slot.
+        # The archive redirects to a thumbnail of the front cover without checking the file
+        # on archive.org exists, so the 1200px redirect is trusted as the cover.
         for size in ("front-1200", "front-500"):
             if url := await self._head_cover(
                 f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
@@ -112,13 +115,23 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
     async def _head_cover(self, url: str) -> str | None:
         """Return the URL one cover request resolves to, or None when the archive has no such cover."""
         try:
-            async with self.mass.http_session.head(url, allow_redirects=True) as response:
+            # the archive answers with a redirect to the image file on archive.org, which is
+            # often slow or down; the redirect alone tells the cover exists, so don't follow it
+            async with self.mass.http_session.head(url, allow_redirects=False) as response:
+                if response.status in REDIRECT_STATUSES and (
+                    location := response.headers.get("Location")
+                ):
+                    return location
                 if response.status == 200:
                     return str(response.url)
-                if response.status != 404:
-                    response.raise_for_status()
+                if response.status == 404:
+                    return None
         except (aiohttp.ClientError, TimeoutError) as err:
-            # a non-404 status (5xx, 429, ...) or network failure is transient — surface it as
-            # ResourceTemporarilyUnavailable so it is retried instead of cached as "no cover art"
+            # a network failure is transient — surface it as ResourceTemporarilyUnavailable
+            # so it is retried instead of cached as "no cover art"
             raise ResourceTemporarilyUnavailable("Cover Art Archive request failed") from err
-        return None
+        # any other status (5xx, 429, a redirect without a location, ...) is no answer
+        # about the cover either, so it is just as transient
+        raise ResourceTemporarilyUnavailable(
+            f"Cover Art Archive request failed with status {response.status}"
+        )
