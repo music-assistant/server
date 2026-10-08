@@ -1317,6 +1317,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # determine if this queue is currently active for this player
         queue.active = player.state.active_source in (queue.queue_id, None)
+        if queue.active and (abandoned := self._abandoned_queue_played_by(player)):
+            # the player renders another player's queue that its owner left behind (a group
+            # change made on the device): that queue moves here, and reconciling this one
+            # against the player meanwhile would show it playing what is not its own
+            self.mass.create_task(
+                self._follow_leader_change(queue_id, abandoned),
+                task_id=f"follow_leader_change_{queue_id}",
+            )
+            return
         if not queue.active and self._queue_data[queue_id].prev_state is None:
             queue.state = PlaybackState.IDLE
             # return early if the queue is not active and we have no previous state

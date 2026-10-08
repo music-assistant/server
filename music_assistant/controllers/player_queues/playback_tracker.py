@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     ProviderType,
 )
@@ -37,6 +38,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.constants import (
+    ATTR_PLAY_ACTION_IN_PROGRESS,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
@@ -53,6 +55,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.compare import compare_item_ids
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
@@ -92,6 +95,64 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # player with a delay and can still read idle on the first playing update
             return reported == queue_id
         return queue_data.queue.state == PlaybackState.PLAYING
+
+    def _abandoned_queue_played_by(self, player: Player) -> str | None:
+        """
+        Return the queue of another player that this player renders while its owner does not.
+
+        A device that regroups on its own (a Sonos coordinator leaving its group in the Sonos
+        app) can leave a member playing the departed leader's queue: the member then reports
+        that queue's stream while its own queue is the active one.
+
+        :param player: The player whose reported media is checked.
+        """
+        if player.state.playback_state != PlaybackState.PLAYING:
+            return None
+        if player.state.synced_to or player.state.active_group:
+            # a member renders its leader's queue by design
+            return None
+        if player.state.type not in PLAYBACK_TARGET_TYPES:
+            # transfer_queue refuses a target that cannot render audio; checked here so
+            # the refusal is not retried on every update
+            return None
+        reported = self._reported_queue_id(player)
+        if reported is None or reported == player.player_id:
+            return None
+        queue_data = self._queue_data[reported]
+        if not queue_data.items or queue_data.queue.state != PlaybackState.IDLE:
+            return None
+        if queue_data.transitioning or queue_data.queue.extra_attributes.get(
+            ATTR_PLAY_ACTION_IN_PROGRESS
+        ):
+            # a transfer Music Assistant started itself is under way: it stops the source
+            # under the play lock and empties it right after
+            return None
+        owner = self.mass.players.get_player(reported)
+        if owner is None or owner.state.type == PlayerType.GROUP:
+            # a group player's queue re-forms around another member by itself
+            return None
+        return reported
+
+    async def _follow_leader_change(self, queue_id: str, abandoned_queue_id: str) -> None:
+        """
+        Move a queue its owner stopped rendering to the player that plays it now.
+
+        :param queue_id: The queue (player) that reports playing the abandoned queue.
+        :param abandoned_queue_id: The queue its owner no longer renders.
+        """
+        player = self.mass.players.get_player(queue_id)
+        if player is None or self._abandoned_queue_played_by(player) != abandoned_queue_id:
+            return  # settled by itself in the meantime
+        self.logger.info(
+            "Player %s plays queue %s after a group change made outside Music Assistant, "
+            "moving the queue to it",
+            player.display_name,
+            self._queue_data[abandoned_queue_id].queue.display_name,
+        )
+        # the transfer resumes where the queue was, under this player's own stream session:
+        # the device carries on with a copy of the old leader's queue that this server can
+        # no longer update, and it skips to the next item when it cannot resume mid-track
+        await self.transfer_queue(abandoned_queue_id, queue_id, auto_play=True)
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
