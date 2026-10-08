@@ -1788,8 +1788,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if player is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
+        before = self._queue_index(player_id)
         with player.suppress_ws_notify():
             await self.provider.mass.players.cmd_previous_track(player_id)
+        if not self._queue_advanced(player_id, before):
+            return _msx_execute_ok()
         return _msx_execute_ok(self._queue_playlist_action(request, player_id))
 
     # --- Helpers ---

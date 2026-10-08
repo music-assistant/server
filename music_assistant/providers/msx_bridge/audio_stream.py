@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from aiohttp import web
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.controllers.streams.constants import output_pacing_args
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 from .constants import PRE_BUFFER_BYTES
@@ -30,8 +30,6 @@ if TYPE_CHECKING:
     from .provider import MSXBridgeProvider
 
 logger = logging.getLogger(__name__)
-
-READRATE_ARGS = output_pacing_args("gapless_burst")
 
 
 class AudioPipeline:
@@ -143,6 +141,7 @@ class AudioPipeline:
                 pcm_format,
                 out_format,
                 output_plan.filter_params,
+                self._get_pacing_profile(media),
             )
         )
         transport = getattr(request, "transport", None)
@@ -159,6 +158,7 @@ class AudioPipeline:
         pcm_format: AudioFormat,
         out_format: AudioFormat,
         filter_params: Sequence[str | ComplexFilter],
+        pacing_profile: PacingProfile,
     ) -> None:
         """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
         player_id = player.player_id
@@ -172,7 +172,7 @@ class AudioPipeline:
                     input_format=pcm_format,
                     output_format=out_format,
                     filter_params=filter_params,
-                    extra_input_args=READRATE_ARGS,
+                    extra_input_args=output_pacing_args(pacing_profile),
                 ):
                     await chunk_queue.put(chunk)
             finally:
@@ -268,6 +268,18 @@ class AudioPipeline:
         if not self.active_stream_tasks[player_id]:
             del self.active_stream_tasks[player_id]
             del self.active_stream_transports[player_id]
+
+    def _get_pacing_profile(self, media: PlayerMedia) -> PacingProfile:
+        """Return the pacing profile for the audio delivered to the TV."""
+        if media.media_type == MediaType.AUDIO_SOURCE:
+            return PacingProfile.LOW_LATENCY
+        if media.media_type in (MediaType.RADIO, MediaType.FLOW_STREAM):
+            return PacingProfile.NEAR_REALTIME
+        if media.source_id and media.queue_item_id:
+            item = self.provider.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if item and item.streamdetails and item.streamdetails.is_realtime:
+                return PacingProfile.NEAR_REALTIME
+        return PacingProfile.DEFAULT
 
 
 def _signal_eof(queue: asyncio.Queue[bytes | None], *, replace: bool = False) -> None:
