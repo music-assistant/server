@@ -1,1 +1,1 @@
-"""Tests for the Smart DJ provider."""
+"""Tests for Smart DJ provider."""
