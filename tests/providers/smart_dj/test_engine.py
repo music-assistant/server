@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -27,7 +28,7 @@ from music_assistant.providers.smart_dj.engine import (
 
 def _weight_total(weights: DJWeights) -> float:
     """Sum every weight field of a DJWeights instance."""
-    return sum(getattr(weights, name) for name in DJWeights.__dataclass_fields__)
+    return float(sum(getattr(weights, name) for name in DJWeights.__dataclass_fields__))
 
 
 def test_default_weights_sum_to_one() -> None:
@@ -110,7 +111,7 @@ def test_clap_similarity_is_scale_invariant() -> None:
 def test_clap_similarity_accepts_json_string() -> None:
     """A JSON-encoded embedding is decoded rather than silently ignored."""
     vector = [0.25, 0.5, 0.75]
-    assert clap_similarity(json.dumps(**{"obj": vector}), vector) == pytest.approx(1.0)
+    assert clap_similarity(json.dumps(vector), vector) == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -126,7 +127,7 @@ def test_clap_similarity_accepts_json_string() -> None:
         (b"bytes", [1.0]),
     ],
 )
-def test_clap_similarity_unusable_input_is_neutral(a, b) -> None:
+def test_clap_similarity_unusable_input_is_neutral(a: Any, b: Any) -> None:
     """Every unusable shape returns the neutral score instead of raising."""
     assert clap_similarity(a, b) == pytest.approx(0.5)
 
@@ -136,9 +137,9 @@ def test_clap_similarity_unusable_input_is_neutral(a, b) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _track(**overrides):
+def _track(**overrides: Any) -> dict[str, Any]:
     """Build a complete analysis dict with sensible defaults."""
-    track = {
+    track: dict[str, Any] = {
         "bpm": 120.0,
         "camelot": "8A",
         "energy": 0.5,
@@ -151,9 +152,9 @@ def _track(**overrides):
     return track
 
 
-def _soft_controls(**overrides) -> DJControls:
+def _soft_controls(**overrides: SignalControl) -> DJControls:
     """Build controls with every signal disabled, then apply the given overrides."""
-    signals = {
+    signals: dict[str, SignalControl] = {
         name: SignalControl("disabled")
         for name in (
             "bpm",
