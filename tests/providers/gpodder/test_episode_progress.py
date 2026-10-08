@@ -176,34 +176,42 @@ async def test_sync_refreshes_several_feeds_at_once(provider: GPodder) -> None:
 
 
 @pytest.mark.parametrize("synced", [True, False])
-async def test_listing_shows_and_writes_what_is_new_since_the_sync(
+async def test_listing_shows_what_is_new_and_leaves_the_playlog_to_the_sync(
     provider: GPodder, synced: bool
 ) -> None:
-    """A synced feed fetches and writes only what is new, an unsynced one is read in full."""
+    """Opening a listing repeatedly credits a finished episode only once, by the sync."""
     _serve(provider)
+    _subscribe(provider, [FEED])
     if synced:
         provider.feeds = {FEED}
-
-    episodes = [x async for x in provider.get_podcast_episodes(FEED)]
-
-    assert [_progress(x) for x in episodes] == [
-        ("guid-1", False, 600_000),
-        ("guid-2", False, 0),
-        ("guid-3", None, None),
-    ]
+    finished = EpisodeActionPlay(
+        podcast=FEED, episode="https://example.com/ep1.mp3", position=1200, total=1200
+    )
     client = cast("Mock", provider._client)
-    client.get_episode_actions.assert_awaited_once_with(since=100 if synced else 0)
-    music = cast("Mock", provider.mass.music)
-    played = music.mark_item_played
-    assert [(c.args[0].item_id, c.kwargs["seconds_played"]) for c in played.call_args_list] == (
-        [(f"{FEED} guid-1", 600)] if synced else []
-    )
-    unplayed = music.mark_item_unplayed
-    assert [c.args[0].item_id for c in unplayed.call_args_list] == (
-        [f"{FEED} guid-2"] if synced else []
-    )
+    client.get_episode_actions = AsyncMock(return_value=([finished, *ACTIONS[:2]], 999))
+
+    for _ in range(2):
+        episodes = [x async for x in provider.get_podcast_episodes(FEED)]
+        assert [_progress(x) for x in episodes] == [
+            ("guid-1", True, 1_200_000),
+            ("guid-2", False, 0),
+            ("guid-3", None, None),
+        ]
+    assert [c.kwargs for c in client.get_episode_actions.call_args_list] == 2 * [
+        {"since": 100 if synced else 0}
+    ]
     # only the sync moves the timestamp, as only it writes every feed
     assert provider.timestamp_actions == 100
+    with patch(
+        "music_assistant.providers.gpodder.refresh_cached_podcast",
+        AsyncMock(return_value=PODCAST),
+    ):
+        _ = [podcast async for podcast in provider.get_library_podcasts()]
+
+    played = cast("Mock", provider.mass.music).mark_item_played
+    assert [(c.args[0].item_id, c.kwargs["fully_played"]) for c in played.call_args_list] == [
+        (f"{FEED} guid-1", True)
+    ]
 
 
 @pytest.mark.parametrize(

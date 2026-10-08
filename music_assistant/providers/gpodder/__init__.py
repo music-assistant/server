@@ -282,7 +282,7 @@ class GPodder(MusicProvider):
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get Podcast episodes, with the progress gPodder got since the last sync."""
-        actions, synced = await self._get_unsynced_actions(prov_podcast_id)
+        actions = await self._get_unsynced_actions(prov_podcast_id)
         podcast = await self._cache_get_podcast(prov_podcast_id)
         for position, parsed_episode, stream_url, guid in iter_episodes(podcast):
             mass_episode = parse_podcast_episode(
@@ -298,8 +298,6 @@ class GPodder(MusicProvider):
                 continue
             if action := find_action(actions, guid, stream_url):
                 apply_action(mass_episode, action)
-                if synced:
-                    await self._write_playlog(mass_episode, action)
             yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -321,11 +319,9 @@ class GPodder(MusicProvider):
             )
             if mass_episode is None:
                 break
-            actions, synced = await self._get_unsynced_actions(podcast_id)
+            actions = await self._get_unsynced_actions(podcast_id)
             if action := find_action(actions, guid, stream_url):
                 apply_action(mass_episode, action)
-                if synced:
-                    await self._write_playlog(mass_episode, action)
             await enrich_episode_chapters(
                 session=self.mass.http_session,
                 chapters_json_url=parsed_episode.get("chapters_json_url"),
@@ -476,15 +472,14 @@ class GPodder(MusicProvider):
             for _, task in refreshing:
                 task.cancel()
 
-    async def _get_unsynced_actions(self, podcast_id: str) -> tuple[ActionIndex, bool]:
-        """Return the podcast's actions the playlog lacks, and whether the sync wrote the rest."""
-        # without a completed sync of this feed the whole history is needed, but it is too
-        # large to write to the playlog outside of the sync
+    async def _get_unsynced_actions(self, podcast_id: str) -> ActionIndex:
+        """Return the podcast's actions the playlog lacks."""
+        # only the sync writes them to the playlog, a listing would credit plays again on each open
         synced = bool(self.timestamp_actions) and podcast_id in self.feeds
         episode_actions, _ = await self._client.get_episode_actions(
             since=self.timestamp_actions if synced else 0
         )
-        return index_actions(episode_actions).get(podcast_id, {}), synced
+        return index_actions(episode_actions).get(podcast_id, {})
 
     async def _write_playlog(self, mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
         # the playlog writes must not be reported back to gPodder
