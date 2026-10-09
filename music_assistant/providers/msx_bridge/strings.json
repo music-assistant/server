@@ -13,8 +13,8 @@
       "description": "Unregister MSX players after this many minutes without activity."
     },
     "show_stop_notification": {
-      "label": "Show notification before closing player",
-      "description": "Show confirmation dialog on MSX when stopping playback from MA."
+      "label": "Show playback stopped notification",
+      "description": "Show an informational notice after MSX playback is stopped from MA."
     },
     "group_stream_mode": {
       "label": "Stream Delivery Mode",
@@ -25,8 +25,8 @@
       }
     },
     "include_content_length": {
-      "label": "Include estimated Content-Length",
-      "description": "Include an estimated Content-Length on MP3 and AAC streams served by the local Independent proxy. Disable this if a TV rejects or truncates estimated-length streams. This does not control Music Assistant Streamserver responses."
+      "label": "Legacy Content-Length setting",
+      "description": "Deprecated compatibility setting. Independent streams omit estimated Content-Length; redirected responses use the per-player HTTP profile."
     }
   },
   "manifest": {
