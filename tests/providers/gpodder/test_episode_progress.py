@@ -158,6 +158,10 @@ async def test_sync_only_reads_what_is_new_for_known_feeds(provider: GPodder) ->
         # stored before the episode limit was kept with the timestamps
         ([5, 999], True),
         ([5, 999, 2], False),
+        ([5, 999, 1], True),
+        # a lower limit or a previously unlimited one exposes no skipped episodes
+        ([5, 999, 3], False),
+        ([5, 999, 0], False),
     ],
 )
 async def test_a_changed_episode_limit_brings_in_the_skipped_history(

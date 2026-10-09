@@ -182,8 +182,11 @@ class GPodder(MusicProvider):
             self.timestamp_actions: int = 0
         else:
             self.timestamp_subscriptions, self.timestamp_actions = timestamps[:2]
-        # a changed episode limit can expose episodes whose actions the sync skipped
-        if timestamps is None or len(timestamps) < 3 or timestamps[2] != self.max_episodes:
+        # a broader episode limit can expose episodes whose actions the sync skipped
+        prev_limit = timestamps[2] if timestamps is not None and len(timestamps) >= 3 else None
+        if prev_limit is None or (
+            prev_limit != 0 and (self.max_episodes == 0 or self.max_episodes > prev_limit)
+        ):
             self.timestamp_actions = 0
 
         self.logger.debug(
