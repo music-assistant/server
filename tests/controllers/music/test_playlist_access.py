@@ -11,7 +11,14 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, ProviderSharing
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderSharing,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -27,11 +34,14 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    CONF_PROVIDERS,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLISTS,
     HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.models.music_provider import MusicProvider
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -769,6 +779,42 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
             await playlists._handle_add_playlist_tracks(target.item_id, [], "user-gone")
         with pytest.raises(InsufficientPermissions):
             await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
+
+
+async def test_a_music_assistant_playlist_takes_no_uri_of_a_hidden_source(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The builtin provider stores the uri as given, so one naming a hidden source is refused."""
+    target = await _add(playlists, _playlist("Target", PlaylistAccess(owner=MEMBER.user_id)))
+    provider = MagicMock(spec=MusicProvider)
+    provider.domain = provider.instance_id = "builtin"
+    provider.type, provider.available = ProviderType.MUSIC, True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+    provider.add_playlist_tracks = AsyncMock()
+    sources = {
+        "builtin": None,
+        "spotify_theirs": ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+        "spotify_mine": ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE),
+    }
+    set_music_source_access(music_mass_module, sources)
+    try:
+        with patch.object(music_mass_module, "get_provider", return_value=provider):
+            with pytest.raises(InsufficientPermissions):
+                await playlists._handle_add_playlist_tracks(
+                    target.item_id, ["spotify_theirs://track/t1"], MEMBER.user_id
+                )
+            provider.add_playlist_tracks.assert_not_awaited()
+            await playlists._handle_add_playlist_tracks(
+                target.item_id, ["spotify_mine://track/t1", "library://track/1"], MEMBER.user_id
+            )
+        provider.add_playlist_tracks.assert_awaited_once_with(
+            next(iter(target.provider_mappings)).item_id,
+            ["spotify_mine://track/t1", "library://track/1"],
+        )
+    finally:
+        for instance_id in sources:
+            music_mass_module.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
 
 
 async def test_library_add_command_ignores_a_supplied_record(

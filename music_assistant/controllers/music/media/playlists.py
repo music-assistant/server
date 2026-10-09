@@ -143,11 +143,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/add_playlist_tracks",
             self.add_playlist_tracks,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks",
             self.remove_playlist_tracks,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/export_playlist",
@@ -1564,10 +1566,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         # use _select_provider_id to respect user's provider filter
         playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        playlist_prov = self.mass.get_provider(playlist_prov_instance)
-        if not playlist_prov or not playlist_prov.available:
-            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
-        playlist_prov = cast("MusicProvider", playlist_prov)
+        playlist_prov = cast(
+            "MusicProvider",
+            self.mass.music.resolve_visible_provider(playlist_prov_instance, strict=True),
+        )
 
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in playlist_prov.supported_features:
             msg = f"Provider {playlist_prov.name} does not support editing playlists"
@@ -1631,6 +1633,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # work out the track id's that need to be added
         # filter out duplicates and items that not exist on the provider.
         ids_to_add: list[str] = []
+        hidden_sources = self._hidden_sources()
         total_candidates = len(unwrapped_uris)
         for index, uri in enumerate(unwrapped_uris, start=1):
             _update_stage_progress(
@@ -1651,6 +1654,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
+                # it stores the uri as given, so one naming a source the user may not see is
+                # refused here (it resolves the items itself, as this user, when read)
+                _, provider_instance_id_or_domain, _ = await parse_uri(uri)
+                if provider_instance_id_or_domain in hidden_sources:
+                    raise InsufficientPermissions(
+                        f"{provider_instance_id_or_domain} is not a music source of this user"
+                    )
                 ids_to_add.append(uri)
                 continue
 
@@ -1733,7 +1743,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 if item_mapping.item_id in cur_playlist_track_ids:
                     break  # already existing in the playlist
-                item_prov = self.mass.get_provider(item_mapping.provider_instance)
+                item_prov = self.mass.music.get_visible_provider(item_mapping.provider_instance)
                 if not item_prov:
                     continue
                 track_version_uri = create_uri(
@@ -1789,8 +1799,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         # use _select_provider_id to respect user's provider filter
         playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(playlist_prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
+        provider = self.mass.music.resolve_visible_provider(playlist_prov_instance, strict=True)
+        if not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
             msg = f"Provider {provider.name} does not support editing playlists"
