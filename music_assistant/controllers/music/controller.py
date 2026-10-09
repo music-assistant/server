@@ -1803,6 +1803,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 await self._upsert_playlog(params)
                 play_history_written = recorded_play or play_history_written
+            await self.database.commit()
             self._signal_playlog_updated(
                 reference,
                 fully_played=fully_played,
@@ -3503,7 +3504,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for column in columns
             if column not in PLAYLOG_CONFLICT_KEYS
         ]
-        await self.database.execute_write(
+        await self.database.execute(
             f"INSERT INTO {DB_TABLE_MEDIA_PROGRESS} ({', '.join(columns)}) "
             f"VALUES ({', '.join(f':{column}' for column in columns)}) "
             f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
@@ -3534,20 +3535,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if not transitioned:
                 return False
 
-        await self.database.insert(
-            DB_TABLE_PLAY_HISTORY,
-            {
-                "item_id": progress["item_id"],
-                "provider": progress["provider"],
-                "media_type": progress["media_type"],
-                "userid": progress["userid"],
-                "queue_id": progress["queue_id"],
-                "timestamp": progress["timestamp"],
-                "user_initiated": progress["user_initiated"],
-                "name": progress["name"],
-                "image": progress["image"],
-                "artists": progress["artists"],
-            },
+        await self.database.execute(
+            f"INSERT INTO {DB_TABLE_PLAY_HISTORY} "
+            "(item_id, provider, media_type, userid, queue_id, timestamp, "
+            "user_initiated, name, image, artists) "
+            "VALUES (:item_id, :provider, :media_type, :userid, :queue_id, :timestamp, "
+            ":user_initiated, :name, :image, :artists)",
+            progress,
         )
         return True
 

@@ -23,7 +23,12 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import (
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
+    DB_TABLE_PLAY_HISTORY,
+    HOMEASSISTANT_SYSTEM_USER,
+)
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_GLOBAL_FAILURE_CEILING,
@@ -878,7 +883,9 @@ async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     assert deleted_user is None
 
 
-async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationManager) -> None:
+async def test_delete_user_removes_dependent_rows(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     Test that deleting a user takes its tokens, join codes and provider links with it.
 
@@ -889,6 +896,8 @@ async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationMa
     await auth_manager.create_token(user, "Device", is_long_lived=False)
     await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
     await auth_manager.generate_join_code(user)
+    history_delete = AsyncMock()
+    monkeypatch.setattr(auth_manager.mass.music.database, "delete", history_delete)
     tables = ("auth_tokens", "join_codes", "user_auth_providers")
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
@@ -898,6 +907,7 @@ async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationMa
 
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+    history_delete.assert_awaited_once_with(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
 
 
 async def test_delete_user_releases_its_playlists(auth_manager: AuthenticationManager) -> None:
