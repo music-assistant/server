@@ -28,6 +28,13 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.lastfm_recommendations")
 # Limit concurrent provider searches to avoid overwhelming their APIs.
 _SEARCH_SEMAPHORE = asyncio.Semaphore(SEARCH_CONCURRENCY_LIMIT)
 
+# returned by a provider search that failed, as opposed to one that found nothing
+_SEARCH_FAILED = object()
+
+
+class SearchIncomplete(Exception):
+    """Raised when an item could not be resolved because not every provider could be searched."""
+
 
 def _is_matching_result(
     item_mapping: ItemMapping, result: Artist | Album | Track, artist_name: str | None
@@ -97,9 +104,11 @@ async def _search_provider(
     ctrl: ArtistsController | AlbumsController | TracksController,
     item_mapping: ItemMapping,
     provider: Any,
-) -> Artist | Album | Track | None:
+) -> Artist | Album | Track | object | None:
     """
     Search a single provider for a matching item.
+
+    Returns _SEARCH_FAILED when the search itself failed (e.g. the provider is rate limited).
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
@@ -123,7 +132,7 @@ async def _search_provider(
             return search_results[0]
         except MusicAssistantError as err:
             LOGGER.debug("Provider %s search failed: %s", provider.name, type(err).__name__)
-            return None
+            return _SEARCH_FAILED
 
 
 async def _search_providers_concurrent(
@@ -139,15 +148,20 @@ async def _search_providers_concurrent(
     :param item_mapping: ItemMapping to search for.
     :param providers: List of providers to search.
     :param artist_name: Artist name to verify candidate matches against, if known.
+    :raises SearchIncomplete: When nothing matched and at least one provider search failed.
     """
     tasks = [
         asyncio.create_task(_search_provider(ctrl, item_mapping, provider))
         for provider in providers
     ]
 
+    search_failed = False
     for task in asyncio.as_completed(tasks):
         result = await task
-        if result is None:
+        if result is _SEARCH_FAILED:
+            search_failed = True
+            continue
+        if not isinstance(result, Artist | Album | Track):
             continue
 
         if _is_matching_result(item_mapping, result, artist_name):
@@ -170,6 +184,8 @@ async def _search_providers_concurrent(
             item_mapping.name,
         )
 
+    if search_failed:
+        raise SearchIncomplete(item_mapping.name)
     return None
 
 
@@ -186,6 +202,7 @@ async def _resolve_item(
     :param mass: MusicAssistant instance.
     :param provider_instance_to_skip: Provider instance to skip (ourselves).
     :param artist_name: Artist name to verify candidate matches against, if known.
+    :raises SearchIncomplete: When the item may exist but not every provider could be searched.
     """
     ctrl: ArtistsController | AlbumsController | TracksController
     if item_mapping.media_type == MediaType.ARTIST:
@@ -210,8 +227,9 @@ async def _resolve_item(
 
     streaming_providers = _get_streaming_providers(mass, item_mapping, provider_instance_to_skip)
     if not streaming_providers:
+        # providers may still be loading, so this says nothing about the item itself
         LOGGER.debug("No streaming providers available for resolution")
-        return None
+        raise SearchIncomplete(item_mapping.name)
 
     result = await _search_providers_concurrent(
         ctrl, item_mapping, streaming_providers, artist_name
@@ -244,6 +262,7 @@ async def parse_artist(
     :param lastfm_artist: Raw Last.fm artist dict with 'name' and 'mbid' fields.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the artist may exist but not every provider could be searched.
     """
     name = lastfm_artist.get("name", "Unknown Artist")
     mbid = lastfm_artist.get("mbid")
@@ -274,6 +293,7 @@ async def parse_track(
     :param lastfm_track: Raw Last.fm track dict with 'name', 'artist', 'mbid', 'duration'.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the track may exist but not every provider could be searched.
     """
     name = lastfm_track.get("name", "Unknown Track")
     mbid = lastfm_track.get("mbid")
@@ -310,6 +330,7 @@ async def parse_album(
     :param lastfm_album: Raw Last.fm album dict with 'name', 'artist', 'mbid'.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the album may exist but not every provider could be searched.
     """
     name = lastfm_album.get("name", "Unknown Album")
     mbid = lastfm_album.get("mbid")
