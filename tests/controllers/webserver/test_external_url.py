@@ -1,7 +1,8 @@
 """Tests for validating the external URL of the webserver."""
 
-from typing import cast
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.config_entries import CoreConfig
@@ -31,6 +32,9 @@ from music_assistant.controllers.webserver.controller import (
         ("https://", False),
         ("https://[::1", False),
         (8095, False),
+        # links are built by appending to the URL
+        ("https://ma.example.com/#/home", False),
+        ("https://ma.example.com/?foo=bar", False),
         # only reachable on the local network
         ("http://localhost:8095", False),
         ("http://musicassistant:8095", False),
@@ -72,3 +76,42 @@ async def test_external_url_ignores_invalid_stored_value(
     webserver.config = cast("CoreConfig", CoreConfig.parse(entries, raw))
 
     assert webserver.external_url == expected
+
+
+@pytest.mark.parametrize(
+    ("stored_value", "cleared"),
+    [
+        ("http://192.168.1.5:8095", True),
+        ("https://ma.example.com", False),
+        (None, False),
+    ],
+)
+async def test_setup_clears_invalid_stored_external_url(
+    mock_mass: MagicMock, tmp_path: Path, stored_value: str | None, cleared: bool
+) -> None:
+    """Setup clears an invalid stored external URL, so it is reported only once."""
+    mock_mass.config.get_raw_core_config_value.side_effect = lambda _domain, key, default=None: (
+        stored_value if key == CONF_EXTERNAL_URL else default
+    )
+    webserver = WebserverController(mock_mass)
+    webserver._server = MagicMock(setup=AsyncMock(), port=8095, bind_ip=None)
+    webserver.auth = MagicMock(setup=AsyncMock())
+    webserver.remote_access = MagicMock(setup=AsyncMock())
+    config_values: dict[str, Any] = {"bind_port": 8095, "bind_ip": None, "enable_ssl": False}
+    config = MagicMock()
+    config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
+
+    with (
+        patch(
+            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=("192.168.1.5",)),
+        ),
+        patch(
+            "music_assistant.controllers.webserver.controller.locate_frontend",
+            return_value=str(tmp_path),
+        ),
+    ):
+        await webserver.setup(cast("CoreConfig", config))
+
+    calls = [c.args for c in mock_mass.config.set_raw_core_config_value.call_args_list]
+    assert (("webserver", CONF_EXTERNAL_URL, None) in calls) is cleared

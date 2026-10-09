@@ -446,12 +446,14 @@ class WebserverController(CoreController):
             self.domain, CONF_EXTERNAL_URL
         )
         if not _is_valid_external_url(raw_external_url):
-            # the parsed config already dropped the invalid value, only the raw one still has it
+            # config parsing already dropped the invalid stored value; clear the stored
+            # value too, so the setting reads back as empty and this warns only once
             self.logger.warning(
                 "External URL %r in the webserver settings is not a public http(s) URL, "
-                "ignoring it",
+                "clearing it",
                 raw_external_url,
             )
+            self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
         # Setup remote access after webserver is running
         await self.remote_access.setup()
         # signal fresh server info so a reload (e.g. changed bind/ssl config)
@@ -1453,7 +1455,8 @@ def _is_valid_external_url(value: ConfigValueType) -> bool:
         host = parts.hostname
     except ValueError:
         return False
-    if parts.scheme not in ("http", "https") or not host:
+    # query or fragment (e.g. a copied frontend route like /#/home) breaks appended links
+    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
         return False
     try:
         return ip_address(host).is_global
