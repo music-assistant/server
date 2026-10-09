@@ -67,7 +67,7 @@ async def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track
         track.album = album
 
     if track_genre := track_obj.get("genre"):
-        track.metadata.genres = set(track_genre)
+        track.metadata.genres = {track_genre} if isinstance(track_genre, str) else set(track_genre)
 
     if track_label := track_obj.get("label"):
         track.metadata.label = track_label
