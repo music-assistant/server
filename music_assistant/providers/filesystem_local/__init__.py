@@ -561,7 +561,7 @@ class LocalFileSystemProvider(MusicProvider):
         query = (
             f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             f"WHERE provider_instance = '{self.instance_id}' "
-            f"AND media_type in ('track', 'playlist', 'audiobook', 'podcast_episode')"
+            f"AND media_type in ('track', 'playlist', 'audiobook', 'podcast')"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
@@ -652,6 +652,10 @@ class LocalFileSystemProvider(MusicProvider):
                     and item.absolute_path.rsplit(".", 1)[0] in cue_stems
                 )
             ]
+            if self.media_content_type == "podcasts":
+                items_to_process = self._changed_podcast_folders(
+                    [item for item, _ in items_to_process], file_checksums, cur_filenames
+                )
             # register synthetic track IDs for unchanged CUE files so the
             # deletion pass does not treat them as removed
             for cue_item in unchanged_cue_items:
@@ -671,7 +675,9 @@ class LocalFileSystemProvider(MusicProvider):
                 self.name,
             )
 
-            # _SYNC_CONCURRENCY caps parallelism per provider (NFS/SMB/WebDAV friendly)
+            # _SYNC_CONCURRENCY caps parallelism per provider (NFS/SMB/WebDAV friendly);
+            # a podcast folder already parses its episodes in parallel, so those go one by one
+            concurrency = 1 if self.media_content_type == "podcasts" else self._SYNC_CONCURRENCY
             processed_count = 0
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
@@ -689,7 +695,7 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
             with self._ondemand_listing_scope():
-                async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+                async with TaskManager(self.mass, concurrency) as tm:
                     for item, prev_checksum in items_to_process:
                         await tm.create_task_with_limit(_process(item, prev_checksum))
         finally:
@@ -1369,6 +1375,11 @@ class LocalFileSystemProvider(MusicProvider):
         if not self._is_imported_file(item):
             cur_filenames.add(item.relative_path)
             return
+        if self.media_content_type == "podcasts":
+            # an episode is not stored in the library: its podcast folder is what a sync
+            # tracks, compared once the walk has found all of the folder's episodes
+            items_to_process.append((item, None))
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1410,6 +1421,42 @@ class LocalFileSystemProvider(MusicProvider):
         if self.media_content_type == "podcasts":
             return item.ext in PODCAST_EPISODE_EXTENSIONS
         return False
+
+    def _changed_podcast_folders(
+        self,
+        episodes: list[FileSystemItem],
+        file_checksums: dict[str, str],
+        cur_filenames: set[str],
+    ) -> list[tuple[FileSystemItem, str | None]]:
+        """
+        Return one item per podcast folder whose episode files changed since the last sync.
+
+        Each returned item is the folder itself, with its new signature as checksum, paired
+        with the signature stored by the previous sync (None for a new podcast).
+
+        :param episodes: The episode files found by the scan.
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cur_filenames: Receives the unchanged podcast folders.
+        """
+        episodes_by_folder: dict[str, list[FileSystemItem]] = {}
+        for episode in episodes:
+            episodes_by_folder.setdefault(episode.relative_parent_path, []).append(episode)
+        changed: list[tuple[FileSystemItem, str | None]] = []
+        for folder, folder_episodes in episodes_by_folder.items():
+            signature = get_folder_signature(folder_episodes)
+            prev_signature = file_checksums.get(folder)
+            if signature == prev_signature:
+                cur_filenames.add(folder)
+                continue
+            folder_item = FileSystemItem(
+                filename=Path(folder).name,
+                relative_path=folder,
+                absolute_path=os.path.dirname(folder_episodes[0].absolute_path),
+                is_dir=True,
+                checksum=signature,
+            )
+            changed.append((folder_item, prev_signature))
+        return changed
 
     async def _root_artist_path(self, name: str) -> str | None:
         """
@@ -2209,7 +2256,7 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Process a single item asynchronously.
 
-        :param item: The filesystem item to process.
+        :param item: The filesystem item to process (the podcast folder for a podcasts source).
         :param prev_checksum: Previous checksum from the database, or None for new items.
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
@@ -2219,6 +2266,15 @@ class LocalFileSystemProvider(MusicProvider):
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
+
+            if item.is_dir and self.media_content_type == "podcasts":
+                podcast = await self.get_podcast(item.relative_path)
+                for prov_mapping in podcast.provider_mappings:
+                    prov_mapping.details = item.checksum
+                # merged, not overwritten: the folder changes with every new episode and an
+                # overwrite would drop the mappings matched on other providers
+                await self.mass.music.podcasts.add_item_to_library(podcast)
+                return True
 
             if prev_checksum is not None:
                 # the file changed on disk: drop cached artwork derived from it
@@ -2263,15 +2319,6 @@ class LocalFileSystemProvider(MusicProvider):
                     return True
                 await self.mass.music.audiobooks.add_item_to_library(
                     audiobook, overwrite_existing=prev_checksum is not None
-                )
-                return True
-
-            if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                tags = await async_parse_tags(item.absolute_path, item.file_size)
-                episode = await self._parse_podcast_episode(item, tags)
-                assert isinstance(episode.podcast, Podcast)
-                await self.mass.music.podcasts.add_item_to_library(
-                    episode.podcast, overwrite_existing=prev_checksum is not None
                 )
                 return True
 
@@ -2369,7 +2416,10 @@ class LocalFileSystemProvider(MusicProvider):
         album_ids = set()
         artist_ids = set()
         for file_path in deleted_files:
-            if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
+            if self.media_content_type == "podcasts":
+                # a podcast is tracked by its folder
+                controller = self.mass.music.get_controller(MediaType.PODCAST)
+            elif parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
             elif not file_path:
                 # an empty id matches no single library item
@@ -2383,9 +2433,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             else:
                 ext = file_path.rsplit(".", 1)[1].lower()
-                if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                    controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
-                elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
+                if ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
                     controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
                 elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
                     controller = self.mass.music.get_controller(MediaType.PLAYLIST)
