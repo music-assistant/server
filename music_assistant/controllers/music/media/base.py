@@ -1271,6 +1271,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         if (
             fallback
+            and not isinstance(fallback, ItemMapping)
+            and not self._has_visible_source(fallback)
+        ):
+            # the stored item exists, but on no source the user may see
+            fallback = None
+        if (
+            fallback
             and isinstance(fallback, ItemMapping)
             and (fallback_provider := self.mass.get_provider(fallback.provider))
         ):

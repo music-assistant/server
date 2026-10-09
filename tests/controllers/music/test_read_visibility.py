@@ -164,6 +164,17 @@ async def test_get_serves_a_library_item_only_from_a_visible_source(
         await music.tracks.get("t1", THEIRS)
 
 
+async def test_get_does_not_fall_back_to_a_library_item_of_a_hidden_source(
+    music: MusicController,
+) -> None:
+    """When the user's own account misses the id, the hidden library item is not handed out."""
+    await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    _add_my_spotify(music).get_track.side_effect = MediaNotFoundError("not on this account")
+
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music.tracks.get("t1", THEIRS)
+
+
 @pytest.mark.parametrize(
     "read",
     [
