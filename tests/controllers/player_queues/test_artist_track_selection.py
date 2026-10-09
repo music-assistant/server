@@ -133,10 +133,10 @@ def _track_obj(name: str, version: str = "") -> Track:
     return Track(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
 
 
-def _prov_mapping(instance: str, item_id: str) -> ProviderMapping:
+def _prov_mapping(instance: str, item_id: str, in_library: bool = False) -> ProviderMapping:
     """Create a provider mapping for the given (streaming) provider instance."""
     return ProviderMapping(
-        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=False
+        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=in_library
     )
 
 
@@ -149,7 +149,9 @@ def _fake_queues(selection: str) -> MagicMock:
     """Create a mock standing in for the media resolver, with the artist option preselected."""
     fake = MagicMock()
     fake.mass.config.get_raw_core_config_value = MagicMock(return_value=selection)
-    fake._resolve_library_artist = AsyncMock(return_value=_artist_obj())
+    fake._resolve_library_artist = AsyncMock(
+        return_value=_artist_obj({_prov_mapping("p1", "a1", in_library=True)})
+    )
     return fake
 
 
@@ -203,10 +205,13 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
 
 
 @pytest.mark.parametrize("selection", ["top_tracks", "library_tracks", "prefer_library"])
-async def test_artist_not_in_the_library_plays_all_its_tracks(selection: str) -> None:
-    """An artist that is not in the library plays all of its tracks, whatever the option."""
+@pytest.mark.parametrize("stored_artist", [None, _artist_obj({_prov_mapping("p1", "a1")})])
+async def test_artist_not_in_the_library_plays_all_its_tracks(
+    selection: str, stored_artist: Artist | None
+) -> None:
+    """An artist not in the library, even when stored for a saved track, plays all its tracks."""
     fake = _fake_queues(selection)
-    fake._resolve_library_artist = AsyncMock(return_value=None)
+    fake._resolve_library_artist = AsyncMock(return_value=stored_artist)
     fake._library_artist_tracks = AsyncMock(return_value=[])
     fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
     fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])

@@ -120,7 +120,7 @@ class MediaResolver:
 
         :param artist: The artist to play.
         """
-library_artist = await self._resolve_library_artist(artist)
+        library_artist = await self._resolve_library_artist(artist)
         if library_artist is None or not any(
             mapping.in_library for mapping in library_artist.provider_mappings
         ):
