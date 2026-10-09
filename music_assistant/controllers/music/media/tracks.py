@@ -13,6 +13,7 @@ from aiohttp import ClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     ExternalID,
+    ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -32,6 +33,7 @@ from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
     ItemMappingSummary,
+    MediaItemImage,
     ProviderMapping,
     Track,
     TrackSummary,
@@ -72,6 +74,8 @@ from .base import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from music_assistant_models.media_items import MediaItemMetadata
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -1549,7 +1553,9 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        stored_metadata = await self._get_stored_metadata(db_id)
+        update_metadata = await self._update_metadata_without_album_thumbs(update, stored_metadata)
+        metadata = update_metadata if overwrite else stored_metadata.update(update_metadata)
         metadata.lrc_lyrics = normalize_lrc_lyrics(
             metadata.lrc_lyrics or extract_lrc_lyrics(metadata.lyrics)
         )
@@ -1598,6 +1604,41 @@ class TracksController(MediaControllerBase[Track]):
     async def _update_library_item_for_merge(self, item_id: int, update: Track) -> None:
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
+
+    async def _update_metadata_without_album_thumbs(
+        self, update: Track, stored: MediaItemMetadata
+    ) -> MediaItemMetadata:
+        """
+        Return the metadata of a track update without the album thumbs of a library read.
+
+        A track read from the library carries its album thumb among its images, which
+        does not belong in the track's own stored images.
+
+        :param update: The track to store.
+        :param stored: The metadata currently stored for the track.
+        """
+        if update.provider != "library" or not update.metadata.images:
+            return update.metadata
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.images') AS images "
+            f"FROM {DB_TABLE_ALBUM_TRACKS} JOIN {DB_TABLE_ALBUMS} "
+            f"ON {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = :track_id",
+            {"track_id": int(update.item_id)},
+        )
+        album_thumbs = {
+            MediaItemImage.from_dict(image)
+            for row in rows
+            if row["images"]
+            for image in json_loads(row["images"])
+            if image["type"] == ImageType.THUMB.value
+        }
+        images = UniqueList(
+            image
+            for image in update.metadata.images
+            if image not in album_thumbs or image in (stored.images or ())
+        )
+        return replace(update.metadata, images=images or None)
 
     async def _set_track_album(
         self,

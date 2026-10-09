@@ -2632,6 +2632,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user = get_current_user()
         return hidden_music_sources(self.mass, user) if user else set()
 
+    @final
+    async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:
+        """
+        Return the metadata as stored for a library item.
+
+        Unlike the metadata of a library item read via get_library_item, this holds
+        nothing that is only added at read time (such as the album thumb among a
+        track's images), so it is safe to update and write back.
+
+        :param db_id: The library (database) id of the item.
+        """
+        db_row = await self.mass.music.database.get_row(self.db_table, {"item_id": db_id})
+        if not db_row or not (raw_metadata := db_row["metadata"]):
+            return MediaItemMetadata()
+        return MediaItemMetadata.from_dict(json_loads(raw_metadata))
+
     async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
         """
         Remove images belonging to a provider from a library item's stored metadata.
@@ -2640,13 +2656,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param provider_instance_id: The provider instance whose images should be removed.
         :return: True if any images were removed and the db record was updated.
         """
-        # read the raw metadata straight from the db (instead of via get_library_item)
-        # to avoid persisting any images that are only injected at read time (such as
-        # the album thumb that gets merged into a track's images)
-        db_row = await self.mass.music.database.get_row(self.db_table, {"item_id": db_id})
-        if not db_row or not (raw_metadata := db_row["metadata"]):
-            return False
-        metadata = MediaItemMetadata.from_dict(json_loads(raw_metadata))
+        metadata = await self._get_stored_metadata(db_id)
         if not metadata.images:
             return False
         remaining = UniqueList(
