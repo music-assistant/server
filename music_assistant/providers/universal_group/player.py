@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -18,7 +19,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from propcache import under_cached_property as cached_property
 
@@ -282,7 +283,8 @@ class UniversalGroupPlayer(Player):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    with suppress(PlayerUnavailableError):
+                        await self.mass.players.cmd_power(member.player_id, False)
 
         if not powered:
             # reset the original group members when powered off
@@ -506,7 +508,8 @@ class UniversalGroupPlayer(Player):
                 # member is part of a syncgroup — release it first
                 await member.ungroup()
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                await self.mass.players.cmd_power(member.player_id, True)
+                with suppress(PlayerUnavailableError):
+                    await self.mass.players.cmd_power(member.player_id, True)
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
