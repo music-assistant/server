@@ -3,8 +3,8 @@ Ranking of the sources a media item can be streamed from.
 
 A library item often has several copies: a local file, the same track on one or more
 streaming services, another account of the same service. This module decides the order those
-copies are tried in. It is pure: the caller expands the mappings to the provider instances that
-may serve them and applies the access rules, this module only sorts.
+copies are tried in. The caller expands the mappings to the provider instances that may serve
+them and applies the access rules, this module only sorts.
 """
 
 from __future__ import annotations
@@ -155,18 +155,18 @@ def rank_stream_sources(
 
 
 def rank_provider_mappings(
-    mappings: Iterable[ProviderMapping], pinned: tuple[str, str] | None = None
+    mappings: Iterable[ProviderMapping], *, pinned: tuple[str, str] | None = None
 ) -> list[ProviderMapping]:
     """
-    Return a media item's own mappings in the order the default policy would try them.
+    Return a media item's own mappings in the order the default policy ranks them.
 
     For callers that look up data per copy outside a playback: there is no playback user to
-    steer to, only the copy actually streamed, when known, comes first.
+    steer to, only the copy actually streamed, when known, comes first. Whether a mapping's
+    instance is a streaming service is read off the loaded providers.
 
     :param mappings: The media item's provider mappings.
     :param pinned: The (provider instance, item id) the item is streamed from, if known.
     """
-    # whether a mapping's instance is a streaming service is read off the loaded providers
     non_streaming = cast("set[str]", get_global_cache_value("non_streaming_providers") or set())
     return sorted(
         mappings,

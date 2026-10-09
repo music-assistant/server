@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from music_assistant.models.provider import Provider
 
 LOCAL = "filesystem_local--a"
+# sorts before the local instance, so the id tie-break cannot mask a local-first level
+DEEZER = "deezer--a"
 TIDAL = "tidal--a"
 OTHER_TIDAL = "tidal--b"
 SPOTIFY = "spotify--a"
@@ -220,9 +222,9 @@ def test_quality_tier(audio_format: AudioFormat, tier: QualityTier) -> None:
             "lossless 48/16",
         ),
         (
-            [_candidate(TIDAL), _candidate(LOCAL, is_streaming=False)],
+            [_candidate(DEEZER), _candidate(LOCAL, is_streaming=False)],
             {},
-            [f"{LOCAL}/1", f"{TIDAL}/1"],
+            [f"{LOCAL}/1", f"{DEEZER}/1"],
             "local source",
         ),
         (
@@ -325,16 +327,16 @@ def test_reasons_name_the_decisive_level_and_the_last_candidates_quality() -> No
 async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sources() -> None:
     """Bare mappings rank under the default policy, with the streamed copy first when known."""
     local = _mapping(LOCAL)
-    tidal = _mapping(TIDAL)
+    deezer = _mapping(DEEZER)
     spotify = _mapping(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320))
     previous = get_global_cache_value("non_streaming_providers")
     await set_global_cache_values({"non_streaming_providers": {LOCAL}})
     try:
-        assert rank_provider_mappings({local, tidal, spotify}) == [local, tidal, spotify]
-        assert rank_provider_mappings({local, tidal, spotify}, pinned=(SPOTIFY, ITEM_ID)) == [
+        assert rank_provider_mappings({local, deezer, spotify}) == [local, deezer, spotify]
+        assert rank_provider_mappings({local, deezer, spotify}, pinned=(SPOTIFY, ITEM_ID)) == [
             spotify,
             local,
-            tidal,
+            deezer,
         ]
     finally:
         await set_global_cache_values({"non_streaming_providers": previous})
