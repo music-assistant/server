@@ -187,7 +187,7 @@
                 } else if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     stopPositionTimer();
                     clearPendingServerSeek();
-                    var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";
+                    var action = msg.showNotification ? "[player:eject|player:hide|info:Playback stopped.]" : "[player:eject|player:hide]";
                     tvx.InteractionPlugin.executeAction(action);
                 } else if (msg.type === "pause" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     pausedAtPosition = monitoredElement ? monitoredElement.currentTime : getCurrentPosition();

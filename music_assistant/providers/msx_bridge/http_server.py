@@ -940,12 +940,19 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             # PNG, not SVG: MSX image slots on older TV engines cannot decode SVG
             item = MsxItem(
                 image=f"{prefix}/api/party/qr.png",
-                label=party.qr_text or "Scan to join the party",
+                layout="0,0,4,4",
             )
         content = MsxContent(
             headline=(party.name if party else None) or "Party",
             template=MsxTemplate(type="separate", layout="0,0,4,4"),
-            items=[item],
+            items=[
+                item,
+                MsxItem(
+                    type="default", layout="4,0,8,4", text=party.qr_text or "Scan to join the party"
+                ),
+            ]
+            if party
+            else [item],
         )
         return web.json_response(dump_msx(content))
 

@@ -325,3 +325,19 @@ async def test_tv_plugin_menu_has_party_entry(http_client: TestClient[Any, Any])
     assert resp.status == 200
     body = await resp.text()
     assert "/msx/party.json" in body
+
+
+async def test_party_caption_is_outside_qr_image(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """A caption must never obscure the QR quiet zone on native MSX."""
+    mass_mock.get_provider = Mock(return_value=_party_mock(qr_text="Scan this screen " * 20))
+    response = await http_client.get("/msx/party.json")
+    items = (await response.json())["items"]
+    qr_item = next(item for item in items if item.get("image"))
+    assert not qr_item.get("label")
+    assert any(
+        item.get("text", "").startswith("Scan this screen")
+        for item in items
+        if not item.get("image")
+    )

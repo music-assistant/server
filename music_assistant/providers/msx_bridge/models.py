@@ -29,6 +29,8 @@ class MsxTemplate(BaseModel):
 class MsxItem(BaseModel):
     """MSX Content Item model."""
 
+    layout: str | None = None
+    text: str | None = None
     title: str | None = None
     title_header: str | None = Field(default=None, serialization_alias="titleHeader")
     label: str | None = None

@@ -150,6 +150,34 @@ process.stdout.write('ok');
     assert result.stdout == "ok"
 
 
+def test_stop_notification_stops_decoder_before_showing_notice() -> None:
+    """Stop must not offer Continue on an already stopped MA queue."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Native plugin runtime tests require Node.js")
+    html = (Path(http_server.__file__).parent / "static/plugin.html").read_text()
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    runner = (
+        NODE_RUNNER.split("vm.runInNewContext", 1)[0]
+        + """
+const actions=[];
+context.tvx.InteractionPlugin.executeAction=action=>actions.push(action);
+vm.runInNewContext(input.script, context);
+handler.handleRequest('init',null,()=>{});
+ws.onmessage({data:JSON.stringify({type:'stop',showNotification:true})});
+process.stdout.write(JSON.stringify(actions));
+"""
+    )
+    result = subprocess.run(  # noqa: S603 - fixed runtime and shipped plugin
+        [node, "-e", runner],
+        input=json.dumps({"script": script}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == ["[player:eject|player:hide|info:Playback stopped.]"]
+
+
 def test_native_seek_requests_source_position_without_faking_decoder_seek() -> None:
     """A source offset belongs in the MA seek request, not in decoder telemetry."""
     node = shutil.which("node")
