@@ -2205,7 +2205,9 @@ def _recording_lock(events: list[str]) -> MagicMock:
     """Build a get_player_lock mock that records every lock enter/exit in ``events``."""
 
     def _make(
-        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,  # noqa: ARG001
     ) -> AsyncMock:
         ctx = AsyncMock()
 
@@ -2229,7 +2231,9 @@ def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
 
     @asynccontextmanager
     async def _ctx(
-        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,  # noqa: ARG001
     ) -> AsyncIterator[None]:
         if player_id != group_id:
             yield
@@ -3748,6 +3752,10 @@ class TestNextTrackHandoverLocksTheLeader:
 
         mass.players._handle_enqueue_next_media.assert_awaited_once_with("leader", media)
         assert events == ["lock:leader", "enqueue", "unlock:leader"]
+        # strict, so a busy leader fails the handover instead of running without the lock
+        mass.players.get_player_lock.assert_called_once_with(
+            "leader", PlayerLockPurpose.PLAYBACK, strict=True
+        )
 
     @pytest.mark.asyncio
     async def test_a_leader_swapped_while_waiting_is_not_enqueued(self) -> None:

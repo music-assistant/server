@@ -517,9 +517,11 @@ class SyncGroupPlayer(Player):
                 # and the new leader doesn't support enqueueing next media.
                 return
             # the leader is commanded from under the group's lock, like play_media does,
-            # so leader-scoped work such as a member re-join cannot interleave with it
+            # so leader-scoped work such as a member re-join cannot interleave with it.
+            # Strict, like the handover's own lock: a busy leader drops the handover
+            # rather than letting it run alongside whatever holds the leader
             async with self.mass.players.get_player_lock(
-                sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                sync_leader.player_id, PlayerLockPurpose.PLAYBACK, strict=True
             ):
                 if self.sync_leader is not sync_leader:
                     # the group was re-led while we waited: the new leader gets its own
