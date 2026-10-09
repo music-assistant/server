@@ -1324,8 +1324,14 @@ class NeteaseCloudMusicProvider(MusicProvider):
         self,
         prov_playlist_id: str,
         page: int = 0,
+        account_scope: str | None = None,
     ) -> Sequence[Track]:
-        """Get playlist tracks for static playlists (cached)."""
+        """
+        Get playlist tracks for static playlists (cached).
+
+        :param account_scope: Account discriminator for account-personalized playlists
+            (the radar playlists), so a listing is not reused across accounts.
+        """
         limit = 500
         offset = page * limit
         payload = await self._client.get(
@@ -1366,7 +1372,9 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 track.position = idx
             return tracks
         if source_playlist_id := _RADAR_SOURCE_PLAYLIST_IDS.get(prov_playlist_id):
-            return await self._get_playlist_tracks_cached(source_playlist_id, page)
+            return await self._get_playlist_tracks_cached(
+                source_playlist_id, page, account_scope=self._uid
+            )
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
             if page > 0:
                 return []
@@ -2076,7 +2084,9 @@ class NeteaseCloudMusicProvider(MusicProvider):
         # some api backends do not expose a cover on the radar playlist detail:
         # fall back to the album art of the first track in the playlist
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-            tracks = await self._get_playlist_tracks_cached(source_playlist_id)
+            tracks = await self._get_playlist_tracks_cached(
+                source_playlist_id, account_scope=self._uid
+            )
             for track in tracks:
                 if track.metadata.images:
                     return next(iter(track.metadata.images)).path

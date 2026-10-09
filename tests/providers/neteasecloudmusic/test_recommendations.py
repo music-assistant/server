@@ -326,6 +326,28 @@ async def test_get_playlist_tracks_personal_radar(
 
 
 @pytest.mark.asyncio
+async def test_radar_tracks_cache_key_includes_account(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """Radar track listings are cached per account, never shared across accounts."""
+    use_real_create_task(provider.mass)
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    cache_set = AsyncMock()
+    provider.mass.cache.set = cache_set  # type: ignore[method-assign]
+    _stub_client_get(provider)
+
+    await provider.get_playlist_tracks("personal_radar_dynamic")
+
+    assert cache_set.await_count == 1
+    cache_key = cache_set.call_args.kwargs["key"]
+    assert "3136952023" in cache_key
+    # the account uid is part of the key (fixture uid is 42), so another account cannot reuse it
+    assert "account_scope42" in cache_key
+
+
+@pytest.mark.asyncio
 async def test_get_recommendation_items_new_songs(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
