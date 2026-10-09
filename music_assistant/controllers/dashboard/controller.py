@@ -24,7 +24,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.guest_access import get_or_create_guest_user
-from music_assistant.models.core_controller import CoreController
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -61,6 +61,7 @@ class DashboardController(CoreController):
         super().__init__(mass)
         self.manifest.name = "Dashboard"
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
+        self.manifest.documentation = CORE_DOCS_URL
         self._dashboards: dict[str, _RegisteredDashboard] = {}
         self._sessions: dict[str, DashboardSession] = {}
 
