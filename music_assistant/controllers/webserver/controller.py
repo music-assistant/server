@@ -20,7 +20,9 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
 from functools import partial
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import urlsplit
 
 import aiofiles
 from aiohttp import web
@@ -32,6 +34,7 @@ from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
+    ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
@@ -233,7 +236,7 @@ class WebserverController(CoreController):
 
     @property
     def external_url(self) -> str | None:
-        """Return the external URL for the webserver (if configured)."""
+        """Return the configured URL that reaches this server from the internet, if any."""
         config = getattr(self, "config", None)
         if config is None:
             return None
@@ -439,6 +442,16 @@ class WebserverController(CoreController):
                 base_url,
             )
 
+        raw_external_url = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_EXTERNAL_URL
+        )
+        if not _is_valid_external_url(raw_external_url):
+            # the parsed config already dropped the invalid value, only the raw one still has it
+            self.logger.warning(
+                "External URL %r in the webserver settings is not a public http(s) URL, "
+                "ignoring it",
+                raw_external_url,
+            )
         # Setup remote access after webserver is running
         await self.remote_access.setup()
         # signal fresh server info so a reload (e.g. changed bind/ssl config)
@@ -665,6 +678,7 @@ class WebserverController(CoreController):
                 required=False,
                 advanced=True,
                 requires_reload=False,
+                validate=_is_valid_external_url,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -1426,3 +1440,24 @@ def _serialize_script_value(value: str) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+def _is_valid_external_url(value: ConfigValueType) -> bool:
+    """Return whether a configured external URL is empty or an http(s) URL on a public host."""
+    if not value:
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        pass
+    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
+    return "." in host and not host.endswith(".local")
