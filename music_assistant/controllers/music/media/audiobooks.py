@@ -686,7 +686,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , playlog.seconds_played * 1000 AS resume_position_ms
         """
         extra_joins = (
-            f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} ON playlog.id = ("
+            f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = ("
             f"SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} p2 "
             "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
             "AND p2.media_type = 'audiobook' "
