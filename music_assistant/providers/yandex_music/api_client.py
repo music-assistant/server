@@ -1004,9 +1004,17 @@ class YandexMusicClient:
         cache_key = (track_id, quality, codecs, transport)
         lock, users = self._file_info_locks.get(cache_key, (asyncio.Lock(), 0))
         self._file_info_locks[cache_key] = (lock, users + 1)
+        cached_before_wait = self._file_info_cache.get(cache_key)
         try:
             async with lock:
-                return await self._get_track_file_info(track_id, quality, codecs, transport)
+                # Joined playback refreshes may reuse only a URL replaced while waiting.
+                # Cancellation or failure leaves the old cache untouched, so fetch again.
+                reuse_refreshed = (
+                    users > 0 and self._file_info_cache.get(cache_key) is not cached_before_wait
+                )
+                return await self._get_track_file_info(
+                    track_id, quality, codecs, transport, reuse_refreshed=reuse_refreshed
+                )
         finally:
             _, users = self._file_info_locks[cache_key]
             if users == 1:
@@ -1357,7 +1365,13 @@ class YandexMusicClient:
             return False
 
     async def _get_track_file_info(
-        self, track_id: str, quality: str, codecs: str, transport: str
+        self,
+        track_id: str,
+        quality: str,
+        codecs: str,
+        transport: str,
+        *,
+        reuse_refreshed: bool = False,
     ) -> dict[str, Any] | None:
         """Resolve one stream variant after acquiring its shared request lock."""
         # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
@@ -1369,7 +1383,7 @@ class YandexMusicClient:
         # same (track, quality, transport) but different codec lists must not
         # share a cache slot.
         cache_key = (track_id, quality, codecs, transport)
-        if current_priority() is not RequestPriority.HIGH:
+        if current_priority() is not RequestPriority.HIGH or reuse_refreshed:
             # Check the file_info circuit-breaker BEFORE the cache lookup —
             # otherwise a cooldown-period caller could be served a stale URL
             # from before the block was engaged. Fail fast (return None) so

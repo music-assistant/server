@@ -11,6 +11,7 @@ import pytest
 from ya_passport_auth import SecretStr
 from yandex_music import ClientAsync
 
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.providers.yandex_music.api_client import YandexMusicClient
 
 
@@ -205,3 +206,102 @@ async def test_cancelled_file_info_lookup_allows_next_waiter_to_retry() -> None:
         result = await asyncio.wait_for(waiter, timeout=2)
         assert result is not None
         assert result["url"] == "https://cdn.example/fresh"
+
+
+async def test_concurrent_playback_refreshes_share_new_url_but_later_refresh_again() -> None:
+    """Joined playback callers share a fresh URL; later playback rejects that cache."""
+    raw = ClientAsync()
+    client = YandexMusicClient(SecretStr("fake_token"))
+    client._client = raw
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def respond(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            started.set()
+            await release.wait()
+        return {
+            "downloadInfo": {
+                "trackId": "42",
+                "quality": "lossless",
+                "codec": "flac",
+                "bitrate": 0,
+                "transport": "raw",
+                "url": f"https://cdn.example/url-{calls}",
+                "urls": [],
+            }
+        }
+
+    request = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "get", request):
+        old = await client.get_track_file_info("42")
+        assert old is not None
+        assert old["url"] == "https://cdn.example/url-1"
+        with request_priority(RequestPriority.HIGH):
+            active = asyncio.create_task(client.get_track_file_info("42"))
+            await started.wait()
+            waiters = [asyncio.create_task(client.get_track_file_info("42")) for _ in range(2)]
+            await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.gather(active, *waiters)
+            assert all(r and r["url"] == "https://cdn.example/url-2" for r in results)
+            assert request.await_count == 2
+            later = await client.get_track_file_info("42")
+        assert later is not None
+        assert later["url"] == "https://cdn.example/url-3"
+    assert request.await_count == 3
+
+
+@pytest.mark.parametrize("cancel_active", [False, True])
+async def test_joined_playback_refresh_retries_after_missing_result(cancel_active: bool) -> None:
+    """Failed or cancelled refreshes must not let playback reuse the stale URL."""
+    raw = ClientAsync()
+    client = YandexMusicClient(SecretStr("fake_token"))
+    client._client = raw
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def respond(*_args: object, **_kwargs: object) -> dict[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            started.set()
+            await release.wait()
+            return None
+        return {
+            "downloadInfo": {
+                "trackId": "42",
+                "quality": "lossless",
+                "codec": "flac",
+                "bitrate": 0,
+                "transport": "raw",
+                "url": f"https://cdn.example/url-{calls}",
+                "urls": [],
+            }
+        }
+
+    request = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "get", request):
+        old = await client.get_track_file_info("42")
+        assert old is not None
+        assert old["url"] == "https://cdn.example/url-1"
+        with request_priority(RequestPriority.HIGH):
+            active = asyncio.create_task(client.get_track_file_info("42"))
+            await started.wait()
+            waiter = asyncio.create_task(client.get_track_file_info("42"))
+            await asyncio.sleep(0)
+            if cancel_active:
+                active.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await active
+            else:
+                release.set()
+                assert await active is None
+            result = await asyncio.wait_for(waiter, timeout=2)
+        assert result is not None
+        assert result["url"] == "https://cdn.example/url-3"
+    assert request.await_count == 3
