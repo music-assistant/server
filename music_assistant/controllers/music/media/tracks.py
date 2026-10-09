@@ -1554,7 +1554,7 @@ class TracksController(MediaControllerBase[Track]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         stored_metadata = await self._get_stored_metadata(db_id)
-        update_metadata = await self._update_metadata_without_album_thumbs(update)
+        update_metadata = await self._metadata_without_album_thumbs(update)
         metadata = update_metadata if overwrite else stored_metadata.update(update_metadata)
         metadata.lrc_lyrics = normalize_lrc_lyrics(
             metadata.lrc_lyrics or extract_lrc_lyrics(metadata.lyrics)
@@ -1605,12 +1605,13 @@ class TracksController(MediaControllerBase[Track]):
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
 
-    async def _update_metadata_without_album_thumbs(self, update: Track) -> MediaItemMetadata:
+    async def _metadata_without_album_thumbs(self, update: Track) -> MediaItemMetadata:
         """
         Return the metadata of a track update without the album thumbs of a library read.
 
         A track read from the library carries its album thumb among its images, which
-        does not belong in the track's own stored images.
+        does not belong in the track's own stored images. An album thumb the track
+        stores as its own artwork is kept.
 
         :param update: The track to store.
         """

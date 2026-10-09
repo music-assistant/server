@@ -46,6 +46,14 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import ISRC, create_album, create_track
 
+ALBUM_THUMB = MediaItemImage(
+    type=ImageType.THUMB, path="http://images/album1.jpg", provider="spotify_1"
+)
+TRACK_THUMB = MediaItemImage(
+    type=ImageType.THUMB, path="http://images/track1.jpg", provider="spotify_1"
+)
+NEW_THUMB = MediaItemImage(type=ImageType.THUMB, path="http://images/new.jpg", provider="tidal_1")
+
 
 @pytest.fixture
 async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]:
@@ -3110,15 +3118,6 @@ async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
 
     refreshed = await mass.music.tracks.get_library_item(db_track.item_id)
     assert [artist.name for artist in refreshed.artists] == ["Other Artist"]
-
-
-ALBUM_THUMB = MediaItemImage(
-    type=ImageType.THUMB, path="http://images/album1.jpg", provider="spotify_1"
-)
-TRACK_THUMB = MediaItemImage(
-    type=ImageType.THUMB, path="http://images/track1.jpg", provider="spotify_1"
-)
-NEW_THUMB = MediaItemImage(type=ImageType.THUMB, path="http://images/new.jpg", provider="tidal_1")
 
 
 async def _add_track_on_album_with_thumb(
