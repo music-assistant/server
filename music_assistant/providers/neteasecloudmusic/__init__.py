@@ -152,6 +152,14 @@ def _lrc_to_plain_text(lrc_text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _playlist_cover_url(playlist_obj: dict[str, Any]) -> str | None:
+    """Extract the cover image URL from a playlist detail object."""
+    cover = playlist_obj.get("coverImgUrl") or playlist_obj.get("picUrl")
+    if isinstance(cover, str) and cover.strip():
+        return cover.strip()
+    return None
+
+
 def _extract_song_image_url(song_obj: dict[str, Any]) -> str | None:
     """Extract best-effort cover image URL from a song payload object."""
     album_raw = (
@@ -1690,9 +1698,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
                     return next(iter(track.metadata.images)).path
         # fall back to the source playlist (我喜欢的音乐) cover
         if first_playlist := await self._get_heart_mode_source_playlist():
-            cover = first_playlist.get("coverImgUrl") or first_playlist.get("picUrl")
-            if isinstance(cover, str) and cover.strip():
-                return cover.strip()
+            if cover := _playlist_cover_url(first_playlist):
+                return cover
         return None
 
     async def _build_heart_mode_dynamic_playlist(
@@ -1972,12 +1979,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 song_obj = fm_item.get("song") if isinstance(fm_item.get("song"), dict) else fm_item
                 if isinstance(song_obj, dict) and (image_url := _extract_song_image_url(song_obj)):
                     return image_url
-        # fallback to the daily recommendations cover when no FM artwork is available
-        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-            rows = daily_rows if daily_rows is not None else await self._get_daily_recommend_rows()
-            if rows and isinstance(rows[0], dict):
-                return _extract_song_image_url(rows[0])
-        return None
+        # fallback to the first daily song with artwork when no FM artwork is available
+        return await self._get_daily_recommend_image_url(daily_rows)
 
     async def _get_daily_recommend_rows(
         self, daily_rows: list[dict[str, Any]] | None = None
@@ -2024,8 +2027,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
             return await self._get_personal_fm_image_url(daily_rows)
         if dynamic_id == _PLAYLIST_DAILY_RECOMMEND_ID:
             return await self._get_daily_recommend_image_url(daily_rows)
-        if source_playlist_id := _RADAR_SOURCE_PLAYLIST_IDS.get(dynamic_id):
-            return await self._get_radar_cover_url(source_playlist_id)
         return None
 
     async def _build_dynamic_playlist_for_id(
@@ -2033,15 +2034,21 @@ class NeteaseCloudMusicProvider(MusicProvider):
     ) -> Playlist:
         """Build a dynamic playlist item with best-effort real cover and name."""
         name, translation_key = _DYNAMIC_PLAYLIST_META[dynamic_id]
-        if dynamic_id in _RADAR_SOURCE_PLAYLIST_IDS:
-            # radars carry the official (account-localized) NCM name, so no translation key
-            name = await self._get_radar_display_name(dynamic_id)
+        if source_playlist_id := _RADAR_SOURCE_PLAYLIST_IDS.get(dynamic_id):
+            # radars carry the official (account-localized) NCM name, so no translation key;
+            # fetch the playlist detail once and reuse it for both the name and the cover
+            detail = await self._get_radar_playlist_detail(source_playlist_id)
+            if detail and (radar_name := str(detail.get("name") or "").strip()):
+                name = radar_name
             translation_key = None
+            image_url = await self._get_radar_cover_url(source_playlist_id, detail)
+        else:
+            image_url = await self._get_dynamic_playlist_image_url(dynamic_id, daily_rows)
         return self._build_dynamic_playlist(
             dynamic_id,
             name,
             translation_key=translation_key,
-            image_url=await self._get_dynamic_playlist_image_url(dynamic_id, daily_rows),
+            image_url=image_url,
         )
 
     async def _get_radar_playlist_detail(self, source_playlist_id: str) -> dict[str, Any] | None:
@@ -2058,18 +2065,14 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 return playlist_obj
         return None
 
-    def _playlist_cover_url(self, playlist_obj: dict[str, Any]) -> str | None:
-        """Extract the cover image URL from a playlist detail object."""
-        cover = playlist_obj.get("coverImgUrl") or playlist_obj.get("picUrl")
-        if isinstance(cover, str) and cover.strip():
-            return cover.strip()
-        return None
-
-    async def _get_radar_cover_url(self, source_playlist_id: str) -> str | None:
+    async def _get_radar_cover_url(
+        self, source_playlist_id: str, detail: dict[str, Any] | None = None
+    ) -> str | None:
         """Return the cover image of an official radar playlist."""
-        if detail := await self._get_radar_playlist_detail(source_playlist_id):
-            if cover := self._playlist_cover_url(detail):
-                return cover
+        if detail is None:
+            detail = await self._get_radar_playlist_detail(source_playlist_id)
+        if detail and (cover := _playlist_cover_url(detail)):
+            return cover
         # some api backends do not expose a cover on the radar playlist detail:
         # fall back to the album art of the first track in the playlist
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
@@ -2080,24 +2083,22 @@ class NeteaseCloudMusicProvider(MusicProvider):
         self.logger.debug("No cover image found for radar playlist %s", source_playlist_id)
         return None
 
-    async def _get_radar_display_name(self, dynamic_id: str) -> str:
-        """Return the official NCM name of a radar playlist, or the hardcoded fallback."""
-        source_playlist_id = _RADAR_SOURCE_PLAYLIST_IDS[dynamic_id]
-        if detail := await self._get_radar_playlist_detail(source_playlist_id):
-            if name := str(detail.get("name") or "").strip():
-                return name
-        return _DYNAMIC_PLAYLIST_META[dynamic_id][0]
-
     async def _build_personal_recommend_items(
         self,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """Build the personalized items for the personal_recommend row."""
-        # build the five playlists concurrently: each builder resolves its own
-        # short-TTL payloads exactly once, so no sequential chain of backend
-        # calls can stack up against the 30s row timeout
-        # the daily payload feeds two of the builders: fetch it once up front
-        # so the concurrent builders cannot duplicate the /recommend/songs call
-        daily_rows = await self._get_daily_recommend_rows()
+        # the daily songs feed three of the builders (daily cover, personal FM
+        # fallback and heart mode seed), so fetch them once up front, then build
+        # the five playlists concurrently. a daily-songs failure must not take
+        # down the whole row, so fall back to an empty list (not None, so the
+        # builders do not retry the request)
+        try:
+            daily_rows = await self._get_daily_recommend_rows()
+        except (InvalidDataError, ResourceTemporarilyUnavailable) as err:
+            self.logger.warning(
+                "Failed to fetch daily recommendations for the personal recommend row: %s", err
+            )
+            daily_rows = []
         results = await asyncio.gather(
             self._build_dynamic_playlist_for_id(_PLAYLIST_PERSONAL_FM_ID, daily_rows),
             self._build_dynamic_playlist_for_id(_PLAYLIST_DAILY_RECOMMEND_ID, daily_rows),

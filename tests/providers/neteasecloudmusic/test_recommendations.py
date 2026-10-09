@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
@@ -65,12 +66,32 @@ RADAR_DETAIL_PAYLOADS = {
         },
     },
 }
+_SONG_NO_COVER = {**_SONG, "id": 1004, "al": {"id": 9, "name": "Album"}}
+_SONG_LATER_COVER = {
+    **_SONG,
+    "id": 1005,
+    "al": {"id": 10, "name": "Album", "picUrl": "https://p1.music.126.net/later.jpg"},
+}
+PERSONAL_FM_NO_COVER_PAYLOAD = {"code": 200, "data": [{"song": _SONG_NO_COVER}]}
+DAILY_MIXED_COVER_PAYLOAD = {
+    "code": 200,
+    "data": {"dailySongs": [_SONG_NO_COVER, _SONG_LATER_COVER]},
+}
 
 
-def _stub_client_get(provider: NeteaseCloudMusicProvider) -> AsyncMock:
+def _stub_client_get(
+    provider: NeteaseCloudMusicProvider,
+    *,
+    fail_paths: set[str] | None = None,
+    overrides: dict[str, dict[str, Any]] | None = None,
+) -> AsyncMock:
     """Attach a client.get stub that returns canned payloads keyed by path."""
 
     async def _fake(path: str, **kwargs: Any) -> dict[str, Any]:
+        if fail_paths and path in fail_paths:
+            raise ResourceTemporarilyUnavailable(f"stubbed failure for {path}")
+        if overrides and path in overrides:
+            return overrides[path]
         if path == "/playlist/detail" and kwargs.get("params", {}).get("id"):
             radar_id = str(kwargs["params"]["id"])
             if radar_id in RADAR_DETAIL_PAYLOADS:
@@ -163,6 +184,53 @@ async def test_get_recommendation_items_personal_recommend(
         call for call in client_mock.call_args_list if call.args[0] == "/playlist/detail"
     ]
     assert {call.kwargs["params"]["id"] for call in radar_calls} == {"3136952023", "5320167908"}
+    # each radar detail is fetched exactly once and reused for both name and cover
+    assert len(radar_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_personal_recommend_survives_daily_failure(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """A failing daily request must not take down the FM and radar items of the row."""
+    _install_cache_mocks(provider)
+    client_mock = _stub_client_get(provider, fail_paths={"/recommend/songs"})
+
+    result = await provider.get_recommendation_items("personal_recommend")
+
+    ids = [item.item_id for item in result]
+    assert "personal_fm_dynamic" in ids
+    assert "personal_radar_dynamic" in ids
+    assert "time_radar_dynamic" in ids
+    # heart mode needs a daily seed song, so it drops out on its own
+    assert not any(item_id.startswith("heart_mode_dynamic") for item_id in ids)
+    # the failed daily request is attempted once and never retried by the builders
+    called_paths = [call.args[0] for call in client_mock.call_args_list]
+    assert called_paths.count("/recommend/songs") == 1
+
+
+@pytest.mark.asyncio
+async def test_personal_fm_cover_scans_daily_songs_for_artwork(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """FM with no cover on its own track falls back to the first daily song that has art."""
+    _install_cache_mocks(provider)
+    _stub_client_get(
+        provider,
+        overrides={
+            "/personal_fm": PERSONAL_FM_NO_COVER_PAYLOAD,
+            "/recommend/songs": DAILY_MIXED_COVER_PAYLOAD,
+        },
+    )
+
+    result = await provider.get_recommendation_items("personal_recommend")
+
+    fm = next(item for item in result if item.item_id == "personal_fm_dynamic")
+    assert isinstance(fm, Playlist)
+    images = fm.metadata.images
+    assert images
+    # the first daily song has no art, so the scan must reach the later one
+    assert next(iter(images)).path == "https://p1.music.126.net/later.jpg"
 
 
 @pytest.mark.asyncio
