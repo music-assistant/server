@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import re
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from types import MethodType
 from typing import Any, cast
 from unittest import mock
 
@@ -20,7 +18,6 @@ from yandex_music import ClientAsync
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
-from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
@@ -52,6 +49,12 @@ def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
     """
     client = YandexMusicClient(token=SecretStr("fake_token"))
     mock_underlying = mock.AsyncMock()
+    mock_underlying.report_unknown_fields = False
+    mock_underlying.strict = False
+    mock_underlying.on_schema_mismatch = None
+    mock_underlying.tracks_file_info = mock.AsyncMock(
+        wraps=MethodType(ClientAsync.tracks_file_info, mock_underlying)
+    )
     client._client = mock_underlying
     client._user_id = 12345
     # Disable throttling in unit tests — replace every kind with an AsyncMock.
@@ -229,11 +232,13 @@ async def test_send_rotor_station_feedback_skip() -> None:
 # -- rotor session API (/rotor/session/*) --------------------------------------
 
 
-def _patch_rotor_session_request(client: YandexMusicClient, response: object) -> mock.AsyncMock:
-    """Install a mocked _rotor_session_request on the client and return the mock."""
-    req_mock = mock.AsyncMock(return_value=response)
-    client._rotor_session_request = req_mock  # type: ignore[method-assign]
-    return req_mock
+def _patch_rotor_transport(client: YandexMusicClient, response: object) -> mock.AsyncMock:
+    """Run the real library's session methods against a mocked HTTP transport."""
+    underlying = ClientAsync("fake_token")
+    post = mock.AsyncMock(return_value=response)
+    underlying._request = mock.MagicMock(post=post)
+    client._client = underlying
+    return post
 
 
 def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.AsyncMock:
@@ -259,21 +264,21 @@ def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
 async def test_rotor_session_new_posts_expected_body_and_returns_session() -> None:
     """rotor_session_new POSTs to /rotor/session/new with wave-model flags and parses result."""
     client, underlying = _make_client()
-    del underlying  # unused; session API bypasses MarshalX client
+    del underlying
     response = {
         "radioSessionId": "sess_abc",
         "batchId": "batch_1",
-        "sequence": [{"track": {"id": 100, "title": "T"}, "liked": False}],
+        "sequence": [{"type": "track", "track": {"id": 100, "title": "T"}, "liked": False}],
     }
-    req_mock = _patch_rotor_session_request(client, response)
+    req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 100})()])
 
     session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
 
     req_mock.assert_awaited_once()
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "new"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/new"
     assert body["seeds"] == ["user:onyourwave"]
     assert body["queue"] == []
     assert body["includeTracksInResponse"] is True
@@ -289,7 +294,7 @@ async def test_rotor_session_new_appends_settings_as_seeds() -> None:
     """rotor_session_new appends settingDiversity / settingMoodEnergy / settingLanguage seeds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(
+    req_mock = _patch_rotor_transport(
         client, {"radioSessionId": "s1", "batchId": "b1", "sequence": []}
     )
     _patch_get_tracks(client, [])
@@ -299,8 +304,8 @@ async def test_rotor_session_new_appends_settings_as_seeds() -> None:
         settings={"diversity": "discover", "moodEnergy": "calm", "language": "russian"},
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     assert body["seeds"] == [
         "user:onyourwave",
         "settingDiversity:discover",
@@ -313,7 +318,7 @@ async def test_rotor_session_new_returns_empty_on_missing_session_id() -> None:
     """If the response lacks radioSessionId the call returns (None, [], None) without raising."""
     client, underlying = _make_client()
     del underlying
-    _patch_rotor_session_request(client, None)
+    _patch_rotor_transport(client, None)
 
     session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
 
@@ -328,40 +333,44 @@ async def test_rotor_session_tracks_posts_current_track_queue() -> None:
     del underlying
     response = {
         "batchId": "batch_2",
-        "sequence": [{"track": {"id": 200}}, {"track": {"id": 201}}],
+        "sequence": [
+            {"type": "track", "track": {"id": 200}, "liked": False},
+            {"type": "track", "track": {"id": 201}, "liked": False},
+        ],
     }
-    req_mock = _patch_rotor_session_request(client, response)
+    req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 200})(), type("T", (), {"id": 201})()])
 
     tracks, batch_id = await client.rotor_session_tracks("sess_abc", current_track_id="100")
 
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "sess_abc/tracks"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/sess_abc/tracks"
     assert body == {"queue": ["100"]}
     assert batch_id == "batch_2"
     assert [t.id for t in tracks] == [200, 201]
 
 
 async def test_rotor_session_feedback_radio_started_sends_from_field() -> None:
-    """RadioStarted event uses event.from=track_id (not trackId)."""
+    """RadioStarted uses a top-level from field, as defined by the session API."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     result = await client.rotor_session_feedback(
         "sess_abc", "radioStarted", track_id="100", batch_id="batch_1"
     )
 
     assert result is True
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "sess_abc/feedback"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/sess_abc/feedback"
     assert body["batchId"] == "batch_1"
     event = body["event"]
     assert event["type"] == "radioStarted"
-    assert event["from"] == "100"
-    assert "trackId" not in event
+    assert body["from"] == "100"
+    assert event.get("trackId") is None
+    assert "from" not in event
     assert "timestamp" in event
     assert re.match(r"^\d{4}-\d{2}-\d{2}T", event["timestamp"])
 
@@ -370,26 +379,26 @@ async def test_rotor_session_feedback_track_started_sends_track_id() -> None:
     """TrackStarted event uses event.trackId (not from)."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc", "trackStarted", track_id="100", batch_id="batch_1"
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "trackStarted"
     assert event["trackId"] == "100"
     assert "from" not in event
-    assert "totalPlayedSeconds" not in event
+    assert event.get("totalPlayedSeconds") is None
 
 
 async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
     """TrackFinished event includes totalPlayedSeconds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc",
@@ -399,8 +408,8 @@ async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
         batch_id="batch_1",
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "trackFinished"
     assert event["trackId"] == "100"
@@ -411,14 +420,14 @@ async def test_rotor_session_feedback_skip_includes_seconds() -> None:
     """Skip event includes totalPlayedSeconds and trackId."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc", "skip", track_id="100", total_played_seconds=10, batch_id="batch_1"
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "skip"
     assert event["trackId"] == "100"
@@ -429,16 +438,16 @@ async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> Non
     """like/dislike events use trackId but do NOT include totalPlayedSeconds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback("sess_abc", "like", track_id="100", batch_id="batch_1")
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "like"
     assert event["trackId"] == "100"
-    assert "totalPlayedSeconds" not in event
+    assert event.get("totalPlayedSeconds") is None
 
 
 async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
@@ -450,14 +459,10 @@ async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None
     provider instead of triggering MA's re-auth prompt.
     """
     client, underlying = _make_client()
-    # _do is awaited via _call_with_retry → _ensure_connected → returns our
-    # AsyncMock underlying client. The underlying client's ._request.post is
-    # what actually raises.
-    underlying._request = mock.MagicMock()
-    underlying._request.post = mock.AsyncMock(side_effect=UnauthorizedError("stale token"))
+    underlying.rotor_session_new.side_effect = UnauthorizedError("stale token")
 
     with pytest.raises(LoginFailed):
-        await client._rotor_session_request("new", {"seeds": ["user:onyourwave"]})
+        await client.rotor_session_new("user:onyourwave")
 
 
 # -- get_similar_artists ------------------------------------------------------
@@ -631,39 +636,6 @@ def test_lrc_regex_rejects_invalid_formats() -> None:
 
     for case in invalid_cases:
         assert not re.search(pattern, case), f"Should NOT match: {case}"
-
-
-# -- HMAC sign construction tests --------------------------------------------
-
-
-def test_hmac_sign_construction_explicit() -> None:
-    """HMAC sign is constructed explicitly with commas stripped from codecs."""
-    # Simulate the parameters
-    timestamp = 1234567890
-    track_id = "12345"
-
-    # The correct way (explicit construction)
-    codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
-    param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
-
-    # Verify codecs_for_sign has no commas
-    assert "," not in codecs_for_sign
-
-    # Verify the construction is correct
-    expected = f"1234567890{track_id}lossless{codecs_for_sign}encraw"
-    assert param_string == expected
-
-    # Verify HMAC can be constructed
-    hmac_sign = hmac.new(
-        DEFAULT_SIGN_KEY.encode(),
-        param_string.encode(),
-        hashlib.sha256,
-    )
-    sign = base64.b64encode(hmac_sign.digest()).decode()[:-1]
-
-    # Verify sign is 43 characters (SHA-256 base64 with one "=" removed)
-    assert len(sign) == 43
-    assert not sign.endswith("=")
 
 
 # -- rate-limit detection -----------------------------------------------------
@@ -1252,9 +1224,7 @@ async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
     during an active edge ban.
     """
     client, underlying = _make_client()
-    underlying._request = mock.MagicMock()
-    underlying._request.post = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
-    underlying.base_url = "https://api.music.yandex.net"
+    underlying.rotor_session_feedback.side_effect = NetworkError(_CAPTCHA_HTML_SNIPPET)
 
     # Pre-condition: rotor kind not blocked.
     assert client._block_until["rotor"] == 0.0
