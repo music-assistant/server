@@ -2487,16 +2487,25 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(album_id):
             return
         folder = album_id.rstrip("/") + "/"
+        # read the mappings of all the album's tracks straight from the db, so a large
+        # album is checked in full
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance, "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"JOIN {DB_TABLE_ALBUM_TRACKS} "
+            f"ON {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
+            f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = 'track' "
+            f"AND {DB_TABLE_ALBUM_TRACKS}.album_id = :album_id",
+            {"album_id": int(library_album.item_id)},
+            limit=0,
+        )
         paths: list[str] = []
-        for db_track in await self.mass.music.albums.get_library_album_tracks(
-            library_album.item_id
-        ):
-            for mapping in db_track.provider_mappings:
-                if mapping.provider_instance != self.instance_id or not mapping.item_id.startswith(
-                    folder
-                ):
-                    return
-                paths.append(mapping.item_id)
+        for row in rows:
+            if row["provider_instance"] != self.instance_id or not str(
+                row["provider_item_id"]
+            ).startswith(folder):
+                return
+            paths.append(row["provider_item_id"])
         albums: list[Album] = []
         for path in paths:
             track = await self._read_track_again(path, read_tracks)
