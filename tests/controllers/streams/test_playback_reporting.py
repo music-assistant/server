@@ -14,6 +14,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.music_provider import MusicProvider
 
 PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -54,7 +55,10 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, MagicMock]:
     mass.player_queues.queue_data_or_none.return_value = None
     provider = MagicMock()
     provider.type = ProviderType.MUSIC
-    provider.on_stream_started = AsyncMock()
+    provider.instance_id = "test_provider"
+    provider.available = True
+    # the start hook is looked up on the provider's class, like a real implementation
+    type(provider).on_stream_started = AsyncMock()
     provider.on_streamed = AsyncMock()
     mass.get_provider.return_value = provider
     return controller, provider
@@ -130,6 +134,20 @@ async def test_short_stream_that_reported_the_start_also_reports_the_end(
     assert queue_item.streamdetails.seconds_streamed == 1
 
 
+async def test_crossfade_intro_and_body_report_one_start(
+    audio: tuple[StreamsAudio, MagicMock],
+) -> None:
+    """A track whose intro is streamed ahead for a crossfade starts once and ends per stream."""
+    controller, provider = audio
+    queue_item = _make_queue_item()
+
+    await _stream(controller, queue_item, take=1)
+    await _stream(controller, queue_item)
+
+    provider.on_stream_started.assert_awaited_once()
+    assert provider.on_streamed.await_count == 2
+
+
 async def test_short_stream_without_a_start_reports_nothing(
     audio: tuple[StreamsAudio, MagicMock],
 ) -> None:
@@ -139,6 +157,33 @@ async def test_short_stream_without_a_start_reports_nothing(
     queue_item.streamdetails.seconds_streamed = 3
 
     await _stream(controller, queue_item, take=1)
+
+    provider.on_stream_started.assert_not_awaited()
+    provider.on_streamed.assert_not_awaited()
+
+
+async def test_provider_without_the_start_hook_keeps_the_end_rule(
+    audio: tuple[StreamsAudio, MagicMock],
+) -> None:
+    """A provider that never hears of the start is not owed an end for a short stream."""
+    controller, provider = audio
+    type(provider).on_stream_started = MusicProvider.on_stream_started
+    queue_item = _make_queue_item()
+
+    await _stream(controller, queue_item, take=1)
+
+    provider.on_streamed.assert_not_awaited()
+
+
+async def test_another_account_of_the_service_is_not_reported_to(
+    audio: tuple[StreamsAudio, MagicMock],
+) -> None:
+    """Only the account that served the stream receives its playback reports."""
+    controller, provider = audio
+    provider.instance_id = "test_provider_other_account"
+    queue_item = _make_queue_item()
+
+    await _stream(controller, queue_item)
 
     provider.on_stream_started.assert_not_awaited()
     provider.on_streamed.assert_not_awaited()

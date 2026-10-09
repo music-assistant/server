@@ -728,7 +728,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Handle callback when the first audio of given streamdetails reaches a player.
 
         Called once per playback, so unlike get_stream_details never for a preload.
-        A playback that triggers this callback is always followed by on_streamed.
+        A playback that triggers this callback is followed by at least one on_streamed.
         """
 
     async def on_streamed(

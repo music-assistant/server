@@ -153,7 +153,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
-from music_assistant.helpers.provider_access import playback_sources
+from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -1732,8 +1732,7 @@ class StreamsAudio:
                     # a reconnect, a crossfade intro and its body); only the first one,
                     # the one that finds no streamed seconds yet, starts the playback
                     if streamdetails.seconds_streamed is None:
-                        start_reported = True
-                        self._notify_provider_stream_started(streamdetails)
+                        start_reported = self._notify_provider_stream_started(streamdetails)
                 # trigger pre-buffering of the next item well before end
                 # to ensure the raw PCM is ready when the next item needs to be streamed.
                 # tracks and sound effects are finite files that fill and close immediately;
@@ -3226,12 +3225,21 @@ class StreamsAudio:
 
     # --- Private methods ---
 
-    def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> None:
-        """Report the start of an item's playback to the provider that owns it."""
+    def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:
+        """
+        Report the start of an item's playback to the provider that owns it.
+
+        Returns whether the provider was told, so its end report is owed.
+        """
         if (music_prov := self._get_reporting_provider(streamdetails)) is None:
-            return
+            return False
+        # the base hook is a no-op: a provider that does not implement it never hears of
+        # the start, so it is not owed the matching end report either
+        if type(music_prov).on_stream_started is MusicProvider.on_stream_started:
+            return False
         with request_priority(RequestPriority.LOW):
             self.mass.create_task(music_prov.on_stream_started(streamdetails))
+        return True
 
     def _notify_provider_streamed(
         self,
@@ -3252,7 +3260,9 @@ class StreamsAudio:
 
     def _get_reporting_provider(self, streamdetails: StreamDetails) -> MusicProvider | None:
         """Return the music provider that receives the playback reports for an item."""
-        provider = self.mass.get_provider(streamdetails.provider)
+        # only the account that served the stream reports its playback, never another
+        # instance of the same service
+        provider = exact_provider(self.mass, streamdetails.provider)
         # plugin providers serve playable items too, but the playback callbacks are
         # MusicProvider-only
         if provider is None or provider.type != ProviderType.MUSIC:
