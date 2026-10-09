@@ -877,8 +877,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if library_item and self._has_visible_source(library_item):
+        if library_item is None or self._has_visible_source(library_item):
             return library_item
+        if provider_instance_id_or_domain == "library":
+            return None
+        # a provider item id is not unique across rows either: the first row is hidden, but
+        # another row with the same id may lie on the user's sources
+        for candidate in await self.get_library_items_by_prov_id(
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_item_id=item_id,
+        ):
+            if self._has_visible_source(candidate):
+                return candidate
         return None
 
     @final
@@ -1280,16 +1290,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
-        fallback = fallback or await self.get_library_item_by_prov_id(
+        # a stored item counts only when it lies on a source the user may see
+        fallback = fallback or await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if (
-            fallback
-            and not isinstance(fallback, ItemMapping)
-            and not self._has_visible_source(fallback)
-        ):
-            # the stored item exists, but on no source the user may see
-            fallback = None
         if (
             fallback
             and isinstance(fallback, ItemMapping)

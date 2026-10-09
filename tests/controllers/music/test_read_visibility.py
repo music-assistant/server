@@ -272,6 +272,26 @@ async def test_get_item_by_external_id_takes_the_first_library_item_the_user_may
     _mock(music, MINE).get_track_by_external_id.assert_not_awaited()
 
 
+async def test_get_takes_the_first_library_row_the_user_may_see_for_a_provider_id(
+    music: MusicController,
+) -> None:
+    """Two library rows carry the same catalog id; the hidden one does not shadow the other."""
+    await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    mine = await music.tracks.add_item_to_library(
+        create_track(MY_SPOTIFY, "t2", name="Zz Track", isrc="GBUM71505078")
+    )
+    # a second row with the same catalog id on the member's account, as a missed match leaves
+    await music.tracks.set_provider_mappings(
+        mine.item_id,
+        {ProviderMapping(item_id="t1", provider_domain="spotify", provider_instance=MY_SPOTIFY)},
+    )
+    _add_my_spotify(music)
+
+    with _as_user(MEMBER):
+        found = await music.tracks.get("t1", "spotify")
+    assert (found.provider, found.item_id) == ("library", mine.item_id)
+
+
 async def test_get_collection_needs_a_visible_source(music: MusicController) -> None:
     """A collection whose books are all on hidden sources does not exist for the user."""
     book = Audiobook(
