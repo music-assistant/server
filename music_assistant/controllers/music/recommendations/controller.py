@@ -41,11 +41,13 @@ class RecommendationsController:
             "music/recommendations",
             self.get_recommendations,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/recommendations/items",
             self.get_recommendation_items,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
@@ -76,16 +78,12 @@ class RecommendationsController:
             instance ids (OR semantics). Only honored on rows that advertise
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
+        # the rows listing leaves out the music sources the user may not see, and only lists
+        # providers declaring the feature; a row of any other provider does not exist
+        prov = self.mass.music.get_visible_provider(provider)
+        if prov is None or ProviderFeature.RECOMMENDATIONS not in prov.supported_features:
+            return UniqueList()
         try:
-            prov = self.mass.get_provider(provider)
-            # re-apply the user provider filter the rows listing applies, so a user
-            # can not fetch items from a music provider an admin has restricted them from
-            if prov is None or not self.mass.music._apply_user_provider_filter([prov]):
-                return UniqueList()
-            if ProviderFeature.RECOMMENDATIONS not in prov.supported_features:
-                # keep the base-model guarantee that this method is only called for
-                # providers declaring the feature, matching the rows listing
-                return UniqueList()
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
                 if isinstance(prov, LibraryRecommendationsProvider):
                     return await prov.get_recommendation_items(item_id, providers=providers)

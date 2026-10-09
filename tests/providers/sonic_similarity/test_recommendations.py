@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
@@ -94,3 +95,12 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
     assert plugin._handle_similar.await_count == 1
     assert list(first) == [resolved]
     assert list(second) == [resolved]
+
+    # another user's row is seeded by their own recently played tracks, not the cached one
+    other_user = User(user_id="user-b", username="b", role=UserRole.USER)
+    with patch(
+        "music_assistant.providers.sonic_similarity.provider.get_current_user",
+        return_value=other_user,
+    ):
+        await plugin.get_recommendation_items(ROW_ID)
+    assert mock_mass.music.recently_played.await_count == 2
