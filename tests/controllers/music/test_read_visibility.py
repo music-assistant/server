@@ -254,6 +254,24 @@ async def test_get_item_by_external_id_skips_a_library_item_of_a_hidden_source(
     _mock(music, THEIRS).get_track_by_external_id.assert_not_awaited()
 
 
+async def test_get_item_by_external_id_takes_the_first_library_item_the_user_may_see(
+    music: MusicController,
+) -> None:
+    """Two library items share an external id; a hidden one does not shadow the visible one."""
+    await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    mine = await music.tracks.add_item_to_library(
+        create_track(MINE, "t2", name="Zz Track", isrc="GBUM71505078")
+    )
+    # a second row with the same identifier, as a match that was not made leaves behind
+    await music.tracks.set_external_ids(mine.item_id, {(ExternalID.ISRC, ISRC)})
+
+    with _as_user(MEMBER):
+        found = await music.tracks.get_item_by_external_id(ISRC, ExternalID.ISRC)
+    assert found is not None
+    assert (found.provider, found.item_id) == ("library", mine.item_id)
+    _mock(music, MINE).get_track_by_external_id.assert_not_awaited()
+
+
 async def test_get_collection_needs_a_visible_source(music: MusicController) -> None:
     """A collection whose books are all on hidden sources does not exist for the user."""
     book = Audiobook(

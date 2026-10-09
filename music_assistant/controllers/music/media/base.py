@@ -1055,12 +1055,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         external_id_type: ExternalID | None = None,
     ) -> ItemCls | None:
         """Get item by external ID, querying library then active providers."""
-        if (
-            library_item := await self.get_library_item_by_external_id(
-                external_id, external_id_type
-            )
-        ) and self._has_visible_source(library_item):
-            return library_item
+        # an external id is not unique, so the first library item on the user's sources wins
+        for library_item in await self.get_library_items_by_external_id(
+            external_id, external_id_type, limit=None
+        ):
+            if self._has_visible_source(library_item):
+                return library_item
 
         if external_id_type is None:
             return None
