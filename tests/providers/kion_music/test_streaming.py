@@ -6,16 +6,23 @@ import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from aiohttp import ClientPayloadError
+from aiohttp import ClientPayloadError, ClientSession, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
+    from pytest_aiohttp import AiohttpServer
+
     from music_assistant.providers.kion_music.provider import KionMusicProvider
     from tests.providers.kion_music.conftest import (
         StreamingProviderStub,
@@ -289,3 +296,52 @@ async def test_get_audio_stream_retries_on_payload_error_then_raises(
     with pytest.raises(MediaNotFoundError, match="retries were exhausted"):
         async for _ in get_audio_stream(streamdetails):
             pass
+
+
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_expired_stream_refresh_has_playback_priority(
+    streaming_manager: KionMusicStreamingManager,
+    aiohttp_server: AiohttpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_fails: bool,
+) -> None:
+    """Expired audio URLs refresh at playback priority without changing the caller's context."""
+    audio = b"audio-bytes"
+
+    async def expired(_request: web.Request) -> web.Response:
+        return web.Response(status=403)
+
+    async def refreshed(request: web.Request) -> web.Response:
+        assert request.headers["Range"].startswith("bytes=0-")
+        return web.Response(body=audio)
+
+    app = web.Application()
+    app.router.add_get("/expired", expired)
+    app.router.add_get("/refreshed", refreshed)
+    server = await aiohttp_server(app)
+
+    async def get_file_info(track_id: str, **_kwargs: Any) -> dict[str, Any]:
+        assert track_id == "test_track"
+        assert current_priority() is RequestPriority.HIGH
+        if refresh_fails:
+            raise RuntimeError("refresh failed")
+        return {"url": str(server.make_url("/refreshed"))}
+
+    monkeypatch.setattr(
+        streaming_manager.client, "get_track_file_info", get_file_info, raising=False
+    )
+    details = _make_stream_details("", url=str(server.make_url("/expired")))
+    del details.data["decryption_key"]
+    details.data["transport"] = "raw"
+    async with ClientSession() as session:
+        mass_stub: Any = streaming_manager.mass
+        mass_stub.http_session = session
+        with request_priority(RequestPriority.LOW):
+            if refresh_fails:
+                with pytest.raises(RuntimeError, match="refresh failed"):
+                    async for _chunk in streaming_manager.get_audio_stream(details):
+                        pass
+            else:
+                chunks = [chunk async for chunk in streaming_manager.get_audio_stream(details)]
+                assert b"".join(chunks) == audio
+            assert current_priority() is RequestPriority.LOW
