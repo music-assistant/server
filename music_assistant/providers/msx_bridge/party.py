@@ -98,12 +98,9 @@ class PartyAdapter:
         return f"{client_prefix}/api/party/qr-cover.png?image={quote(image_url, safe='')}"
 
     async def get_active_party(self) -> PartyInfo | None:
-        """
-        Return details of the active party, or None when no party is active.
-
-        Expected Party provider failures and timeouts degrade to no active party.
-        Results are cached briefly.
-        """
+        """Return details of the active party, or None when unavailable."""
+        # Expected Party provider failures and timeouts degrade to no active party.
+        # Results are cached briefly.
         now = time.monotonic()
         if self.cache is not None and now - self.cache[0] < PARTY_CACHE_TTL:
             return self.cache[1]
@@ -244,10 +241,11 @@ class PartyAdapter:
 @functools.lru_cache(maxsize=4)
 def render_qr(join_url: str, kind: str) -> bytes:
     """
-    Render the join URL as a QR image (blocking on a miss; run in a worker thread).
+    Return a QR image for the join URL.
 
-    Results are memoized — the output only changes when the join code rotates.
+    Run this blocking function in a worker thread.
     """
+    # Results are memoized — the output only changes when the join code rotates.
     import segno  # noqa: PLC0415
 
     buf = io.BytesIO()

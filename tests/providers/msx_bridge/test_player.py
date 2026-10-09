@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
+import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -429,7 +430,6 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
     """Native transitions suppress playback commands while allowing a clock reset."""
     player._playing_from_queue = True
-    player._skip_ws_notify = True
 
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
@@ -441,15 +441,13 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
         patch.object(player.provider, "notify_goto_index") as mock_goto,
         patch.object(player.provider, "notify_play_playlist") as mock_playlist,
         patch.object(player.provider, "notify_play_started") as mock_play,
+        player.suppress_ws_notify(),
     ):
         await player.play_media(media)
 
     mock_goto.assert_not_called()
     mock_playlist.assert_not_called()
     mock_play.assert_not_called()
-
-    # Clean up
-    player._skip_ws_notify = False
 
 
 async def test_play_media_non_queue_sends_broadcast_play(
@@ -558,6 +556,15 @@ def test_suppress_ws_notify_nests(player: MSXPlayer) -> None:
         assert player._skip_ws_notify is True
         with player.suppress_ws_notify():
             assert player._skip_ws_notify is True
+        assert player._skip_ws_notify is True
+    assert player._skip_ws_notify is False
+
+
+def test_suppress_ws_notify_cannot_be_overwritten(player: MSXPlayer) -> None:
+    """Commands cannot bypass the nesting counter with a direct flag assignment."""
+    with player.suppress_ws_notify():
+        with pytest.raises(AttributeError):
+            player._skip_ws_notify = False  # type: ignore[misc]
         assert player._skip_ws_notify is True
     assert player._skip_ws_notify is False
 
@@ -698,14 +705,15 @@ async def test_resume_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
     """play() when PAUSED with _skip_ws_notify should not broadcast to MSX."""
     player._attr_playback_state = PlaybackState.PAUSED
     player._attr_elapsed_time = 10.0
-    player._skip_ws_notify = True
 
-    with patch.object(player.provider, "notify_play_resumed") as mock_notify:
+    with (
+        patch.object(player.provider, "notify_play_resumed") as mock_notify,
+        player.suppress_ws_notify(),
+    ):
         await player.play()
 
     assert player._attr_playback_state == PlaybackState.PLAYING
     mock_notify.assert_not_called()
-    player._skip_ws_notify = False
 
 
 async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
@@ -713,11 +721,12 @@ async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 10.0
     player._attr_elapsed_time_last_updated = 100.0
-    player._skip_ws_notify = True
 
-    with patch.object(player.provider, "notify_play_paused") as mock_notify:
+    with (
+        patch.object(player.provider, "notify_play_paused") as mock_notify,
+        player.suppress_ws_notify(),
+    ):
         await player.pause()
 
     assert player._attr_playback_state == PlaybackState.PAUSED
     mock_notify.assert_not_called()
-    player._skip_ws_notify = False

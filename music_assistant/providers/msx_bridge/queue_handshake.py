@@ -99,12 +99,9 @@ async def prepare_msx_audio(
     from_playlist: bool,
     queue_item_id: str | None,
 ) -> PlayerMedia:
-    """
-    Resolve the PlayerMedia MSX should stream for this URI.
-
-    Selects a queued item (or reuses current media) so MA-driven play
-    and MSX-driven /msx/audio share one implementation.
-    """
+    """Return the PlayerMedia MSX should stream for this URI."""
+    # Selects a queued item (or reuses current media) so MA-driven play
+    # and MSX-driven /msx/audio share one implementation.
     provider.on_player_activity(player.player_id)
     async with player._prepare_lock:
         return await _prepare_msx_audio_locked(

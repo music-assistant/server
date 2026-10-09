@@ -181,11 +181,7 @@ class MSXBridgeProvider(PlayerProvider):
         display_name: str | None = None,
         ip_address: str | None = None,
     ) -> MSXPlayer | None:
-        """
-        Get or register an MSX player for the given player_id.
-
-        Returns the player, or None if registration failed.
-        """
+        """Return the MSX player for this ID, or None if registration fails."""
         # Wait for any pending unregister to complete (race condition handling)
         if pending_event := self._pending_unregisters.get(player_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
@@ -221,16 +217,13 @@ class MSXBridgeProvider(PlayerProvider):
             player.mark_available()
 
     def on_player_disabled(self, player_id: str) -> None:
-        """
-        Handle player disabled: do not unregister (base would unregister).
-
-        MSX players are registered on demand; unregister on disable would remove them
-        from the list. On enable, discovery is empty so the player would not come back
-        until the TV reconnects. We keep the player registered but disabled so it stays
-        visible in the list when re-enabled.
-
-        Still stop playback on TV by broadcasting stop and cancelling streams.
-        """
+        """Disable the player and stop playback while retaining its registration."""
+        # MSX players are registered on demand; unregister on disable would remove them
+        # from the list. On enable, discovery is empty so the player would not come back
+        # until the TV reconnects. We keep the player registered but disabled so it stays
+        # visible in the list when re-enabled.
+        #
+        # Still stop playback on TV by broadcasting stop and cancelling streams.
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
             self.http_server.cancel_streams_for_player(player_id)
@@ -241,12 +234,9 @@ class MSXBridgeProvider(PlayerProvider):
         # Player was never unregistered (see on_player_disabled), so nothing to do.
 
     async def remove_player(self, player_id: str) -> None:
-        """
-        Remove (delete) a player from this provider.
-
-        Called when user chooses to remove the player from MA.
-        This fully unregisters the player. It will reappear if the TV reconnects.
-        """
+        """Remove the player; it may register again when the TV reconnects."""
+        # Called when user chooses to remove the player from MA.
+        # This fully unregisters the player. It will reappear if the TV reconnects.
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
             self.http_server.cancel_streams_for_player(player_id)
@@ -309,12 +299,9 @@ class MSXBridgeProvider(PlayerProvider):
             self.http_server.broadcast_resume(player_id)
 
     def notify_play_stopped(self, player_id: str) -> None:
-        """
-        Notify WebSocket clients that playback stopped (MA stop -> MSX).
-
-        Sends broadcast_stop + cancel_streams twice — same as Disable flow, which
-        stops playback on MSX instantly (vs single signal with ~30s delay).
-        """
+        """Notify the MSX player that playback has stopped."""
+        # Sends broadcast_stop + cancel_streams twice — same as Disable flow, which
+        # stops playback on MSX instantly (vs single signal with ~30s delay).
         server = self.http_server
         if not server:
             return
@@ -332,26 +319,22 @@ class MSXBridgeProvider(PlayerProvider):
             self.http_server.broadcast_seek(player_id, position_seconds)
 
     def is_redirect_stream_mode(self) -> bool:
-        """
-        Check if MA redirect stream mode is enabled.
-
-        In redirect mode the TV is 302-redirected to the MA Streamserver
-        (``resolve_stream_url``) instead of being served by the local
-        proxy/ffmpeg pipeline. See also ``get_ma_stream_url()``.
-        """
+        """Return whether direct MA Streamserver delivery is enabled."""
+        # In redirect mode the TV is 302-redirected to the MA Streamserver
+        # (``resolve_stream_url``) instead of being served by the local
+        # proxy/ffmpeg pipeline. See also ``get_ma_stream_url()``.
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
 
     def get_stream_token(self, player_id: str) -> str:
         """
-        Return the token that authorizes the audio routes for the given player.
-
-        Derived rather than stored, so a caller cannot grow provider state by asking for
-        tokens under new player ids. It stays the same for the provider's lifetime: an
-        idle TV is unregistered after the configured timeout, and changing the token there
-        would strand the URLs a long-running TV session has already cached.
+        Return the token that authorizes audio requests for the given player.
 
         :param player_id: The player to build an audio URL for.
         """
+        # Derived rather than stored, so a caller cannot grow provider state by asking for
+        # tokens under new player ids. It stays the same for the provider's lifetime: an
+        # idle TV is unregistered after the configured timeout, and changing the token there
+        # would strand the URLs a long-running TV session has already cached.
         digest = hmac.new(self._stream_token_secret, player_id.encode(), hashlib.sha256)
         return digest.hexdigest()[:32]
 
@@ -359,15 +342,13 @@ class MSXBridgeProvider(PlayerProvider):
         """
         Resolve the direct MA Streamserver URL for the given media.
 
-        Used by redirect stream mode: the TV fetches audio straight from the
-        MA Streamserver, which applies the player's own codec config and DSP —
-        no local proxy/ffmpeg involved.
-
         :param player_id: The MSX player requesting the stream.
         :param media: PlayerMedia to resolve the stream URL for.
-        :return: Direct URL to the MA Streamserver, or None when resolution
-            fails (the caller falls back to the local proxy pipeline).
+        :return: Direct stream URL, or None if resolution fails.
         """
+        # Used by redirect stream mode: the TV fetches audio straight from the
+        # MA Streamserver, which applies the player's own codec config and DSP —
+        # no local proxy/ffmpeg involved.
         if not media:
             logger.debug("[MARedirect] No media provided")
             return None

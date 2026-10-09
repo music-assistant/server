@@ -107,12 +107,9 @@ def play_context_action(
 
 
 def sort_album_tracks(tracks: list[Track]) -> list[Track]:
-    """
-    Sort album tracks deterministically.
-
-    Include stable track identity so separate display and playlist requests
-    agree even when disc, track number, and title are identical.
-    """
+    """Sort album tracks deterministically."""
+    # Include stable track identity so separate display and playlist requests
+    # agree even when disc, track number, and title are identical.
     return sorted(
         tracks,
         key=lambda t: (
@@ -162,10 +159,9 @@ def get_image_url(
     """
     Get an image URL for a media item.
 
-    :param prefer_proxy: Route the image through the MA imageproxy so the URL
-        points at the MA server (rather than a remote CDN). Needed for the
-        party QR-cover compositor, which only accepts MA-hosted sources.
+    :param prefer_proxy: Return an MA-hosted imageproxy URL.
     """
+    # The party QR-cover compositor only accepts MA-hosted image sources.
     if item.image:
         return provider.mass.metadata.get_image_url(item.image, prefer_proxy=prefer_proxy)
     return None
@@ -316,15 +312,13 @@ def map_tracks_to_msx_playlist(
     qr_cover_base: str | None = None,
 ) -> MsxContent:
     """
-    Map tracks to an MSX Content page for playlist playback.
+    Map tracks to an MSX playlist content page.
 
-    MSX ``playlist:{URL}`` loads a standard Content Root Object.
-    Each item uses ``action: "audio:{URL}"`` so MSX can play them sequentially.
-    The page-level ``action`` auto-starts playback at the requested track index.
-
-    :param qr_cover_base: When set (active party), item backgrounds are routed
-        through this QR-compositing endpoint so the join QR shows on covers.
+    :param qr_cover_base: Optional endpoint for track covers with a party join QR code.
     """
+    # MSX ``playlist:{URL}`` loads a standard Content Root Object.
+    # Each item uses ``action: "audio:{URL}"`` so MSX can play them sequentially.
+    # The page-level ``action`` auto-starts playback at the requested track index.
     token = provider.get_stream_token(player_id)
     msx_items = []
     for track in tracks:
