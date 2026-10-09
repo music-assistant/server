@@ -918,12 +918,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # so pressing play starts it over from the beginning
             resume_item = queue_items[0]
             resume_pos = 0
-        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
-            resume_item = self.get_item(queue_id, queue.current_index)
-            resume_pos = 0
-        elif not resume_item and queue.current_index is None and len(queue_items) > 0:
-            # items available in queue but no previous track, start at 0
-            resume_item = self.get_item(queue_id, 0)
+        elif not resume_item and len(queue_items) > 0:
+            # no (valid) current item: start at the current index, or over from the beginning
+            # when there is none or it lies beyond the items
+            resume_item = self.get_item(queue_id, queue.current_index) or queue_items[0]
             resume_pos = 0
 
         if resume_item is not None:
