@@ -3783,16 +3783,17 @@ class StreamsAudio:
         :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Ordered provider mapping candidates.
         """
+        mappings = list(provider_mappings)
         candidates: dict[tuple[str, str], SourceCandidate] = {}
         # an account that no longer finds an item id is no stand-in for it either
         unavailable = {
             (mapping.provider_instance, mapping.item_id)
-            for mapping in provider_mappings
+            for mapping in mappings
             if not mapping.available
         }
         # best mapping first, so an account standing in for a sibling's item id is backed by
         # the sibling's best mapping
-        for mapping in rank_provider_mappings(provider_mappings):
+        for mapping in rank_provider_mappings(mappings):
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
