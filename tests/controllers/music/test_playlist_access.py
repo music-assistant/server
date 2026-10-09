@@ -841,14 +841,17 @@ async def test_a_music_assistant_playlist_takes_no_uri_of_a_hidden_source(
         "builtin": None,
         "spotify_theirs": ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
         "spotify_mine": ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE),
+        "qobuz--theirs": ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
     }
     set_music_source_access(music_mass_module, sources)
     try:
         with patch.object(music_mass_module, "get_provider", return_value=provider):
-            with pytest.raises(InsufficientPermissions):
-                await playlists._handle_add_playlist_tracks(
-                    target.item_id, ["spotify_theirs://track/t1"], MEMBER.user_id
-                )
+            # by instance id, and by domain of a service the user has no account of
+            for uri in ("spotify_theirs://track/t1", "qobuz://track/t1"):
+                with pytest.raises(InsufficientPermissions):
+                    await playlists._handle_add_playlist_tracks(
+                        target.item_id, [uri], MEMBER.user_id
+                    )
             provider.add_playlist_tracks.assert_not_awaited()
             await playlists._handle_add_playlist_tracks(
                 target.item_id, ["spotify_mine://track/t1", "library://track/1"], MEMBER.user_id
