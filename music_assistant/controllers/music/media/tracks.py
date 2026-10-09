@@ -1554,7 +1554,7 @@ class TracksController(MediaControllerBase[Track]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         stored_metadata = await self._get_stored_metadata(db_id)
-        update_metadata = await self._update_metadata_without_album_thumbs(update, stored_metadata)
+        update_metadata = await self._update_metadata_without_album_thumbs(update)
         metadata = update_metadata if overwrite else stored_metadata.update(update_metadata)
         metadata.lrc_lyrics = normalize_lrc_lyrics(
             metadata.lrc_lyrics or extract_lrc_lyrics(metadata.lyrics)
@@ -1605,9 +1605,7 @@ class TracksController(MediaControllerBase[Track]):
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
 
-    async def _update_metadata_without_album_thumbs(
-        self, update: Track, stored: MediaItemMetadata
-    ) -> MediaItemMetadata:
+    async def _update_metadata_without_album_thumbs(self, update: Track) -> MediaItemMetadata:
         """
         Return the metadata of a track update without the album thumbs of a library read.
 
@@ -1615,16 +1613,16 @@ class TracksController(MediaControllerBase[Track]):
         does not belong in the track's own stored images.
 
         :param update: The track to store.
-        :param stored: The metadata currently stored for the track.
         """
         if update.provider != "library" or not update.metadata.images:
             return update.metadata
+        source_id = int(update.item_id)
         rows = await self.mass.music.database.get_rows_from_query(
             f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.images') AS images "
             f"FROM {DB_TABLE_ALBUM_TRACKS} JOIN {DB_TABLE_ALBUMS} "
             f"ON {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id "
             f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = :track_id",
-            {"track_id": int(update.item_id)},
+            {"track_id": source_id},
         )
         album_thumbs = {
             MediaItemImage.from_dict(image)
@@ -1633,10 +1631,13 @@ class TracksController(MediaControllerBase[Track]):
             for image in json_loads(row["images"])
             if image["type"] == ImageType.THUMB.value
         }
+        if not album_thumbs:
+            return update.metadata
+        own_images = (await self._get_stored_metadata(source_id)).images or ()
         images = UniqueList(
             image
             for image in update.metadata.images
-            if image not in album_thumbs or image in (stored.images or ())
+            if image not in album_thumbs or image in own_images
         )
         return replace(update.metadata, images=images or None)
 

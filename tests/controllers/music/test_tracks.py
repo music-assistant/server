@@ -3166,3 +3166,19 @@ async def test_library_overwrite_keeps_an_album_thumb_the_track_stores(
     await mass.music.tracks.update_item_in_library(db_track.item_id, db_track, overwrite=True)
 
     assert await _stored_image_paths(mass, db_track.item_id) == [ALBUM_THUMB.path]
+
+
+async def test_merge_keeps_an_album_thumb_the_source_track_stores(mass: MusicAssistant) -> None:
+    """A merged duplicate's own artwork is kept, also when it is its album's thumb."""
+    target = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+    source_album = create_album("tidal_1", "album2", name="Other Album")
+    source_album.metadata.images = UniqueList([NEW_THUMB])
+    await mass.music.albums.add_item_to_library(source_album)
+    track = create_track("tidal_1", "track2", name="Other Track", isrc="USRC17607840")
+    track.metadata.images = UniqueList([NEW_THUMB])
+    track.album = create_album("tidal_1", "album2", name="Other Album")
+    source = await mass.music.tracks.add_item_to_library(track)
+
+    await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    assert await _stored_image_paths(mass, target.item_id) == [TRACK_THUMB.path, NEW_THUMB.path]
