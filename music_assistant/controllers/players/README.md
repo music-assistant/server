@@ -101,7 +101,7 @@ Contains standalone helper functions and decorators:
 
 ## Locking
 
-Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds, and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
+Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
 
 ### Lock Ordering
 

@@ -157,7 +157,7 @@ are dropped.
 Transport and playback actions on a given queue are serialized through the player's shared playback
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
 queue do not deadlock. Play actions take it strictly: a request waits for the running one to finish,
-up to 120 seconds, and then fails with a busy error rather than run alongside it (the player
+up to 120 seconds per lock, and then fails with a busy error rather than run alongside it (the player
 controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
 provider call). The next-track handover takes the same strict lock and only checks the queue once it
 holds it, so a track handed to the player after a wait is still the one that follows the playing one.

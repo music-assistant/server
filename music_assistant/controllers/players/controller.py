@@ -239,7 +239,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         If the lock can't be acquired within 30s the body runs anyway, to keep
         the player responsive when a previous holder is stuck on a hung command.
         A strict acquisition never runs without the lock: it keeps waiting, up to
-        120s, and then raises ResourceBusyError.
+        120s per lock, and then raises ResourceBusyError.
 
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves always
@@ -289,7 +289,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         that is not part of a group only takes its own lock.
 
         :param player_id: The player to lock.
-        :param strict: Never run without either lock, see get_player_lock.
+        :param strict: Never run without either lock, see get_player_lock. Each lock has
+            its own strict timeout, so a player held by a group waits for both in turn.
         :raises ResourceBusyError: When a strict acquisition timed out.
         """
         async with contextlib.AsyncExitStack() as stack:
