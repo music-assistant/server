@@ -183,6 +183,34 @@ async def test_scrobble_submits_to_the_resolved_instance(
     providers[INSTANCE_B].scrobble.assert_not_awaited()
 
 
+async def test_unavailable_instance_is_skipped(
+    handler: NeteaseScrobbleHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """A direct uri whose instance is not loaded is not reported."""
+    mass.get_provider.side_effect = lambda *_args, **_kwargs: None
+
+    await handler._scrobble(_report(uri=f"{INSTANCE_A}://track/42"))
+
+    providers[INSTANCE_A].scrobble.assert_not_awaited()
+    providers[INSTANCE_B].scrobble.assert_not_awaited()
+
+
+async def test_repeated_completion_is_submitted_once(
+    mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """The same completed play reported twice is only checked in once."""
+    provider = NeteaseScrobbleProvider(
+        mass, Mock(domain="neteasecloudmusic_scrobble"), _config(), SUPPORTED_FEATURES
+    )
+    await provider.loaded_in_mass()
+
+    report = _report(uri=f"{INSTANCE_A}://track/42")
+    await provider.on_media_item_played(report)
+    await provider.on_media_item_played(report)
+
+    providers[INSTANCE_A].scrobble.assert_awaited_once()
+
+
 async def test_hook_reports_to_the_account_of_the_playing_user(
     mass: Mock, providers: dict[str, Mock]
 ) -> None:
