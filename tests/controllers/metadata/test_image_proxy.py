@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -597,6 +602,28 @@ async def test_serve_thumbnail_sets_csp_for_svg(
     jpg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 256, "jpeg")
     assert "Content-Security-Policy" not in jpg_resp.headers
     assert "X-Content-Type-Options" not in jpg_resp.headers
+
+
+async def test_serve_thumbnail_logs_an_upstream_outage_without_a_trace(
+    metadata_controller: MetaDataController,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An image source that is temporarily down is a one-line warning and a 404, no trace."""
+
+    async def _fake_resolve(*_args: object, **_kwargs: object) -> tuple[bytes, str]:
+        raise RetriesExhausted("failed after 2 attempts")
+
+    monkeypatch.setattr(metadata_controller, "_resolve_thumbnail", _fake_resolve)
+    caplog.set_level(logging.DEBUG)
+
+    resp = await metadata_controller._serve_thumbnail("mbid", "coverartarchive", 256, "jpg")
+
+    assert resp.status == 404
+    records = [r for r in caplog.records if "Error while fetching image" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
 
 
 async def test_invalidate_image_cache_end_to_end(
