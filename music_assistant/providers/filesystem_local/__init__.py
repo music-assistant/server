@@ -2448,7 +2448,7 @@ class LocalFileSystemProvider(MusicProvider):
             return
         try:
             track = await self.get_track(mappings[0].item_id)
-        except MusicAssistantError as err:
+        except (MusicAssistantError, OSError) as err:
             # the file was read earlier in this sync, so a failure here leaves it as stored
             self.logger.warning("Could not read %s again: %s", mappings[0].item_id, err)
             return
