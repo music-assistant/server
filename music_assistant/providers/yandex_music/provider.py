@@ -399,6 +399,17 @@ class _WaveState:
         self.settings: dict[str, str] = {}
         self.lock: asyncio.Lock = asyncio.Lock()
 
+    def reset_session(self) -> None:
+        """Clear playback state for a new session, retaining station settings and lock."""
+        self.session_id = None
+        self.batch_id = None
+        self.last_track_id = None
+        self.playlist_next_cursor = None
+        self.radio_started_sent = False
+        self.ended = False
+        self.prefetched.clear()
+        self.seen_track_ids.clear()
+
 
 class YandexMusicProvider(MusicProvider):
     """Implementation of a Yandex Music MusicProvider."""
@@ -1660,9 +1671,9 @@ class YandexMusicProvider(MusicProvider):
         # "Load more" always uses single next batch.
         max_batches = batch_size_config if sub_subpath != "next" else 1
 
-        # Reset seen tracks on fresh browse (not "load more")
+        # Start a new session on fresh browse (not "load more").
         if sub_subpath != "next":
-            wave.seen_track_ids = set()
+            wave.reset_session()
 
         queue: str | int | None = None
         if sub_subpath == "next":
@@ -1719,7 +1730,7 @@ class YandexMusicProvider(MusicProvider):
             queue = first_track_id_this_batch
 
         # Only show "Load more" if we haven't reached the limit and there's more data
-        if last_batch_id and total_track_count < max_tracks_config:
+        if last_batch_id and not wave.ended and total_track_count < max_tracks_config:
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
@@ -1830,7 +1841,7 @@ class YandexMusicProvider(MusicProvider):
         max_batches = batch_size_config if not load_more else 1
 
         if not load_more:
-            wave.seen_track_ids = set()
+            wave.reset_session()
 
         all_tracks: list[Track | BrowseFolder] = []
         last_batch_id: str | None = None
@@ -1868,7 +1879,7 @@ class YandexMusicProvider(MusicProvider):
             ):
                 break
 
-        if last_batch_id and total_track_count < max_tracks_config:
+        if last_batch_id and not wave.ended and total_track_count < max_tracks_config:
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
@@ -2471,13 +2482,7 @@ class YandexMusicProvider(MusicProvider):
                     wave.session_id, current_track_id=str(wave.last_track_id)
                 )
             except RotorSessionExpiredError:
-                wave.session_id = None
-                wave.batch_id = None
-                wave.last_track_id = None
-                wave.playlist_next_cursor = None
-                wave.radio_started_sent = False
-                wave.prefetched.clear()
-                wave.seen_track_ids.clear()
+                wave.reset_session()
             except RotorSessionTerminatedError:
                 wave.ended = True
                 return ([], None)
@@ -2714,6 +2719,8 @@ class YandexMusicProvider(MusicProvider):
         """
         state = self._get_wave_state(station_id)
         async with state.lock:
+            if state.ended and path.rstrip("/").split("/")[-1] != "next":
+                state.reset_session()
             max_tracks = int(
                 self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
             )
@@ -2772,7 +2779,7 @@ class YandexMusicProvider(MusicProvider):
 
             # Append "Load more" sentinel so MA knows to call browse again for next batch.
             # This mirrors the My Wave mechanism and enables continuous radio playback.
-            if tracks and len(state.seen_track_ids) < max_tracks and path:
+            if tracks and not state.ended and len(state.seen_track_ids) < max_tracks and path:
                 # Append /next to the current path (same pattern as _browse_my_wave).
                 # This makes each "Load more" path unique (e.g. /next/next/next...)
                 # so MA never serves a cached result for subsequent presses.
