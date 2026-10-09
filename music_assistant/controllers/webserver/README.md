@@ -53,6 +53,7 @@ Handles all authentication and user management:
 - `roles` - Custom user roles (the builtin roles are defined in code and never stored)
 - `user_auth_providers` - Links users to authentication providers (many-to-many)
 - `auth_tokens` - Access tokens with expiration tracking
+- `join_codes` - Short codes (QR code or link sign-in) that are exchanged for an access token
 - `settings` - Schema version and configuration
 
 **Authentication Providers:**
@@ -61,12 +62,18 @@ Handles all authentication and user management:
 
 **Token Types:**
 - **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
+- **Guest tokens**: Short-lived tokens of guest users get a fixed 1-day expiration instead, without renewal
 - **Long-lived tokens**: No auto-renewal, 1-year expiration (for integrations/API access)
+
+Tokens are HS256-signed JWTs ([helpers/jwt_auth.py](../../helpers/jwt_auth.py)), each backed by
+a row in `auth_tokens`. The JWT's `exp` holds the token's hard limit (the fixed expiry of guest
+and long-lived tokens, the 90-day cap of short-lived ones); the row adds the sliding expiration
+and revocation. Older non-JWT tokens are still accepted through their hash.
 
 **Security Features:**
 - Rate limiting on login attempts (progressive delays)
 - Password hashing with PBKDF2-HMAC-SHA256 (100,000 iterations) and user- and server specific salts
-- Secure token generation with secrets.token_urlsafe()
+- Tokens signed with a random per-server secret
 - WebSocket disconnect on token revocation
 - Session management and cleanup
 
@@ -130,7 +137,8 @@ Manages WebRTC-based remote access for external connectivity:
 ### 4. WebSocket Client Handler ([websocket_client.py](websocket_client.py))
 
 Manages individual WebSocket connections:
-- Authentication enforcement (auth or login command must be first)
+- Authentication enforcement (Ingress connections are signed in from the HA headers; on others
+  only public commands run before a successful `auth` command)
 - Command routing and response handling
 - Event subscription and broadcasting
 - Connection lifecycle management
@@ -140,7 +148,7 @@ Manages individual WebSocket connections:
 
 **Helpers ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
 - Request authentication for HTTP endpoints, called per handler (there is no aiohttp middleware)
-- User context management (thread-local storage)
+- User context management (contextvars)
 - Ingress detection (Home Assistant add-on)
 - Token extraction from Authorization header
 
@@ -182,25 +190,22 @@ Manages individual WebSocket connections:
 
 ### Login Flow (Home Assistant OAuth)
 
-1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...`
-2. **Redirect to HA**: User is redirected to Home Assistant OAuth consent page
+1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...` (or the
+   `auth/authorization_url` command) answers with the Home Assistant `authorization_url`
+2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant
 3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
-6. **Token Generation**: MA token created and returned via redirect with `code` parameter
-7. **Client Handling**: Client extracts token from URL and stores it
-
-### Remote Client OAuth Flow
-
-For remote clients (PWA over WebRTC), OAuth requires special handling since redirect URLs can't point to localhost:
-
-1. **Request Session**: Remote client calls `auth/authorization_url` with `for_remote_client=true`
-2. **Session Created**: Server creates a pending OAuth session and returns session_id and auth URL
-3. **User Opens Browser**: Client opens auth URL in system browser
-4. **OAuth Flow**: User completes OAuth in browser
-5. **Token Stored**: Server stores token in pending session (using special return URL format)
-6. **Polling**: Client polls `auth/oauth_status` with session_id
-7. **Token Retrieved**: Once complete, client receives token and can authenticate
+6. **Token Generation**: A short-lived MA token is created and the callback answers with
+   [oauth_callback.html](../../helpers/resources/oauth_callback.html), which carries the token and
+   the `return_url` with the token appended as `code` parameter
+7. **Client Handling**: The page asks for consent first when `return_url` is valid but not
+   trusted. Trusted are the same origin, localhost, a private network address, the configured
+   base URL and the allowlisted Home Assistant and app URLs (see `is_allowed_redirect_url` in
+   [redirect_validation.py](../../helpers/redirect_validation.py)). A popup whose `return_url`
+   is an absolute URL on the server's own origin posts the token to its opener (an
+   `oauth_success` message) and closes; otherwise the page navigates to `return_url` (`/` when
+   none or an invalid one was given), where the client reads the token from the `code` parameter
 
 ### Ingress Authentication (Home Assistant Add-on)
 
@@ -215,7 +220,9 @@ When running as a Home Assistant add-on:
 ### WebSocket Authentication
 
 1. **Connection Established**: Client connects to `/ws`
-2. **Auth Command Required**: First command must be `auth` with token
+2. **Auth Command Required**: Until an `auth` command with a valid token succeeds, only public
+   commands (such as `auth/login`) are accepted. Ingress connections skip this step: they are
+   signed in from the HA headers on connect
 3. **Token Validation**: Token validated and user context set
 4. **Authenticated Session**: All subsequent commands executed in user context
 5. **Auto-Disconnect**: Connection closed on token revocation or user disable
@@ -401,8 +408,8 @@ HTTP Request → Webserver → Command Handler → Response
 ```
 WebSocket Connect → WebsocketClientHandler
                            |
-                           ├─ First command: auth → Validate token → Set user context
-                           └─ Subsequent commands → Check auth/role → Execute → Respond
+                           ├─ auth command → Validate token → Set user context
+                           └─ Other commands → Check auth/scope → Execute → Respond
 ```
 
 ### Remote WebRTC Request Flow
@@ -417,11 +424,12 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 ### Authentication
 
-- **Mandatory authentication**: All API access requires authentication (except Ingress)
-- **Secure token generation**: Uses `secrets.token_urlsafe(48)` for cryptographically secure tokens
-- **Password hashing**: PBKDF2-HMAC-SHA256 with user-specific salts
+- **Mandatory authentication**: All API access requires authentication, except Ingress and the
+  few public commands marked `authenticated=False` (such as `auth/login`)
+- **Signed tokens**: HS256 JWTs signed with a random per-server secret, each backed by an `auth_tokens` row so it can be revoked
+- **Password hashing**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
 - **Rate limiting**: Progressive delays on failed login attempts
-- **Token expiration**: Both short-lived (30 days sliding, 90 days max) and long-lived (1 year) tokens supported
+- **Token expiration**: Short-lived (30 days sliding, 90 days max), guest (1 day) and long-lived (1 year) tokens supported
 
 ### Authorization
 
@@ -447,9 +455,11 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 ### Data Protection
 
-- **Token storage**: Only hashed tokens stored in database
-- **Password storage**: PBKDF2-HMAC-SHA256 with user-specific salts
-- **Session cleanup**: Expired tokens automatically deleted
+- **Token storage**: `auth_tokens` stores only a SHA-256 hash of each token; the Home Assistant
+  integration token is kept in plain text in `settings`, so it can be announced again
+- **Password storage**: PBKDF2-HMAC-SHA256 with user- and server-specific salts
+- **Session cleanup**: Expired tokens are deleted when used, and a daily cleanup removes expired
+  short-lived tokens
 - **User disable**: Immediate disconnect of all user sessions
 
 ## Development Guide
@@ -457,9 +467,15 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ### Adding New Authentication Providers
 
 1. Create provider class inheriting from `LoginProvider` in [helpers/auth_providers.py](helpers/auth_providers.py)
-2. Implement required methods: `authenticate()`, `get_authorization_url()` (if OAuth), `handle_oauth_callback()` (if OAuth)
-3. Register provider in `AuthenticationManager._setup_login_providers()`
-4. Add provider configuration to webserver config entries if needed
+2. Implement the abstract members: the `provider_type` property (its `AuthProviderType`), the
+   `requires_redirect` property and `authenticate(credentials)`, which returns an `AuthResult`
+3. Override the optional members where needed: `get_authorization_url(redirect_uri, return_url)`
+   and `handle_oauth_callback(code, state, redirect_uri)` for a redirect (OAuth) provider, and
+   `allow_self_registration` (default `False`), which the provider checks itself before it
+   creates an account for a user signing in for the first time
+4. Register provider in `AuthenticationManager._setup_login_providers()`, passing its
+   configuration as a `LoginProviderConfig` (subclass it for provider-specific keys, see
+   `HomeAssistantProviderConfig`)
 
 ### Adding New API Endpoints
 
@@ -545,11 +561,13 @@ webserver/
 ├── controller.py                       # Main webserver controller
 ├── auth.py                             # Authentication manager
 ├── websocket_client.py                 # WebSocket client handler
+├── sendspin_proxy.py                   # Authenticated WebSocket proxy to the Sendspin server
 ├── api_docs.py                         # API documentation generator
 ├── README.md                           # This file
 ├── helpers/
 │   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
-│   └── auth_providers.py               # Authentication providers
+│   ├── auth_providers.py               # Authentication providers
+│   └── ssl.py                          # SSL certificate helpers
 └── remote_access/
     ├── __init__.py                     # Remote access manager
     └── gateway.py                      # WebRTC gateway implementation

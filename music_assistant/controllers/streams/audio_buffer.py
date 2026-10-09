@@ -15,11 +15,13 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing, suppress
+from contextlib import aclosing, nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import (
+    ContentType,
     MediaType,
+    StreamType,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import AudioError
@@ -38,8 +40,17 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.audio import (
+    arriving_audio_format,
+    decoded_pcm_format,
+    is_dsd_stream,
+)
+from music_assistant.helpers.ffmpeg import (
+    AUDIO_PROBE_TIMEOUT,
+    apply_stream_info,
+    get_ffmpeg_stream,
+    probe_audio_stream,
+)
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     request_priority,
@@ -449,6 +460,8 @@ class AudioBuffer:
             all of its audio. Not called when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
+        :raises ProviderStreamLimitError: If a source in an unknown format can not get a
+            source-stream slot to detect that format within the timeout.
         """
         log_prefix = f"get_buffer[{reason}]" if reason else "get_buffer"
         # the producer may spend its source wait before the first byte arrives,
@@ -496,6 +509,8 @@ class AudioBuffer:
                     )
                 return existing_buffer
 
+        if _needs_format_probe(streamdetails):
+            await _probe_source_format(mass, streamdetails, source_wait_timeout)
         audio_buffer, buffer_seek_seconds = _new_buffer(
             mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
         )
@@ -855,8 +870,9 @@ def _new_buffer(
         ):
             # the first boundary comes before the player could build up a lead of its
             # own, so hand it one. A preload at a boundary never banks: with the
-            # source's slot only freed by the item that just ended, it would just
-            # widen the gap the player has to bridge there.
+            # source's slot only freed by the item that just ended, it would just take
+            # more of the tail from the fade, or widen the gap the player has to bridge
+            # where there is no fade.
             ready_threshold = max(ready_threshold, REALTIME_COLD_START_BANK)
     elif crossfade_enabled:
         ready_threshold = 8
@@ -942,3 +958,61 @@ def _has_single_source_slot(mass: MusicAssistant, streamdetails: StreamDetails) 
     # the exact instance: a lookup by domain may land on a sibling instance's budget
     provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
     return isinstance(provider, MusicProvider) and provider.max_concurrent_streams == 1
+
+
+def _needs_format_probe(streamdetails: StreamDetails) -> bool:
+    """Return whether the source must be probed before a buffer format can be chosen for it."""
+    arriving_format = arriving_audio_format(streamdetails)
+    return (
+        arriving_format.content_type == ContentType.UNKNOWN
+        and arriving_format.codec_type == ContentType.UNKNOWN
+        and streamdetails.stream_type in (StreamType.HTTP, StreamType.HLS, StreamType.LOCAL_FILE)
+        # the parts of a multi-part stream are opened by a concat demuxer of their own
+        and isinstance(streamdetails.path, str)
+        # a live source is left alone: probing it opens a second session on it
+        and not streamdetails.is_realtime
+        and streamdetails.media_type
+        in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+        and not is_dsd_stream(streamdetails)
+    )
+
+
+async def _probe_source_format(
+    mass: MusicAssistant, streamdetails: StreamDetails, source_wait_timeout: float | None
+) -> None:
+    """
+    Detect the arriving format of a source that does not declare it.
+
+    Updates the arriving format of the streamdetails in place, and leaves it untouched
+    when the source can not be probed.
+
+    :param mass: The MusicAssistant instance.
+    :param streamdetails: The stream details of the source.
+    :param source_wait_timeout: Maximum seconds to wait for a free source-stream slot,
+        or None to wait without a timeout.
+    :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
+    """
+    input_path = streamdetails.path
+    assert isinstance(input_path, str)  # for type checking
+    # the probe opens the source just like the producer does, so it needs a slot as well
+    provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
+    stream_slot = (
+        provider.acquire_stream_slot(source_wait_timeout)
+        if isinstance(provider, MusicProvider)
+        else nullcontext()
+    )
+    async with stream_slot:
+        if streamdetails.stream_type == StreamType.HLS:
+            try:
+                async with asyncio.timeout(AUDIO_PROBE_TIMEOUT):
+                    input_path = (await mass.streams.audio.get_hls_substream(input_path)).path
+            except Exception as err:
+                LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
+                return
+        stream_info = await probe_audio_stream(input_path, streamdetails.extra_input_args)
+    if stream_info is None:
+        LOGGER.debug("Unable to detect the audio format of %s", streamdetails.uri)
+        return
+    audio_format = arriving_audio_format(streamdetails)
+    apply_stream_info(audio_format, stream_info)
+    LOGGER.debug("Detected audio format of %s: %s", streamdetails.uri, audio_format)
