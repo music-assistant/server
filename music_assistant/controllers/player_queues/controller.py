@@ -1481,6 +1481,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
+    async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Cancel the still-filling source of an item the player reported it could not play.
+
+        A player that gives up on a track moves on to the next one by itself, while the
+        failed track's source keeps filling its buffer and holds the provider stream slot
+        that next track needs. Safe to call for any item: only a source that still holds
+        a capped provider slot is cancelled.
+
+        :param queue_id: The queue the failed item belongs to.
+        :param queue_item_id: The queue item id the player failed to play.
+        """
+        if (queue_item := self.get_item(queue_id, queue_item_id)) is None:
+            return
+        await self._abort_source_buffer(queue_item)
+
     def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
         Call when the flow stream has finished generating all audio data for a queue.
@@ -1822,19 +1838,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if item_index in (center - 1, center):
                 return True
         # get_next_item accounts for repeat mode and unavailable items. Measured from the
-        # item the player last fetched, since that is the one it asks to follow; a player
-        # reading ahead of our playhead is otherwise refused the track it needs next
+        # item the player last fetched, since that is the one it asks to follow (a player
+        # reading ahead of our playhead is otherwise refused the track it needs next), and
+        # from the playhead itself: a player that gave up on a track before its stream
+        # delivered a byte asks for the one after it, which no fetch ever recorded. A
+        # served item the queue no longer holds (a clear or a replace) has no next item
         served_item_id = self._queue_data[queue_id].last_served_item_id
-        from_item: int | str | None
-        if served_item_id is not None and self.index_by_id(queue_id, served_item_id) is not None:
-            from_item = served_item_id
-        else:
-            # never served, or the queue no longer holds it (a clear or a replace)
-            from_item = queue.current_index
-        if from_item is None:
-            return False
-        next_item = self.get_next_item(queue_id, from_item)
-        return next_item is not None and next_item.queue_item_id == queue_item_id
+        for from_item in (served_item_id, queue.current_index):
+            if from_item is None:
+                continue
+            next_item = self.get_next_item(queue_id, from_item)
+            if next_item is not None and next_item.queue_item_id == queue_item_id:
+                return True
+        return False
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """
