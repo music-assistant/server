@@ -91,12 +91,12 @@ def parse_artist(provider: Music247eProvider, artist_obj: JsonLike) -> Artist:
         item_id=artist_obj["id"],
         provider=provider.instance_id,
         name=artist_obj["title"],
-        uri=artist_obj.get("share"),
         provider_mappings={
             ProviderMapping(
                 item_id=str(artist_obj["id"]),
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
+                url=artist_obj.get("share"),
             )
         },
     )
