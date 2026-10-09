@@ -268,7 +268,7 @@ async def test_ingress_never_sees_the_setup_page(
     :param gets_the_app: Whether that account is served the app.
     """
     with (
-        patch.object(controller_module, "is_request_from_ingress", return_value=True),
+        patch.object(controller_module, "is_request_from_ingress_proxy", return_value=True),
         patch.object(controller_module, "get_ha_user_role", AsyncMock(return_value=role)),
         patch.object(webserver._server, "serve_static", _served_app()) as serve_static,
     ):

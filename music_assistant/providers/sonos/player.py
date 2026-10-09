@@ -619,6 +619,32 @@ class SonosPlayer(Player):
         """
         return item_id.rsplit("@", 1)[0]
 
+    def release_failed_item(self, wire_item_id: str) -> None:
+        """
+        Hand the source of a queue item the speaker failed to play over to the next track.
+
+        :param wire_item_id: The failed item's id as the speaker reports it, which is the
+            id it was served under.
+        """
+        if not (queue_id := self.cloud_queue_id):
+            return
+        queue_item_id = self.bare_item_id(wire_item_id)
+        # only the current load's wire id (or a legacy bare id) names the source the item
+        # holds now: a report from before a same-track reload is about the load that the
+        # reload replaced, and must not take the fresh source down with it
+        if wire_item_id not in (queue_item_id, self.wire_item_id(queue_item_id)):
+            self.logger.debug(
+                "Ignoring the failure of %s: the item has been reloaded since", wire_item_id
+            )
+            return
+        # the speaker moves on to the next track by itself, while the failed track's
+        # source may still be filling its buffer and holding the stream slot that
+        # next track needs on a music service that allows a single stream
+        self.mass.create_task(
+            self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
+            task_name=f"sonos_release_failed_item_{self.player_id}",
+        )
+
     def bump_cloud_queue_version(self) -> None:
         """
         Advance the version the speaker compares its cached queue against.
@@ -747,6 +773,7 @@ class SonosPlayer(Player):
                 player_ids_to_add=player_ids_to_add,
                 player_ids_to_remove=player_ids_to_remove,
             )
+            await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
 
     async def ungroup(self) -> None:
         """
@@ -962,8 +989,8 @@ class SonosPlayer(Player):
         output_protocol: OutputProtocol,
     ) -> None:
         """Handle callback when playback starts on a protocol output."""
-        # Only handle AirPlay protocol
-        if output_protocol.protocol_domain != "airplay":
+        # Only handle AirPlay, directly or as the base of a derived transport (e.g. Sendspin bridge)
+        if not self._streams_over_airplay(output_protocol):
             return
 
         # Only if this player is a coordinator with group members
@@ -1176,7 +1203,7 @@ class SonosPlayer(Player):
         )
 
     def _on_playback_error(self, event: SonosEvent) -> None:
-        """Log a playback failure the speaker reported for the item it tried to play."""
+        """Handle a playback failure the speaker reported for the item it tried to play."""
         if self.synced_to:
             # the coordinator plays for the whole group and reports for it
             return
@@ -1199,12 +1226,45 @@ class SonosPlayer(Player):
             error["errorCode"],
             error.get("reason", "no reason given"),
         )
+        if item_id := error.get("itemId"):
+            self.release_failed_item(item_id)
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
         media.uri = await self.mass.streams.resolve_stream_url(self.player_id, media)
         return media
+
+    def _streams_over_airplay(self, output_protocol: OutputProtocol) -> bool:
+        """Return whether the output protocol reaches this speaker over AirPlay."""
+        if output_protocol.protocol_domain == "airplay":
+            return True
+        derived_from = output_protocol.derived_from
+        if not derived_from or derived_from == "native":
+            return False
+        base_player = self.mass.players.get_player(derived_from)
+        return base_player is not None and base_player.provider.domain == "airplay"
+
+    async def _wait_for_group_members(
+        self, player_ids_to_add: list[str], player_ids_to_remove: list[str]
+    ) -> None:
+        """Wait until the Sonos group reports the requested members, or give up after a timeout."""
+        removed = set(player_ids_to_remove) - {self.player_id}
+
+        def _reported() -> bool:
+            members = set(self.client.player.group_members)
+            return members.issuperset(player_ids_to_add) and members.isdisjoint(removed)
+
+        try:
+            async with asyncio.timeout(5):
+                while not _reported():
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            self.logger.debug(
+                "Timed out waiting for the Sonos group of %s to report members %s",
+                self.name,
+                player_ids_to_add,
+            )
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

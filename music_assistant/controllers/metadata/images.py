@@ -3,13 +3,11 @@ Image handling for the Metadata Controller.
 
 Provides the ImageProxyMixin, mixed into the MetaDataController, which resolves
 media images to (proxied) URLs, renders and caches thumbnails, serves the
-``/imageproxy`` HTTP endpoint, extracts colour palettes and serves previously
-generated playlist collage images.
+``/imageproxy`` HTTP endpoint and extracts colour palettes.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from base64 import b64encode
@@ -18,7 +16,12 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -39,7 +42,6 @@ from music_assistant.helpers.images import (
     get_image_thumb,
     invalidate_cached_image,
 )
-from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
@@ -68,8 +70,7 @@ class ImageProxyMixin:
     Image/imageproxy functionality for the MetaDataController.
 
     Expects to be mixed with a class providing ``mass``, ``cache``, ``logger``,
-    ``domain``, the ``_collage_images_dir`` set during setup and the image-id
-    LRU bookkeeping attributes initialised in ``__init__``.
+    ``domain`` and the image-id LRU bookkeeping attributes initialised in ``__init__``.
     """
 
     if TYPE_CHECKING:
@@ -77,7 +78,6 @@ class ImageProxyMixin:
         cache: CacheController
         logger: logging.Logger
         domain: str
-        _collage_images_dir: str
         _image_id_forward: dict[tuple[str, str], str]
         _image_id_lru: OrderedDict[str, tuple[str, str]]
         _image_id_persisted: dict[str, float]
@@ -379,12 +379,6 @@ class ImageProxyMixin:
         :param image_format: Requested output format (jpg/jpeg/png/svg).
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
-        if provider == "builtin" and path.startswith("/collage/"):
-            # special case for collage images
-            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
-            if not is_safe_path(collage_rel):
-                raise FileNotFoundError("Invalid collage path")
-            path = os.path.join(self._collage_images_dir, collage_rel)
         if image_format == "svg":
             return await get_image_data(self.mass, path, provider), "svg"
         thumbnail_bytes = await get_image_thumb(
@@ -414,6 +408,9 @@ class ImageProxyMixin:
             # broadly catch all exceptions here to ensure we dont crash the request handler
             if isinstance(err, (MediaNotFoundError, FileNotFoundError)):
                 self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            elif isinstance(err, (RetriesExhausted, ResourceTemporarilyUnavailable)):
+                # an upstream outage is expected now and then, a trace would only add noise
+                self.logger.warning("Error while fetching image %s: %s", path, str(err))
             else:
                 self.logger.warning(
                     "Error while fetching image %s: %s",

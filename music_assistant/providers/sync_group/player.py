@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -515,8 +516,19 @@ class SyncGroupPlayer(Player):
                 # this may happen in race conditions where we just switched sync leaders
                 # and the new leader doesn't support enqueueing next media.
                 return
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
+            # the leader is commanded from under the group's lock, like play_media does,
+            # so leader-scoped work such as a member re-join cannot interleave with it.
+            # Strict, like the handover's own lock: a busy leader drops the handover
+            # rather than letting it run alongside whatever holds the leader
+            async with self.mass.players.get_player_lock(
+                sync_leader.player_id, PlayerLockPurpose.PLAYBACK, strict=True
+            ):
+                if self.sync_leader is not sync_leader:
+                    # the group was re-led while we waited: the new leader gets its own
+                    # handover from the queue, this one is for a leader that is gone
+                    return
+                # Use internal handler to bypass group redirect logic and avoid infinite loop
+                await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
@@ -746,6 +758,8 @@ class SyncGroupPlayer(Player):
         """Handle callback when a group member of the group player is updated."""
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
+        if not self.is_dynamic and self.sync_leader is not None:
+            self._schedule_rejoin_missing_members()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -1009,11 +1023,13 @@ class SyncGroupPlayer(Player):
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
         group_members = self.static_group_members or self.group_members or new_members or []
+        # display, visualizer and lighting members can follow the group but never host it
         candidates = [
             member_player
             for member_id in group_members
             if (member_player := self.mass.players.get_player(member_id))
             and member_player.state.available
+            and member_player.state.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
         # preference tiers, most specific first: a member that is already fed by the
@@ -1537,6 +1553,67 @@ class SyncGroupPlayer(Player):
     def _playback_recently_started(self) -> bool:
         """Return whether a playback start was issued within the settle window."""
         return (time.monotonic() - self._playback_start_at) < PLAYBACK_START_TIMEOUT
+
+    def _schedule_rejoin_missing_members(self) -> None:
+        """Debounce a re-add of the configured members the live leader is not holding."""
+        if self.sync_leader is not None and self._missing_members(self.sync_leader):
+            # the leader reports every state change, so the next one is the retry
+            self.mass.call_later(
+                REFORM_DEBOUNCE_SECONDS,
+                self._rejoin_members,
+                task_id=f"sync_group_rejoin_{self.player_id}",
+            )
+
+    def _missing_members(self, leader: Player) -> list[str]:
+        """
+        Return the configured members the leader can group with but is not holding.
+
+        :param leader: The group's live sync leader.
+        """
+        grouped = set(self._translate_to_parent_ids(leader.state.group_members))
+        return [
+            member_id
+            for member_id in self._attr_static_group_members
+            if member_id != leader.player_id
+            and member_id not in grouped
+            # the leader lists the available players it can group with, so a member
+            # that is offline, or incompatible with it, is not on it
+            and member_id in leader.state.can_group_with
+            and (member := self.mass.players.get_player(member_id)) is not None
+            # a member another group holds, or that leads a group of its own, is left
+            # alone: this is a background recovery, not a play command
+            and member.state.synced_to in (None, leader.player_id)
+            and member.state.active_group in (None, self.player_id)
+            and all(child_id == member_id for child_id in member.state.group_members)
+        ]
+
+    async def _rejoin_members(self) -> None:
+        """Re-add the configured members that returned to the live leader, playback untouched."""
+        if (leader := self.sync_leader) is None:
+            return
+        async with self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+            # judged again now rather than when scheduled: in the meantime a member may
+            # have joined another group, which the controller's add would take it from,
+            # or the group may have been saved without it
+            if self.sync_leader is not leader:
+                return
+            if not (member_ids := self._missing_members(leader)):
+                return
+            self.logger.info("Re-adding %s to syncgroup %s", member_ids, self.display_name)
+            try:
+                await self.mass.players._handle_set_members(leader, player_ids_to_add=member_ids)
+            except PlayerCommandFailed as err:
+                self.logger.warning(
+                    "Could not re-add %s to syncgroup %s: %s", member_ids, self.display_name, err
+                )
+                return
+            # a form drops a member the leader can not group with at the time, and this
+            # add goes past set_members: track the member again so the next formation
+            # includes it. The leader may report the join only later, so this does not
+            # wait for it; a member the controller passed over is dropped by that form
+            for member_id in member_ids:
+                if member_id not in self._attr_group_members:
+                    self._attr_group_members.append(member_id)
 
     def _schedule_reform_timer(self) -> None:
         """(Re)schedule the debounced re-form after the sync leader was removed."""

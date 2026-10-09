@@ -82,6 +82,7 @@ from .helpers import (
     determine_recommendation_icon,
     get_album,
     get_artist,
+    get_artist_albums,
     get_home,
     get_library_albums,
     get_library_artists,
@@ -156,6 +157,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
@@ -269,10 +271,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return parsed_results
         results = await search(
             query=search_query,
-            headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -529,19 +529,90 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         return result
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
+        artists = []
+
+        for similar_artist in artist_obj.get("related", {}).get("results", []):
+            # ytmusicapi returns related artists as if they were tracks,
+            # reshape into something _parse_artist() will understand.
+            fake_artist = {
+                "channelId": similar_artist["browseId"],
+                "name": similar_artist["title"],
+                "thumbnails": similar_artist["thumbnails"],
+            }
+            artists.append(self._parse_artist(fake_artist))
+
+        return artists[:limit]
+
+    @use_cache(3600 * 24 * 7, cache_checksum="v1", allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
-        if "albums" in artist_obj and "results" in artist_obj["albums"]:
-            albums = []
-            for album_obj in artist_obj["albums"]["results"]:
-                if "artists" not in album_obj:
+
+        # get_artist() only embeds ~10 item previews, so fetch each section in full.
+        # "singles" covers singles and EPs, "shows" covers radio shows and audio dramas.
+        sections = [
+            (key, section)
+            for key in ("albums", "singles", "shows")
+            if (section := artist_obj.get(key))
+        ]
+        to_hydrate = [
+            (key, section)
+            for key, section in sections
+            if section.get("browseId") and section.get("params")
+        ]
+        hydrated_sections = await asyncio.gather(
+            *(
+                get_artist_albums(
+                    channel_id=section["browseId"],
+                    params=section["params"],
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                )
+                for _key, section in to_hydrate
+            ),
+            return_exceptions=True,
+        )
+        sections_by_key = dict(
+            zip((key for key, _section in to_hydrate), hydrated_sections, strict=True)
+        )
+
+        seen: set[str] = set()
+        albums: list[Album] = []
+        for key, section in sections:
+            result = sections_by_key.get(key)
+            if isinstance(result, BaseException):
+                if isinstance(result, (KeyError, IndexError, TypeError)):
+                    # ytmusicapi fails to parse some empty sections; keep the preview instead.
+                    self.logger.warning(
+                        "Failed to hydrate YouTube Music artist %s section %r, "
+                        "using the inline preview instead",
+                        artist_obj.get("name", prov_artist_id),
+                        key,
+                        exc_info=result,
+                    )
+                    items = section.get("results", [])
+                else:
+                    # Network/auth errors should not be cached as a complete discography.
+                    raise result
+            else:
+                items = result if result is not None else section.get("results", [])
+
+            for album_obj in items:
+                browse_id = album_obj.get("browseId")
+                if not browse_id or browse_id in seen:
+                    continue
+                seen.add(browse_id)
+                if not album_obj.get("artists"):
                     album_obj["artists"] = [
                         {"id": artist_obj["channelId"], "name": artist_obj["name"]}
                     ]
-                albums.append(self._parse_album(album_obj, album_obj["browseId"]))
-            return albums
-        return []
+                albums.append(self._parse_album(album_obj, browse_id))
+
+        return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -818,15 +889,21 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         recommended_item["id"] = recommended_item["playlistId"]
                         del recommended_item["playlistId"]
                         folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist, but it's in that same weird album-like format
+                        # that you see for the get_similar_artists payload
+                        fake_artist = {
+                            "channelId": recommended_item["browseId"],
+                            "name": recommended_item["title"],
+                            "thumbnails": recommended_item["thumbnails"],
+                        }
+                        folder.items.append(self._parse_artist(fake_artist))
                     elif recommended_item.get("browseId"):
                         if podcast := self._parse_browse_podcast(recommended_item):
                             folder.items.append(podcast)
                         else:
                             # Probably an album
                             folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("subscribers"):
-                        # Probably artist
-                        folder.items.append(self._parse_album(recommended_item))
                     elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
                         # Podcast episodes show up here without a videoId/browseId,
                         # so there is no playable item to build from them
@@ -1295,7 +1372,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 if "maxresdefault" in url or image_ratio > 2.0
                 else ImageType.THUMB
             )
-            if "=w" not in url and width < 500:
+            if "=w" not in url and width < 400:
                 continue
             # if the size is in the url, we can actually request a higher thumb
             if "=w" in url and width < 600:

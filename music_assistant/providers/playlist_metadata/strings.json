@@ -24,7 +24,7 @@
     },
     "skip_provider_playlists": {
       "label": "Skip provider playlists",
-      "description": "When enabled, provider playlists that already have their own artwork are skipped. Playlists without any artwork still receive a generated collage."
+      "description": "When enabled, provider playlists that already have their own cover are skipped. When disabled, they keep their own cover and also receive a generated collage as a background image. Playlists without a cover always receive a generated collage."
     },
     "enable_genre_detection": {
       "label": "Enable genre detection",

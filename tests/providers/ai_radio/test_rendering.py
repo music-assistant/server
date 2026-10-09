@@ -56,8 +56,10 @@ from music_assistant.providers.ai_radio.constants import (
 from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
+from .events import ProviderEventRecorder
 
-class DummyRenderer(AIRadioRenderMixin):
+
+class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
     """Minimal harness exposing the render path."""
 
     domain = "ai_radio"

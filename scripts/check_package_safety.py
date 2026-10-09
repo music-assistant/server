@@ -299,10 +299,10 @@ def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
 
     :param package_name: The name of the package to check.
     """
-    url = f"https://pypi.org/pypi/{package_name}/json"
-
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
+        with urllib.request.urlopen(
+            f"https://pypi.org/pypi/{package_name}/json", timeout=10
+        ) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as err:
         if err.code == 404:

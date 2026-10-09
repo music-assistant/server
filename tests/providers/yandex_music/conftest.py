@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
+from yandex_music import ClientAsync
 
 from music_assistant.mass import MusicAssistant
 
@@ -208,8 +209,8 @@ class StreamingProviderStubWithTracking:
         self.logger = TrackingLogger()
 
 
-# Minimal client-like object for yandex_music de_json (library requires client, not None)
-DE_JSON_CLIENT = type("ClientStub", (), {"report_unknown_fields": False})()
+# Disconnected real client for library model deserialization.
+DE_JSON_CLIENT = ClientAsync()
 
 
 @pytest.fixture

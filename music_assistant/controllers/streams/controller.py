@@ -152,7 +152,7 @@ isfile = wrap(os.path.isfile)
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     """Return the normalization modes that can be picked as a preference."""
     return [
-        ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
+        ConfigValueOption(mode.value)
         for mode in VolumeNormalizationMode
         if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     ]
@@ -601,6 +601,8 @@ class StreamsController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
+        # the music library migrations have moved any legacy analysis rows over by now
+        await self._audio_analysis.setup_database()
         # the inbound half of a live announcement rides on the webserver: it is the only
         # one of the two servers that authenticates (and that browsers reach over https)
         self.live_announcements.setup()
@@ -1266,6 +1268,14 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
+        if self.mass.player_queues.flow_stream_finished(queue_id):
+            # the session already streamed everything it had; a player that opens it again
+            # (Sonos reconnects to a stream url that ended) would replay the current track
+            self.logger.debug(
+                "Denying flow stream request from %s: its session already streamed to the end",
+                player.display_name,
+            )
+            raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
         if not start_queue_item:

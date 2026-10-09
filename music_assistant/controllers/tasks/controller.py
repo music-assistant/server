@@ -151,7 +151,7 @@ class TasksController(CoreController):
 
     @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
-        """Queue a task for immediate execution."""
+        """Queue a task to run next, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.is_scheduled:
             raise InvalidDataError(f"Task {task_id} can not be run manually")
@@ -160,12 +160,13 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
     @api_command("tasks/retry", required_scope=Scope.SYSTEM_MANAGE)
     def retry_task(self, task_id: str) -> BackgroundTask:
-        """Retry a failed or cancelled task."""
+        """Retry a failed or cancelled task, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.task_info.allow_retry:
             raise InvalidDataError(f"Task {task_id} can not be retried")
@@ -180,6 +181,7 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
@@ -696,11 +698,23 @@ class TasksController(CoreController):
         *,
         reset_logs: bool,
         run_user_id: str | None = None,
+        priority: bool | None = None,
     ) -> None:
-        """Queue a task for execution."""
+        """Queue a task for execution, at the front of the queue when priority is set."""
         if managed.removed:
             raise InvalidDataError(f"Task {managed.task_info.id} is no longer available")
-        if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        if priority is None:
+            priority = managed.priority
+        if managed.task_info.status == TaskStatus.RUNNING:
+            return
+        if managed.task_info.status == TaskStatus.PENDING:
+            if priority:
+                self._remove_from_pending(managed.task_info.id)
+                self._pending_task_ids.appendleft(managed.task_info.id)
+                managed.task_info.last_run_user_id = run_user_id
+                managed.task_info.updated_at = utcnow()
+                self._persist_scheduled_task_state(managed)
+                self._schedule_task_update(force=True)
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
         managed.run_token = uuid4().hex
@@ -720,7 +734,7 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
-            if managed.priority:
+            if priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
             else:
                 self._pending_task_ids.append(managed.task_info.id)

@@ -73,6 +73,7 @@ from music_assistant.helpers.provider_access import playback_sources, resolve_pl
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     request_priority,
+    set_request_priority,
     with_request_priority,
 )
 from music_assistant.models.music_provider import MusicProvider
@@ -390,6 +391,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
+        if (
+            isinstance(queue_item.media_item, PodcastEpisode)
+            and queue_item.media_item.metadata.chapters is None
+        ):
+            # episode listings skip the chapter download, so look the episode up once
+            self.mass.create_task(
+                self._load_episode_chapters(queue_id, queue_item.media_item),
+                task_id=f"episode_chapters_{queue_item.queue_item_id}",
+            )
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -484,6 +494,21 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if duration := await get_probed_duration(self.mass, uri):
             self._set_missing_duration(queue_item, duration)
+
+    async def _load_episode_chapters(self, queue_id: str, episode: PodcastEpisode) -> None:
+        """Fill in the chapters of a queued podcast episode from its full details."""
+        # extra metadata must not compete with the playback requests of the same item
+        set_request_priority(RequestPriority.LOW)
+        # an empty list marks the episode as looked up, so a seek does not repeat it
+        episode.metadata.chapters = []
+        try:
+            details = await self.mass.music.podcasts.episode(episode.item_id, episode.provider)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not look up the chapters of %s: %s", episode.name, err)
+            return
+        if details.metadata.chapters:
+            episode.metadata.chapters = details.metadata.chapters
+            self.signal_update(queue_id, items_changed=True)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """
@@ -1188,14 +1213,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
     async def _abort_source_buffer(
         self,
         item: QueueItem,
-        started_item: QueueItem,
+        started_item: QueueItem | None = None,
         only_when_saturated: bool = False,
     ) -> None:
         """
         Cancel one item's still-filling source so its provider stream slot is handed over.
 
         :param item: The queue item whose source buffer should be aborted.
-        :param started_item: The queue item that is about to start playing.
+        :param started_item: The queue item that is about to start playing, if known.
         :param only_when_saturated: Only abort while the provider has no free slot left.
         """
         if item.streamdetails is None:
@@ -1206,6 +1231,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         provider = self.mass.get_provider(item.streamdetails.provider, return_unavailable=True)
         if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams is None:
             return
+        beneficiary = started_item.name if started_item is not None else "the next track"
         if only_when_saturated:
             if provider.has_available_stream_slot:
                 # an abort above already freed a slot, so this prewarm can stay
@@ -1214,14 +1240,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 "Aborting the prewarm of %s: %s has no free stream slot left for %s",
                 item.name,
                 provider.name,
-                started_item.name,
+                beneficiary,
             )
         else:
             self.logger.debug(
                 "Aborting the source of %s to free a %s stream slot for %s",
                 item.name,
                 provider.name,
-                started_item.name,
+                beneficiary,
             )
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse

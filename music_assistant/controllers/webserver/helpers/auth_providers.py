@@ -21,6 +21,7 @@ from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -35,6 +36,8 @@ DEFAULT_DELAY_TIERS: Final[tuple[tuple[int, int], ...]] = ((3, 30), (6, 60), (10
 DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 # Tracked keys before expired ones are swept from the rate limiter's bookkeeping
 PRUNE_THRESHOLD: Final = 128
+# Salt for the password hash of a login with an unknown username
+UNKNOWN_USER_ID: Final = "unknown-user"
 
 
 def normalize_username(username: str) -> str:
@@ -120,6 +123,78 @@ async def get_ha_user_role(
     except Exception as err:
         msg = f"Failed to check HA admin status: {err}"
         raise AuthenticationFailed(msg) from err
+
+
+async def get_or_create_ha_user(
+    mass: MusicAssistant,
+    ha_user_id: str,
+    username: str,
+    display_name: str | None,
+    avatar_url: str | None,
+    *,
+    allow_create: bool,
+) -> User | None:
+    """
+    Get the user of a Home Assistant account, linking or creating it as needed.
+
+    A user not yet linked to the Home Assistant account is matched by username. An enabled
+    user gets its display name and avatar refreshed from the given details, a disabled user
+    is returned untouched for the caller to refuse.
+
+    :param mass: MusicAssistant instance.
+    :param ha_user_id: Home Assistant user ID.
+    :param username: Username to match an unlinked user by, and to create a new user with.
+    :param display_name: Display name from Home Assistant, if any.
+    :param avatar_url: Avatar URL from Home Assistant, if any.
+    :param allow_create: Whether to create a user when none matches.
+    :return: The user, which may be a disabled one, or None if none matches and
+        allow_create is False.
+    :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
+    """
+    auth = mass.webserver.auth
+    # Check if user already linked to HA
+    user = await auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ha_user_id, include_disabled=True
+    )
+    linked = user is not None
+    if not user:
+        # Check if a user with this username already exists (from built-in provider)
+        user = await auth.get_user_by_username(username, include_disabled=True)
+    if user:
+        # A disabled user is left untouched, the caller refuses its sign-in
+        if not user.enabled:
+            return user
+        if not linked:
+            # User exists with this username - link them to HA provider
+            await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+        # Update user with HA details if available (HA is source of truth)
+        if display_name or avatar_url:
+            user = await auth.update_user(
+                user,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+        return user
+
+    if not allow_create:
+        return None
+
+    # Determine role based on HA admin status
+    role = await get_ha_user_role(mass, ha_user_id)
+
+    # Create new user
+    username = normalize_username(username)
+    user = await auth.create_user(
+        username=username,
+        role=role,
+        display_name=display_name or username,
+        avatar_url=avatar_url,
+    )
+
+    # Link to Home Assistant
+    await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+
+    return user
 
 
 class LoginRateLimiter:
@@ -375,6 +450,8 @@ class BuiltinLoginProvider(LoginProvider):
         """
         super().__init__(mass, provider_id, config)
         self._rate_limiter = LoginRateLimiter()
+        # Bounds concurrent password hashing, so a flood of logins cannot saturate the CPU
+        self._hash_semaphore = asyncio.Semaphore(2)
 
     @property
     def provider_type(self) -> AuthProviderType:
@@ -416,23 +493,17 @@ class BuiltinLoginProvider(LoginProvider):
         # First, look up user by username to get user_id
         # This is needed to create the password hash with user_id in the salt
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        if not user_row:
-            # Record failed attempt even if username doesn't exist
-            # This prevents username enumeration timing attacks
-            await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
-
-        user_id = user_row["user_id"]
-
-        # Hash the password using user_id for enhanced security
-        password_hash = self._hash_password(password, user_id)
+        # Hash and verify for an unknown username too, so the response time does not
+        # reveal whether a username exists
+        user_id = user_row["user_id"] if user_row else UNKNOWN_USER_ID
+        password_hash = await self._hash_password(password, user_id)
 
         # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
-            AuthProviderType.BUILTIN, password_hash
+            AuthProviderType.BUILTIN, password_hash, include_disabled=True
         )
 
-        if not user:
+        if not user_row or not user:
             # Record failed attempt
             await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
@@ -473,7 +544,7 @@ class BuiltinLoginProvider(LoginProvider):
         )
 
         # Hash password using user_id for enhanced security
-        password_hash = self._hash_password(password, user.user_id)
+        password_hash = await self._hash_password(password, user.user_id)
         await self.auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, password_hash)
 
         return user
@@ -487,7 +558,7 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Verify old password first using user_id
-        old_password_hash = self._hash_password(old_password, user.user_id)
+        old_password_hash = await self._hash_password(old_password, user.user_id)
         existing_user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, old_password_hash
         )
@@ -496,7 +567,7 @@ class BuiltinLoginProvider(LoginProvider):
             return False
 
         # Update password link with new hash using user_id
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
@@ -511,12 +582,12 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Hash new password using user_id and update provider link
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
 
-    def _hash_password(self, password: str, user_id: str) -> str:
+    async def _hash_password(self, password: str, user_id: str) -> str:
         """
         Hash password with salt combining user ID and server ID.
 
@@ -525,9 +596,15 @@ class BuiltinLoginProvider(LoginProvider):
         """
         # Combine user_id (random) and server_id for maximum security
         salt = f"{user_id}:{self.mass.server_id}"
-        return hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), salt.encode(), iterations=100000
-        ).hex()
+        await self._hash_semaphore.acquire()
+        hash_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
+            )
+        )
+        # the slot stays taken until the hash is done, also when the caller is cancelled
+        hash_task.add_done_callback(lambda _: self._hash_semaphore.release())
+        return (await join_task(hash_task)).hex()
 
 
 class HomeAssistantOAuthProvider(LoginProvider):
@@ -687,6 +764,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     success=False,
                     error="Self-registration is disabled. Please contact an administrator.",
                 )
+            if not user.enabled:
+                return AuthResult(success=False, error="User account is disabled")
 
             return AuthResult(success=True, user=user, return_url=return_url)
 
@@ -787,81 +866,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
         avatar_url: str | None = None,
     ) -> User | None:
         """
-        Get or create a user for Home Assistant OAuth authentication.
-
-        Updates existing users with display_name and avatar_url from HA on each OAuth login
-        (HA is considered the source of truth for these fields).
+        Get or create the user signing in with a Home Assistant account.
 
         :param username: Username from Home Assistant.
         :param display_name: Display name from Home Assistant.
         :param ha_user_id: Home Assistant user ID.
         :param avatar_url: Avatar URL from Home Assistant person entity.
-        :return: User object or None if creation failed.
+        :return: The user, which may be a disabled one, or None if a new user may not register.
         """
-        # Check if user already linked to HA
-        user = await self.auth_manager.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ha_user_id
+        return await get_or_create_ha_user(
+            self.mass,
+            ha_user_id,
+            username,
+            display_name,
+            avatar_url,
+            allow_create=self.allow_self_registration,
         )
-        if user:
-            # Update user with HA details if available (HA is source of truth)
-            if display_name or avatar_url:
-                user = await self.auth_manager.update_user(
-                    user,
-                    display_name=display_name,
-                    avatar_url=avatar_url,
-                )
-            return user
-
-        username = normalize_username(username)
-
-        # Check if a user with this username already exists (from built-in provider)
-        user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        if user_row:
-            # User exists with this username - link them to HA provider
-            user_dict = dict(user_row)
-            existing_user = User(
-                user_id=user_dict["user_id"],
-                username=user_dict["username"],
-                role=user_dict["role"],
-                enabled=bool(user_dict["enabled"]),
-                created_at=datetime.fromisoformat(user_dict["created_at"]),
-                display_name=user_dict["display_name"],
-                avatar_url=user_dict["avatar_url"],
-            )
-
-            # Link existing user to Home Assistant
-            await self.auth_manager.link_user_to_provider(
-                existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-            )
-
-            # Update user with HA details if available (HA is source of truth)
-            if display_name or avatar_url:
-                existing_user = await self.auth_manager.update_user(
-                    existing_user,
-                    display_name=display_name,
-                    avatar_url=avatar_url,
-                )
-
-            return existing_user
-
-        # New HA user - check if self-registration allowed
-        if not self.allow_self_registration:
-            return None
-
-        # Determine role based on HA admin status
-        role = await get_ha_user_role(self.mass, ha_user_id)
-
-        # Create new user
-        user = await self.auth_manager.create_user(
-            username=username,
-            role=role,
-            display_name=display_name or username,
-            avatar_url=avatar_url,
-        )
-
-        # Link to Home Assistant
-        await self.auth_manager.link_user_to_provider(
-            user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-        )
-
-        return user

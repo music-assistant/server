@@ -37,6 +37,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    PlayerUnavailableError,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -81,7 +82,7 @@ from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
     resolve_command_impersonation,
     set_current_peer_address,
     set_current_token,
@@ -351,7 +352,6 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/auth/login", self._handle_cors_preflight))
         routes.append(("POST", "/auth/logout", self._handle_auth_logout))
         routes.append(("GET", "/auth/me", self._handle_auth_me))
-        routes.append(("PATCH", "/auth/me", self._handle_auth_me_update))
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
@@ -822,6 +822,8 @@ class WebserverController(CoreController):
             return web.Response(status=403, text=str(e))
         except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
+        except PlayerUnavailableError as e:
+            return web.Response(status=404, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -950,7 +952,7 @@ class WebserverController(CoreController):
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
-        is_ingress_request = is_request_from_ingress(request)
+        is_ingress_request = is_request_from_ingress_proxy(request)
 
         if (not self.auth.has_users or not self.mass.config.onboard_done) and is_ingress_request:
             # a non-admin user tries to access the index via HA ingress
@@ -1114,6 +1116,9 @@ class WebserverController(CoreController):
             if token_row:
                 await self.auth.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
 
+                # Disconnect any WebSocket connections using this token
+                self.disconnect_websockets_for_token(token_row["token_id"])
+
         return web.json_response({"success": True})
 
     async def _handle_auth_me(self, request: web.Request) -> web.Response:
@@ -1123,41 +1128,6 @@ class WebserverController(CoreController):
             return web.Response(status=401, text="Not authenticated")
 
         return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
-
-    async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
-        """Handle request to update current user's profile."""
-        user = await get_authenticated_user(request)
-        if not user:
-            return web.Response(status=401, text="Not authenticated")
-
-        try:
-            if not request.can_read_body:
-                return web.Response(status=400, text="Body required")
-
-            body = await request.json()
-            username = body.get("username")
-            display_name = body.get("display_name")
-            avatar_url = body.get("avatar_url")
-
-            # Update user
-            updated_user = await self.auth.update_user(
-                user,
-                username=username,
-                display_name=display_name,
-                avatar_url=avatar_url,
-            )
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
-                }
-            )
-        except Exception:
-            self.logger.exception("Error updating user profile")
-            return web.json_response(
-                {"success": False, "error": "Failed to update profile"}, status=500
-            )
 
     async def _handle_auth_providers(self, request: web.Request) -> web.Response:
         """Handle request for available login providers."""

@@ -31,14 +31,13 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
     Playlist,
     Podcast,
     PodcastEpisode,
     Radio,
-    RecommendationFolder,
-    SearchResults,
     SoundEffect,
     Track,
     UniqueList,
@@ -56,6 +55,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 
+from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
 
 if TYPE_CHECKING:
@@ -81,8 +81,12 @@ MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 # skipped id's are resolved back to library id's in batches of this size
 SKIPPED_ITEM_QUERY_LIMIT: Final[int] = 500
-# failures of one provider's fetch that leave the other providers' items playable: a
-# multi-provider caller skips that provider rather than abort on its behalf
+# the expected ways one provider's fetch of an item can fail: the item is gone or not
+# usable there, the provider is (temporarily) unreachable, or the transport broke down.
+# A multi-provider caller skips that provider rather than abort on its behalf, and a
+# best-effort matcher treats the item as absent. Deliberately not the whole
+# aiohttp.ClientError family: an HTTP status error the provider did not translate (an
+# expired token, a permanently failing request) must surface rather than be skipped
 PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     InvalidDataError,
     MediaNotFoundError,
@@ -91,7 +95,10 @@ PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
     TimeoutError,
-    aiohttp.ClientError,
+    # an HTML error page where JSON was expected
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 
 LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
@@ -164,6 +171,13 @@ class ProviderStreamLimitError(AudioError):
         self.limit = limit
 
 
+def provider_fetch_log_level(err: Exception) -> int:
+    """Return the log level for a provider fetch failure the caller skips over."""
+    # an item a provider no longer lists is expected to stay that way, so it must not
+    # warn on every play; the other failures are worth a look
+    return logging.DEBUG if isinstance(err, MediaNotFoundError) else logging.WARNING
+
+
 def describe_sync_error(err: Exception) -> str:
     """Return a short description of a sync failure, safe to log and to report to clients."""
     if isinstance(err, MusicAssistantError):
@@ -179,7 +193,7 @@ def describe_sync_error(err: Exception) -> str:
     return f"{type(err).__name__}: {detail}"
 
 
-class MusicProvider(Provider):
+class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, Provider):
     """
     Base representation of a Music Provider (controller).
 
@@ -334,23 +348,6 @@ class MusicProvider(Provider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 
-    async def search(
-        self,
-        search_query: str,
-        media_types: list[MediaType],
-        limit: int = 5,
-    ) -> SearchResults:
-        """
-        Perform search on musicprovider.
-
-        :param search_query: Search query.
-        :param media_types: A list of media_types to include.
-        :param limit: Number of items to return in the search (per type).
-        """
-        if ProviderFeature.SEARCH in self.supported_features:
-            raise NotImplementedError
-        return SearchResults()
-
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield  # type: ignore[misc]
@@ -435,14 +432,6 @@ class MusicProvider(Provider):
         """Get full track details by id."""
         raise NotImplementedError
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id."""
-        raise NotImplementedError
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id."""
-        raise NotImplementedError
-
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         raise NotImplementedError
@@ -504,25 +493,6 @@ class MusicProvider(Provider):
         prov_album_id: str,
     ) -> list[Track]:
         """Get album tracks for given album id."""
-        raise NotImplementedError
-
-    async def get_playlist_tracks(
-        self,
-        prov_playlist_id: str,
-        page: int = 0,
-    ) -> Sequence[PlaylistPlayableItem]:
-        """Get all playlist tracks for given playlist id."""
-        raise NotImplementedError
-
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
-        """
-        Return a fresh batch of tracks for a dynamic radio station.
-
-        Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
-        there is no stable listing and no pagination.
-
-        :param prov_radio_id: The provider's ID of the radio station.
-        """
         raise NotImplementedError
 
     async def get_podcast_episodes(
@@ -750,20 +720,16 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a track/radio/chapter/episode."""
-        raise NotImplementedError
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
         """
-        Return the (custom) audio stream for the provider item.
+        Handle callback when the first audio of given streamdetails reaches a player.
 
-        Will only be called when the stream_type is set to CUSTOM.
+        Called once per playback, so unlike get_stream_details never for a preload.
+        A playback that triggers this callback is followed by at least one on_streamed.
         """
-        yield b""
-        raise NotImplementedError
 
     async def on_streamed(
         self,
@@ -817,15 +783,6 @@ class MusicProvider(Provider):
 
         :param item: The updated library item.
         """
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        """
-        return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """
@@ -1038,35 +995,6 @@ class MusicProvider(Provider):
         if ProviderFeature.ALBUM_VERSIONS in self.supported_features:
             raise NotImplementedError
         return []
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's available recommendation rows, without items.
-
-        Must be fast: return static or cached row descriptors only, without
-        live backend calls. The items for a row are fetched separately
-        through get_recommendation_items.
-
-        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        Live backend fetches belong here. Will only be called if
-        ProviderFeature.RECOMMENDATIONS is declared.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
@@ -1694,31 +1622,22 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.add_item_to_library(
                             prov_item
                         )
-                    elif (
-                        self._library_item_needs_update(library_item, prov_item)
-                        # or the supported mediatypes changed
-                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
-                    ):
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif (
-                        prov_item.is_dynamic
-                        and not library_item.is_editable
-                        and (
-                            prov_item.name != library_item.name
-                            or prov_item.metadata.images != library_item.metadata.images
-                        )
-                    ):
-                        # the provider is the sole source of truth for non-editable dynamic
-                        # playlists (e.g. Pandora/personalized-radio stations): overwrite=True
-                        # replaces the full stored record (not just name/images), which is fine
-                        # here since there's no local customization on these to lose. Restricted
-                        # to is_dynamic so static non-editable playlists (e.g. provider
-                        # "favorites") keep their locally-enriched metadata/images.
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item, overwrite=True
-                        )
+                    else:
+                        if (
+                            self._library_item_needs_update(library_item, prov_item)
+                            # or the supported mediatypes changed
+                            or prov_item.supported_mediatypes != library_item.supported_mediatypes
+                        ):
+                            library_item = await self.mass.music.playlists.update_item_in_library(
+                                library_item.item_id, prov_item
+                            )
+                        # the provider owns the playlist's name and its own images; the library
+                        # item is written back (not the provider item) so locally added data,
+                        # such as generated collages and genres, is kept
+                        if update := self._playlist_with_provider_details(library_item, prov_item):
+                            library_item = await self.mass.music.playlists.update_item_in_library(
+                                library_item.item_id, update, overwrite=True
+                            )
                     db_id = int(library_item.item_id)
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
@@ -2034,6 +1953,56 @@ class MusicProvider(Provider):
             return True
         # the item's date_added changed on the provider
         return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
+
+    def _playlist_with_provider_details(
+        self, library_item: Playlist, prov_item: Playlist
+    ) -> Playlist | None:
+        """
+        Return the library playlist updated with the provider's name and images.
+
+        Returns None when there is nothing to update.
+
+        :param library_item: The library playlist, which is updated in place.
+        :param prov_item: The same playlist as listed by this provider.
+        """
+        # rows stored before the lookup-key phase-out tag images with the domain, which for
+        # a single-instance provider is its instance id as well
+        own_providers = (self.instance_id, self.domain)
+        library_images: list[MediaItemImage] = library_item.metadata.images or []
+        prov_images: list[MediaItemImage] = prov_item.metadata.images or []
+        prov_types = {img.type for img in prov_images}
+        # an image type the provider does not supply is kept, so an empty image list from
+        # the provider is not taken as a removed cover
+        own_images = [
+            img
+            for img in library_images
+            if img.provider in own_providers and img.type in prov_types
+        ]
+        images_changed = own_images != prov_images
+        # an empty list of name params is stored as None
+        naming_changed = (
+            prov_item.name,
+            prov_item.sort_name,
+            prov_item.translation_key,
+            prov_item.translation_params or None,
+        ) != (
+            library_item.name,
+            library_item.sort_name,
+            library_item.translation_key,
+            library_item.translation_params or None,
+        )
+        if not naming_changed and not images_changed:
+            return None
+        library_item.name = prov_item.name
+        library_item.sort_name = prov_item.sort_name
+        library_item.translation_key = prov_item.translation_key
+        library_item.translation_params = prov_item.translation_params
+        if images_changed:
+            # the provider's images go first so its cover is the one shown
+            library_item.metadata.images = UniqueList(
+                [*prov_images, *(img for img in library_images if img not in own_images)]
+            )
+        return library_item
 
     def _check_provider_mappings(
         self,
