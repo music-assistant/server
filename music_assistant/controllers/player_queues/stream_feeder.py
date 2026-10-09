@@ -356,6 +356,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     if current_item.queue_item_id == item_id_in_buffer:
                         break
                     await asyncio.sleep(1)
+                next_item = self.get_next_item(queue_id, item_id_in_buffer)
+                if next_item is None or (
+                    queue.flow_mode and next_item.queue_item_id == item_id_in_buffer
+                ):
+                    # Loading a repeat resets the shared item's seek offset while its audio
+                    # is still playing. Leave that load to the actual repeat transition.
+                    return
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
                         "Preloaded next item %s for queue %s",

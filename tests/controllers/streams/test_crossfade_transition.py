@@ -220,6 +220,72 @@ def _install_counting_mix(monkeypatch: pytest.MonkeyPatch, audio: StreamsAudio) 
     return calls
 
 
+async def test_flow_mixer_failure_restores_seek_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed mix restores the incoming offset before fallback audio plays."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    second_item.streamdetails.seek_position = 10
+    audio, queue, mass = _flow_audio(
+        monkeypatch, next_item=None, load_next=[second_item, QueueEmpty]
+    )
+    opened, _consumed, _exhausted = _install_item_streams(
+        monkeypatch, audio, {"item-1": 40, "item-2": 20}
+    )
+    fallback_snapshots: list[float] = []
+    item_stream = audio.get_queue_item_stream
+
+    async def _stream_with_snapshot(
+        queue_item: SimpleNamespace, *args: Any, **kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        if queue_item is second_item and "prepared_buffer" not in kwargs:
+            entry = mass.player_queues.queue_data.return_value.flow_mode_stream_log[-1]
+            fallback_snapshots.append(entry.seek_position)
+            assert queue_item.streamdetails.seek_position == entry.seek_position == 10
+        async for chunk in item_stream(cast("Any", queue_item), *args, **kwargs):
+            yield chunk
+
+    async def _failed_mix(smart_fade: object, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        if smart_fade is not None:
+            raise RuntimeError("Mixer failed")
+        yield b""  # pragma: no cover
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _stream_with_snapshot)
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _failed_mix)
+    await _drain(
+        audio.get_queue_flow_stream(
+            cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+        )
+    )
+
+    assert opened == ["item-1", "item-2", "item-2"]
+    assert fallback_snapshots == [10]
+
+
+async def test_flow_short_blend_clamps_seek_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short incoming blend credits only its actual audio in the flow offset."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    second_item.streamdetails.seek_position = 10
+    audio, queue, mass = _flow_audio(
+        monkeypatch, next_item=None, load_next=[second_item, QueueEmpty]
+    )
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 2})
+    mix_calls = _install_counting_mix(monkeypatch, audio)
+    await _drain(
+        audio.get_queue_flow_stream(
+            cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+        )
+    )
+
+    assert len(mix_calls) == 1
+    entry = mass.player_queues.queue_data.return_value.flow_mode_stream_log[-1]
+    assert second_item.streamdetails.seek_position == entry.seek_position == 12
+
+
 async def test_flow_prefetches_the_incoming_fade_in_during_the_holdback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
