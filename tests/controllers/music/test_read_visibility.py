@@ -112,6 +112,10 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
         await controller._database.close()
 
 
+async def _drain(items: AsyncGenerator[object]) -> list[object]:
+    return [item async for item in items]
+
+
 def _as_user(user: User | None) -> ExitStack:
     """Run the enclosed block as the given user (None for an internal caller)."""
     stack = ExitStack()
@@ -158,6 +162,31 @@ async def test_get_serves_a_library_item_only_from_a_visible_source(
     my_spotify.get_track.assert_awaited_once_with("t1")
     with _as_user(GUEST), pytest.raises(InsufficientPermissions):
         await music.tracks.get("t1", THEIRS)
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(lambda music, item_id: music.tracks.get(item_id, "library"), id="get"),
+        pytest.param(
+            lambda music, item_id: music.get_item(MediaType.TRACK, item_id, "library"), id="item"
+        ),
+        pytest.param(
+            lambda music, item_id: music.get_item_by_uri(f"library://track/{item_id}"),
+            id="item_by_uri",
+        ),
+    ],
+)
+async def test_library_reads_hide_an_item_of_a_hidden_source(
+    music: MusicController, read: Callable[[MusicController, str], Awaitable[object]]
+) -> None:
+    """A library item whose only source is hidden is not found when read as a library item."""
+    library_track = await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+
+    with _as_user(OWNER):
+        assert await read(music, library_track.item_id) is not None
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await read(music, library_track.item_id)
 
 
 async def test_get_library_item_command_hides_items_of_hidden_sources(
@@ -278,6 +307,9 @@ async def test_search_asks_only_a_provider_the_user_may_see(music: MusicControll
         pytest.param(
             lambda music: music.artists.audiobooks("ar1", THEIRS, ArtistType.AUTHOR),
             id="artist_audiobooks",
+        ),
+        pytest.param(
+            lambda music: _drain(music.podcasts.episodes("p1", THEIRS)), id="podcast_episodes"
         ),
         pytest.param(lambda music: music.podcasts.episode("e1", THEIRS), id="podcast_episode"),
         pytest.param(

@@ -739,6 +739,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 assert library_item.uri is not None
                 self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
+        if library_item and provider_instance_id_or_domain == "library":
+            # the library item exists but none of its sources is one of the user's
+            raise MediaNotFoundError(f"{self.media_type.value} {item_id} not found in library")
         # grab full details from the provider
         return await self.get_provider_item(
             item_id,
