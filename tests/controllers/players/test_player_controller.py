@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
+    ResourceBusyError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
@@ -7426,3 +7428,106 @@ class TestAddCurrentlyPlayingToFavorites:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@contextlib.asynccontextmanager
+async def _lock_held_elsewhere(controller: PlayerController, player_id: str) -> AsyncIterator[None]:
+    """Hold the player's playback lock from another task for the duration of the block."""
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _hold() -> None:
+        async with controller.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            held.set()
+            await release.wait()
+
+    holder = asyncio.create_task(_hold())
+    await held.wait()
+    try:
+        yield
+    finally:
+        release.set()
+        await holder
+
+
+class TestPlayerLockTimeouts:
+    """A command gives up on a lock it cannot get in time, unless it asked for it strictly."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.3)
+
+    async def test_a_command_runs_without_the_lock_once_the_timeout_is_over(
+        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stuck holder must not keep the player from responding to the next command."""
+        ran = False
+        async with _lock_held_elsewhere(controller, "p1"):
+            with caplog.at_level(logging.WARNING):
+                async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK):
+                    ran = True
+
+        assert ran
+        assert "proceeding without lock" in caplog.text
+
+    async def test_a_strict_command_fails_instead_of_running_without_the_lock(
+        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A strict command that would overlap with the holder is refused as busy."""
+        ran = False
+        async with _lock_held_elsewhere(controller, "p1"):
+            with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+                async with controller.get_player_lock(
+                    "p1", PlayerLockPurpose.PLAYBACK, strict=True
+                ):
+                    ran = True
+
+        assert not ran
+        assert "still waiting" in caplog.text
+        # the lock itself is left intact for the next command
+        async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
+            ran = True
+        assert ran
+
+    async def test_a_strict_command_keeps_waiting_past_the_timeout(
+        self, controller: PlayerController
+    ) -> None:
+        """A strict command runs once the holder is done, however long that takes."""
+        ran = asyncio.Event()
+
+        async def _strict_command() -> None:
+            async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
+                ran.set()
+
+        async with _lock_held_elsewhere(controller, "p1"):
+            command = asyncio.create_task(_strict_command())
+            # well past the point where a non-strict command would have given up
+            await asyncio.sleep(0.1)
+            assert not ran.is_set()
+
+        await command
+        assert ran.is_set()
+
+    async def test_a_strict_group_and_player_lock_takes_both_strictly(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The group's lock, taken before the member's, is waited for just as strictly."""
+        controller, _group, _member = _group_with_member(mock_mass)
+        acquisitions: list[tuple[str, bool]] = []
+        acquire_lock = controller.get_player_lock
+
+        def _record(
+            player_id: str,
+            purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+            strict: bool = False,
+        ) -> contextlib.AbstractAsyncContextManager[None]:
+            acquisitions.append((player_id, strict))
+            return acquire_lock(player_id, purpose, strict=strict)
+
+        controller.get_player_lock = _record  # type: ignore[assignment]
+        async with controller.get_group_and_player_lock("member", strict=True):
+            pass
+
+        assert acquisitions == [("group", True), ("member", True)]
