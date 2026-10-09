@@ -893,6 +893,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         await self.seek(queue_id, int(target))
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
+    @handle_play_action
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """
         Handle SEEK command for given queue.

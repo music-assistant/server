@@ -17,10 +17,14 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from tests.common import bare_player_controller
 
 if TYPE_CHECKING:
+    from music_assistant.controllers.players import PlayerController
     from music_assistant.mass import MusicAssistant
 
 
@@ -103,6 +107,99 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         == next_item.queue_item_id
     )
     assert controller._queue_data["q1"].next_item_id_enqueued == next_item.queue_item_id
+
+
+@asynccontextmanager
+async def _already_playing(*_args: object, **_kwargs: object) -> AsyncIterator[None]:
+    """Stand in for the wait for the player to report playing, which it already does."""
+    yield
+
+
+def _handover_controller() -> tuple[
+    PlayerQueuesController, MagicMock, PlayerController, list[QueueItem]
+]:
+    """Build a bare controller whose player is playing, with the real playback lock in place."""
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+    players = bare_player_controller()
+    player = SimpleNamespace(
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
+    )
+    mass = MagicMock()
+    mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
+    mass.players.get_player = MagicMock(return_value=player)
+    mass.players.get_player_lock = players.get_player_lock
+    mass.players.enqueue_next_media = AsyncMock()
+    controller.mass = mass
+    items = [_make_queue_item("q1", name) for name in ("nerin", "another-love", "future-track")]
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(items),
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        index_in_buffer=0,
+        current_item=items[0],
+    )
+    controller._queue_data = {
+        "q1": PlayerQueueData(queue=queue, items=items, session_id="session-1")
+    }
+    return controller, mass, players, items
+
+
+def _scheduled_handover(
+    controller: PlayerQueuesController, mass: MagicMock, next_item: QueueItem
+) -> asyncio.Task[None]:
+    """Schedule the handover of the next item and start it in its own task, as call_later would."""
+    controller._enqueue_next_item("q1", next_item)
+    enqueue_callback = mass.call_later.call_args.args[1]
+    return asyncio.create_task(enqueue_callback(next_item))
+
+
+async def test_enqueue_next_item_waits_for_the_playback_lock() -> None:
+    """The handover runs after the play action holding the lock, never alongside it."""
+    controller, mass, players, items = _handover_controller()
+
+    async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):
+        handover = _scheduled_handover(controller, mass, items[1])
+        await asyncio.sleep(0)
+        mass.players.enqueue_next_media.assert_not_awaited()
+    await handover
+
+    mass.players.enqueue_next_media.assert_awaited_once()
+    assert controller._queue_data["q1"].next_item_id_enqueued == items[1].queue_item_id
+
+
+async def test_enqueue_next_item_rechecks_the_queue_once_it_holds_the_lock() -> None:
+    """A handover that waited must not push a track the play action meanwhile replaced."""
+    controller, mass, players, items = _handover_controller()
+
+    async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):
+        handover = _scheduled_handover(controller, mass, items[1])
+        await asyncio.sleep(0)
+        # the play action holding the lock changes what follows the playing track
+        controller._queue_data["q1"].items = [items[0], items[2]]
+    await handover
+
+    mass.players.enqueue_next_media.assert_not_awaited()
+
+
+async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handover that cannot get the lock in time is dropped quietly."""
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.02)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+    controller, mass, players, items = _handover_controller()
+
+    async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):
+        await _scheduled_handover(controller, mass, items[1])
+
+    mass.players.enqueue_next_media.assert_not_awaited()
+    assert "busy" in cast("MagicMock", controller.logger).debug.call_args.args[0]
 
 
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
