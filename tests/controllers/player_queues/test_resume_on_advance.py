@@ -242,6 +242,61 @@ async def test_preload_next_audiobook_still_resumes_and_enqueues() -> None:
     controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[1])
 
 
+@pytest.mark.parametrize("flow_mode", [False, True])
+async def test_preload_reaches_item_beyond_next_item_scan(flow_mode: bool) -> None:
+    """Preloading still tries the loader when the short next-item scan finds no candidate."""
+    items = [_book("playing"), *[_book(f"unavailable-{idx}") for idx in range(5)], _book("next")]
+    for item in items[1:6]:
+        item.available = False
+    controller, get_stream_details = _controller(items)
+    queue = controller._queue_data[QUEUE_ID].queue
+    queue.current_item = items[0]
+    queue.flow_mode = flow_mode
+    tasks: list[asyncio.Task[None]] = []
+    cast("MagicMock", controller.mass).create_task.side_effect = lambda coro, **_kwargs: (
+        tasks.append(asyncio.create_task(coro))
+    )
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+    assert controller.get_next_item(QUEUE_ID, items[0].queue_item_id) is None
+    controller._preload_next_item(QUEUE_ID, items[0].queue_item_id)
+    await asyncio.gather(*tasks)
+
+    if flow_mode:
+        get_stream_details.assert_not_awaited()
+        controller._enqueue_next_item.assert_not_called()
+    else:
+        assert get_stream_details.call_args.kwargs["queue_item"] is items[-1]
+        controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[-1])
+
+
+async def test_flow_preload_does_not_wrap_past_unavailable_items() -> None:
+    """A deeper preload scan must not wrap around and reset the playing flow item's offset."""
+    items = [_book("playing"), *[_book(f"unavailable-{idx}") for idx in range(5)]]
+    for item in items[1:]:
+        item.available = False
+    controller, get_stream_details = _controller(items, repeat_mode=RepeatMode.ALL)
+    queue = controller._queue_data[QUEUE_ID].queue
+    queue.current_item = items[0]
+    queue.flow_mode = True
+    details = MagicMock(seek_position=59)
+    items[0].streamdetails = details
+    tasks: list[asyncio.Task[None]] = []
+    cast("MagicMock", controller.mass).create_task.side_effect = lambda coro, **_kwargs: (
+        tasks.append(asyncio.create_task(coro))
+    )
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+    assert controller.get_next_item(QUEUE_ID, items[0].queue_item_id) is None
+    controller._preload_next_item(QUEUE_ID, items[0].queue_item_id)
+    await asyncio.gather(*tasks)
+
+    get_stream_details.assert_not_awaited()
+    controller._enqueue_next_item.assert_not_called()
+    assert items[0].streamdetails is details
+    assert details.seek_position == 59
+
+
 async def test_audiobook_played_to_the_end_restarts_on_the_next_repeat_pass() -> None:
     """An audiobook finished during this queue starts at 0:00 on the next pass, not its bookmark."""
     items = [_book("book-a"), _book("book-b", resume_position_ms=60000)]

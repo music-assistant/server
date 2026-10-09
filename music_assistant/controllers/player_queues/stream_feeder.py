@@ -357,11 +357,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
                         break
                     await asyncio.sleep(1)
                 next_item = self.get_next_item(queue_id, item_id_in_buffer)
-                if next_item is None or (
-                    queue.flow_mode and next_item.queue_item_id == item_id_in_buffer
+                if queue.flow_mode and (
+                    next_item is None or next_item.queue_item_id == item_id_in_buffer
                 ):
                     # Loading a repeat resets the shared item's seek offset while its audio
-                    # is still playing. Leave that load to the actual repeat transition.
+                    # is still playing. A deeper scan can also wrap back to this item when
+                    # the short scan finds no candidate. Leave that load to the flow transition.
                     return
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
