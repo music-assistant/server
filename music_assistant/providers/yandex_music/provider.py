@@ -393,6 +393,7 @@ class _WaveState:
         self.last_track_id: str | None = None
         self.playlist_next_cursor: str | None = None
         self.seen_track_ids: set[str] = set()
+        self.ended: bool = False
         self.radio_started_sent: bool = False
         self.prefetched: list[Any] = []
         self.settings: dict[str, str] = {}
@@ -633,6 +634,7 @@ class YandexMusicProvider(MusicProvider):
         # print when MA is set to DEBUG for this provider.
         logging.getLogger("music_assistant.providers.yandex_music").setLevel(self.logger.level)
         self._streaming = YandexMusicStreamingManager(self)
+        self._browse_router = _BrowseRouter(self)
         # Per-station wave state (incl. My Wave under ROTOR_STATION_MY_WAVE).
         # Entries are created lazily by _get_wave_state() on first access.
         self._wave_states = {}
@@ -684,10 +686,7 @@ class YandexMusicProvider(MusicProvider):
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             raise NotImplementedError
-        router = getattr(self, "_browse_router", None)
-        if router is None:
-            router = self._browse_router = _BrowseRouter(self)
-        return await router.dispatch(path)
+        return await self._browse_router.dispatch(path)
 
     # Search
 
@@ -2400,8 +2399,9 @@ class YandexMusicProvider(MusicProvider):
              state (session creation, batch_id write) and would race with
              other callers now that we hold no lock. The raw client call
              only reads the arguments we pass in.
-          3. Re-acquire, verify the session hasn't been recycled and the
-             buffer is still empty, then ``extend``.
+          3. Re-acquire, verify session identity, save terminal state and
+             batch metadata, then extend the buffer. Ordinary batches are
+             skipped if another caller filled it; final batches are retained.
 
         :param station_key: Station key whose state to top up.
         """
@@ -2410,7 +2410,7 @@ class YandexMusicProvider(MusicProvider):
             return
 
         async with wave.lock:
-            if wave.session_id is None or wave.prefetched:
+            if wave.session_id is None or wave.ended or wave.prefetched:
                 return
             session_id = wave.session_id
             cursor = wave.last_track_id
@@ -2419,20 +2419,28 @@ class YandexMusicProvider(MusicProvider):
             return  # No anchor for the next batch yet; try again later.
 
         try:
-            tracks, _ = await self.client.rotor_session_tracks(
+            tracks, batch_id, ended = await self.client.rotor_session_tracks(
                 session_id, current_track_id=str(cursor)
             )
-        except RotorSessionExpiredError, RotorSessionTerminatedError:
+        except RotorSessionExpiredError:
             return
-        if not tracks:
-            return
+        except RotorSessionTerminatedError:
+            tracks, batch_id, ended = [], None, True
 
         async with wave.lock:
-            # Another task could have restarted the session or filled the
-            # buffer while we were awaiting the network call; bail in both
-            # cases to avoid stale extends.
-            if wave.session_id != session_id or wave.prefetched:
+            # A final batch must survive concurrent buffering, but a stale response
+            # must not terminate a replacement session or append to an ended one.
+            if (
+                self._wave_states.get(station_key) is not wave
+                or wave.session_id != session_id
+                or wave.ended
+            ):
                 return
+            if wave.prefetched and not ended:
+                return
+            wave.ended = ended
+            if batch_id:
+                wave.batch_id = batch_id
             wave.prefetched.extend(tracks)
 
     async def _fetch_rotor_session_batch(
@@ -2454,9 +2462,12 @@ class YandexMusicProvider(MusicProvider):
         :param station_id: Rotor station key (may include a "#preset" suffix).
         :return: Tuple of (list of yandex tracks, batch_id or None).
         """
+        if wave.ended:
+            tracks, wave.prefetched = wave.prefetched, []
+            return (tracks, wave.batch_id if tracks else None)
         if wave.session_id is not None and wave.last_track_id:
             try:
-                tracks, batch_id = await self.client.rotor_session_tracks(
+                tracks, batch_id, ended = await self.client.rotor_session_tracks(
                     wave.session_id, current_track_id=str(wave.last_track_id)
                 )
             except RotorSessionExpiredError:
@@ -2468,8 +2479,10 @@ class YandexMusicProvider(MusicProvider):
                 wave.prefetched.clear()
                 wave.seen_track_ids.clear()
             except RotorSessionTerminatedError:
+                wave.ended = True
                 return ([], None)
             else:
+                wave.ended = ended
                 if batch_id:
                     wave.batch_id = batch_id
                 return (tracks, batch_id)

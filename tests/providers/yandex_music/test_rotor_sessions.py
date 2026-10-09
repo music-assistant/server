@@ -46,6 +46,7 @@ async def test_rotor_uses_public_library_methods(
             assert await client.rotor_session_tracks("session", current_track_id="100") == (
                 [],
                 "batch",
+                False,
             )
         else:
             assert await client.rotor_session_feedback("session", "trackStarted", track_id="100")
@@ -208,6 +209,7 @@ async def test_rotor_fetch_retries_connection_drop_with_another_throttle_slot(
             assert await client.rotor_session_tracks("session", current_track_id="100") == (
                 [],
                 "batch",
+                False,
             )
         reconnect_call.assert_awaited_once()
     assert post.await_count == 2

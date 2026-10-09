@@ -400,26 +400,26 @@ class YandexMusicClient:
 
     async def rotor_session_tracks(
         self, session_id: str, *, current_track_id: str
-    ) -> tuple[list[YandexTrack], str | None]:
+    ) -> tuple[list[YandexTrack], str | None, bool]:
         """
         Fetch the next batch of tracks for an active rotor session.
 
         :param session_id: radioSessionId from rotor_session_new().
         :param current_track_id: Track ID just consumed from the previous batch
             (Yandex uses it to decide what to return next).
-        :return: Tuple of (list of tracks, new batch_id).
+        :return: Tuple of (list of tracks, new batch_id, session ended).
         """
         result = await self._call_rotor_session(
             lambda c: c.rotor_session_tracks(session_id, queue=[str(current_track_id)])
         )
         if result is None:
-            return ([], None)
+            return ([], None, False)
         if result.unknown_session:
             raise RotorSessionExpiredError(session_id)
         if result.terminated and not result.sequence:
             raise RotorSessionTerminatedError(session_id)
         tracks = await self._hydrate_session_tracks(result.sequence or [])
-        return (tracks, result.batch_id)
+        return (tracks, result.batch_id, bool(result.terminated))
 
     async def rotor_session_feedback(
         self,

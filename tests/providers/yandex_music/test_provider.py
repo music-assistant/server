@@ -341,3 +341,17 @@ async def test_unload_clears_all_per_session_caches() -> None:
     assert state["_liked_albums_cache"] is None
     assert not state["_audiobook_chapter_cache"]
     assert not state["_audiobook_play_ids"]
+
+
+async def test_successful_initialization_creates_browse_router() -> None:
+    """A connected provider is ready to browse without constructing state on first use."""
+    provider, _, _ = _make_auth_init_provider("new-token")
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.provider.YandexMusicClient",
+            return_value=mock.AsyncMock(),
+        ),
+        mock.patch("music_assistant.providers.yandex_music.provider.YandexMusicStreamingManager"),
+    ):
+        await provider.handle_async_init()
+    assert provider._browse_router is not None

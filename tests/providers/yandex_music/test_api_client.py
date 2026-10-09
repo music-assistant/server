@@ -341,7 +341,8 @@ async def test_rotor_session_tracks_posts_current_track_queue() -> None:
     req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 200})(), type("T", (), {"id": 201})()])
 
-    tracks, batch_id = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+    tracks, batch_id, ended = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+    assert not ended
 
     args, kwargs = _call_args(req_mock)
     path, body = args[0], kwargs["json"]

@@ -27,6 +27,7 @@ def browse_provider() -> Mock:
     provider._get_wave_state.side_effect = lambda key: provider._wave_states.setdefault(
         key, _WaveState()
     )
+    provider._browse_router = _BrowseRouter(provider)
     return provider
 
 
