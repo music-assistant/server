@@ -101,6 +101,41 @@ async def test_a_member_may_not_ask_for_a_source_of_another_user(
         await storage.get_source_folder(SOURCE)
 
 
+async def test_a_member_sees_the_folder_of_a_shared_source(storage: StorageController) -> None:
+    """A source of another user, shared with the member, shows its folder and location."""
+    share = replace(
+        make_location("/mnt/nas", StorageKind.NETWORK_SHARE, managed=True),
+        share_name="nas",
+        server="nas.local",
+        used_by=["My music"],
+    )
+    storage._locations = [share]
+    store_source(storage, "/mnt/nas/Rock")
+    storage.mass.config.set(
+        f"{CONF_PROVIDERS}/{SOURCE}/access", {"owner": "someone_else", "sharing": "members"}
+    )
+    set_current_user(MEMBER)
+
+    result = await storage.get_source_folder(SOURCE)
+
+    assert result.path == "/mnt/nas/Rock"
+    assert result.location is not None
+    assert result.location.path == "/mnt/nas"
+    assert (result.location.server, result.location.used_by) == (None, [])
+
+
+async def test_a_disabled_source_still_has_its_folder(storage: StorageController) -> None:
+    """The folder is read from the stored setup, so a source that is switched off answers too."""
+    music = make_location("/mnt/nas/music")
+    storage._locations = [music]
+    store_source(storage, "/mnt/nas/music/Rock", enabled=False)
+
+    result = await storage.get_source_folder(SOURCE)
+
+    assert result.path == "/mnt/nas/music/Rock"
+    assert result.location == music
+
+
 @pytest.mark.parametrize(
     ("domain", "has_folder"),
     [(None, False), ("spotify", True), ("filesystem_local", False)],
