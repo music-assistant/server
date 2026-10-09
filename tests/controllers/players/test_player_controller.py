@@ -2015,15 +2015,22 @@ class TestCmdUngroupNewBranches:
         group._attr_group_members = ["member"]
         gone = MockPlayer(provider, "gone", "Gone")
         gone._attr_available = False
+        # available follower whose sync leader is unavailable
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "follower"]
+        follower = MockPlayer(provider, "follower", "Follower")
 
-        controller._players = {"g1": group, "gone": gone}
+        controller._players = {"g1": group, "gone": gone, "leader": leader, "follower": follower}
         mock_mass.players = controller
-        for player in (group, gone):
+        for player in (group, gone, leader, follower):
             player.set_initialized()
             player.update_state(signal_event=False)
+        leader._attr_available = False
+        leader.update_state(signal_event=False)
+        assert follower.state.synced_to == "leader"
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
-        await controller.cmd_ungroup_many(["missing", "gone", "g1"])
+        await controller.cmd_ungroup_many(["missing", "gone", "follower", "g1"])
 
         controller._handle_cmd_stop.assert_awaited_once_with("g1")
 
