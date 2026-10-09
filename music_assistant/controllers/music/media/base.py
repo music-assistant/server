@@ -3207,7 +3207,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 prov_mapping.item_id,
             ) == (mapping.provider_instance, mapping.item_id):
                 prov_mapping.in_library = mapping.in_library
-        self.mass.music.match_provider_instances(update)
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item_from_provider(db_id, update)
         return True
