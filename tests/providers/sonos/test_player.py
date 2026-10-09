@@ -45,6 +45,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._marked_asleep = False
     player._woken_from_sleep = False
     player.cloud_queue_id = None
+    player.cloud_queue_item_generation = 0
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -626,19 +627,43 @@ def test_a_group_member_leaves_reporting_playback_errors_to_the_coordinator(
     assert not caplog.records
 
 
-async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on_to() -> None:
+@pytest.mark.parametrize("item_id", ["abc@3", "abc"], ids=["current load", "legacy bare id"])
+async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on_to(
+    item_id: str,
+) -> None:
     """Test the queue is asked to release the failed track's source, by its bare item id."""
     player = _make_named_player("Kantoor")
     player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
     mass = cast("MagicMock", player.mass)
     mass.player_queues.release_failed_item_source = AsyncMock()
     scheduled = _scheduled_tasks(mass)
 
-    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId=item_id))
 
     assert len(scheduled) == 1
     await scheduled[0]
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
+
+
+def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Test a delayed report about the load a reload replaced is ignored.
+
+    A seek or replay serves the same track under a new generation, and the source the queue
+    item holds then belongs to that load; the old load's failure must not cancel it.
+    """
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 4
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId="abc@3"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+    assert "Ignoring the failure of abc@3" in caplog.text
 
 
 def test_a_track_refused_by_our_stream_server_has_no_source_to_release() -> None:
