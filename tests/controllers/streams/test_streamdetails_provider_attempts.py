@@ -346,6 +346,41 @@ async def test_a_sibling_account_with_a_mapping_of_its_own_is_ranked_on_that_map
     lofi.get_stream_details.assert_not_awaited()
 
 
+async def test_an_account_without_a_mapping_stands_in_on_the_siblings_best_mapping() -> None:
+    """An account that lacks a mapping of its own is credited with its siblings' best copy."""
+    lofi_instance = "tidal--a"
+    hifi_instance = "tidal--b"
+    standin_instance = "tidal--c"
+    other_instance = "spotify--other"
+    lofi = _music_provider(lofi_instance)
+    hifi = _music_provider(hifi_instance)
+    standin = _music_provider(standin_instance)
+    other = _music_provider(other_instance)
+    audio = _audio(
+        {
+            lofi_instance: lofi,
+            hifi_instance: hifi,
+            standin_instance: standin,
+            other_instance: other,
+        }
+    )
+    cast("MagicMock", audio.mass).providers = [lofi, hifi, standin, other]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(lofi_instance),
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            _mapping(other_instance, content_type=ContentType.OGG),
+        ),
+        excluded_provider_instances={lofi_instance, hifi_instance},
+    )
+
+    # backed by the lossless sibling mapping, the stand-in ranks ahead of the other
+    # service's lossy copy
+    assert streamdetails.provider == standin_instance
+    other.get_stream_details.assert_not_awaited()
+
+
 async def test_a_sibling_account_with_a_mapping_of_its_own_is_marked_on_that_mapping() -> None:
     """An account that maps the item itself marks its own mapping when it no longer finds it."""
     hifi_instance = "tidal--hifi"

@@ -118,6 +118,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSF
 from music_assistant.controllers.streams.stream_sources import (
     DEFAULT_POLICY,
     SourceCandidate,
+    rank_provider_mappings,
     rank_stream_sources,
 )
 from music_assistant.helpers import ssl as ssl_util
@@ -3783,9 +3784,9 @@ class StreamsAudio:
         :return: Ordered provider mapping candidates.
         """
         candidates: dict[tuple[str, str], SourceCandidate] = {}
-        # a fixed iteration order keeps a stand-in candidate backed by the same mapping at
-        # every selection, the mapping set itself iterates in hash order
-        for mapping in sorted(provider_mappings, key=lambda m: (m.provider_instance, m.item_id)):
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(provider_mappings):
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
