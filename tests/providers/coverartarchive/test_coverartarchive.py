@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import ClientError
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 
 from music_assistant.providers.coverartarchive import (
@@ -11,6 +10,9 @@ from music_assistant.providers.coverartarchive import (
     CoverArtArchiveMetadataProvider,
 )
 from tests.common import use_real_create_task
+
+COVER_URL = "https://coverartarchive.org/release-group/mbid/front-1200"
+IMAGE_URL = "https://archive.org/download/mbid-release/mbid-release-1_thumb1200.jpg"
 
 
 @pytest.fixture
@@ -36,44 +38,75 @@ def _response_cm(response: MagicMock) -> MagicMock:
     return cm
 
 
+def _answer(
+    provider: CoverArtArchiveMetadataProvider, status: int, location: str | None = None
+) -> MagicMock:
+    """Have every HEAD request to the archive answered with the status, return the HEAD mock."""
+    response = MagicMock()
+    response.status = status
+    response.url = COVER_URL
+    response.headers = {"Location": location} if location else {}
+    head = MagicMock(return_value=_response_cm(response))
+    provider.mass.http_session.head = head  # type: ignore[method-assign]
+    return head
+
+
+async def test_get_cover_art_url_is_the_redirect_location(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A redirect means the cover exists: its location is returned without following it."""
+    head = _answer(provider, 307, IMAGE_URL)
+
+    assert await provider._get_cover_art_url("mbid") == IMAGE_URL
+    head.assert_called_once_with(COVER_URL, allow_redirects=False)
+
+
 async def test_get_cover_art_url_returns_url_on_success(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """A 200 response returns the resolved cover art URL."""
-    response = MagicMock()
-    response.status = 200
-    response.url = "https://coverartarchive.org/release-group/mbid/front-1200"
-    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
-        return_value=_response_cm(response)
-    )
+    _answer(provider, 200)
 
-    result = await provider._get_cover_art_url("mbid")
-    assert result == "https://coverartarchive.org/release-group/mbid/front-1200"
+    assert await provider._get_cover_art_url("mbid") == COVER_URL
 
 
-async def test_get_cover_art_url_returns_none_when_missing(
+async def test_get_cover_art_url_without_a_cover_is_one_request(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
-    """A 404 for every size means there is genuinely no cover art, so None is returned."""
-    response = MagicMock()
-    response.status = 404
-    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
-        return_value=_response_cm(response)
-    )
+    """A release group without a cover costs a single archive request, not one per size."""
+    head = _answer(provider, 404)
 
     assert await provider._get_cover_art_url("mbid") is None
+    head.assert_called_once_with(COVER_URL, allow_redirects=False)
 
 
 async def test_get_cover_art_url_propagates_transient_error(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """A 5xx failure surfaces as ResourceTemporarilyUnavailable, not cached as 'no cover art'."""
-    response = MagicMock()
-    response.status = 503
-    response.raise_for_status = MagicMock(side_effect=ClientError("service unavailable"))
+    _answer(provider, 503)
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await provider._get_cover_art_url("mbid")
+
+
+async def test_get_cover_art_url_propagates_a_timeout(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A request that times out surfaces as ResourceTemporarilyUnavailable."""
     provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
-        return_value=_response_cm(response)
+        side_effect=TimeoutError
     )
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await provider._get_cover_art_url("mbid")
+
+
+async def test_get_cover_art_url_treats_a_redirect_without_location_as_transient(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """A redirect that names no location says nothing about the cover, so it is transient."""
+    _answer(provider, 307)
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await provider._get_cover_art_url("mbid")

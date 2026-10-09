@@ -24,6 +24,7 @@ SUPPORTED_FEATURES = {
 }
 
 CAA_BASE_URL = "https://coverartarchive.org"
+REDIRECT_STATUSES = (301, 302, 307, 308)
 
 
 async def setup(
@@ -84,18 +85,27 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
 
         :param release_group_id: MusicBrainz release group ID.
         """
-        # Try 1200px first, fall back to 500px
+        # the archive answers 404 only when the release group has no front cover at all, for
+        # every size alike, so one request for the 1200px size is enough
+        url = f"{CAA_BASE_URL}/release-group/{release_group_id}/front-1200"
         try:
-            for size in ("front-1200", "front-500"):
-                url = f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
-                async with self.mass.http_session.head(url, allow_redirects=True) as response:
-                    if response.status == 200:
-                        return str(response.url)
-                    if response.status != 404:
-                        response.raise_for_status()
+            # the archive answers with a redirect to the image file on archive.org, which is
+            # often slow or down; the redirect alone tells the cover exists, so don't follow it
+            async with self.mass.http_session.head(url, allow_redirects=False) as response:
+                if response.status in REDIRECT_STATUSES and (
+                    location := response.headers.get("Location")
+                ):
+                    return location
+                if response.status == 200:
+                    return str(response.url)
+                if response.status == 404:
+                    return None
         except (aiohttp.ClientError, TimeoutError) as err:
-            # a non-404 status (5xx, 429, ...) or network failure is transient — surface it as
-            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no cover art"
+            # a network failure is transient — surface it as ResourceTemporarilyUnavailable
+            # so callers degrade instead of caching "no cover art"
             raise ResourceTemporarilyUnavailable("Cover Art Archive request failed") from err
-        # a 404 for both sizes means this release group genuinely has no cover art
-        return None
+        # any other status (5xx, 429, a redirect without a location, ...) is no answer
+        # about the cover either, so it is just as transient
+        raise ResourceTemporarilyUnavailable(
+            f"Cover Art Archive request failed with status {response.status}"
+        )
