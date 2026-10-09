@@ -2439,52 +2439,37 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             elif player.state.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
 
-        # signal player provider that the player got enabled/disabled
-        if (player_enabled or player_disabled) and player_provider:
-            assert isinstance(player_provider, PlayerProvider)  # for type checking
-            # Collect linked protocol IDs to cascade the enable/disable to.
-            # Without this, a disabled native parent leaves its linked protocols
-            # registered after restart; they then fail to find their parent and
-            # get wrapped in a fresh Universal Player.
-            cascade_protocol_ids: list[str] = []
-            parent_is_protocol = player.state.type == PlayerType.PROTOCOL if player else False
-            if not parent_is_protocol:
-                if player and player.linked_output_protocols:
-                    cascade_protocol_ids = [
-                        link.output_protocol_id for link in player.linked_output_protocols
-                    ]
-                else:
-                    cascade_protocol_ids = self._get_cached_protocol_ids(config.player_id)
-            if player_disabled:
-                player_provider.on_player_disabled(config.player_id)
-            elif player_enabled:
-                player_provider.on_player_enabled(config.player_id)
-            for protocol_id in cascade_protocol_ids:
-                protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
-                if not protocol_raw:
-                    continue
-                if bool(protocol_raw.get("enabled", True)) == bool(player_enabled):
-                    continue
-                self.mass.create_task(
-                    self.mass.config.save_player_config(
-                        protocol_id, {ATTR_ENABLED: bool(player_enabled)}
-                    )
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.state.active_source)
+            if player and player.state.active_source
+            else None
+        )
+
+        # Providers may retain their registered player on disable. Apply the saved
+        # config after stopping under the old state, before notifying the provider.
+        previous_config = player.config if player else None
+        try:
+            if player:
+                player.set_config(config)
+                await player.on_config_updated()
+                player.update_state()
+            if (player_enabled or player_disabled) and player_provider:
+                assert isinstance(player_provider, PlayerProvider)  # for type checking
+                self._notify_provider_player_enabled_change(
+                    player, player_provider, config, player_enabled
                 )
-            return  # enabling/disabling a player will be handled by the provider
+                return  # enabling/disabling a player will be handled by the provider
+        except Exception:
+            # ConfigController rolls back persistence on failure; keep the retained
+            # runtime player consistent with that same previous configuration.
+            if player and previous_config:
+                player.set_config(previous_config)
+                player.update_state()
+            raise
 
         if not player:
             return  # guard against player not being registered (yet)
 
-        resume_queue: PlayerQueue | None = (
-            self.mass.player_queues.get(player.state.active_source)
-            if player.state.active_source
-            else None
-        )
-
-        # ensure player state gets updated with any updated config
-        player.set_config(config)
-        await player.on_config_updated()
-        player.update_state()
         # if the PlayerQueue was playing, restart playback
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             requires_restart = any(
@@ -2570,6 +2555,41 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
+
+    def _notify_provider_player_enabled_change(
+        self,
+        player: Player | None,
+        player_provider: PlayerProvider,
+        config: PlayerConfig,
+        enabled: bool,
+    ) -> None:
+        """Notify the provider and cascade enabled state to linked protocols."""
+        # Collect linked protocol IDs to cascade the enable/disable to.
+        # Without this, a disabled native parent leaves its linked protocols
+        # registered after restart; they then fail to find their parent and
+        # get wrapped in a fresh Universal Player.
+        cascade_protocol_ids: list[str] = []
+        parent_is_protocol = player.state.type == PlayerType.PROTOCOL if player else False
+        if not parent_is_protocol:
+            if player and player.linked_output_protocols:
+                cascade_protocol_ids = [
+                    link.output_protocol_id for link in player.linked_output_protocols
+                ]
+            else:
+                cascade_protocol_ids = self._get_cached_protocol_ids(config.player_id)
+        if not enabled:
+            player_provider.on_player_disabled(config.player_id)
+        else:
+            player_provider.on_player_enabled(config.player_id)
+        for protocol_id in cascade_protocol_ids:
+            protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if not protocol_raw:
+                continue
+            if bool(protocol_raw.get("enabled", True)) == bool(enabled):
+                continue
+            self.mass.create_task(
+                self.mass.config.save_player_config(protocol_id, {ATTR_ENABLED: bool(enabled)})
+            )
 
     async def _resolve_mac_addresses(self, player: Player) -> None:
         """
