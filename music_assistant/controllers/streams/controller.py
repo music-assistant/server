@@ -1731,6 +1731,9 @@ class StreamsController(CoreController):
                 ),
                 session_id=queue_session_id,
             )
+            # the HTTP route and the flow stream record the first chunk that goes out to the
+            # player; this stream is handed to the player provider itself, so record it here
+            inner_stream = self._mark_served_on_first_chunk(inner_stream, queue_item)
             if (
                 queue is not None
                 and queue_item.media_type == MediaType.RADIO
@@ -2171,6 +2174,25 @@ class StreamsController(CoreController):
                     yield chunk
         finally:
             self._active_output_streams -= 1
+
+    async def _mark_served_on_first_chunk(
+        self, inner: AsyncGenerator[bytes], queue_item: QueueItem
+    ) -> AsyncGenerator[bytes]:
+        """
+        Forward a single-item stream, recording the item as served to the player on its first chunk.
+
+        :param inner: The queue item stream to forward.
+        :param queue_item: The queue item the stream carries.
+        """
+        served = False
+        async with aclosing(inner):
+            async for chunk in inner:
+                if not served:
+                    served = True
+                    self.mass.player_queues.mark_item_served(
+                        queue_item.queue_id, queue_item.queue_item_id
+                    )
+                yield chunk
 
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
         """

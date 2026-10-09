@@ -691,6 +691,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             #  Ignore items that had a stream error
             return
 
+        if item_to_report.queue_item_id not in queue_data.served_item_ids:
+            # the player named an item it never received audio for (one from its own cached
+            # copy of the queue that the stream server then refused): nothing of it has played,
+            # whatever position the player reports for it
+            return
+
         # a preloaded item is only probed once it actually streams
         self._apply_probed_duration(item_to_report)
 
