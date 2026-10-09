@@ -1238,7 +1238,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         requested_queue_item_id = request.query.get("queue_item_id")
 
         player = self.provider.mass.players.get_player(player_id)
-        if not player or not isinstance(player, MSXPlayer):
+        if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
@@ -1412,7 +1412,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         player_id = _strip_known_extension(request.match_info["player_id"])
 
         player = self.provider.mass.players.get_player(player_id)
-        if not player or not isinstance(player, MSXPlayer):
+        if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
@@ -1852,7 +1852,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     def _get_msx_player(self, player_id: str) -> MSXPlayer | None:
         """Return the MSXPlayer for player_id if it belongs to this provider, else None."""
         player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
-        if isinstance(player, MSXPlayer) and player.provider == self.provider:
+        if (
+            isinstance(player, MSXPlayer)
+            and player.provider == self.provider
+            and player.config.enabled
+        ):
             return player
         return None
 

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import aiohttp
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient as AiohttpTestClient
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import (
@@ -3121,3 +3122,41 @@ async def test_native_queue_advances_without_authentication(
         await client.close()
         current_user.reset(user_context)
         impersonated_user.reset(owner_context)
+
+
+@pytest.mark.parametrize("path", ["/msx/audio/msx_test?uri=library://track/1", "/stream/msx_test"])
+async def test_disabled_native_stream_is_rejected(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    player: MSXPlayer,
+    player_config_mock: Mock,
+    provider: MSXBridgeProvider,
+    path: str,
+) -> None:
+    """A disabled player cannot fetch or prepare native audio."""
+    player_config_mock.enabled = False
+    mass_mock.players.get_player.return_value = player
+    separator = "&" if "?" in path else "?"
+    response = await http_client.get(
+        path + separator + "token=" + provider.get_stream_token("msx_test")
+    )
+    assert response.status == 404
+    mass_mock.player_queues.play_index.assert_not_awaited()
+
+
+async def test_disable_during_redirect_resolution_rejects_the_resolved_stream(
+    provider: MSXBridgeProvider,
+    player: MSXPlayer,
+) -> None:
+    """A URL resolved after disable cannot start an independent or redirected decoder."""
+    server = MSXHTTPServer(provider, 0)
+    provider.is_redirect_stream_mode = Mock(return_value=True)  # type: ignore[method-assign]
+
+    async def resolve(*_args: object) -> str:
+        player.config.enabled = False
+        return "http://ma/audio"
+
+    provider.get_ma_stream_url = AsyncMock(side_effect=resolve)  # type: ignore[method-assign]
+    with pytest.raises(web.HTTPNotFound):
+        await server.audio.serve(Mock(), player, PlayerMedia(uri="http://ma/track"))
+    assert not server._active_stream_tasks

@@ -70,8 +70,13 @@ class AudioPipeline:
         """Serve this player's current media on this request."""
         player_id = player.player_id
 
+        if not player.config.enabled:
+            raise web.HTTPNotFound(text="Player not found")
+
         if self.provider.is_redirect_stream_mode():
             redirect_url = await self.provider.get_ma_stream_url(player_id, media)
+            if not player.config.enabled:
+                raise web.HTTPNotFound(text="Player not found")
             if redirect_url:
                 redirect_url = rewrite_stream_host(request, redirect_url)
                 logger.info(

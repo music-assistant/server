@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderURI,
+    PlayerUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import Track
@@ -102,8 +103,12 @@ async def prepare_msx_audio(
     """Return the PlayerMedia MSX should stream for this URI."""
     # Selects a queued item (or reuses current media) so MA-driven play
     # and MSX-driven /msx/audio share one implementation.
+    if not player.config.enabled:
+        raise PlayerUnavailableError("Player is disabled")
     provider.on_player_activity(player.player_id)
     async with player._prepare_lock:
+        if not player.config.enabled:
+            raise PlayerUnavailableError("Player is disabled")
         return await _prepare_msx_audio_locked(
             provider,
             player,
@@ -142,6 +147,8 @@ async def _prepare_msx_audio_locked(
         await provider.mass.player_queues.play_index(*queue_item)
 
     media = await player.wait_for_media(timeout=10.0)
+    if not player.config.enabled:
+        raise PlayerUnavailableError("Player is disabled")
     if not media:
         raise ResourceTemporarilyUnavailable("Playback setup timeout")
     if media.source_id:

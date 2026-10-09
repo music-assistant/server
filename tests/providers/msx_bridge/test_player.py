@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
@@ -730,3 +731,15 @@ async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
 
     assert player._attr_playback_state == PlaybackState.PAUSED
     mock_notify.assert_not_called()
+
+
+async def test_disabled_player_rejects_direct_media_and_resume(
+    player: MSXPlayer, player_config_mock: Mock
+) -> None:
+    """Native and delayed core commands cannot start a disabled player."""
+    player_config_mock.enabled = False
+    with pytest.raises(PlayerUnavailableError):
+        await player.play_media(PlayerMedia(uri="http://ma/track"))
+    with pytest.raises(PlayerUnavailableError):
+        await player.play()
+    assert player.current_media is None

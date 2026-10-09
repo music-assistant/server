@@ -119,6 +119,8 @@ class MSXPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command — store stream URL for the TV to fetch."""
+        if not self.config.enabled:
+            raise PlayerUnavailableError("Player is disabled")
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self.current_stream_url = media.uri
         self._attr_current_media = media
@@ -138,6 +140,8 @@ class MSXPlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY (resume) command."""
+        if not self.config.enabled:
+            raise PlayerUnavailableError("Player is disabled")
         self.logger.info("play (resume) on %s", self.display_name)
         if self._attr_playback_state == PlaybackState.PAUSED:
             await self._resume_from_pause()
