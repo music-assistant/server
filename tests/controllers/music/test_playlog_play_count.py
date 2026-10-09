@@ -10,7 +10,7 @@ from __future__ import annotations
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ItemMapping, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY
 from music_assistant.mass import MusicAssistant
 
 AUDIOBOOK_PROVIDER = "filesystem_local--AbCd"
@@ -56,7 +56,7 @@ async def _add_playlog_row(mass: MusicAssistant, userid: str, *, fully_played: b
     :param fully_played: Whether the row records a completed play.
     """
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": AUDIOBOOK_ID,
             "provider": AUDIOBOOK_PROVIDER,
@@ -129,4 +129,56 @@ async def test_play_count_is_never_driven_below_zero(mass: MusicAssistant) -> No
 
     await mass.music.mark_item_unplayed(_reference(), userid=user.user_id)
 
+    assert await _play_count(mass, db_item_id) == 0
+
+
+async def test_provider_sync_appends_history_only_when_progress_completes(
+    mass: MusicAssistant,
+) -> None:
+    """Provider sync records one event on the incomplete-to-completed transition."""
+    user = await mass.webserver.auth.create_user("providerhistory")
+    db_item_id = await _add_library_audiobook(mass, play_count=0)
+    audiobook = await mass.music.audiobooks.get_library_item(db_item_id)
+
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        userid=user.user_id,
+    )
+    assert not await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
+
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=True,
+        seconds_played=3600,
+        user_initiated=False,
+        userid=user.user_id,
+    )
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=True,
+        seconds_played=3600,
+        user_initiated=False,
+        userid=user.user_id,
+    )
+
+    rows = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
+    assert len(rows) == 1
+    assert rows[0]["media_type"] == MediaType.AUDIOBOOK.value
+    assert await _play_count(mass, db_item_id) == 1
+
+
+async def test_manual_mark_played_does_not_append_history_or_increment_count(
+    mass: MusicAssistant,
+) -> None:
+    """Manual state changes are not completed playback events."""
+    user = await mass.webserver.auth.create_user("manualhistory")
+    db_item_id = await _add_library_audiobook(mass, play_count=0)
+    audiobook = await mass.music.audiobooks.get_library_item(db_item_id)
+
+    await mass.music.mark_item_played(audiobook, userid=user.user_id)
+
+    assert not await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
     assert await _play_count(mass, db_item_id) == 0

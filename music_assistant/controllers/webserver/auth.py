@@ -30,7 +30,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_PLAYERS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -2396,7 +2396,7 @@ class AuthenticationManager:
         try:
             # Update all playlog entries with NULL userid to this user
             await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET userid = :userid WHERE userid IS NULL",
                 {"userid": user_id},
             )
             await self.mass.music.database.commit()

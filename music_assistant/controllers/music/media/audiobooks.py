@@ -24,7 +24,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -71,7 +71,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         Return the base SELECT query for audiobooks and its bound query params.
 
-        The playlog table is joined to hydrate per-user resume info (fully_played,
+        The media progress table is joined to hydrate per-user resume info (fully_played,
         resume_position_ms). When a session user is present the join is scoped to that
         user, so multi-user installs don't surface each other's resume state.
         """
@@ -102,8 +102,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
-            LEFT JOIN playlog ON playlog.id = (
-                SELECT p2.id FROM playlog p2
+            LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = (
+                SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} AS p2
                 WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT)
                 AND p2.media_type = 'audiobook'
                 {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
@@ -115,7 +115,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         Return the slim SELECT query used for audiobook summary listings.
 
-        Joins the playlog table the same way as the base query to hydrate the
+        Joins the media progress table the same way as the base query to hydrate the
         per-user resume info (fully_played, resume_position_ms).
         """
         params: dict[str, Any] = {}
@@ -139,8 +139,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.fully_played AS fully_played,
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
-            LEFT JOIN playlog ON playlog.id = (
-                SELECT p2.id FROM playlog p2
+            LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = (
+                SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} AS p2
                 WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT)
                 AND p2.media_type = 'audiobook'
                 {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
@@ -599,7 +599,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         for prov_mapping in media_item.provider_mappings:
             for user_id in user_ids:
                 await self.mass.music.database.delete(
-                    DB_TABLE_PLAYLOG,
+                    DB_TABLE_MEDIA_PROGRESS,
                     {
                         "media_type": self.media_type.value,
                         "item_id": prov_mapping.item_id,
@@ -612,7 +612,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
         for user_id in user_ids:
             cur_entry = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
+                DB_TABLE_MEDIA_PROGRESS,
                 {
                     "media_type": self.media_type.value,
                     "item_id": db_id,
@@ -630,7 +630,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 return
 
             await self.mass.music.database.insert(
-                DB_TABLE_PLAYLOG,
+                DB_TABLE_MEDIA_PROGRESS,
                 {
                     "item_id": db_id,
                     "provider": "library",
@@ -686,8 +686,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , playlog.seconds_played * 1000 AS resume_position_ms
         """
         extra_joins = (
-            f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.id = ("
-            f"SELECT p2.id FROM {DB_TABLE_PLAYLOG} p2 "
+            f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} ON playlog.id = ("
+            f"SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} p2 "
             "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
             "AND p2.media_type = 'audiobook' "
             f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"

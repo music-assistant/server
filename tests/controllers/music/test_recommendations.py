@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider, LibraryRowID
 
@@ -358,7 +358,7 @@ async def _add_playlog_row(
     userid: str = "user-a",
 ) -> None:
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": "library",
