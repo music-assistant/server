@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+from uuid import uuid4
 
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         MediaItemImage,
         PlayableMediaItemType,
     )
+    from music_assistant_models.player import PlayerMedia
 
     from .provider import MSXBridgeProvider
 
@@ -73,7 +75,7 @@ def queue_nav_properties(player_id: str, prefix: str = "") -> dict[str, str]:
         "button:next:action": next_action,
         "button:prev:icon": "default",
         "button:prev:action": prev_action,
-        "trigger:complete": next_action,
+        "trigger:complete": "[]",
     }
 
 
@@ -310,6 +312,9 @@ def map_tracks_to_msx_playlist(
     provider: MSXBridgeProvider,
     device_param: str = "",
     qr_cover_base: str | None = None,
+    *,
+    current_media: PlayerMedia | None = None,
+    playback_generation: str | None = None,
 ) -> MsxContent:
     """
     Map tracks to an MSX playlist content page.
@@ -350,6 +355,24 @@ def map_tracks_to_msx_playlist(
             queue_item_id=track.queue_item_id,
         )
         nav = queue_nav_properties(player_id, prefix)
+        served_duration = duration
+        if current_media and track.queue_item_id == current_media.queue_item_id:
+            served_duration = current_media.stream_duration or duration
+        if served_duration > 0:
+            nav["video:duration"] = str(served_duration)
+        nav["button:rewind:icon"] = "default"
+        nav["button:rewind:action"] = "interaction:commit:message:seek:-10"
+        nav["button:forward:icon"] = "default"
+        nav["button:forward:action"] = "interaction:commit:message:seek:+10"
+        # Chunked transcodes do not provide arbitrary HTTP Range seeking.
+        nav["progress:marker:enable"] = "false"
+        playback_id = uuid4().hex
+        action += f"&playback_id={playback_id}"
+        if playback_generation:
+            action += f"&playback_generation={quote(playback_generation, safe='')}"
+        nav["trigger:complete"] = (
+            f"execute:{prefix}/api/complete/{player_id}?playback_id={playback_id}"
+        )
 
         msx_items.append(
             MsxItem(

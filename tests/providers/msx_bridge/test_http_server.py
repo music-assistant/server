@@ -3143,6 +3143,51 @@ async def test_disabled_native_stream_is_rejected(
     mass_mock.player_queues.play_index.assert_not_awaited()
 
 
+async def test_stale_decoder_position_cannot_move_replacement_track(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+    player: MSXPlayer,
+) -> None:
+    """A late frame from an earlier decoder cannot change the new item's clock."""
+    server = MSXHTTPServer(provider, 0)
+    mass_mock.players.get_player.return_value = player
+    await player.play_media(PlayerMedia(uri="http://ma/old", duration=180))
+    old = player.clock_context()["playback_id"]
+    await player.play_media(PlayerMedia(uri="http://ma/new", duration=180))
+    server._handle_ws_message(
+        player.player_id, json.dumps({"type": "position", "position": 1, "playback_id": old})
+    )
+    assert player.elapsed_time == 0
+
+
+async def test_queued_native_seek_cannot_retarget_replacement_playback(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+    player: MSXPlayer,
+) -> None:
+    """A seek waiting to run belongs to the decoder which requested it."""
+    server = MSXHTTPServer(provider, 0)
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.seek = AsyncMock()
+    await player.play_media(
+        PlayerMedia(uri="http://ma/old", source_id="msx_test", queue_item_id="old")
+    )
+    queue = PlayerQueue(
+        queue_id="msx_test", active=True, display_name="Queue", available=True, items=1
+    )
+    mass_mock.player_queues.get_active_queue.return_value = queue
+    old = player.playback_generation
+    server._handle_ws_message(
+        player.player_id, json.dumps({"type": "seek_request", "position": 120, "playback_id": old})
+    )
+    pending = mass_mock.create_task.call_args.args[0]
+    await player.play_media(
+        PlayerMedia(uri="http://ma/new", source_id="msx_test", queue_item_id="new")
+    )
+    await pending
+    mass_mock.player_queues.seek.assert_not_awaited()
+
+
 async def test_disable_during_redirect_resolution_rejects_the_resolved_stream(
     provider: MSXBridgeProvider,
     player: MSXPlayer,
@@ -3159,3 +3204,39 @@ async def test_disable_during_redirect_resolution_rejects_the_resolved_stream(
     with pytest.raises(web.HTTPNotFound):
         await server.audio.serve(Mock(), player, PlayerMedia(uri="http://ma/track"))
     assert not server._active_stream_tasks
+
+
+async def test_old_playlist_generation_cannot_rebind_a_repeat_decoder(
+    http_client: TestClient[Any, Any],
+    provider: MSXBridgeProvider,
+    player: MSXPlayer,
+    mass_mock: Mock,
+) -> None:
+    """Even the same occurrence must reject audio from the previous repeat generation."""
+    media = PlayerMedia(uri="http://ma/track", source_id=player.player_id, queue_item_id="same")
+    await player.play_media(media)
+    old = player.playback_generation
+    assert old is not None
+    await player.play_media(media)
+    mass_mock.players.get_player.return_value = player
+    item = Mock(uri="library://track/1", queue_item_id="same", streamdetails=None, duration=180)
+    mass_mock.player_queues.get_active_queue.return_value = Mock(queue_id=player.player_id, items=1)
+    mass_mock.player_queues.items.return_value = [item]
+    mass_mock.player_queues.get_item.return_value = item
+    provider.get_ma_stream_url = AsyncMock(return_value="http://ma/encoded")  # type: ignore[method-assign]
+    token = provider.get_stream_token(player.player_id)
+    response = await http_client.get(
+        "/msx/audio/msx_test",
+        params={
+            "uri": "library://track/1",
+            "token": token,
+            "from_playlist": "1",
+            "queue_item_id": "same",
+            "playback_id": "old-decoder",
+            "playback_generation": old,
+        },
+        allow_redirects=False,
+    )
+    assert response.status == 400
+    mass_mock.player_queues.play_index.assert_not_awaited()
+    assert not player.claim_native_completion("old-decoder")

@@ -6,7 +6,8 @@ import asyncio
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import MusicAssistantError, PlayerUnavailableError
@@ -41,6 +42,8 @@ class MSXPlayer(Player):
     _last_ws_position: float | None = None
     _ws_ever_connected: bool = False
     _track_started_at: float = 0.0
+    _native_completion_token: str | None = None
+    playback_generation: str | None = None
 
     def __init__(
         self,
@@ -122,6 +125,8 @@ class MSXPlayer(Player):
         if not self.config.enabled:
             raise PlayerUnavailableError("Player is disabled")
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
+        self._native_completion_token = None
+        self.playback_generation = uuid4().hex
         self.current_stream_url = media.uri
         self._attr_current_media = media
         self._media_ready.set()
@@ -166,6 +171,8 @@ class MSXPlayer(Player):
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
+        self._native_completion_token = None
+        self.playback_generation = None
         self._attr_current_media = None
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
@@ -178,6 +185,38 @@ class MSXPlayer(Player):
         self.update_state()
         provider = cast("MSXBridgeProvider", self.provider)
         provider.notify_play_stopped(self.player_id)
+
+    def clock_context(self) -> dict[str, Any]:
+        """Return source metadata separately from the decoder's stream-time clock."""
+        media = self.current_media
+        offset = 0.0
+        if media and media.source_id and media.queue_item_id:
+            item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if item and item.streamdetails:
+                offset = item.streamdetails.seek_position
+        return {
+            "playback_id": self.playback_generation,
+            "source_offset": offset,
+            "source_duration": media.duration if media else None,
+            "served_duration": self._served_duration(),
+        }
+
+    def bind_native_completion(self, token: str, media: PlayerMedia | None) -> None:
+        """Bind one native decoder request to its current media generation."""
+        if media is not None and self.current_media is media and self.config.enabled:
+            self._native_completion_token = token
+
+    def claim_native_completion(self, token: str) -> bool:
+        """Consume a decoder's completion once, rejecting stopped or replaced playback."""
+        if (
+            not token
+            or token != self._native_completion_token
+            or self.playback_state != PlaybackState.PLAYING
+            or not self.config.enabled
+        ):
+            return False
+        self._native_completion_token = None
+        return True
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""

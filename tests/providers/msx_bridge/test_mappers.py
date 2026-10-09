@@ -102,7 +102,7 @@ def test_map_track_to_msx() -> None:
     assert "uri=library%3A%2F%2Ftrack%2F1" in item.action
     assert "device_id=abc" in item.action
     assert item.properties is not None
-    assert item.properties["trigger:complete"] == "execute:http://localhost/api/next/msx_123"
+    assert item.properties["trigger:complete"] == "[]"
 
 
 def test_map_track_to_msx_play_context() -> None:

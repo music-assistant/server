@@ -107,3 +107,80 @@ async def test_native_next_from_pause_starts_new_item_at_zero(
 def test_native_same_item_resume_preserves_paused_position() -> None:
     """A pause/resume or no-op navigation with no item transition retains twenty seconds."""
     assert plugin_position_after_resume([]) == 20
+
+
+@pytest.mark.parametrize("close_code", [1000, 1001, 1006])
+def test_server_close_reconnects_without_reopening_msx(close_code: int) -> None:
+    """Even a clean server shutdown is temporary while the plugin session is active."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Native plugin runtime tests require Node.js")
+    html = (Path(http_server.__file__).parent / "static/plugin.html").read_text()
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    runner = NODE_RUNNER.split("vm.runInNewContext", 1)[0]
+    runner += """
+const retries = new Map(); let sequence = 0; const sockets = [];
+context.setTimeout = fn => { const id = ++sequence; retries.set(id, fn); return id; };
+context.clearTimeout = id => retries.delete(id);
+context.WebSocket = class extends Socket {
+    constructor(url) { super(); this.url = url; sockets.push(this); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose({code: 1000}); }
+};
+vm.runInNewContext(input.script, context);
+handler.handleRequest('init', null, () => {});
+ws.onopen();
+// Flush debug timers; the device ID timeout is cancelled by its callback.
+for (const [id, callback] of [...retries]) { retries.delete(id); callback(); }
+const original = ws;
+original.readyState = 3; original.onclose({code: input.code});
+if (retries.size !== 1) throw new Error('Expected exactly one reconnect timer');
+for (const [id, callback] of [...retries]) { retries.delete(id); callback(); }
+if (sockets.length !== 2 || ws.url !== original.url) throw new Error('Device did not reconnect');
+handler.handleRequest('init', null, () => {});
+if (sockets.filter(s => s.readyState === 1).length !== 1) throw new Error('Repeated init leaked sockets');
+process.stdout.write('ok');
+"""
+    result = subprocess.run(  # noqa: S603 - fixed local runtime and shipped plugin
+        [node, "-e", runner],
+        input=json.dumps({"script": script, "code": close_code}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == "ok"
+
+
+def test_native_seek_requests_source_position_without_faking_decoder_seek() -> None:
+    """A source offset belongs in the MA seek request, not in decoder telemetry."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Native plugin runtime tests require Node.js")
+    html = (Path(http_server.__file__).parent / "static/plugin.html").read_text()
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    runner = (
+        NODE_RUNNER.split("vm.runInNewContext", 1)[0]
+        + """
+const actions=[];
+context.tvx.InteractionPlugin.executeAction=action=>actions.push(action);
+vm.runInNewContext(input.script,context);
+handler.handleRequest('init',null,()=>{});
+ws.onmessage({data:JSON.stringify({type:'clock_reset',playback_id:'generation',source_offset:120,source_duration:180,served_duration:60})});
+handler.handleEvent({event:'video:play'});
+handler.handleData({message:'seek:+10'});
+timer();
+process.stdout.write(JSON.stringify({sent,actions}));
+"""
+    )
+    result = subprocess.run(  # noqa: S603 - fixed runtime and shipped plugin
+        [node, "-e", runner],
+        input=json.dumps({"script": script}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+    assert {"type": "seek_request", "position": 130, "playback_id": "generation"} in data["sent"]
+    assert {"type": "position", "position": 0, "playback_id": "generation"} in data["sent"]
+    assert "player:label:position:2:00" in data["actions"]
+    assert "player:label:duration:3:00" in data["actions"]
+    assert not any(action.startswith("player:seek:") for action in data["actions"])

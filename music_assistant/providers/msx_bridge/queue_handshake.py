@@ -99,6 +99,7 @@ async def prepare_msx_audio(
     *,
     from_playlist: bool,
     queue_item_id: str | None,
+    expected_generation: str | None = None,
 ) -> PlayerMedia:
     """Return the PlayerMedia MSX should stream for this URI."""
     # Selects a queued item (or reuses current media) so MA-driven play
@@ -109,6 +110,8 @@ async def prepare_msx_audio(
     async with player._prepare_lock:
         if not player.config.enabled:
             raise PlayerUnavailableError("Player is disabled")
+        if expected_generation is not None and expected_generation != player.playback_generation:
+            raise InvalidDataError("Playback generation is no longer current")
         return await _prepare_msx_audio_locked(
             provider,
             player,

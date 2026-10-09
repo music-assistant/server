@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import aiohttp
 from aiohttp import WSMsgType, web
-from music_assistant_models.enums import QueueOption, RepeatMode
+from music_assistant_models.enums import PlaybackState, QueueOption, RepeatMode
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -231,6 +231,9 @@ class MSXHTTPServer:
             payload["next_action"] = next_action
         if prev_action:
             payload["prev_action"] = prev_action
+        player = self._get_msx_player(player_id)
+        if player:
+            payload.update(player.clock_context())
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
@@ -257,6 +260,9 @@ class MSXHTTPServer:
             "url": playlist_url,
             "player_id": player_id,
         }
+        player = self._get_msx_player(player_id)
+        if player:
+            payload.update(player.clock_context())
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
@@ -285,7 +291,9 @@ class MSXHTTPServer:
 
     def broadcast_clock_reset(self, player_id: str) -> None:
         """Notify native playback of a new item without changing the TV playlist."""
-        msg = json.dumps({"type": "clock_reset"})
+        player = self._get_msx_player(player_id)
+        context = player.clock_context() if player else {}
+        msg = json.dumps({"type": "clock_reset", **context})
         for ws in list(self._ws_clients.get(player_id, set())):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
@@ -456,6 +464,7 @@ class MSXHTTPServer:
             ("/api/quick-stop/{player_id}", self._handle_quick_stop),
             ("/api/play-context/{player_id}", self._handle_play_context),
             ("/api/next/{player_id}", self._handle_next),
+            ("/api/complete/{player_id}", self._handle_complete),
             ("/api/previous/{player_id}", self._handle_previous),
         ):
             self.app.router.add_get(path, handler)
@@ -1212,6 +1221,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             self.provider.mass.player_queues.items(queue_id, limit=queue.items) if queue else []
         )
         tracks = queue_items_to_tracks(queue_items)
+        player = self._get_msx_player(player_id)
 
         playlist = map_tracks_to_msx_playlist(
             tracks,
@@ -1221,6 +1231,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             self.provider,
             device_param,
             qr_cover_base=await self._qr_cover_base(prefix),
+            current_media=player.current_media if player else None,
+            playback_generation=player.playback_generation if player else None,
         )
         return web.json_response(dump_msx(playlist))
 
@@ -1249,6 +1261,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 uri,
                 from_playlist=from_playlist,
                 queue_item_id=requested_queue_item_id,
+                expected_generation=request.query.get("playback_generation"),
             )
         except InvalidDataError as err:
             return web.Response(status=400, text=str(err))
@@ -1258,6 +1271,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             logger.exception("Unable to prepare audio for MSX player %s", player_id)
             return web.Response(status=503, text="Unable to prepare audio")
 
+        player.bind_native_completion(request.query.get("playback_id", ""), prepared)
         return await self._serve_audio_stream(
             request,
             player,
@@ -1319,6 +1333,14 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         )
         if player and isinstance(player, MSXPlayer):
             player.on_ws_connected()
+            await ws.send_json(
+                {
+                    "type": "state_sync",
+                    "enabled": player.config.enabled,
+                    "state": player.playback_state.value,
+                    **player.clock_context(),
+                }
+            )
 
         try:
             async for msg in ws:
@@ -1364,6 +1386,24 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         with player.suppress_ws_notify():
             await self.provider.mass.players.cmd_play(player_id)
 
+    async def _cmd_seek_for_generation(
+        self,
+        player_id: str,
+        queue_id: str,
+        position: int,
+        generation: str | None,
+    ) -> None:
+        """Reject a queued native seek after playback was replaced or stopped."""
+        player = self._get_msx_player(player_id)
+        if (
+            player is None
+            or player.current_media is None
+            or player.playback_generation != generation
+            or player.current_media.source_id != queue_id
+        ):
+            return
+        await self.provider.mass.player_queues.seek(queue_id, position)
+
     def _handle_ws_message(self, player_id: str, data: str) -> None:
         """Process an inbound WebSocket message from MSX."""
         try:
@@ -1376,6 +1416,29 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             return
 
         msg_type = msg.get("type")
+        if msg_type in {"position", "pause", "resume", "seek", "seek_request"}:
+            msx_player = self._get_msx_player(player_id)
+            if msx_player is None:
+                return
+            if "playback_id" in msg and msg["playback_id"] != msx_player.playback_generation:
+                return
+        if msg_type == "seek_request":
+            seek_player = self._get_msx_player(player_id)
+            if seek_player is None:
+                return
+            position = msg.get("position")
+            if _is_finite_position(position):
+                queue = self.provider.mass.player_queues.get_active_queue(player_id)
+                if queue and queue.active:
+                    self.provider.mass.create_task(
+                        self._cmd_seek_for_generation(
+                            player_id,
+                            queue.queue_id,
+                            int(position),
+                            seek_player.playback_generation,
+                        )
+                    )
+            return
         if msg_type == "position":
             position = msg.get("position")
             if _is_finite_position(position):
@@ -1774,6 +1837,41 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if not self._queue_advanced(player_id, before):
             return _msx_execute_ok()
         return _msx_execute_ok(self._queue_playlist_action(request, player_id))
+
+    async def _handle_complete(self, request: web.Request) -> web.Response:
+        """Complete one native decoder generation using natural MA queue selection."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
+        player_id = _strip_known_extension(request.match_info["player_id"])
+        player = self._get_msx_player(player_id)
+        if player is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
+        async with player._prepare_lock:
+            media = player.current_media
+            queue = self.provider.mass.player_queues.get_active_queue(player_id)
+            if (
+                media is None
+                or queue is None
+                or media.source_id != queue.queue_id
+                or queue.current_item is None
+                or media.queue_item_id != queue.current_item.queue_item_id
+                or not player.claim_native_completion(request.query.get("playback_id", ""))
+            ):
+                return _msx_execute_ok()
+            next_item = self.provider.mass.player_queues.get_next_item(
+                queue.queue_id, media.queue_item_id
+            )
+            if next_item is None:
+                await self.provider.mass.player_queues.stop(queue.queue_id)
+                self.provider.mass.player_queues.mark_ended(queue.queue_id)
+                return _msx_execute_ok("[player:eject|player:hide]")
+            with player.suppress_ws_notify():
+                await self.provider.mass.player_queues.play_index(
+                    queue.queue_id, next_item.queue_item_id
+                )
+            if not player.config.enabled or player.playback_state != PlaybackState.PLAYING:
+                return _msx_execute_ok()
+            return _msx_execute_ok(self._queue_playlist_action(request, player_id))
 
     async def _handle_previous(self, request: web.Request) -> web.Response:
         """Skip to previous track."""

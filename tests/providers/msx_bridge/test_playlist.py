@@ -58,7 +58,11 @@ def test_map_tracks_to_msx_playlist_basic() -> None:
     assert "&from_playlist=1" in item0.action
     assert item0.properties is not None
     assert item0.properties["button:next:action"] == "execute:http://localhost/api/next/msx_1"
-    assert item0.properties["trigger:complete"] == "execute:http://localhost/api/next/msx_1"
+    assert item0.properties["trigger:complete"].startswith(
+        "execute:http://localhost/api/complete/msx_1?playback_id="
+    )
+    playback_id = item0.properties["trigger:complete"].split("playback_id=", 1)[1]
+    assert "&playback_id=" + playback_id in item0.action
     assert item0.player_label == "Track 2"
     assert item0.duration == 200
     assert item0.label is not None
@@ -140,3 +144,13 @@ def test_map_tracks_to_msx_playlist_serialization() -> None:
     assert len(data["items"]) == 1
     assert data["items"][0]["playerLabel"] == "Track 1"
     assert data["items"][0]["action"].startswith("audio:")
+
+
+def test_known_duration_is_exposed_to_native_decoder() -> None:
+    """Chunked audio still has a known duration in the native MSX controls."""
+    content = map_tracks_to_msx_playlist(
+        [_make_track(1, "Track", "Artist", 180)], 0, "http://ma", "msx_1", _mock_provider()
+    )
+    assert content.items is not None
+    assert content.items[0].properties is not None
+    assert content.items[0].properties["video:duration"] == "180"

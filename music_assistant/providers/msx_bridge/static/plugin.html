@@ -64,6 +64,9 @@
 
     var wsRetryDelay = 1000;
     var wsConnection = null;
+    var wsRetryTimer = null;
+    var wsGeneration = 0;
+    var pluginActive = true;
     var positionTimer = null;
     var positionStartTime = 0;
     var positionStartValue = 0;
@@ -74,6 +77,10 @@
     var pausedAtPosition = 0;
     var monitoredElement = null;
     var mediaObserver = null;
+    var playbackId = null;
+    var sourceOffset = 0;
+    var sourceDuration = 0;
+    var servedDuration = 0;
 
     function stopPositionTimer() {
         if (positionTimer) {
@@ -96,6 +103,29 @@
         startPositionTimer(0);
     }
 
+    function applyClockContext(msg) {
+        playbackId = msg.playback_id || null;
+        sourceOffset = msg.source_offset || 0;
+        sourceDuration = msg.source_duration || 0;
+        servedDuration = msg.served_duration || 0;
+    }
+
+    function displaySourcePosition(position) {
+        if (typeof tvx.InteractionPlugin.executeAction !== "function") return;
+        var sourcePosition = Math.max(0, position + sourceOffset);
+        if (sourceDuration > 0) sourcePosition = Math.min(sourcePosition, sourceDuration);
+        tvx.InteractionPlugin.executeAction("player:label:position:" + (formatDuration(sourcePosition) || "0:00"));
+        if (sourceDuration > 0) {
+            tvx.InteractionPlugin.executeAction("player:label:duration:" + formatDuration(sourceDuration));
+            tvx.InteractionPlugin.executeAction("player:progress:duration:" + sourceDuration);
+            tvx.InteractionPlugin.executeAction("player:progress:position:" + sourcePosition);
+        } else {
+            tvx.InteractionPlugin.executeAction("player:label:duration:default");
+            tvx.InteractionPlugin.executeAction("player:progress:duration:-1");
+            tvx.InteractionPlugin.executeAction("player:progress:position:-1");
+        }
+    }
+
     function startPositionTimer(startPosition) {
         stopPositionTimer();
         positionStartValue = startPosition || 0;
@@ -111,27 +141,48 @@
                     }
                 }
                 try {
-                    wsConnection.send(JSON.stringify({ type: "position", position: position }));
+                    if (servedDuration > 0) position = Math.min(position, servedDuration);
+                    displaySourcePosition(position);
+                    wsConnection.send(JSON.stringify({ type: "position", position: position, playback_id: playbackId }));
                 } catch (e) {
                     if (typeof console !== "undefined" && console.warn) {
                         console.warn("WebSocket position send failed", e);
                     }
                 }
             }
-        }, 3000);
+        }, 1000);
     }
 
     function connectPushWebSocket(deviceId) {
         if (typeof WebSocket === "undefined") return null;
+        if (!pluginActive) return null;
+        if (wsRetryTimer !== null) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+        var generation = ++wsGeneration;
+        var previous = wsConnection;
+        wsConnection = null;
+        if (previous && typeof previous.close === "function") previous.close();
         var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
         var ws = new WebSocket(url);
         var thisConnection = ws;
         wsConnection = ws;
-        ws.onopen = function() { wsRetryDelay = 1000; };
+        ws.onopen = function() {
+            if (wsConnection !== thisConnection || !pluginActive) return;
+            wsRetryDelay = 1000;
+        };
         ws.onmessage = function(ev) {
+            if (wsConnection !== thisConnection || !pluginActive) return;
             try {
                 var msg = JSON.parse(ev.data);
-                if (msg.type === "clock_reset") {
+                if (msg.type === "state_sync") {
+                    var samePlayback = playbackId && playbackId === msg.playback_id;
+                    if (!msg.enabled || (!samePlayback && playbackId)) {
+                        stopPositionTimer();
+                        tvx.InteractionPlugin.executeAction("[player:eject|player:hide]");
+                    }
+                    applyClockContext(msg);
+                    if (samePlayback && msg.state === "playing") startPositionTimer(getCurrentPosition());
+                } else if (msg.type === "clock_reset") {
+                    applyClockContext(msg);
                     resetPlaybackClock();
                 } else if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     stopPositionTimer();
@@ -162,12 +213,14 @@
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
                     resetPlaybackClock();
 
+                    applyClockContext(msg);
                     var audioUrl = BRIDGE + msg.path;
                     var audioAction = "audio:" + audioUrl;
                     tvx.InteractionPlugin.executeAction(audioAction, data);
                     scanForMediaElements();
                 } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
+                    applyClockContext(msg);
                     resetPlaybackClock();
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
                     scanForMediaElements();
@@ -214,13 +267,28 @@
             if (wsConnection !== thisConnection) return; // stale connection
             stopPositionTimer();
             wsConnection = null;
-            if (event.code !== 1000 && event.code !== 1001) {
+            if (pluginActive) {
                 var jitter = Math.random() * 1000;
-                setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay + jitter);
+                wsRetryTimer = setTimeout(function() {
+                    wsRetryTimer = null;
+                    if (pluginActive && generation === wsGeneration) connectPushWebSocket(deviceId);
+                }, wsRetryDelay + jitter);
                 wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
             }
         };
         return ws;
+    }
+
+    if (typeof window.addEventListener === "function") {
+        window.addEventListener("pagehide", function() {
+            pluginActive = false;
+            ++wsGeneration;
+            if (wsRetryTimer !== null) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+            stopPositionTimer();
+            var connection = wsConnection;
+            wsConnection = null;
+            if (connection && typeof connection.close === "function") connection.close();
+        });
     }
 
     function MAHandler() {}
@@ -230,6 +298,7 @@
     }
 
     function sendWsMessage(msg) {
+        msg.playback_id = playbackId;
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
             try {
                 wsConnection.send(JSON.stringify(msg));
@@ -485,8 +554,11 @@
                 if (ws) {
                     var origOnOpen = ws.onopen;
                     ws.onopen = function() {
+                        if (wsConnection !== ws || !pluginActive) return;
                         if (origOnOpen) origOnOpen.apply(this, arguments);
-                        setTimeout(function() { sendDebugInfoToServer(ws); }, 500);
+                        setTimeout(function() {
+                            if (wsConnection === ws && pluginActive) sendDebugInfoToServer(ws);
+                        }, 500);
                     };
                 }
                 startMediaObserver();
@@ -512,6 +584,19 @@
             } else {
                 respond(null);
             }
+        }
+    };
+
+    MAHandler.prototype.handleData = function(data) {
+        if (!data || typeof data.message !== "string") return;
+        if (data.message.indexOf("seek:") === 0) {
+            var delta = Number(data.message.substring(5));
+            if (!isFinite(delta)) return;
+            var position = (positionTimer ? getCurrentPosition() : pausedAtPosition) + sourceOffset + delta;
+            position = Math.max(0, position);
+            if (sourceDuration > 0) position = Math.min(position, Math.max(0, sourceDuration - 1));
+            // MA recreates the stream at the source offset; do not fake a decoder seek.
+            sendWsMessage({ type: "seek_request", position: position });
         }
     };
 
