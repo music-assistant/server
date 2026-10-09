@@ -2419,19 +2419,13 @@ class LocalFileSystemProvider(MusicProvider):
         # a renamed or moved file was matched to its existing library track before its old
         # path was removed here, so drop what the old path still contributes, but only to
         # items whose remaining data all comes from this provider
-        renamed_albums: dict[str, Album] = {}
+        read_tracks: dict[str, Track | None] = {}
+        renamed_album_ids: set[str] = set()
         for track_id in surviving_track_ids:
-            try:
-                if album := await self._reconcile_renamed_track(track_id):
-                    renamed_albums[album.item_id] = album
-            except Exception as err:
-                # tidying up after a rename must never stop the deletion pass
-                self.logger.warning("Could not update renamed track %s: %s", track_id, err)
-        for album in renamed_albums.values():
-            try:
-                await self._reconcile_renamed_album(album)
-            except Exception as err:
-                self.logger.warning("Could not update renamed album %s: %s", album.item_id, err)
+            if album_id := await self._reconcile_renamed_track(track_id, read_tracks):
+                renamed_album_ids.add(album_id)
+        for album_id in renamed_album_ids:
+            await self._reconcile_renamed_album(album_id, read_tracks)
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2443,38 +2437,46 @@ class LocalFileSystemProvider(MusicProvider):
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
 
-    async def _reconcile_renamed_track(self, track_id: str) -> Album | None:
+    async def _reconcile_renamed_track(
+        self, track_id: str, read_tracks: dict[str, Track | None]
+    ) -> str | None:
         """
         Let the one file left of a renamed or moved track replace its stored data.
 
         Applies only to a library track that is left with a single file of this provider and
-        no other mappings. Its album is left alone and returned, so that it can be checked
-        separately.
+        no other mappings. Its album is left alone, and the album id the file names is
+        returned so that the album can be checked separately.
 
         :param track_id: The library id of the track.
+        :param read_tracks: The files read again during this deletion pass, by path.
         """
         library_item = await self.mass.music.tracks.get_library_item(track_id)
         mappings = list(library_item.provider_mappings)
         if len(mappings) != 1 or mappings[0].provider_instance != self.instance_id:
             return None
-        track = await self.get_track(mappings[0].item_id)
-        album = track.album if isinstance(track.album, Album) else None
-        track.album = None
-        await self.mass.music.tracks.add_item_to_library(track, overwrite_existing=True)
-        return album
+        if not (track := await self._read_track_again(mappings[0].item_id, read_tracks)):
+            return None
+        album_id = track.album.item_id if isinstance(track.album, Album) else None
+        update = Track.from_dict(track.to_dict())
+        update.album = None
+        await self.mass.music.tracks.add_item_to_library(update, overwrite_existing=True)
+        return album_id
 
-    async def _reconcile_renamed_album(self, album: Album) -> None:
+    async def _reconcile_renamed_album(
+        self, album_id: str, read_tracks: dict[str, Track | None]
+    ) -> None:
         """
-        Let the album folder of a renamed or moved track replace the stored album data.
+        Let the files of a renamed or moved album folder replace the stored album data.
 
         Applies only when every track of the library album is a file of this provider inside
         that folder and the album has no other mappings, so no other folder or provider still
-        contributes to it.
+        contributes to it. The album is then rebuilt from all of those files.
 
-        :param album: The album as parsed from the folder of the renamed track.
+        :param album_id: This provider's id of the album, which is its folder.
+        :param read_tracks: The files read again during this deletion pass, by path.
         """
         library_album = await self.mass.music.albums.get_library_item_by_prov_id(
-            album.item_id, self.instance_id
+            album_id, self.instance_id
         )
         if not library_album or any(
             mapping.provider_instance != self.instance_id
@@ -2482,16 +2484,52 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             return
         # an album without a folder of its own has an id made up from its tags
-        if not await self.exists(album.item_id):
+        if not await self.exists(album_id):
             return
-        folder = album.item_id.rstrip("/") + "/"
-        for track in await self.mass.music.albums.get_library_album_tracks(library_album.item_id):
-            for mapping in track.provider_mappings:
+        folder = album_id.rstrip("/") + "/"
+        paths: list[str] = []
+        for db_track in await self.mass.music.albums.get_library_album_tracks(
+            library_album.item_id
+        ):
+            for mapping in db_track.provider_mappings:
                 if mapping.provider_instance != self.instance_id or not mapping.item_id.startswith(
                     folder
                 ):
                     return
+                paths.append(mapping.item_id)
+        albums: list[Album] = []
+        for path in paths:
+            track = await self._read_track_again(path, read_tracks)
+            if not track or not isinstance(track.album, Album) or track.album.item_id != album_id:
+                return
+            albums.append(track.album)
+        if not albums:
+            return
+        # like a normal sync, the first file decides the album's own fields and every file
+        # adds its album artists
+        album = Album.from_dict(albums[0].to_dict())
+        album.artists = UniqueList(artist for other in albums for artist in other.artists)
         await self.mass.music.albums.add_item_to_library(album, overwrite_existing=True)
+
+    async def _read_track_again(
+        self, path: str, read_tracks: dict[str, Track | None]
+    ) -> Track | None:
+        """
+        Return a track file read again for the deletion pass, or None when it can not be read.
+
+        :param path: This provider's id of the track file.
+        :param read_tracks: The files read again during this deletion pass, by path.
+        """
+        if path not in read_tracks:
+            try:
+                read_tracks[path] = await self.get_track(path)
+            except (MusicAssistantError, OSError) as err:
+                # the stored data stays as it is, so the item may still show what the old
+                # file contributed
+                self.logger.warning("Could not read %s again: %s", path, err)
+                report_current_task_failure(f"Failed to read {path} again: {err}")
+                read_tracks[path] = None
+        return read_tracks[path]
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""

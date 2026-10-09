@@ -198,14 +198,14 @@ def _fs_artist(name: str) -> Artist:
     )
 
 
-def _fs_track(folder: str, artist: str, number: int = 1) -> Track:
-    """Return a track file in an album folder, with the artist as track and album artist."""
+def _fs_track(folder: str, artist: str, number: int = 1, album_artist: str | None = None) -> Track:
+    """Return a track file in an album folder, by default with the artist as album artist."""
     album = Album(
         item_id=folder,
         provider=INSTANCE_ID,
         name="Swan Lake",
         provider_mappings=_fs_mapping(folder),
-        artists=UniqueList([_fs_artist(artist)]),
+        artists=UniqueList([_fs_artist(album_artist or artist)]),
     )
     album.mbid = RELEASE_MBID
     return Track(
@@ -274,6 +274,21 @@ async def test_renamed_album_drops_the_old_artist(mass: MusicAssistant, tmp_path
     assert {row["name"] for row in rows} == {NEW}
 
 
+async def test_renamed_album_keeps_the_album_artists_of_every_file(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """Files of one folder can name different album artists, and the album keeps all of them."""
+    other = "Mariinsky Orchestra"
+    moved = [_fs_track(NEW, NEW, 1), _fs_track(NEW, NEW, 2, album_artist=other)]
+    provider = _sync_provider(mass, tmp_path, moved)
+    old_ids = await _add(mass, _fs_track(OLD, OLD, 1), _fs_track(OLD, OLD, 2))
+    await _add(mass, *moved)
+
+    await provider._process_deletions({f"{OLD}/01.flac", f"{OLD}/02.flac"})
+
+    assert await _album(mass, old_ids[0]) == ({NEW, other}, {NEW})
+
+
 async def test_partly_moved_album_keeps_both_folders(mass: MusicAssistant, tmp_path: Path) -> None:
     """A track still in the old folder keeps that folder and its artist on the album."""
     moved = _fs_track(NEW, NEW, 1)
@@ -332,3 +347,13 @@ async def test_unreadable_file_keeps_the_stored_data(
     await provider._process_deletions({f"{OLD}/01.flac"})
 
     assert await _track_artists(mass, track_id) == {OLD, NEW}
+
+
+async def test_unexpected_error_is_not_hidden(mass: MusicAssistant, tmp_path: Path) -> None:
+    """Only a file that can not be read is skipped, anything else stops the pass."""
+    provider = _sync_provider(mass, tmp_path, [])
+    provider.get_track = AsyncMock(side_effect=RuntimeError("bug"))  # type: ignore[method-assign]
+    await _add(mass, _fs_track(OLD, OLD, 1), _fs_track(NEW, NEW, 1))
+
+    with pytest.raises(RuntimeError):
+        await provider._process_deletions({f"{OLD}/01.flac"})
