@@ -153,7 +153,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
-from music_assistant.helpers.provider_access import playback_sources
+from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -1713,6 +1713,7 @@ class StreamsAudio:
         first_chunk_received = False
         bytes_received = 0
         finished = False
+        start_reported = False
         next_buffer_triggered = False
         stream_started_at = asyncio.get_event_loop().time()
         try:
@@ -1727,6 +1728,11 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
+                    # the same streamdetails serve every stream of this playback (a seek,
+                    # a reconnect, a crossfade intro and its body); only the first one,
+                    # the one that finds no streamed seconds yet, starts the playback
+                    if streamdetails.seconds_streamed is None:
+                        start_reported = self._notify_provider_stream_started(streamdetails)
                 # trigger pre-buffering of the next item well before end
                 # to ensure the raw PCM is ready when the next item needs to be streamed.
                 # tracks and sound effects are finite files that fill and close immediately;
@@ -1790,7 +1796,9 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
+            self._notify_provider_streamed(
+                streamdetails, finished, seconds_streamed, start_reported
+            )
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -3217,20 +3225,49 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:
+        """
+        Report the start of an item's playback to the provider that owns it.
+
+        Returns whether the provider was told, so its end report is owed.
+        """
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
+            return False
+        # the base hook is a no-op: a provider that does not implement it never hears of
+        # the start, so it is not owed the matching end report either
+        if type(music_prov).on_stream_started is MusicProvider.on_stream_started:
+            return False
+        with request_priority(RequestPriority.LOW):
+            self.mass.create_task(music_prov.on_stream_started(streamdetails))
+        return True
+
     def _notify_provider_streamed(
-        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+        self,
+        streamdetails: StreamDetails,
+        finished: bool,
+        seconds_streamed: float,
+        start_reported: bool,
     ) -> None:
         """Report a (mostly) streamed item back to the provider that owns it."""
-        if not finished and seconds_streamed < 90:
+        # a stream that reported the start of playback always reports its end too
+        if not finished and not start_reported and seconds_streamed < 90:
             return
-        provider = self.mass.get_provider(streamdetails.provider)
-        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
-        if provider is None or provider.type != ProviderType.MUSIC:
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
             return
-        music_prov = cast("MusicProvider", provider)
         # a listening report is background work, whoever streamed
         with request_priority(RequestPriority.LOW):
             self.mass.create_task(music_prov.on_streamed(streamdetails))
+
+    def _get_reporting_provider(self, streamdetails: StreamDetails) -> MusicProvider | None:
+        """Return the music provider that receives the playback reports for an item."""
+        # only the account that served the stream reports its playback, never another
+        # instance of the same service
+        provider = exact_provider(self.mass, streamdetails.provider)
+        # plugin providers serve playable items too, but the playback callbacks are
+        # MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return None
+        return cast("MusicProvider", provider)
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
