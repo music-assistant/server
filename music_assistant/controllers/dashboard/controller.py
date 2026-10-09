@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,10 @@ ROUTE_SAFE_CHARS = ":!'()*@,;$/"
 # the only preference namespace a dashboard viewer is handed
 VIEWER_PREFERENCE_PREFIX = "visualizer_"
 
+# route query param carrying the per-session secret that authorizes viewer_preferences
+VIEWER_KEY_PARAM = "viewer_key"
+VIEWER_KEY_BYTES = 16
+
 
 @dataclass
 class _RegisteredDashboard:
@@ -68,6 +73,8 @@ class DashboardController(CoreController):
         self._sessions: dict[str, DashboardSession] = {}
         # who cast each session: dashboard viewers follow that user's visualizer preferences
         self._session_owners: dict[str, str] = {}
+        # dashboard_id -> secret in the launched url; kept out of sessions, which are listed
+        self._viewer_keys: dict[str, str] = {}
 
     @api_command("dashboard/register")
     async def register_dashboard(
@@ -137,6 +144,7 @@ class DashboardController(CoreController):
 
         del self._dashboards[dashboard_id]
         self._session_owners.pop(dashboard_id, None)
+        self._viewer_keys.pop(dashboard_id, None)
         self._signal_dashboards_updated()
         if self._sessions.pop(dashboard_id, None) is not None:
             self._signal_sessions_updated()
@@ -229,6 +237,7 @@ class DashboardController(CoreController):
 
         self._sessions.pop(dashboard_id, None)
         self._session_owners.pop(dashboard_id, None)
+        self._viewer_keys.pop(dashboard_id, None)
         self._signal_sessions_updated()
 
     @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
@@ -237,6 +246,7 @@ class DashboardController(CoreController):
         dashboard: DashboardType,
         player_id: str | None = None,
         dashboard_id: str | None = None,
+        viewer_key: str | None = None,
     ) -> dict[str, Any]:
         """
         Return the visualizer preferences a dashboard viewer should render with.
@@ -244,14 +254,19 @@ class DashboardController(CoreController):
         A dashboard session runs as the shared viewer user, which has no
         preferences and no way to set any; it follows the preferences of the
         user who cast it instead. PROVIDERS_READ (held by guests) so the
-        viewer itself can read this; only visualizer settings are exposed.
+        viewer itself can read this, and the viewer_key from its launched url is what
+        authorizes it; only visualizer settings are exposed.
 
         :param dashboard: Dashboard the viewer is showing.
         :param player_id: Player the viewer is showing, when dashboard is NOW_PLAYING.
         :param dashboard_id: The viewer's own dashboard id, carried in the launched
             url; identifies its session when several displays show the same dashboard.
+        :param viewer_key: The session's secret, carried in the launched url.
         """
-        if dashboard_id is None:
+        if dashboard_id is None or viewer_key is None:
+            return {}
+        stored_key = self._viewer_keys.get(dashboard_id)
+        if stored_key is None or not secrets.compare_digest(stored_key, viewer_key):
             return {}
         session = self._sessions.get(dashboard_id)
         # the session must show what the viewer claims to be showing
@@ -315,6 +330,7 @@ class DashboardController(CoreController):
         def unregister() -> None:
             self._dashboards.pop(dashboard_id, None)
             self._session_owners.pop(dashboard_id, None)
+            self._viewer_keys.pop(dashboard_id, None)
             self._signal_dashboards_updated()
             if self._sessions.pop(dashboard_id, None) is not None:
                 self._signal_sessions_updated()
@@ -335,6 +351,7 @@ class DashboardController(CoreController):
         for dashboard_id in stale_ids:
             del self._dashboards[dashboard_id]
             self._session_owners.pop(dashboard_id, None)
+            self._viewer_keys.pop(dashboard_id, None)
             if self._sessions.pop(dashboard_id, None) is not None:
                 sessions_changed = True
 
@@ -372,6 +389,7 @@ class DashboardController(CoreController):
         """
         session = self._sessions.pop(dashboard_id, None)
         self._session_owners.pop(dashboard_id, None)
+        self._viewer_keys.pop(dashboard_id, None)
         if session is None:
             return
         self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
@@ -480,7 +498,7 @@ class DashboardController(CoreController):
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
         :param dashboard_id: When given, carried as a route query param so the viewer
-            can identify its own session.
+            can identify its own session, plus its secret viewer key.
         :raises InvalidCommand: If dashboard is NOW_PLAYING without a player_id, or unsupported.
         """
         query: dict[str, str] = {}
@@ -501,6 +519,10 @@ class DashboardController(CoreController):
             raise InvalidCommand(msg)
         if dashboard_id is not None:
             query["dashboard_id"] = dashboard_id
+            # setdefault: re-resolving must not invalidate the key a showing display carries
+            query[VIEWER_KEY_PARAM] = self._viewer_keys.setdefault(
+                dashboard_id, secrets.token_urlsafe(VIEWER_KEY_BYTES)
+            )
         if not query:
             return route
         return f"{route}?{urlencode(query, safe=ROUTE_SAFE_CHARS)}"
