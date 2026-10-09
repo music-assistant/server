@@ -62,7 +62,6 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
-from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import MusicProvider
 
@@ -1532,7 +1531,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    @guard_single_request
     async def _handle_add_playlist_tracks(
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
