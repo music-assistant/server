@@ -1,8 +1,7 @@
 """
-Tests that marking an item unplayed only undoes a play that was actually counted.
+Tests that marking an item unplayed only clears mutable progress state.
 
-``mark_item_played`` raises ``play_count`` for a completed play only, so removing a
-playlog row that was still in progress must leave the count alone.
+Completed plays are append-only history and are not undone by clearing progress.
 """
 
 from __future__ import annotations
@@ -110,17 +109,33 @@ async def test_marking_an_in_progress_audiobook_unplayed_keeps_the_play_count(
     assert await _play_count(mass, db_item_id) == 0
 
 
-async def test_marking_a_finished_audiobook_unplayed_discounts_the_play(
+async def test_marking_a_finished_audiobook_unplayed_preserves_history_and_play_count(
     mass: MusicAssistant,
 ) -> None:
-    """A completed play was counted, so removing it discounts one again."""
+    """Clearing the progress row does not undo completed history or its count."""
     user = await mass.webserver.auth.create_user("finishedbook")
-    db_item_id = await _add_library_audiobook(mass, play_count=1)
+    db_item_id = await _add_library_audiobook(mass, play_count=2)
     await _add_playlog_row(mass, user.user_id, fully_played=True)
+    for timestamp in (1000, 2000):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": AUDIOBOOK_ID,
+                "provider": AUDIOBOOK_PROVIDER,
+                "media_type": MediaType.AUDIOBOOK.value,
+                "userid": user.user_id,
+                "timestamp": timestamp,
+                "name": AUDIOBOOK_NAME,
+            },
+        )
 
     await mass.music.mark_item_unplayed(_reference(), userid=user.user_id)
 
-    assert await _play_count(mass, db_item_id) == 0
+    assert await _play_count(mass, db_item_id) == 2
+    assert (
+        len(await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id}))
+        == 2
+    )
 
 
 async def test_play_count_is_never_driven_below_zero(mass: MusicAssistant) -> None:
