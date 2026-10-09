@@ -68,21 +68,20 @@ class SourceCandidate:
 
 DEFAULT_POLICY = StreamSourcePolicy()
 
-_SortKey = tuple[bool, bool, bool, int, int, bool, bool, bool, str, str]
+_SortKey = tuple[bool, bool, bool, int, int, bool, str, str]
 
-# what each level of the sort key stands for; the quality levels name the candidate's own format
+# what each level of the sort key stands for; the quality levels name what decided
 _LEVEL_REASONS: tuple[str | None, ...] = (
     "pinned",
     "local source",
     "own account",
     None,
     None,
-    "local source",
-    "in library",
     "mapped instance",
     "tie-break",
     "tie-break",
 )
+_SCORE_LEVEL = 4
 
 
 def quality_tier(audio_format: AudioFormat) -> QualityTier:
@@ -120,8 +119,9 @@ def rank_stream_sources(
 
     The pinned copy comes first (unless the policy ranks every track on its own), then local
     sources when the policy prefers them, then the playback user's own accounts, then the
-    best quality. Ties fall to the candidate's own instance and item id, so equal copies are
-    tried in the same order at every selection.
+    best quality by tier and by the mapping's quality score, which favours local and
+    in-library copies. Ties fall to the candidate's own instance and item id, so equal copies
+    are tried in the same order at every selection.
 
     :param candidates: The copies that may serve the item, already narrowed to what the
         playback user may use.
@@ -148,17 +148,19 @@ def rank_stream_sources(
     )
     ranked: list[SourceCandidate] = []
     for index, (key, candidate) in enumerate(keyed):
-        next_key = keyed[index + 1][0] if index + 1 < len(keyed) else None
-        reason = _reason(key, next_key, candidate.mapping.audio_format)
-        ranked.append(replace(candidate, reason=reason))
+        following = keyed[index + 1] if index + 1 < len(keyed) else None
+        ranked.append(replace(candidate, reason=_reason(candidate, key, following)))
     return ranked
 
 
 def rank_provider_mappings(
-    mappings: Iterable[ProviderMapping], *, pinned: tuple[str, str] | None = None
+    mappings: Iterable[ProviderMapping],
+    *,
+    pinned: tuple[str, str] | None = None,
+    policy: StreamSourcePolicy = DEFAULT_POLICY,
 ) -> list[ProviderMapping]:
     """
-    Return a media item's own mappings in the order the default policy ranks them.
+    Return a media item's own mappings in the order the policy ranks them.
 
     For callers that look up data per copy outside a playback: there is no playback user to
     steer to, only the copy actually streamed, when known, comes first. Whether a mapping's
@@ -166,6 +168,7 @@ def rank_provider_mappings(
 
     :param mappings: The media item's provider mappings.
     :param pinned: The (provider instance, item id) the item is streamed from, if known.
+    :param policy: The source selection settings to rank under.
     """
     non_streaming = cast("set[str]", get_global_cache_value("non_streaming_providers") or set())
     return sorted(
@@ -176,7 +179,7 @@ def rank_provider_mappings(
             mapping.provider_instance not in non_streaming,
             pinned,
             (),
-            DEFAULT_POLICY,
+            policy,
         ),
     )
 
@@ -190,18 +193,14 @@ def _sort_key(
     policy: StreamSourcePolicy,
 ) -> _SortKey:
     """Return the ranking key of one copy on one instance; the lowest key is tried first."""
-    audio_format = mapping.audio_format
     is_pinned = (instance_id, mapping.item_id) == pinned
     return (
         policy.mode != StreamSourceMode.BEST_QUALITY_PER_TRACK and not is_pinned,
         policy.mode == StreamSourceMode.PREFER_LOCAL and is_streaming,
         instance_id not in preferred,
-        -quality_tier(audio_format),
-        # the raw score: the mapping's own quality property adds a local and in-library
-        # bonus to it, which the two levels below express instead
-        -audio_format.quality,
-        is_streaming,
-        not mapping.in_library,
+        -quality_tier(mapping.audio_format),
+        # the mapping's score carries the local and in-library bonus
+        -mapping.quality,
         # the instance the item is mapped on, before an account standing in for it
         instance_id != mapping.provider_instance,
         instance_id,
@@ -209,13 +208,37 @@ def _sort_key(
     )
 
 
-def _reason(key: _SortKey, next_key: _SortKey | None, audio_format: AudioFormat) -> str:
+def _reason(
+    candidate: SourceCandidate,
+    key: _SortKey,
+    following: tuple[_SortKey, SourceCandidate] | None,
+) -> str:
     """Return what puts a candidate ahead of the next one; the last one states its quality."""
-    if next_key is not None:
-        for level, (own, other) in enumerate(zip(key, next_key, strict=True)):
-            if own != other:
-                return _LEVEL_REASONS[level] or _quality_label(audio_format)
+    audio_format = candidate.mapping.audio_format
+    if following is None:
+        return _quality_label(audio_format)
+    next_key, next_candidate = following
+    for level, (own, other) in enumerate(zip(key, next_key, strict=True)):
+        if own == other:
+            continue
+        # a copy that ranks ahead on score without a better format did so on the local or
+        # in-library bonus the mapping's score carries
+        if (
+            level == _SCORE_LEVEL
+            and audio_format.quality <= next_candidate.mapping.audio_format.quality
+        ):
+            return _bonus_reason(candidate, next_candidate)
+        return _LEVEL_REASONS[level] or _quality_label(audio_format)
     return _quality_label(audio_format)
+
+
+def _bonus_reason(candidate: SourceCandidate, next_candidate: SourceCandidate) -> str:
+    """Return which bonus put a candidate ahead of the next one at an equal format."""
+    if not candidate.is_streaming and next_candidate.is_streaming:
+        return "local source"
+    if candidate.mapping.in_library and not next_candidate.mapping.in_library:
+        return "in library"
+    return "local source"
 
 
 def _quality_label(audio_format: AudioFormat) -> str:

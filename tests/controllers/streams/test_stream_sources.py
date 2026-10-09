@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 LOCAL = "filesystem_local--a"
 # sorts before the local instance, so the id tie-break cannot mask a local-first level
 DEEZER = "deezer--a"
+# a local source that is not the filesystem: its local bonus comes from the provider cache
+PLEX = "plex--a"
 TIDAL = "tidal--a"
 OTHER_TIDAL = "tidal--b"
 SPOTIFY = "spotify--a"
@@ -228,6 +230,17 @@ def test_quality_tier(audio_format: AudioFormat, tier: QualityTier) -> None:
             "local source",
         ),
         (
+            [
+                _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
+                _candidate(
+                    LOCAL, is_streaming=False, audio_format=_format(ContentType.MP3, bit_rate=320)
+                ),
+            ],
+            {},
+            [f"{LOCAL}/1", f"{SPOTIFY}/1"],
+            "local source",
+        ),
+        (
             [_candidate(TIDAL), _candidate(OTHER_TIDAL, in_library=True)],
             {},
             [f"{OTHER_TIDAL}/1", f"{TIDAL}/1"],
@@ -260,10 +273,11 @@ def test_quality_tier(audio_format: AudioFormat, tier: QualityTier) -> None:
         "a local source comes first when preferring local",
         "quality decides over a local source by default",
         "the own account comes before a better quality elsewhere",
-        "the quality tier decides before the raw score",
-        "the raw score decides within a tier",
-        "a local source comes before a streaming one at equal quality",
-        "a copy in the library comes before one that is not",
+        "the quality tier decides before the quality score",
+        "the quality score decides within a tier",
+        "the local bonus decides between equal formats",
+        "the local bonus outweighs a slightly better lossy format",
+        "the in-library bonus decides between equal formats",
         "the mapped instance comes before an account standing in for it",
         "equal copies are tried by instance id, then item id",
     ],
@@ -325,18 +339,14 @@ def test_reasons_name_the_decisive_level_and_the_last_candidates_quality() -> No
 
 
 async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sources() -> None:
-    """Bare mappings rank under the default policy, with the streamed copy first when known."""
-    local = _mapping(LOCAL)
+    """Bare mappings rank under the given policy, with the streamed copy first when known."""
+    plex = _mapping(PLEX, audio_format=_format(ContentType.MP3, bit_rate=320))
     deezer = _mapping(DEEZER)
-    spotify = _mapping(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320))
     previous = get_global_cache_value("non_streaming_providers")
-    await set_global_cache_values({"non_streaming_providers": {LOCAL}})
+    await set_global_cache_values({"non_streaming_providers": {PLEX}})
     try:
-        assert rank_provider_mappings({local, deezer, spotify}) == [local, deezer, spotify]
-        assert rank_provider_mappings({local, deezer, spotify}, pinned=(SPOTIFY, ITEM_ID)) == [
-            spotify,
-            local,
-            deezer,
-        ]
+        assert rank_provider_mappings({plex, deezer}) == [deezer, plex]
+        assert rank_provider_mappings({plex, deezer}, pinned=(PLEX, ITEM_ID)) == [plex, deezer]
+        assert rank_provider_mappings({plex, deezer}, policy=PREFER_LOCAL) == [plex, deezer]
     finally:
         await set_global_cache_values({"non_streaming_providers": previous})
