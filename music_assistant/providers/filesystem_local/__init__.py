@@ -2450,7 +2450,10 @@ class LocalFileSystemProvider(MusicProvider):
         :param track_id: The library id of the track.
         :param read_tracks: The files read again during this deletion pass, by path.
         """
-        library_item = await self.mass.music.tracks.get_library_item(track_id)
+        try:
+            library_item = await self.mass.music.tracks.get_library_item(track_id)
+        except MediaNotFoundError:
+            return None
         mappings = list(library_item.provider_mappings)
         if len(mappings) != 1 or mappings[0].provider_instance != self.instance_id:
             return None
