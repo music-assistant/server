@@ -2426,24 +2426,24 @@ class LocalFileSystemProvider(MusicProvider):
                     x.provider_instance == self.instance_id and x.item_id == file_path
                     for x in library_item.provider_mappings
                 )
-                prev_artist_ids = (
-                    await self._library_track_artist_ids(library_item.item_id)
-                    if is_track(library_item)
-                    else set()
-                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
+                    if library_item.album:
+                        album_ids.add(library_item.album.item_id)
+                        # need to fetch the library album to resolve the itemmapping
+                        db_album = await self.mass.music.albums.get_library_item(
+                            library_item.album.item_id
+                        )
+                        for artist in db_album.artists:
+                            artist_ids.add(artist.item_id)
+                    for artist in library_item.artists:
+                        artist_ids.add(artist.item_id)
                 # the library item may also be mapped to other providers,
                 # so only drop this file's mapping
                 await controller.remove_provider_mapping(
                     library_item.item_id, self.instance_id, file_path
                 )
-                if is_track(library_item):
-                    # the album is orphaned only with the track's last file, an artist whenever
-                    # the track or its (rebuilt) album no longer names it
-                    if is_last_mapping and library_item.album:
-                        album_ids.add(library_item.album.item_id)
-                    artist_ids |= prev_artist_ids - await self._library_track_artist_ids(
-                        library_item.item_id
-                    )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2454,17 +2454,6 @@ class LocalFileSystemProvider(MusicProvider):
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
-
-    async def _library_track_artist_ids(self, track_id: str) -> set[str]:
-        """Return the ids of a library track's artists and its albums' artists, if it exists."""
-        try:
-            track = await self.mass.music.tracks.get_library_item(track_id)
-        except MediaNotFoundError:
-            return set()
-        artist_ids = {artist.item_id for artist in track.artists}
-        for album in await self.mass.music.tracks.get_library_track_albums(track_id):
-            artist_ids.update(artist.item_id for artist in album.artists)
-        return artist_ids
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
