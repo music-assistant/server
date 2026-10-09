@@ -84,7 +84,11 @@ from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.podcast_parsers import get_publisher_number
-from music_assistant.helpers.rating import favorite_from_rating
+from music_assistant.helpers.rating import (
+    favorite_from_rating,
+    popm_to_rating,
+    tag_value_to_rating,
+)
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -120,9 +124,14 @@ from .constants import (
     CONF_ENTRY_RATING_DISLIKE_THRESHOLD,
     CONF_ENTRY_RATING_FAVORITE_THRESHOLD,
     CONF_ENTRY_RATING_IMPORT_ENABLED,
+    CONF_ENTRY_RATING_POPM_SCALE,
+    CONF_ENTRY_RATING_TAG_SCALE,
     CONF_RATING_DISLIKE_THRESHOLD,
     CONF_RATING_FAVORITE_THRESHOLD,
+    CONF_RATING_IMPORT_BACKFILL_DONE,
     CONF_RATING_IMPORT_ENABLED,
+    CONF_RATING_POPM_SCALE,
+    CONF_RATING_TAG_SCALE,
     CUE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
@@ -233,6 +242,8 @@ class LocalFileSystemProvider(MusicProvider):
     # set for the single sync that has to reparse an audiobook library that was
     # indexed before authors/narrators became artists
     _force_full_reparse: bool = False
+    # a one-time re-read is owed after rating import is switched on
+    _rating_backfill_pending: bool = False
 
     def __init__(
         self,
@@ -281,6 +292,8 @@ class LocalFileSystemProvider(MusicProvider):
             CONF_ENTRY_RATING_IMPORT_ENABLED,
             CONF_ENTRY_RATING_FAVORITE_THRESHOLD,
             CONF_ENTRY_RATING_DISLIKE_THRESHOLD,
+            CONF_ENTRY_RATING_POPM_SCALE,
+            CONF_ENTRY_RATING_TAG_SCALE,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
             CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
@@ -544,6 +557,14 @@ class LocalFileSystemProvider(MusicProvider):
             )
             if not self._sync_tracks and not self._sync_playlists:
                 return
+            # re-read every file once after rating import is switched on, so a rating
+            # is imported for a library that was indexed before the option existed
+            if self._sync_tracks and self.config.get_value(CONF_RATING_IMPORT_ENABLED):
+                self._rating_backfill_pending = not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_RATING_IMPORT_BACKFILL_DONE, False
+                )
+                if self._rating_backfill_pending:
+                    self._force_full_reparse = True
         elif self.media_content_type == "audiobooks":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
                 return
@@ -728,7 +749,11 @@ class LocalFileSystemProvider(MusicProvider):
         # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
         if self._force_full_reparse and not scan_errors.incomplete:
             self._force_full_reparse = False
-            self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
+            if not self._rating_backfill_pending:
+                self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
+        if self._rating_backfill_pending and not scan_errors.incomplete:
+            self._rating_backfill_pending = False
+            self._update_config_value(CONF_RATING_IMPORT_BACKFILL_DONE, True, immediate=True)
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
@@ -2252,13 +2277,10 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
-                if prev_checksum is None:
-                    # import the rating-derived favorite for a new file only: a rescan must
-                    # never overwrite a favorite the user set inside Music Assistant
-                    track.favorite = self._favorite_from_tags(tags)
-                await self.mass.music.tracks.add_item_to_library(
+                library_track = await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
+                await self._record_rating_favorite(tags, int(library_track.item_id))
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2550,21 +2572,57 @@ class LocalFileSystemProvider(MusicProvider):
                 return ContentType.try_parse(codec_name)
         return ContentType.UNKNOWN
 
-    def _favorite_from_tags(self, tags: AudioTags) -> bool | None:
+    def _rating_from_tags(self, tags: AudioTags) -> float | None:
         """
-        Derive the favorite state from the rating embedded in the file's tags.
+        Read the rating embedded in the file's tags, normalized to 0.0-10.0.
 
         Returns None when rating import is disabled (the default) or when the file
-        carries no rating, so the item keeps whatever favorite state it already had.
+        carries no rating. The scale each format is read with comes from the provider
+        settings, because taggers disagree about what the values mean.
 
         :param tags: The parsed tags of the file.
         """
         if not cast("bool", self.config.get_value(CONF_RATING_IMPORT_ENABLED)):
             return None
+        if (popm_rating := tags.popm_rating) is not None:
+            return popm_to_rating(
+                popm_rating,
+                scale=str(self.config.get_value(CONF_RATING_POPM_SCALE)),
+            )
+        if (rating_tag := tags.rating_tag) is not None:
+            return tag_value_to_rating(
+                rating_tag,
+                scale=str(self.config.get_value(CONF_RATING_TAG_SCALE)),
+            )
+        return None
+
+    def _favorite_from_tags(self, tags: AudioTags) -> bool | None:
+        """
+        Derive the favorite state from the rating embedded in the file's tags.
+
+        :param tags: The parsed tags of the file.
+        """
         return favorite_from_rating(
-            tags.rating,
+            self._rating_from_tags(tags),
             favorite_threshold=cast("float", self.config.get_value(CONF_RATING_FAVORITE_THRESHOLD)),
             dislike_threshold=cast("float", self.config.get_value(CONF_RATING_DISLIKE_THRESHOLD)),
+        )
+
+    async def _record_rating_favorite(self, tags: AudioTags, db_id: int) -> None:
+        """
+        Record the rating-derived favorite state for a library track.
+
+        The state goes through the favorites controller rather than onto the item, so a
+        favorite the user set inside Music Assistant is never overridden, and a rating
+        is imported for a track that is already in the library.
+
+        :param tags: The parsed tags of the file.
+        :param db_id: The database id of the library track.
+        """
+        if (favorite := self._favorite_from_tags(tags)) is None:
+            return
+        await self.mass.music.favorites.record_from_provider(
+            self.instance_id, MediaType.TRACK, db_id, favorite
         )
 
     async def _parse_track(

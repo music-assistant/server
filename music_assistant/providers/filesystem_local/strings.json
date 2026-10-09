@@ -1,5 +1,25 @@
 {
   "config_entries": {
+    "rating_import_enabled": {
+      "label": "Import ratings from file tags",
+      "description": "Use a rating already stored in the files to set the favorite state. Off by default; enabling it re-reads the library once."
+    },
+    "rating_favorite_threshold": {
+      "label": "Rating to import as a favorite",
+      "description": "Tracks and albums rated at or above this value are imported as favorites (0 = unrated, 10 = 5 stars)."
+    },
+    "rating_dislike_threshold": {
+      "label": "Rating to import as a dislike",
+      "description": "Tracks and albums rated at or below this value are imported as dislikes (0 = unrated, 10 = 5 stars)."
+    },
+    "rating_popm_scale": {
+      "label": "How ID3 ratings are read",
+      "description": "Taggers disagree about what a POPM value means. Choose the one your library was tagged with."
+    },
+    "rating_tag_scale": {
+      "label": "How RATING values are read",
+      "description": "How the Vorbis RATING field and the MP4 RATING tag are read."
+    },
     "path": {
       "label": "Folder"
     },

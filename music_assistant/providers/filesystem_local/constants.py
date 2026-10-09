@@ -8,6 +8,13 @@ from typing import Final
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType
 
+from music_assistant.helpers.rating import (
+    POPM_SCALE_ITUNES,
+    POPM_SCALE_WINDOWS,
+    TAG_SCALE_PERCENT,
+    TAG_SCALE_STARS,
+)
+
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
@@ -15,6 +22,11 @@ CONF_CONTENT_TYPE = "content_type"
 CONF_RATING_IMPORT_ENABLED = "rating_import_enabled"
 CONF_RATING_FAVORITE_THRESHOLD = "rating_favorite_threshold"
 CONF_RATING_DISLIKE_THRESHOLD = "rating_dislike_threshold"
+CONF_RATING_POPM_SCALE = "rating_popm_scale"
+CONF_RATING_TAG_SCALE = "rating_tag_scale"
+
+# Hidden conf: has the one-time re-read after enabling rating import completed?
+CONF_RATING_IMPORT_BACKFILL_DONE = "rating_import_backfill_done"
 
 # Hidden conf: Do we still need to promote authors/ narrators to full artists?
 CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
@@ -66,6 +78,33 @@ CONF_ENTRY_RATING_DISLIKE_THRESHOLD = ConfigEntry(
     default_value=2.0,
     range=(0, 10),
     required=False,
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
+# taggers disagree about what the values mean, so the scale is chosen per library
+CONF_ENTRY_RATING_POPM_SCALE = ConfigEntry(
+    key=CONF_RATING_POPM_SCALE,
+    type=ConfigEntryType.STRING,
+    default_value=POPM_SCALE_WINDOWS,
+    required=False,
+    options=[
+        ConfigValueOption(POPM_SCALE_WINDOWS),
+        ConfigValueOption(POPM_SCALE_ITUNES),
+    ],
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
+CONF_ENTRY_RATING_TAG_SCALE = ConfigEntry(
+    key=CONF_RATING_TAG_SCALE,
+    type=ConfigEntryType.STRING,
+    default_value=TAG_SCALE_PERCENT,
+    required=False,
+    options=[
+        ConfigValueOption(TAG_SCALE_PERCENT),
+        ConfigValueOption(TAG_SCALE_STARS),
+    ],
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )

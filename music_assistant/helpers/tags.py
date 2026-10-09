@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, get_subprocess_env
-from music_assistant.helpers.rating import percentage_to_rating, popm_to_rating
 from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
@@ -323,25 +322,36 @@ class AudioTags:
         return title
 
     @property
-    def rating(self) -> float | None:
+    def popm_rating(self) -> int | None:
         """
-        Return the rating embedded in the file, normalized to 0.0-10.0.
+        Return the raw ID3 POPM rating (0-255), or None when the file carries none.
 
-        Returns None when the file carries no rating. The three formats store it
-        differently -- ID3 in a POPM frame, Vorbis in a RATING field, MP4 in the
-        rate atom -- so the raw value is normalized before it is returned.
+        The byte is returned as-is because its meaning depends on the tagger that
+        wrote it; music_assistant.helpers.rating turns it into a rating once the
+        provider has chosen the scale to read it with.
         """
-        if (popm := self.tags.get("popm")) is not None:
-            try:
-                return popm_to_rating(int(popm))
-            except TypeError, ValueError:
-                return None
-        if (raw_rating := self.tags.get("rating")) is not None:
-            try:
-                return percentage_to_rating(float(str(raw_rating).strip()))
-            except TypeError, ValueError:
-                return None
-        return None
+        popm = self.tags.get("popm")
+        if popm is None:
+            return None
+        try:
+            return int(popm)
+        except TypeError, ValueError:
+            return None
+
+    @property
+    def rating_tag(self) -> float | None:
+        """
+        Return the raw Vorbis RATING or MP4 RATING value, or None when absent.
+
+        Returned as-is for the same reason as :attr:`popm_rating`.
+        """
+        raw_rating = self.tags.get("rating")
+        if raw_rating is None:
+            return None
+        try:
+            return float(str(raw_rating).strip())
+        except TypeError, ValueError:
+            return None
 
     @property
     def version(self) -> str:
@@ -1107,10 +1117,11 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
-    # Rating: taggers use the rate atom or a freeform RATING tag, both 0-100
-    if "rate" in tags:
-        result["rating"] = str(tags["rate"][0])
-    elif "----:com.apple.iTunes:RATING" in tags:
+    # Rating: only the freeform RATING tag is read here. A bare `rate` atom is
+    # written as an integer, and mutagen parses unknown atoms only when they hold
+    # UTF-8 text, so an integer atom never reaches this dict. Supporting it would
+    # need raw atom extraction, which is not done here.
+    if "----:com.apple.iTunes:RATING" in tags:
         result["rating"] = _decode_mp4_freeform_single(tags["----:com.apple.iTunes:RATING"])
 
     # album type may be multi-value; join them
