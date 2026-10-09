@@ -218,8 +218,7 @@ jobs:
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
         # --dist loadfile keeps each test file on one xdist worker: snapshot updates
-        # never race on an .ambr file and module-scoped fixtures are reused. --shard
-        # likewise assigns whole test files to each matrix job.
+        # never race on an .ambr file and module-scoped fixtures are reused.
         # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
         # crash leaves the controller blocked on its event queue forever, so the job only
         # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
@@ -228,7 +227,8 @@ jobs:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
           COV_PATHS: ${{ needs.changes.outputs.cov_paths }}
-          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
           # aiolibdatachannel's _native.so doesn't link libstdc++ itself; the production
           # image resolves it via its jemalloc LD_PRELOAD, here we preload it directly
           LD_PRELOAD: libstdc++.so.6
@@ -238,7 +238,8 @@ jobs:
             cov=""
             for src in $COV_PATHS; do cov="$cov --cov=$src"; done
           else
-            targets="tests/"
+            # each matrix job runs the test files whose path hashes to its shard
+            targets=$(python3 -c 'import pathlib, sys, zlib; i, n = map(int, sys.argv[1:]); print(*(p for p in sorted(pathlib.Path("tests").rglob("test_*.py")) if zlib.crc32(p.as_posix().encode()) % n == i - 1))' "$SHARD" "$SHARDS")
             cov="--cov=music_assistant"
           fi
           # the container runs as root, which bypasses file permission bits and breaks
@@ -254,9 +255,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 \
-            --shard="$SHARD" \
-            $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7

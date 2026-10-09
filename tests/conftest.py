@@ -1,13 +1,11 @@
 """Fixtures for testing Music Assistant."""
 
-import argparse
 import asyncio
 import logging
 import os
 import pathlib
 import tempfile
 import threading
-import zlib
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
@@ -54,39 +52,6 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     """Drop this test process's numba kernel cache."""
     if (cache_dir := config.stash.get(NUMBA_CACHE_DIR, None)) is not None:
         cache_dir.cleanup()
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the ``--shard`` option."""
-    parser.addoption(
-        "--shard",
-        type=_parse_shard,
-        default=None,
-        metavar="INDEX/TOTAL",
-        help="Run only the test files assigned to this shard, e.g. 2/3.",
-    )
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """
-    Keep only the tests of the test files assigned to the selected ``--shard``.
-
-    A test file is never split across shards, so its snapshot file and module-scoped
-    fixtures stay with one shard.
-    """
-    shard: tuple[int, int] | None = config.getoption("shard")
-    if shard is None or shard[1] == 1:
-        return
-    index, total = shard
-    selected: list[pytest.Item] = []
-    deselected: list[pytest.Item] = []
-    for item in items:
-        test_file = item.path.relative_to(config.rootpath).as_posix()
-        in_shard = zlib.crc32(test_file.encode()) % total == index - 1
-        (selected if in_shard else deselected).append(item)
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
 
 
 @pytest.hookimpl(wrapper=True)
@@ -299,19 +264,3 @@ async def _music_mass_context(
         finally:
             await mass_instance.tasks.close()
             await mass_instance.music.close()
-
-
-def _parse_shard(value: str) -> tuple[int, int]:
-    """
-    Parse a ``--shard`` value of the form ``INDEX/TOTAL``.
-
-    :param value: The option value, e.g. ``2/3``.
-    """
-    try:
-        index, total = (int(part) for part in value.split("/"))
-    except ValueError:
-        index = total = 0
-    if not 1 <= index <= total:
-        msg = f"expected INDEX/TOTAL with 1 <= INDEX <= TOTAL, got {value!r}"
-        raise argparse.ArgumentTypeError(msg)
-    return index, total
