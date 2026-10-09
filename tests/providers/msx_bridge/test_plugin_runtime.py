@@ -212,3 +212,83 @@ process.stdout.write(JSON.stringify({sent,actions}));
     assert "player:label:position:2:00" in data["actions"]
     assert "player:label:duration:3:00" in data["actions"]
     assert not any(action.startswith("player:seek:") for action in data["actions"])
+
+
+@pytest.mark.parametrize("version", ["0.1.145", "0.1.146", "0.1.165", None])
+@pytest.mark.parametrize("duration", [180, 0])
+@pytest.mark.parametrize("delivery", ["immediate", "delayed", "stale", "missing"])
+def test_native_progress_respects_framework_version(
+    version: str | None, duration: int, delivery: str
+) -> None:
+    """Older MSX keeps native progress without unsupported override actions."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Native plugin runtime tests require Node.js")
+    static = Path(http_server.__file__).parent / "static"
+    script = (static / "plugin.html").read_text().split("<script>", 1)[1].split("</script>", 1)[0]
+    runner = (
+        NODE_RUNNER.split("vm.runInNewContext", 1)[0]
+        + """
+const actions=[], errors=[];
+context.window.addEventListener=()=>{};
+context.Date=Date;
+vm.runInNewContext(input.library, context);
+context.Date={now:()=>0};
+context.tvx.PluginTools.checkFramework=context.window.TVXPluginTools.checkFramework;
+const info={info:{framework:{name:'MSX',version:input.version},application:{version:'9.9.9'}}};
+const callbacks=[];
+context.tvx.InteractionPlugin.requestData=(id,cb)=>{
+    if (input.delivery==='immediate') cb(info);
+    else callbacks.push(cb);
+};
+context.tvx.InteractionPlugin.executeAction=action=>{
+    actions.push(action);
+    if ((!input.version || input.version==='0.1.145') && action.startsWith('player:progress:')) {
+        errors.push("Unknown player progress action: '"+action.slice(16)+"'");
+    }
+};
+vm.runInNewContext(input.script,context);
+handler.handleRequest('init',null,()=>{});
+if (input.delivery==='stale') {
+    handler.handleRequest('init',null,()=>{});
+    callbacks[0]({info:{framework:{name:'MSX',version:'0.1.165'}}});
+}
+ws.onmessage({data:JSON.stringify({type:'clock_reset',playback_id:'generation',
+    source_offset:120,source_duration:input.duration,served_duration:60})});
+if (input.delivery!=='immediate') {
+    timer();
+    if (actions.some(action=>action.startsWith('player:progress:'))) throw Error('Premature override');
+    if (input.delivery!=='missing') callbacks.at(-1)(info);
+    actions.length=0;
+}
+handler.handleEvent({event:'video:play'});
+timer();
+process.stdout.write(JSON.stringify({sent,actions,errors}));
+"""
+    )
+    result = subprocess.run(  # noqa: S603 - fixed runtime and shipped plugin
+        [node, "-e", runner],
+        input=json.dumps(
+            {
+                "script": script,
+                "library": (static / "tvx-plugin.min.js").read_text(),
+                "version": version,
+                "duration": duration,
+                "delivery": delivery,
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-1500:]
+    data = json.loads(result.stdout)
+    assert data["errors"] == []
+    assert {"type": "position", "position": 0, "playback_id": "generation"} in data["sent"]
+    assert "player:label:position:2:00" in data["actions"]
+    progress = [action for action in data["actions"] if action.startswith("player:progress:")]
+    if delivery != "missing" and version in ("0.1.146", "0.1.165"):
+        assert f"player:progress:position:{120 if duration else -1}" in progress
+        assert f"player:progress:duration:{duration if duration else -1}" in progress
+    else:
+        assert progress == []

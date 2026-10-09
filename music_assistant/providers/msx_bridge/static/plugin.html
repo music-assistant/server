@@ -81,6 +81,8 @@
     var sourceOffset = 0;
     var sourceDuration = 0;
     var servedDuration = 0;
+    var supportsProgressOverride = false;
+    var capabilityGeneration = 0;
 
     function stopPositionTimer() {
         if (positionTimer) {
@@ -117,12 +119,16 @@
         tvx.InteractionPlugin.executeAction("player:label:position:" + (formatDuration(sourcePosition) || "0:00"));
         if (sourceDuration > 0) {
             tvx.InteractionPlugin.executeAction("player:label:duration:" + formatDuration(sourceDuration));
-            tvx.InteractionPlugin.executeAction("player:progress:duration:" + sourceDuration);
-            tvx.InteractionPlugin.executeAction("player:progress:position:" + sourcePosition);
+            if (supportsProgressOverride) {
+                tvx.InteractionPlugin.executeAction("player:progress:duration:" + sourceDuration);
+                tvx.InteractionPlugin.executeAction("player:progress:position:" + sourcePosition);
+            }
         } else {
             tvx.InteractionPlugin.executeAction("player:label:duration:default");
-            tvx.InteractionPlugin.executeAction("player:progress:duration:-1");
-            tvx.InteractionPlugin.executeAction("player:progress:position:-1");
+            if (supportsProgressOverride) {
+                tvx.InteractionPlugin.executeAction("player:progress:duration:-1");
+                tvx.InteractionPlugin.executeAction("player:progress:position:-1");
+            }
         }
     }
 
@@ -537,6 +543,20 @@
 
     MAHandler.prototype.handleRequest = function(dataId, data, callback) {
         if (dataId === "init") {
+            supportsProgressOverride = false;
+            var generation = ++capabilityGeneration;
+            // These actions were added in MSX 0.1.146; the bundled library version
+            // does not indicate what the host framework supports.
+            if (typeof tvx.InteractionPlugin.requestData === "function" &&
+                    typeof tvx.PluginTools.checkFramework === "function") {
+                try {
+                    tvx.InteractionPlugin.requestData("info:extended", function(info) {
+                        if (pluginActive && generation === capabilityGeneration) {
+                            supportsProgressOverride = tvx.PluginTools.checkFramework(info, "0.1.146");
+                        }
+                    });
+                } catch (e) {}
+            }
             var respond = function(deviceId) {
                 // Priority: MSX provided ID > sync methods > localStorage fallback
                 var finalDeviceId = deviceId || getMsxDeviceId() || getOrCreateLocalDeviceId();
