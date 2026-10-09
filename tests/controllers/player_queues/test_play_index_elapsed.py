@@ -98,7 +98,9 @@ async def test_seek_publishes_target_before_restarting_stream() -> None:
     await ctrl.seek(QUEUE_ID, 30)
 
     play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
-    assert events == [("signal", 30), ("restart", 30)]
+    # the play action's own bookkeeping updates around the seek carry whatever the queue
+    # holds at that moment; the seek target itself must go out before the stream restarts
+    assert events.index(("signal", 30)) < events.index(("restart", 30))
     assert queue.elapsed_time == 30
     assert queue.elapsed_time_last_updated >= before
 
