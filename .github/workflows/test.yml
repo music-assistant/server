@@ -20,6 +20,10 @@ on:
         description: "Git ref to checkout"
         required: false
         type: string
+      base_image_version:
+        description: "Base image version to run the tests in (default: the target branch's pin in release.yml)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -43,6 +47,8 @@ jobs:
       mode: ${{ steps.scope.outputs.mode }}
       test_paths: ${{ steps.scope.outputs.test_paths }}
       cov_paths: ${{ steps.scope.outputs.cov_paths }}
+      shards: ${{ steps.pytest.outputs.shards }}
+      base_image_version: ${{ steps.pytest.outputs.base_image_version }}
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v7
@@ -72,6 +78,32 @@ jobs:
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' | python3 scripts/ci_test_scope.py
+      # Tests run in the production base image (Dockerfile.base) pinned in release.yml for
+      # the branch this code ships from: stable's pin for stable, the nightly pin otherwise.
+      - name: Determine test container and shards
+        id: pytest
+        env:
+          MODE: ${{ steps.scope.outputs.mode }}
+          INPUT_VERSION: ${{ inputs.base_image_version }}
+          TARGET_BRANCH: ${{ github.base_ref || github.event.merge_group.base_ref || github.ref }}
+        run: |
+          case "$TARGET_BRANCH" in
+            stable | refs/heads/stable) pin=BASE_IMAGE_VERSION_STABLE ;;
+            *) pin=BASE_IMAGE_VERSION_NIGHTLY ;;
+          esac
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(sed -n "s/^ *$pin: *\"\([^\"]*\)\".*/\1/p" .github/workflows/release.yml)
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::Could not read $pin from .github/workflows/release.yml"
+            exit 1
+          fi
+          if [ "$MODE" = "full" ]; then shards="[1,2,3]"; else shards="[1]"; fi
+          {
+            echo "base_image_version=$version"
+            echo "shards=$shards"
+          } >> "$GITHUB_OUTPUT"
 
   provider-scope:
     # Advisory only (never fails the build): emit warning annotations when a PR that touches a
@@ -108,12 +140,18 @@ jobs:
           python-version-file: ".python-version"
           check-latest: true
       - name: Install uv
-        run: pip install uv
-      - name: Cache uv packages
-        uses: actions/cache@v6
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements_all.txt
+            pyproject.toml
+            .python-version
+          cache-suffix: lint
+          # keeps only the wheels uv built from source; pre-built wheels download faster than they restore
+          prune-cache: true
+          # only branch pushes save, PR and merge-queue runs restore their base branch's cache
+          save-cache: ${{ github.event_name == 'push' }}
       - name: Install dependencies
         # --index-strategy: allow PyPI packages when also using the PyTorch extra index
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
@@ -121,54 +159,67 @@ jobs:
       - name: Lint/test with pre-commit
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
-  test:
+  pytest:
+    name: pytest (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: changes
     if: ${{ needs.changes.outputs.mode != 'skip' }}
     runs-on: ubuntu-latest
-    # Same base as the production image (Dockerfile.base), so apt ffmpeg is the same
-    # 7.1.x line we ship; ubuntu-latest's apt only has 6.1. Keep the Python tag in
-    # sync with .python-version.
-    container: python:3.14-slim-trixie
+    # The production base image of the release this code ships in, so the tests run
+    # against the same ffmpeg, PyAV and Python version as that release.
+    container: ghcr.io/music-assistant/base:${{ needs.changes.outputs.base_image_version }}
     # Backstop: a hung test process should fail in minutes, not sit at the 6h job cap.
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
 
     steps:
-      # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
-      - name: Cache apt packages
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/apt-packages
-          key: apt-ffmpeg-${{ runner.os }}-trixie
       # git must be present before checkout, or it degrades to a REST tarball download;
-      # build-essential + libssl-dev are needed to build aiolibdatachannel from its git
-      # source; curl + gpg are needed by the codecov action
-      - name: Install ffmpeg and build tools
-        run: |
-          # Restore cached .deb files to apt cache (if any)
-          cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          apt-get update && apt-get install -y ffmpeg git build-essential libssl-dev curl gpg
-          # Save .deb files for next run
-          mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
+      # build-essential is needed to build aiolibdatachannel from its git source;
+      # curl, gpg and gpg-agent are needed by the codecov action
+      - name: Install build tools
+        run: apt-get update && apt-get install -y --no-install-recommends git build-essential curl gpg gpg-agent
       - name: Check out code from GitHub
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Install uv
-        run: pip install uv
-      - name: Cache uv packages
-        uses: actions/cache@v6
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements_all.txt
+            pyproject.toml
+            .python-version
+          cache-suffix: pytest
+          prune-cache: true
+          # the shards share one cache, so only the first one saves it
+          save-cache: ${{ github.event_name == 'push' && matrix.shard == 1 }}
       - name: Install dependencies
         # --index-strategy: allow PyPI packages when also using the PyTorch extra index
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
+      # Same as the production image: PyAV comes from the base image's wheel, built
+      # against its ffmpeg, and must match the version the requirements resolve to.
+      - name: Install PyAV from the base image
+        env:
+          BASE_IMAGE_VERSION: ${{ needs.changes.outputs.base_image_version }}
+        run: |
+          required=$(python3 -c "import importlib.metadata; print(importlib.metadata.version('av'))")
+          wheel=$(ls /usr/local/share/pyav-wheels/av-*.whl)
+          available=$(basename "$wheel" | cut -d- -f2)
+          if [ "$required" != "$available" ]; then
+            echo "::error::PyAV mismatch: requirements need $required, base image $BASE_IMAGE_VERSION ships $available. Rebuild the base image with PyAV $required."
+            exit 1
+          fi
+          uv pip install --system --force-reinstall --no-deps "$wheel"
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
         # --dist loadfile keeps each test file on one xdist worker: snapshot updates
-        # never race on an .ambr file and module-scoped fixtures are reused.
+        # never race on an .ambr file and module-scoped fixtures are reused. --shard
+        # likewise assigns whole test files to each matrix job.
         # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
         # crash leaves the controller blocked on its event queue forever, so the job only
         # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
@@ -177,6 +228,7 @@ jobs:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
           COV_PATHS: ${{ needs.changes.outputs.cov_paths }}
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           # aiolibdatachannel's _native.so doesn't link libstdc++ itself; the production
           # image resolves it via its jemalloc LD_PRELOAD, here we preload it directly
           LD_PRELOAD: libstdc++.so.6
@@ -202,7 +254,9 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 \
+            --shard="$SHARD" \
+            $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7
@@ -212,3 +266,14 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # The branch ruleset requires a check named `test`: it passes when every pytest shard
+  # passed, or when there was nothing to test.
+  test:
+    needs: [changes, pytest]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
