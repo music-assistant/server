@@ -3054,6 +3054,17 @@ async def test_resolve_command_impersonation(auth_manager: AuthenticationManager
     resolved = await resolve_command_impersonation(auth_manager.mass, args)
     assert resolved == standard_user
 
+    # user wins over the deprecated username alias, both are popped
+    args = {"user": "user_a", "username": "admin"}
+    assert await resolve_command_impersonation(auth_manager.mass, args) == standard_user
+    assert args == {}
+
+    # a disabled user can not be impersonated
+    await auth_manager.disable_user(standard_user.user_id)
+    with pytest.raises(UserNotFoundError):
+        await resolve_command_impersonation(auth_manager.mass, {"user": "user_a"})
+    await auth_manager.enable_user(standard_user.user_id)
+
     # a caller without the users.impersonate scope may not impersonate another user
     set_current_user(standard_user)
     with pytest.raises(InsufficientPermissions):
