@@ -15,6 +15,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import (
+    ArtistType,
     MediaType,
     PlaybackState,
     QueueOption,
@@ -30,6 +31,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Album,
+    Artist,
     Audiobook,
     BrowseFolder,
     ItemMapping,
@@ -82,6 +84,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.media_resolver import ArtistTracks
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
@@ -904,16 +907,27 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # shuffled queue keeps the items preceding a start_item (chosen track pinned
                 # first) instead of dropping them. The first item that resolves decides for the
                 # whole batch, because it is the only media type known this early.
+                artist_tracks: ArtistTracks | None = None
                 if not shuffle_settled:
+                    # an artist's tracks don't depend on the shuffle state, so the artist is
+                    # resolved first: it plays in order when it plays its albums. A lookup that
+                    # fails leaves the decision unsettled, like any item that can't be fetched.
+                    if (
+                        shuffle is None
+                        and isinstance(media_item, Artist)
+                        and media_item.artist_type not in (ArtistType.AUTHOR, ArtistType.NARRATOR)
+                    ):
+                        artist_tracks = await self._media_resolver.resolve_artist_tracks(media_item)
+                    plays_in_order = media_item.media_type in ORDERED_MEDIA_TYPES or bool(
+                        artist_tracks and artist_tracks.plays_albums
+                    )
                     shuffle_settled = True
                     await self._apply_shuffle(
                         queue_id,
                         option,
                         # an explicit request always wins; only an unset one defers to the
                         # media's own order
-                        False
-                        if shuffle is None and media_item.media_type in ORDERED_MEDIA_TYPES
-                        else shuffle,
+                        False if shuffle is None and plays_in_order else shuffle,
                     )
 
                 # the user picked this exact track to play next, so it must be inserted literally
@@ -972,6 +986,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         # whole playlist/album (chosen track first) instead of dropping everything
                         # before it - the chosen track is pinned in front of the shuffled rest
                         keep_preceding_items=queue.shuffle_enabled,
+                        artist_tracks=artist_tracks.tracks if artist_tracks else None,
                     )
                     media_items += resolved_items
                     if plays_next_track:

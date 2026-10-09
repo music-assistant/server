@@ -148,6 +148,15 @@
         "all_tracks": "All tracks from all providers"
       }
     },
+    "default_enqueue_order_artist": {
+      "label": "Order to play an artist in.",
+      "description": "With an album order, the items to select for an artist pick the artist's own albums. Each album plays as it does on its own. Top tracks, or an artist with no albums, play shuffled tracks.",
+      "options": {
+        "shuffled_tracks": "Shuffled tracks",
+        "random_albums": "Albums in random order, each album in track order",
+        "albums_by_release": "Albums by release year, oldest first"
+      }
+    },
     "default_enqueue_select_album": {
       "label": "Items to select when you play a (in-library) album.",
       "options": {

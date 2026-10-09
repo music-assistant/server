@@ -66,6 +66,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
     CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+    CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
@@ -78,6 +79,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
+    ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     PLAY_ACTION_PLAY_FROM_HERE,
@@ -89,6 +91,7 @@ from music_assistant.controllers.player_queues.constants import (
     SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
+    ArtistOrder,
 )
 
 if TYPE_CHECKING:
@@ -215,6 +218,17 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
                 ConfigValueOption("library_tracks"),
                 ConfigValueOption("prefer_library"),
                 ConfigValueOption("all_tracks"),
+            ],
+            category=CATEGORY_ITEMS_TO_SELECT,
+        ),
+        ConfigEntry(
+            key=CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
+            type=ConfigEntryType.STRING,
+            default_value=ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
+            options=[
+                ConfigValueOption(ArtistOrder.SHUFFLED_TRACKS.value),
+                ConfigValueOption(ArtistOrder.RANDOM_ALBUMS.value),
+                ConfigValueOption(ArtistOrder.ALBUMS_BY_RELEASE.value),
             ],
             category=CATEGORY_ITEMS_TO_SELECT,
         ),
