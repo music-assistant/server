@@ -296,7 +296,8 @@ Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueIt
 
 The controller decides when a track counts as played and reports it to the Music Controller. Only
 an item whose audio actually reached the player (recorded when its first chunk is served) is ever
-reported, so an item a player merely names from its own cached copy of the queue is never credited.
+reported as played or taken as the item the queue ended on, so an item a player merely names from
+its own cached copy of the queue is never credited and never ends the queue.
 Plays are de-duplicated using a last-counted-play marker (with album-level handling) so a track is
 not double-counted on the end-of-queue idle transition. It also computes and applies resume positions
 for audiobooks and podcast episodes, and restores a previously playing queue from the play log.

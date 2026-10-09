@@ -495,6 +495,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
             return
+        if prev_state["current_item_id"] not in queue_data.served_item_ids:
+            # the player stopped on an item it never received audio for (one from its own cached
+            # copy of the queue that the stream server then refused): it did not reach the end of
+            # the queue, so the queue must stay where it is and remain resumable
+            return
 
         # retrieve prev_item here so it's available in the _settle_or_resume_delayed closure
         # regardless of which code path (flow mode or non-flow mode) creates the task

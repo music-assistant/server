@@ -1,10 +1,11 @@
-"""Tests that a play is only reported for an item whose audio actually reached the player."""
+"""Tests that only an item whose audio actually reached the player is reported or ends the queue."""
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from types import SimpleNamespace
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.media_items import ProviderMapping, Track
@@ -53,8 +54,8 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl._load_item = AsyncMock()  # type: ignore[method-assign]
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
-    ctrl._get_next_index = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+    ctrl.mark_ended = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.players.play_media = AsyncMock()
@@ -87,6 +88,14 @@ def _reported(ctrl: PlayerQueuesController) -> list[tuple[str, bool]]:
         (call.args[0].item_id, call.kwargs["fully_played"])
         for call in mark_item_played.call_args_list
     ]
+
+
+def _settle_task(ctrl: PlayerQueuesController) -> Coroutine[Any, Any, None] | None:
+    """Return the end-of-queue settle task the tracker scheduled, if any."""
+    for call in cast("Mock", ctrl.mass.create_task).call_args_list:
+        if call.kwargs.get("task_name") == f"settle_or_resume_{QUEUE_ID}":
+            return cast("Coroutine[Any, Any, None]", call.args[0])
+    return None
 
 
 def test_item_the_player_named_but_never_received_is_not_reported() -> None:
@@ -135,3 +144,38 @@ async def test_a_new_load_keeps_the_playing_item_eligible() -> None:
     ctrl.track_loaded_in_buffer(QUEUE_ID, "c")
     _player_reports(ctrl, PlaybackState.PLAYING, "c", 0)
     assert _reported(ctrl) == [("a", True)]
+
+
+def test_never_received_last_item_does_not_end_the_queue() -> None:
+    """A refused last track the player names before stopping leaves the queue where it is."""
+    ctrl = _controller([_track("a"), _track("b")])
+    ctrl.track_loaded_in_buffer(QUEUE_ID, "a")
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 190)
+    # the request for the last track is refused, yet the player names it (at a position carried
+    # over from before) and then stops
+    _player_reports(ctrl, PlaybackState.PLAYING, "b", 195)
+    _player_reports(ctrl, PlaybackState.IDLE, "b", 195)
+
+    assert _settle_task(ctrl) is None
+    cast("Mock", ctrl.mark_ended).assert_not_called()
+
+
+async def test_served_last_item_played_to_its_end_ends_the_queue() -> None:
+    """The queue still ends after a last track whose audio was served played out."""
+    ctrl = _controller([_track("a"), _track("b")])
+    ctrl.track_loaded_in_buffer(QUEUE_ID, "a")
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 190)
+    ctrl.track_loaded_in_buffer(QUEUE_ID, "b")
+    _player_reports(ctrl, PlaybackState.PLAYING, "b", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "b", 196)
+    _player_reports(ctrl, PlaybackState.IDLE, "b", 196)
+
+    settle = _settle_task(ctrl)
+    assert settle is not None
+    with patch(
+        "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep", AsyncMock()
+    ):
+        await settle
+    cast("Mock", ctrl.mark_ended).assert_called_once_with(QUEUE_ID)
