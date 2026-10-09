@@ -49,6 +49,7 @@ def _make_controller(providers: list[MusicProvider]) -> AlbumsController:
             (p for p in providers if p.instance_id == prov_id), None
         )
     )
+    mass.music.get_visible_provider = mass.get_provider
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.mass = mass
     return ctrl

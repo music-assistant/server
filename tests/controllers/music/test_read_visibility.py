@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import ExitStack
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +11,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
+    ArtistType,
     ExternalID,
     MediaType,
     ProviderFeature,
@@ -23,9 +24,13 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
+    Album,
+    Artist,
     Audiobook,
     MediaItemCollection,
     ProviderMapping,
+    Radio,
+    SearchResults,
     UniqueList,
 )
 
@@ -233,3 +238,132 @@ async def test_sound_effect_of_a_hidden_source_is_not_found(music: MusicControll
     """A sound effect is only resolved through a music source the user may see."""
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await music.get_item(MediaType.SOUND_EFFECT, "rain", THEIRS)
+
+
+def _mapping(instance_id: str, item_id: str) -> ProviderMapping:
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain=instance_id.split("_", maxsplit=1)[0],
+        provider_instance=instance_id,
+        in_library=True,
+    )
+
+
+async def test_search_asks_only_a_provider_the_user_may_see(music: MusicController) -> None:
+    """The search behind version scans is answered by a visible account or not at all."""
+    theirs = _mock(music, THEIRS)
+    theirs.supported_features = {ProviderFeature.SEARCH}
+    theirs.supported_media_types = {MediaType.TRACK}
+    theirs.search = AsyncMock(return_value=SearchResults())
+
+    with _as_user(MEMBER):
+        assert await music.tracks.search("query", THEIRS) == []
+    theirs.search.assert_not_awaited()
+    with _as_user(OWNER):
+        await music.tracks.search("query", THEIRS)
+    theirs.search.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        pytest.param(lambda music: music.albums.tracks("a1", THEIRS), id="album_tracks"),
+        pytest.param(lambda music: music.artists.albums("ar1", THEIRS), id="artist_albums"),
+        pytest.param(lambda music: music.artists.tracks("ar1", THEIRS), id="artist_tracks"),
+        pytest.param(lambda music: music.artists.top_tracks("ar1", THEIRS), id="top_tracks"),
+        pytest.param(lambda music: music.artists.top_albums("ar1", THEIRS), id="top_albums"),
+        pytest.param(
+            lambda music: music.artists.similar_artists("ar1", THEIRS), id="similar_artists"
+        ),
+        pytest.param(
+            lambda music: music.artists.audiobooks("ar1", THEIRS, ArtistType.AUTHOR),
+            id="artist_audiobooks",
+        ),
+        pytest.param(lambda music: music.podcasts.episode("e1", THEIRS), id="podcast_episode"),
+        pytest.param(
+            lambda music: music.podcasts.episode_transcript("e1", THEIRS),
+            id="podcast_episode_transcript",
+        ),
+    ],
+)
+async def test_provider_listings_refuse_a_hidden_source(
+    music: MusicController, listing: Callable[[MusicController], Awaitable[object]]
+) -> None:
+    """A listing asked of a source the user may not see is refused, not served empty."""
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        await listing(music)
+    _mock(music, THEIRS).assert_not_called()
+
+
+async def test_album_tracks_come_from_the_resolved_visible_account(
+    music: MusicController,
+) -> None:
+    """The member's own account serves the tracks, and the album they are backfilled from."""
+    my_spotify = _add_my_spotify(music)
+    my_spotify.get_album_tracks = AsyncMock(return_value=[create_track(MY_SPOTIFY, "t1")])
+    my_spotify.get_album = AsyncMock(
+        return_value=Album(item_id="a1", provider=MY_SPOTIFY, name="Album", provider_mappings=set())
+    )
+
+    with _as_user(MEMBER):
+        tracks = await music.albums.tracks("a1", THEIRS)
+
+    assert [track.item_id for track in tracks] == ["t1"]
+    assert tracks[0].album is not None
+    my_spotify.get_album_tracks.assert_awaited_once_with("a1")
+    my_spotify.get_album.assert_awaited_once_with("a1")
+    _mock(music, THEIRS).get_album_tracks.assert_not_called()
+
+
+async def test_similar_tracks_skip_a_mapping_on_a_hidden_source(music: MusicController) -> None:
+    """Only the mappings on the user's sources are asked for similar tracks."""
+    track = create_track(THEIRS, "t1")
+    track.provider_mappings.add(_mapping(MINE, "t1-mine"))
+    library_track = await music.tracks.add_item_to_library(track)
+    for instance_id in (THEIRS, MINE):
+        provider = _mock(music, instance_id)
+        provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+        provider.get_similar_tracks = AsyncMock(return_value=[create_track(instance_id, "s1")])
+
+    with _as_user(MEMBER):
+        similar = await music.tracks.similar_tracks(library_track.item_id, "library")
+
+    assert [item.provider for item in similar] == [MINE]
+    _mock(music, THEIRS).get_similar_tracks.assert_not_awaited()
+
+
+async def test_export_radios_lists_only_the_users_sources(music: MusicController) -> None:
+    """The radio export carries the stations of the user's sources only."""
+    for instance_id, name in ((THEIRS, "Their Station"), (MINE, "My Station")):
+        await music.radio.add_item_to_library(
+            Radio(
+                item_id=f"r-{instance_id}",
+                provider=instance_id,
+                name=name,
+                provider_mappings={_mapping(instance_id, f"r-{instance_id}")},
+            )
+        )
+
+    with _as_user(MEMBER):
+        export = await music.radio.export_radios()
+
+    assert "My Station" in export
+    assert "Their Station" not in export
+
+
+async def test_library_artist_types_follow_the_users_sources(music: MusicController) -> None:
+    """The artist types listed are those of artists on the user's sources."""
+    await music.artists.add_item_to_library(
+        Artist(
+            item_id="au1",
+            provider=THEIRS,
+            name="Author",
+            artist_type=ArtistType.AUTHOR,
+            provider_mappings={_mapping(THEIRS, "au1")},
+        )
+    )
+
+    with _as_user(OWNER):
+        assert await music.artists.get_library_artist_types() == [ArtistType.AUTHOR]
+    with _as_user(MEMBER):
+        assert await music.artists.get_library_artist_types() == []
