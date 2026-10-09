@@ -1213,14 +1213,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
     async def _abort_source_buffer(
         self,
         item: QueueItem,
-        started_item: QueueItem,
+        started_item: QueueItem | None = None,
         only_when_saturated: bool = False,
     ) -> None:
         """
         Cancel one item's still-filling source so its provider stream slot is handed over.
 
         :param item: The queue item whose source buffer should be aborted.
-        :param started_item: The queue item that is about to start playing.
+        :param started_item: The queue item that is about to start playing, if known.
         :param only_when_saturated: Only abort while the provider has no free slot left.
         """
         if item.streamdetails is None:
@@ -1231,6 +1231,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         provider = self.mass.get_provider(item.streamdetails.provider, return_unavailable=True)
         if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams is None:
             return
+        beneficiary = started_item.name if started_item is not None else "the next track"
         if only_when_saturated:
             if provider.has_available_stream_slot:
                 # an abort above already freed a slot, so this prewarm can stay
@@ -1239,14 +1240,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 "Aborting the prewarm of %s: %s has no free stream slot left for %s",
                 item.name,
                 provider.name,
-                started_item.name,
+                beneficiary,
             )
         else:
             self.logger.debug(
                 "Aborting the source of %s to free a %s stream slot for %s",
                 item.name,
                 provider.name,
-                started_item.name,
+                beneficiary,
             )
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse

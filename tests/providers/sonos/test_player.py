@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -43,6 +44,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
+    player.cloud_queue_id = None
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -84,6 +86,13 @@ def _playback_error(**fields: object) -> PlaybackErrorEvent:
         },
     )
     return PlaybackErrorEvent(SonosEventType.PLAYBACK_ERROR, "group1", body)
+
+
+def _scheduled_tasks(mass: MagicMock) -> list[Coroutine[Any, Any, None]]:
+    """Collect the coroutines the player schedules on the given mass instead of running them."""
+    scheduled: list[Coroutine[Any, Any, None]] = []
+    mass.create_task.side_effect = lambda coro, **_kwargs: scheduled.append(coro)
+    return scheduled
 
 
 async def _connect_player(player: SonosPlayer, client: MagicMock) -> None:
@@ -615,6 +624,53 @@ def test_a_group_member_leaves_reporting_playback_errors_to_the_coordinator(
         player._on_playback_error(event)
 
     assert not caplog.records
+
+
+async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on_to() -> None:
+    """Test the queue is asked to release the failed track's source, by its bare item id."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.release_failed_item_source = AsyncMock()
+    scheduled = _scheduled_tasks(mass)
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
+
+
+def test_a_track_refused_by_our_stream_server_has_no_source_to_release() -> None:
+    """Test our own 404 never started a source for the track, so there is nothing to free."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+
+    player._on_playback_error(_playback_error(httpStatus=404, serviceName="192.168.1.10:9097"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_group_member_leaves_releasing_a_failed_track_to_the_coordinator() -> None:
+    """Test a speaker synced to another one does not act on the group's failure."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_failure_outside_a_cloud_queue_releases_nothing() -> None:
+    """Test a failure while the speaker plays another source has no queue item behind it."""
+    player = _make_named_player("Kantoor")
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
 
 
 def _report_paused_qobuz(group: MagicMock) -> None:

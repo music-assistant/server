@@ -1177,7 +1177,7 @@ class SonosPlayer(Player):
         )
 
     def _on_playback_error(self, event: SonosEvent) -> None:
-        """Log a playback failure the speaker reported for the item it tried to play."""
+        """Handle a playback failure the speaker reported for the item it tried to play."""
         if self.synced_to:
             # the coordinator plays for the whole group and reports for it
             return
@@ -1200,6 +1200,16 @@ class SonosPlayer(Player):
             error["errorCode"],
             error.get("reason", "no reason given"),
         )
+        if (queue_id := self.cloud_queue_id) and (item_id := error.get("itemId")):
+            # the speaker moves on to the next track by itself, while the failed track's
+            # source may still be filling its buffer and holding the stream slot that
+            # next track needs on a music service that allows a single stream
+            self.mass.create_task(
+                self.mass.player_queues.release_failed_item_source(
+                    queue_id, self.bare_item_id(item_id)
+                ),
+                task_name=f"sonos_release_failed_item_{self.player_id}",
+            )
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""
