@@ -403,6 +403,7 @@ async def test_an_ingress_client_announces_without_an_auth_message(harness: Harn
     user = User(user_id="user_2", username="ha_user", role=UserRole.USER)
     with (
         patch.object(live_announcements, "is_request_from_ingress", return_value=True),
+        patch.object(live_announcements, "is_request_from_ingress_proxy", return_value=True),
         patch.object(live_announcements, "get_authenticated_user", AsyncMock(return_value=user)),
     ):
         ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)
@@ -422,6 +423,7 @@ async def test_the_home_assistant_system_user_announces_over_ingress(harness: Ha
     user = User(user_id="user_6", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE)
     with (
         patch.object(live_announcements, "is_request_from_ingress", return_value=True),
+        patch.object(live_announcements, "is_request_from_ingress_proxy", return_value=True),
         patch.object(live_announcements, "get_authenticated_user", AsyncMock(return_value=user)),
     ):
         ws = await harness.client.ws_connect(LIVE_ANNOUNCEMENT_ROUTE)

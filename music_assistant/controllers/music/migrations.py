@@ -1295,6 +1295,12 @@ async def migrate_database(  # noqa: PLR0915
         # audio analysis moved out of library.db into a database file of its own
         await _move_audio_analysis_out(mass, database, logger)
 
+    if prev_version <= 64:
+        # the default classical genre carried aliases of genres that are not classical
+        # (pop, gospel, brass bands and non-western traditions); move them to the genre
+        # they belong to so tracks tagged with them stop showing up under classical
+        await _move_classical_genre_aliases(database, logger)
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:
@@ -1335,6 +1341,159 @@ async def migrate_database(  # noqa: PLR0915
 
     # always clear the cache after a db migration
     await mass.cache.clear()
+
+
+async def _move_classical_genre_aliases(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Remove the misplaced aliases from the default music classical genre.
+
+    Aliases that belong to another default genre are added to that genre. Mappings created
+    through a removed alias are dropped, so the next genre scan maps those items again.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    """
+    # frozen copy of the genre_mapping.json change: target translation_key -> moved aliases
+    moved_aliases: dict[str, tuple[str, ...]] = {
+        "experimental": ("Experimental",),
+        "marching_band": ("Brass Band", "British Brass Band", "Circus March", "Concert Band"),
+        "polka": ("Concertina Band", "Dechovka"),
+        "middle_eastern_music": (
+            "Iraqi Maqam",
+            "Islamic Modal Music",
+            "Mugham",
+            "Sawt",
+            "Turkish Classical",
+            "Uyghur Muqam",
+        ),
+        "asian_music": (
+            "Burmese Classical",
+            "Gamelan",
+            "Japanese Classical",
+            "Japanese Traditional",
+            "Kacapi Suling",
+            "Korean Classical",
+            "Korean Traditional",
+            "Kulintang",
+            "Mahori",
+            "Pinpeat",
+            "Saluang Klasik",
+            "Southeast Asian Classical",
+            "Talempong",
+            "Tembang Cianjuran",
+            "Thai Classical",
+        ),
+    }
+    # already owned by other default genres, so these only leave classical
+    dropped_aliases = (
+        "Alternative",
+        "Christian & Gospel",
+        "Christian / Gospel",
+        "Electronic",
+        "Gospel",
+        "Gospel / Christian",
+        "J-Pop",
+        "Japanese Music",
+        "K-Pop",
+        "Soundtracks and Musicals",
+    )
+    removed_norms = {
+        create_safe_string(alias, True, True)
+        for alias in (*dropped_aliases, *(a for x in moved_aliases.values() for a in x))
+    }
+
+    def _load_aliases(row: Mapping[str, Any]) -> list[str] | None:
+        try:
+            aliases = json_loads(row["genre_aliases"]) if row["genre_aliases"] else []
+        except TypeError, ValueError:
+            return None
+        if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
+            return None
+        return aliases
+
+    try:
+        genre_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_GENRES})", limit=0
+            )
+        }
+        # guard against (test) databases with stand-in tables
+        if not {"genre_aliases", "translation_key", "content_type"} <= genre_columns:
+            return
+        has_mapping_table = bool(
+            await database.get_rows_from_query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+                {"table_name": DB_TABLE_GENRE_MEDIA_ITEM_MAPPING},
+                limit=1,
+            )
+        )
+        for row in await database.get_rows_from_query(
+            f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES} "
+            "WHERE translation_key = 'classical' AND content_type IS NULL",
+            limit=0,
+        ):
+            aliases = _load_aliases(row)
+            removed = [
+                x for x in aliases or [] if create_safe_string(x, True, True) in removed_norms
+            ]
+            if aliases and removed:
+                await database.update(
+                    DB_TABLE_GENRES,
+                    {"item_id": row["item_id"]},
+                    {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
+                )
+                logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
+            # mappings are cleaned up even when the alias list was already clean, as an
+            # earlier alias edit can have left them behind
+            if has_mapping_table:
+                # mappings store the raw tag of the item, which the scanner matched to the
+                # alias in normalized form; manual mappings were picked by the user, so they stay
+                for mapping_row in await database.get_rows_from_query(
+                    f"SELECT DISTINCT alias FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                    "WHERE genre_id = :genre_id AND is_manual = 0 AND alias IS NOT NULL",
+                    {"genre_id": row["item_id"]},
+                    limit=0,
+                ):
+                    mapping_alias = mapping_row["alias"]
+                    if (
+                        not isinstance(mapping_alias, str)
+                        or create_safe_string(mapping_alias, True, True) not in removed_norms
+                    ):
+                        continue
+                    await database.execute(
+                        f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                        "WHERE genre_id = :genre_id AND is_manual = 0 AND alias = :alias",
+                        {"genre_id": row["item_id"], "alias": mapping_alias},
+                    )
+
+        for translation_key, new_aliases in moved_aliases.items():
+            for row in await database.get_rows_from_query(
+                f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES} "
+                "WHERE translation_key = :translation_key AND content_type IS NULL",
+                {"translation_key": translation_key},
+                limit=0,
+            ):
+                if (aliases := _load_aliases(row)) is None:
+                    continue
+                existing_norms = {create_safe_string(x, True, True) for x in aliases}
+                missing = [
+                    x
+                    for x in new_aliases
+                    if create_safe_string(x, True, True) not in existing_norms
+                ]
+                if not missing:
+                    continue
+                await database.update(
+                    DB_TABLE_GENRES,
+                    {"item_id": row["item_id"]},
+                    {"genre_aliases": serialize_to_json([*aliases, *missing])},
+                )
+    except sqlite3.Error as err:
+        # a misplaced alias is not worth discarding the whole library over
+        logger.warning("Could not move the misplaced classical genre aliases: %s", err)
 
 
 async def _move_audio_analysis_out(

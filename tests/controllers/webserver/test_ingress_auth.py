@@ -13,7 +13,12 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 
-from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import (
+    CONF_AUTH_ALLOW_SELF_REGISTRATION,
+    HASSIO_SUPERVISOR_IP,
+    HOMEASSISTANT_SYSTEM_USER,
+    INGRESS_SERVER_PORT,
+)
 from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
@@ -33,6 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant.mass import MusicAssistant
+
+INGRESS_IP = "172.30.32.1"
 
 
 @pytest.fixture
@@ -104,10 +111,29 @@ def _ingress_request(
     request = make_mocked_request("GET", "/", headers=headers, app=app)
     with (
         patch.object(auth_middleware, "is_request_from_ingress", return_value=from_ingress),
+        patch.object(auth_middleware, "is_request_from_ingress_proxy", return_value=from_ingress),
         patch.object(websocket_client, "is_request_from_ingress", return_value=from_ingress),
+        patch.object(websocket_client, "is_request_from_ingress_proxy", return_value=from_ingress),
         patch.object(mass, "get_provider", return_value=hass_provider),
     ):
         yield request
+
+
+def _socket_request(mass: MusicAssistant, headers: dict[str, str], peer_ip: str) -> web.Request:
+    """
+    Build a request received on the ingress site from the given peer address.
+
+    :param mass: The minimal server serving the request.
+    :param headers: The request headers, such as the ingress user headers.
+    :param peer_ip: The address of the peer that opened the connection.
+    """
+    app = web.Application()
+    app["mass"] = mass
+    app["ingress_site"] = (INGRESS_IP, INGRESS_SERVER_PORT)
+    extra_info = {"sockname": (INGRESS_IP, INGRESS_SERVER_PORT), "peername": (peer_ip, 54321)}
+    transport = MagicMock()
+    transport.get_extra_info.side_effect = extra_info.get
+    return make_mocked_request("GET", "/", headers=headers, app=app, transport=transport)
 
 
 async def _create_user(
@@ -205,7 +231,9 @@ async def test_a_new_ingress_user_gets_the_role_of_its_home_assistant_account(
     :param expected_role: The role the created user is expected to hold.
     """
     mass = auth_manager.mass
-    hass_provider = _ready_hass_provider(mass, "ha_alice", admin=admin)
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=admin, details=("alice", None, None)
+    )
     headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "Alice"}
 
     with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
@@ -274,7 +302,7 @@ async def test_ingress_links_a_username_match_keeping_its_role(
     )
     existing = await auth_manager.create_user(username="bob", role=role)
     # the Home Assistant account is an admin, yet a username match must not re-derive the role
-    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=True)
+    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=True, details=("bob", None, None))
     headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "bob"}
 
     with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
@@ -363,7 +391,7 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
     """An unlinked HA user whose username matches a disabled user is refused, and not linked."""
     mass = auth_manager.mass
     await _create_user(auth_manager, "bob", disabled=True)
-    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=False)
+    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=False, details=("bob", None, None))
     headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "Bob"}
 
     with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
@@ -371,6 +399,95 @@ async def test_ingress_refuses_a_username_match_with_a_disabled_user(
 
     assert user is None
     assert await _get_ha_link(auth_manager, "ha_bob") is None
+
+
+async def test_system_user_token_is_accepted_on_the_ingress_site_from_the_host(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """The HA integration connects from the host with the system user token, not headers."""
+    token = await auth_manager.get_homeassistant_system_user_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    user = await get_authenticated_user(_socket_request(auth_manager.mass, headers, "172.30.32.1"))
+
+    assert user is not None
+    assert user.username == HOMEASSISTANT_SYSTEM_USER
+
+
+async def test_ingress_site_request_from_the_supervisor_authenticates_the_linked_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A request on the ingress site opened by the Supervisor signs in the linked HA user."""
+    created = await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+    # the linked user needs no HA lookup; mark the provider ready so none is awaited
+    auth_manager.mass.get_provider_ready_event("hass").set()
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    user = await get_authenticated_user(
+        _socket_request(auth_manager.mass, headers, HASSIO_SUPERVISOR_IP)
+    )
+
+    assert user is not None
+    assert user.user_id == created.user_id
+
+
+@pytest.mark.parametrize("peer_ip", ["127.0.0.1", "172.30.32.1"])
+async def test_ingress_site_request_from_another_peer_authenticates_no_user(
+    auth_manager: AuthenticationManager, peer_ip: str
+) -> None:
+    """
+    A request on the ingress site from a peer other than the Supervisor ignores the HA headers.
+
+    :param peer_ip: The address of the peer that opened the connection.
+    """
+    await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    user = await get_authenticated_user(_socket_request(auth_manager.mass, headers, peer_ip))
+
+    assert user is None
+
+
+async def test_ingress_does_not_link_a_username_match_unconfirmed_by_home_assistant(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An HA user id Home Assistant can not confirm neither signs in, links nor creates a user."""
+    mass = auth_manager.mass
+    await auth_manager.create_user(username="bob", role=UserRole.ADMIN)
+    user_count = len(await auth_manager.list_users())
+    hass_provider = _ready_hass_provider(mass, "ha_unknown", admin=True)
+    mass.get_provider_ready_event("hass").set()
+    headers = {"X-Remote-User-ID": "ha_unknown", "X-Remote-User-Name": "bob"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is None
+    assert await _get_ha_link(auth_manager, "ha_unknown") is None
+    assert len(await auth_manager.list_users()) == user_count
+
+
+async def test_ingress_links_the_username_home_assistant_confirms(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An unlinked user is matched by the username Home Assistant returns, not the header one."""
+    mass = auth_manager.mass
+    existing = await auth_manager.create_user(username="bob")
+    await auth_manager.create_user(username="mallory")
+    hass_provider = _ready_hass_provider(
+        mass, "ha_bob", admin=False, details=("bob", "Bob from HA", None)
+    )
+    headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "mallory"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is not None
+    assert user.user_id == existing.user_id
+    assert user.display_name == "Bob from HA"
+    link = await _get_ha_link(auth_manager, "ha_bob")
+    assert link is not None
+    assert link["user_id"] == existing.user_id
 
 
 @pytest.mark.parametrize("disabled", [False, True], ids=["enabled", "disabled"])
@@ -427,8 +544,10 @@ async def test_ingress_websocket_is_closed_when_the_sign_in_fails(
 ) -> None:
     """An Ingress websocket connection whose sign-in raises is closed and cleaned up."""
     mass = auth_manager.mass
-    # Home Assistant does not know this new user, so looking up its role fails
-    hass_provider = _ready_hass_provider(mass, "ha_someone_else", admin=False)
+    # Home Assistant confirms the username, but the role lookup does not know the id and raises
+    hass_provider = _ready_hass_provider(
+        mass, "ha_someone_else", admin=False, details=("alice", None, None)
+    )
     headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
 
     with (

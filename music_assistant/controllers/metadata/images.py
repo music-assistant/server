@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -403,6 +408,9 @@ class ImageProxyMixin:
             # broadly catch all exceptions here to ensure we dont crash the request handler
             if isinstance(err, (MediaNotFoundError, FileNotFoundError)):
                 self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            elif isinstance(err, (RetriesExhausted, ResourceTemporarilyUnavailable)):
+                # an upstream outage is expected now and then, a trace would only add noise
+                self.logger.warning("Error while fetching image %s: %s", path, str(err))
             else:
                 self.logger.warning(
                     "Error while fetching image %s: %s",

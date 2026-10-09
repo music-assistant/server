@@ -380,6 +380,114 @@ async def test_priority_task_runs_before_normal(tasks_controller: TasksControlle
     assert execution_order[0] == "priority"
 
 
+async def test_run_task_now_runs_before_other_pending_tasks(
+    tasks_controller: TasksController,
+) -> None:
+    """Manually running a scheduled task should queue it ahead of pending tasks."""
+    execution_order: list[str] = []
+    blocker = asyncio.Event()
+
+    async def blocking_handler() -> None:
+        await blocker.wait()
+
+    def make_handler(label: str) -> Callable[[], Awaitable[None]]:
+        async def handler() -> None:
+            execution_order.append(label)
+
+        return handler
+
+    tasks_controller._max_concurrent_tasks = 1
+    tasks_controller.run_background_task(name="blocker", handler=blocking_handler)
+    tasks_controller.run_background_task(name="normal", handler=make_handler("normal"))
+    tasks_controller.register_scheduled_task(
+        task_id="scheduled",
+        name="Scheduled",
+        handler=make_handler("scheduled"),
+        schedule=TaskSchedule.hourly(every=12),
+    )
+
+    tasks_controller.run_task("scheduled")
+    blocker.set()
+    await _wait_for_task_status(tasks_controller, "scheduled", TaskStatus.SUCCESS)
+    await asyncio.sleep(0.05)
+
+    assert execution_order == ["scheduled", "normal"]
+
+
+async def test_run_task_now_moves_already_pending_task_to_front(
+    tasks_controller: TasksController,
+) -> None:
+    """Running a task that is already pending should move it to the front of the queue."""
+    execution_order: list[str] = []
+    blocker = asyncio.Event()
+
+    async def blocking_handler() -> None:
+        await blocker.wait()
+
+    def make_handler(label: str) -> Callable[[], Awaitable[None]]:
+        async def handler() -> None:
+            execution_order.append(label)
+
+        return handler
+
+    tasks_controller._max_concurrent_tasks = 1
+    tasks_controller.run_background_task(name="blocker", handler=blocking_handler)
+    tasks_controller.register_scheduled_task(
+        task_id="scheduled",
+        name="Scheduled",
+        handler=make_handler("scheduled"),
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    tasks_controller.run_background_task(name="normal", handler=make_handler("normal"))
+    # simulate the schedule timer firing while the queue is busy
+    tasks_controller._queue_task(tasks_controller._tasks["scheduled"], reset_logs=True)
+    assert tasks_controller.get_task("scheduled").status == TaskStatus.PENDING
+
+    tasks_controller.run_task("scheduled")
+    blocker.set()
+    await _wait_for_task_status(tasks_controller, "scheduled", TaskStatus.SUCCESS)
+    await asyncio.sleep(0.05)
+
+    assert execution_order == ["scheduled", "normal"]
+
+
+async def test_retry_task_runs_before_other_pending_tasks(
+    tasks_controller: TasksController,
+) -> None:
+    """Retrying a failed task should queue it ahead of pending tasks."""
+    execution_order: list[str] = []
+    blocker = asyncio.Event()
+    attempt = 0
+
+    async def blocking_handler() -> None:
+        await blocker.wait()
+
+    async def failing_once_handler() -> None:
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            raise RuntimeError("First attempt failed")
+        execution_order.append("retry")
+
+    async def normal_handler() -> None:
+        execution_order.append("normal")
+
+    tasks_controller._max_concurrent_tasks = 1
+    task = tasks_controller.run_background_task(
+        name="Retry", handler=failing_once_handler, allow_retry=True
+    )
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.FAILED)
+
+    tasks_controller.run_background_task(name="blocker", handler=blocking_handler)
+    tasks_controller.run_background_task(name="normal", handler=normal_handler)
+    tasks_controller.retry_task(task.id)
+    blocker.set()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+    await asyncio.sleep(0.05)
+
+    assert execution_order == ["retry", "normal"]
+
+
 async def test_task_runs_without_the_user_context_of_its_caller(
     tasks_controller: TasksController,
 ) -> None:
