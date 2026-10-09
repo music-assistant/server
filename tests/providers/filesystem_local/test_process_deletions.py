@@ -310,3 +310,24 @@ async def test_get_album_without_a_folder_skips_the_folder_check(
         album = await provider.get_album(f"{OLD}/Swan Lake")
 
     assert album.name == "Swan Lake"
+
+
+async def test_artist_ids_cover_every_album_of_the_track(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """The artists of every album a track is on are candidates for orphan cleanup."""
+    provider = _disk_provider(mass, tmp_path, [])
+    single = _fs_track("Single", NEW, 1)
+    assert isinstance(single.album, Album)
+    single.album.mbid = "5f4e0a1c-0000-4000-8000-0000000000b2"
+    single.album.artists = UniqueList([_fs_artist("Ballet Orchestra")])
+    (track_id, _) = [
+        (await mass.music.tracks.add_item_to_library(track)).item_id
+        for track in (_fs_track(OLD, OLD, 1), single)
+    ]
+    assert len(await mass.music.tracks.get_library_track_albums(track_id)) == 2
+
+    artist_ids = await provider._library_track_artist_ids(track_id)
+
+    rows = await mass.music.database.get_rows_from_query("SELECT item_id FROM artists")
+    assert artist_ids == {str(row["item_id"]) for row in rows}

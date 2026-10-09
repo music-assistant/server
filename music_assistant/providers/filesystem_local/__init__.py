@@ -2456,17 +2456,14 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
 
     async def _library_track_artist_ids(self, track_id: str) -> set[str]:
-        """Return the ids of a library track's artists and its album's artists, if it exists."""
+        """Return the ids of a library track's artists and its albums' artists, if it exists."""
         try:
             track = await self.mass.music.tracks.get_library_item(track_id)
         except MediaNotFoundError:
             return set()
         artist_ids = {artist.item_id for artist in track.artists}
-        if track.album:
-            # need to fetch the library album to resolve the itemmapping
-            with contextlib.suppress(MediaNotFoundError):
-                db_album = await self.mass.music.albums.get_library_item(track.album.item_id)
-                artist_ids.update(artist.item_id for artist in db_album.artists)
+        for album in await self.mass.music.tracks.get_library_track_albums(track_id):
+            artist_ids.update(artist.item_id for artist in album.artists)
         return artist_ids
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
