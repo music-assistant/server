@@ -96,7 +96,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.security import is_safe_path
-from music_assistant.helpers.util import get_folder_size, get_ip_from_host
+from music_assistant.helpers.util import get_folder_size, get_ip_from_host, join_task
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -139,6 +139,7 @@ class StorageController(CoreController):
         self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
         self._dir_sizes_requested: float | None = None
+        self._dir_sizes_task: asyncio.Task[None] | None = None
         # the mount backends this server can use, in the order of priority
         self._mounters: dict[MountBackend, ShareMounter] = {}
         # why a mount backend can not be used
@@ -168,7 +169,7 @@ class StorageController(CoreController):
         await self._resolve_server_folders()
         # the mount table only: a location is probed once a caller needs its state
         await self._periodic_refresh()
-        self._request_dir_sizes()
+        # the directories are measured once the Storage page asks, as they still fill up at start
         self.mass.create_task(self._setup_network_shares(), task_id=SHARES_SETUP_TASK_ID)
 
     async def close(self) -> None:
@@ -202,6 +203,9 @@ class StorageController(CoreController):
         # only a caller that can add a share makes the server look for a mount backend again
         mounter = await self._get_mounter() if manages_all_sources else self._find_mounter()
         share_versions = mounter.supported_versions if mounter is not None else {}
+        if manages_all_sources and not self._dir_sizes and self._dir_sizes_task is not None:
+            # the Storage page asks once, so its first answer waits for the first measurement
+            await join_task(self._dir_sizes_task)
         locations = self.get_locations(manages_all_sources)
         if not manages_all_sources:
             # a folder picker needs no connection details, nor the sources that use a location
@@ -953,7 +957,9 @@ class StorageController(CoreController):
         ):
             return
         self._dir_sizes_requested = now
-        self.mass.create_task(self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID)
+        self._dir_sizes_task = self.mass.create_task(
+            self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID
+        )
 
     async def _update_dir_sizes(self) -> None:
         """Measure the data and cache directories and show the result on their rows."""
