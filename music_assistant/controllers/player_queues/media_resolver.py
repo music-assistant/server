@@ -120,7 +120,10 @@ class MediaResolver:
 
         :param artist: The artist to play.
         """
-        if await self._resolve_library_artist(artist) is None:
+library_artist = await self._resolve_library_artist(artist)
+        if library_artist is None or not any(
+            mapping.in_library for mapping in library_artist.provider_mappings
+        ):
             artist_items_conf = "all_tracks"
         else:
             artist_items_conf = self.mass.config.get_raw_core_config_value(
