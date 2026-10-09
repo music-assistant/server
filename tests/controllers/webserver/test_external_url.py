@@ -31,6 +31,7 @@ from music_assistant.controllers.webserver.controller import (
         ("ftp://ma.example.com", False),
         ("https://", False),
         ("https://[::1", False),
+        ("https://ma.example.com:notaport", False),
         (8095, False),
         # links are built by appending to the URL
         ("https://ma.example.com/#/home", False),
@@ -39,6 +40,8 @@ from music_assistant.controllers.webserver.controller import (
         ("http://localhost:8095", False),
         ("http://musicassistant:8095", False),
         ("http://musicassistant.local:8095", False),
+        ("http://musicassistant.local.:8095", False),
+        ("http://127.0.0.1.", False),
         ("http://192.168.1.5:8095", False),
         ("http://10.0.0.5", False),
         ("http://127.0.0.1:8095", False),

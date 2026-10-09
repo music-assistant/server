@@ -1452,7 +1452,9 @@ def _is_valid_external_url(value: ConfigValueType) -> bool:
         return False
     try:
         parts = urlsplit(value)
-        host = parts.hostname
+        # reading the port raises on a malformed one (e.g. :notaport)
+        _ = parts.port
+        host = (parts.hostname or "").rstrip(".")
     except ValueError:
         return False
     # query or fragment (e.g. a copied frontend route like /#/home) breaks appended links
