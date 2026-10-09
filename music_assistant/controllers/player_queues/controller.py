@@ -769,7 +769,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.signal_update(queue_id)
 
-    @api_command("player_queues/save_as_playlist", required_scope=Scope.LIBRARY_WRITE)
+    @api_command(
+        "player_queues/save_as_playlist",
+        required_scope=Scope.LIBRARY_WRITE,
+        allow_impersonation=True,
+    )
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
         """
         Save the current queue items as a new playlist.
@@ -777,6 +781,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []

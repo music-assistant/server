@@ -118,6 +118,9 @@ def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
         pytest.param(lambda queues: queues.clear(OTHER_PLAYER), id="clear"),
         pytest.param(lambda queues: queues.skip(OTHER_PLAYER), id="skip"),
         pytest.param(lambda queues: queues.seek(OTHER_PLAYER, 5), id="seek"),
+        pytest.param(
+            lambda queues: queues.save_as_playlist(OTHER_PLAYER, "Saved"), id="save_as_playlist"
+        ),
     ],
 )
 async def test_reading_and_changing_a_queue_needs_access_to_its_player(
