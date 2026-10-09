@@ -433,3 +433,32 @@ async def test_get_tracks_rejected_request_raises(client: KionMusicClient) -> No
         await client.get_tracks(["101", "102"])
     assert isinstance(caught.value.__cause__, BadRequestError)
     reconnect.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["get_liked_albums", "get_liked_artists", "get_user_playlists", "get_liked_playlists"],
+)
+async def test_empty_library_lists_through_real_client(
+    client: KionMusicClient, method: str
+) -> None:
+    """Empty service lists remain empty after real library deserialization."""
+    real_client = ClientAsync(base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "get", return_value=[]) as request_get:
+        assert await getattr(client, method)() == []
+
+    request_get.assert_awaited_once()
+
+
+@pytest.mark.parametrize("response", [None, [], "invalid", 42])
+async def test_landing_invalid_response_returns_none(
+    client: KionMusicClient, response: object
+) -> None:
+    """Invalid landing JSON has the public error result, not empty categories."""
+    real_client = ClientAsync(base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "get", return_value=response) as request_get:
+        assert await client._get_landing_waves("waves") is None
+
+    request_get.assert_awaited_once_with(f"{DEFAULT_BASE_URL}/landing-blocks/waves")
