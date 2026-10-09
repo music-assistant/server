@@ -9,6 +9,7 @@ from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from ytmusicapi import LikeStatus
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
@@ -154,6 +155,21 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
 
 
+async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> None:
+    """A search must not use the account, so MA lookups stay out of its search history."""
+    provider._headers = {"cookie": "abc"}
+    provider._yt_user = "123"
+    mock_ytm = MagicMock()
+    mock_ytm.search.return_value = []
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await search(provider, "test", [MediaType.TRACK])
+
+    assert not mock_ytmusic.call_args.args
+    assert "auth" not in mock_ytmusic.call_args.kwargs
+    assert "user" not in mock_ytmusic.call_args.kwargs
+
+
 async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
     """get_album_versions method of the YTM provider should return other album versions if any exist."""
     album_with_versions = {
@@ -247,3 +263,427 @@ def test_parse_thumbnails_skips_zero_height(provider: YoutubeMusicProvider) -> N
     ]
     images = provider._parse_thumbnails(thumbnails)
     assert [img.path for img in images] == ["https://lh3.googleusercontent.com/good=w600-h600-p"]
+
+
+async def test_get_artist_albums_includes_albums_and_singles(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums should return both albums and singles/EPs for an artist."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Test Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_album_1",
+                    "title": "Full Album",
+                    "year": "2023",
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_1",
+                    "title": "Hit Single",
+                    "type": "Single",
+                    "year": "2024",
+                },
+                {
+                    "browseId": "MPREb_ep_1",
+                    "title": "Summer EP",
+                    "type": "EP",
+                    "year": "2024",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 3
+    assert albums[0].item_id == "MPREb_album_1"
+    assert albums[0].name == "Full Album"
+    # ytmusicapi doesn't return a type for items in the artist albums section.
+    assert albums[0].album_type == AlbumType.UNKNOWN
+
+    assert albums[1].item_id == "MPREb_single_1"
+    assert albums[1].name == "Hit Single"
+    assert albums[1].album_type == AlbumType.SINGLE
+
+    assert albums[2].item_id == "MPREb_ep_1"
+    assert albums[2].name == "Summer EP"
+    assert albums[2].album_type == AlbumType.EP
+
+
+async def test_get_artist_albums_handles_missing_and_empty_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums falls back to the artist details when artists is missing or empty."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Fallback Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_empty_artists",
+                    "title": "Album with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_no_artists_key",
+                    "title": "Album with No Artists Key",
+                },
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_empty_artists",
+                    "title": "Single with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_single_no_artists_key",
+                    "title": "Single with No Artists Key",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 4
+    for album in albums:
+        assert len(album.artists) == 1
+        assert album.artists[0].item_id == "UC_artist_123"
+        assert album.artists[0].name == "Fallback Artist"
+
+
+async def test_get_artist_albums_preserves_existing_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums preserves existing artists when present in album or single."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Primary Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_album",
+                    "title": "Collaborative Album",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_single",
+                    "title": "Collaborative Single",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 2
+    assert albums[0].artists[0].item_id == "UC_collab_456"
+    assert albums[0].artists[0].name == "Collaborator"
+    assert albums[1].artists[0].item_id == "UC_collab_456"
+    assert albums[1].artists[0].name == "Collaborator"
+
+
+@pytest.mark.parametrize(
+    "artist_data",
+    [
+        # Only albums, no singles section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Albums Artist",
+            "albums": {"results": [{"browseId": "MPREb_only_album", "title": "Only Album"}]},
+        },
+        # Only singles, no albums section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Singles Artist",
+            "singles": {"results": [{"browseId": "MPREb_only_single", "title": "Only Single"}]},
+        },
+        # Empty sections
+        {
+            "channelId": "UC_artist_123",
+            "name": "Empty Artist",
+            "albums": {"results": []},
+            "singles": {"results": []},
+        },
+        # Missing both keys completely
+        {
+            "channelId": "UC_artist_123",
+            "name": "No Keys Artist",
+        },
+    ],
+)
+async def test_get_artist_albums_handles_missing_or_empty_sections(
+    provider: YoutubeMusicProvider, artist_data: dict[str, Any]
+) -> None:
+    """get_artist_albums safely handles responses with missing or empty albums/singles sections."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    expected_count = len(artist_data.get("albums", {}).get("results", [])) + len(
+        artist_data.get("singles", {}).get("results", [])
+    )
+    assert len(albums) == expected_count
+
+
+def _get_artist_albums_unwrapped() -> Any:
+    """Return get_artist_albums with its @use_cache decorator stripped."""
+    return cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+
+
+async def test_get_artist_albums_gets_full_section_when_browse_pair_present(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A release section with browseId+params is fetched via the full call."""
+    provider._headers = {}
+    provider._yt_user = "test-brand-user"
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "shows": {
+            "results": [{"browseId": "MPREb_inline1", "title": "Inline Only Show"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.return_value = [
+        {"browseId": "MPREb_hydrated1", "title": "hydrated Show 1"},
+        {"browseId": "MPREb_hydrated2", "title": "hydrated Show 2"},
+    ]
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_hydrated1", "MPREb_hydrated2"]
+    mock_ytm.get_artist_albums.assert_called_once_with(
+        channelId="MPADUCtest", params="params-token", limit=None
+    )
+    assert mock_ytmusic.call_args.kwargs["user"] == "test-brand-user"
+
+
+async def test_get_artist_albums_skips_hydration_without_browse_pair(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A section missing browseId or params is not hydrated - only its preview is used."""
+    provider._headers = {}
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "singles": {"results": [{"browseId": "MPREb_single1", "title": "A Single"}]},
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_single1"]
+    mock_ytm.get_artist_albums.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        KeyError(
+            "Unable to find 'musicCarouselShelfRenderer' using path "
+            "['musicCarouselShelfRenderer', 'contents'] on {'gridRenderer': {}}"
+        ),
+        IndexError("list index out of range"),
+        TypeError("'NoneType' object is not subscriptable"),
+    ],
+    ids=["key_error", "index_error", "type_error"],
+)
+async def test_get_artist_albums_falls_back_to_preview_on_parse_failure(
+    provider: YoutubeMusicProvider, error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A section whose hydration fails to parse degrades to its inline preview and is logged."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "shows": {
+            "results": [
+                {
+                    "browseId": "MPREb_show1",
+                    "title": "Folge 1",
+                    "artists": [{"id": "UCtest", "name": "Test Artist"}],
+                }
+            ],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = error
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_show1"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "shows" in caplog.records[0].message
+    exc_info = caplog.records[0].exc_info
+    assert exc_info is not None
+    assert exc_info[1] is error
+
+
+async def test_get_artist_albums_propagates_server_error_instead_of_caching_truncated(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A genuine ytmusicapi server error should propagate, not degrade to the preview."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_1", "title": "A"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = YTMusicServerError("backend returned 500")
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(YTMusicServerError),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_signed_out_still_raises(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A signed-out session should still surface as LoginFailed, not be swallowed."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_1", "title": "A"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = KeyError(
+        "Unable to find 'twoColumnBrowseResultsRenderer' using path [] on "
+        "{'singleColumnBrowseResultsRenderer': {'signInEndpoint': {'hack': True}}}"
+    )
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(LoginFailed),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_signed_out_raises_even_if_another_section_succeeds(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """LoginFailed from one section should still propagate when sections are gathered concurrently."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_ok", "title": "Fine"}],
+            "browseId": "MPADUCtest-albums",
+            "params": "params-albums",
+        },
+        "singles": {
+            "results": [{"browseId": "MPREb_single", "title": "A Single"}],
+            "browseId": "MPADUCtest-singles",
+            "params": "params-singles",
+        },
+    }
+
+    def _get_artist_albums_side_effect(**kwargs: str) -> list[dict[str, Any]]:
+        if kwargs["channelId"] == "MPADUCtest-albums":
+            return [{"browseId": "MPREb_hydrated_ok", "title": "Fine, hydrated"}]
+        raise KeyError(
+            "Unable to find 'twoColumnBrowseResultsRenderer' using path [] on "
+            "{'singleColumnBrowseResultsRenderer': {'signInEndpoint': {'hack': True}}}"
+        )
+
+    mock_ytm.get_artist_albums.side_effect = _get_artist_albums_side_effect
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(LoginFailed),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_dedupes_across_sections(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Duplicates across albums/singles/shows are removed."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [],
+            "browseId": "MPADUCtest-albums",
+            "params": "params-albums",
+        },
+        "singles": {
+            "results": [],
+            "browseId": "MPADUCtest-singles",
+            "params": "params-singles",
+        },
+    }
+
+    def _get_artist_albums_side_effect(**kwargs: str) -> list[dict[str, Any]]:
+        if kwargs["channelId"] == "MPADUCtest-albums":
+            return [
+                {"browseId": "MPREb_a2", "title": "Album 2"},
+                {"browseId": "MPREb_a1", "title": "Album 1"},
+            ]
+        return [
+            {"browseId": "MPREb_a2", "title": "Duplicate of Album 2"},  # cross-section dupe
+            {"browseId": "MPREb_s1", "title": "Single 1"},
+        ]
+
+    mock_ytm.get_artist_albums.side_effect = _get_artist_albums_side_effect
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_a2", "MPREb_a1", "MPREb_s1"]

@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 84
+API_SCHEMA_VERSION: Final[int] = 85
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -65,6 +65,8 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 # Port used by the internal ingress webserver for the HA integration
 INGRESS_SERVER_PORT: Final[int] = 8094
+# Fixed address of the HA Supervisor on the hassio network, the only legitimate ingress peer
+HASSIO_SUPERVISOR_IP: Final[str] = "172.30.32.2"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"

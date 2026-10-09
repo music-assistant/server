@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -52,6 +52,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     PRUNE_THRESHOLD,
+    AuthResult,
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
@@ -247,6 +248,103 @@ async def test_authenticate_with_password(auth_manager: AuthenticationManager) -
     assert result.success is False
     assert result.user is None
     assert result.error is not None
+
+
+async def test_authenticate_with_unknown_username_still_hashes_the_password(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that a login with an unknown username costs a password hash like a known one.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    hash_password = AsyncMock(wraps=builtin_provider._hash_password)
+    monkeypatch.setattr(builtin_provider, "_hash_password", hash_password)
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "nosuchuser", "password": "some_password"}
+    )
+
+    assert result == AuthResult(success=False, error="Invalid username or password")
+    hash_password.assert_awaited_once()
+
+
+async def test_password_hashing_runs_at_most_two_at_a_time(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that a third password hash waits until one of two running hashes is done.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def blocking_hash(*_args: Any) -> bytes:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        started.release()
+        release.wait(5)
+        with lock:
+            running -= 1
+        return b"hash"
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", blocking_hash)
+    tasks = [
+        asyncio.create_task(builtin_provider._hash_password("password", f"user{idx}"))
+        for idx in range(3)
+    ]
+    for _ in range(2):
+        assert await asyncio.to_thread(started.acquire, True, 5)
+    # the third hash must not start while the first two still run, also when the caller of
+    # a running hash is cancelled
+    assert not await asyncio.to_thread(started.acquire, True, 0.2)
+    tasks[0].cancel()
+    assert not await asyncio.to_thread(started.acquire, True, 0.2)
+    assert peak == 2
+
+    release.set()
+    await asyncio.gather(*tasks[1:])
+    assert peak == 2
+
+
+async def test_authenticate_with_password_refuses_a_disabled_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a disabled user is told so only after giving the right password.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    admin = await auth_manager.create_user(username="disabledloginadmin", role=UserRole.ADMIN)
+    user = await builtin_provider.create_user_with_password(
+        username="disabledlogin", password="secure_password_123"
+    )
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "secure_password_123"}
+    )
+    assert result == AuthResult(success=False, error="User account is disabled")
+
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "disabledlogin", "password": "wrong_password"}
+    )
+    assert result == AuthResult(success=False, error="Invalid username or password")
 
 
 async def test_create_token(auth_manager: AuthenticationManager) -> None:
@@ -504,6 +602,38 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     assert enabled_user is not None
 
 
+async def test_user_lookups_include_a_disabled_user_only_on_request(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the user lookups only return a disabled user when asked to include it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="lookupadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="lookupuser", role=UserRole.USER)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+
+    assert await auth_manager.get_user(user.user_id) is None
+    assert await auth_manager.get_user_by_username("lookupuser") is None
+    assert (
+        await auth_manager.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_lookup")
+        is None
+    )
+    for found in (
+        await auth_manager.get_user(user.user_id, include_disabled=True),
+        await auth_manager.get_user_by_username("LookupUser", include_disabled=True),
+        await auth_manager.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, "ha_lookup", include_disabled=True
+        ),
+    ):
+        assert found is not None
+        assert found.user_id == user.user_id
+        assert not found.enabled
+
+
 async def test_cannot_disable_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot disable their own account.
@@ -562,6 +692,33 @@ async def test_link_user_to_provider(auth_manager: AuthenticationManager) -> Non
 
     assert retrieved_user is not None
     assert retrieved_user.user_id == user.user_id
+
+
+async def test_get_my_providers_hides_the_builtin_password_hash(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the provider links listing leaves out the builtin password hash.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    builtin_provider = auth_manager.login_providers.get("builtin")
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    user = await builtin_provider.create_user_with_password(
+        username="providersuser", password="testpassword123", role=UserRole.USER
+    )
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_user_456")
+    set_current_user(user)
+
+    providers = {p["provider_type"]: p for p in await auth_manager.get_my_providers()}
+
+    assert providers[AuthProviderType.BUILTIN]["provider_user_id"] == ""
+    assert providers[AuthProviderType.HOME_ASSISTANT]["provider_user_id"] == "ha_user_456"
+    # the stored link keeps the hash, so the password still works
+    result = await auth_manager.authenticate_with_credentials(
+        "builtin", {"username": "providersuser", "password": "testpassword123"}
+    )
+    assert result.success is True
 
 
 async def test_homeassistant_system_user(auth_manager: AuthenticationManager) -> None:
@@ -1026,6 +1183,76 @@ async def test_the_system_user_keeps_its_username_role_and_password(
     )
 
 
+async def test_update_user_profile_refuses_a_too_short_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that a too short username is refused without applying the rest of the update."""
+    admin = await auth_manager.create_user(username="shortadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="shortuser", display_name="Short User")
+    set_current_user(admin)
+
+    for username in ("", "   ", "a"):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.update_user_profile(
+                user_id=user.user_id, username=username, display_name="Renamed", role="admin"
+            )
+        assert excinfo.value.translation_key == "username_too_short"
+
+    unchanged_user = await auth_manager.get_user(user.user_id)
+    assert unchanged_user is not None
+    assert unchanged_user.username == "shortuser"
+    assert unchanged_user.display_name == "Short User"
+    assert unchanged_user.role == UserRole.USER
+
+
+async def test_the_system_username_is_reserved(auth_manager: AuthenticationManager) -> None:
+    """Test that no user can take the system username, also before that account exists."""
+    admin = await auth_manager.create_user(username="reservedadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="renamer")
+    assert await auth_manager.get_user_by_username(HOMEASSISTANT_SYSTEM_USER) is None
+
+    set_current_user(admin)
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.create_user_with_api(
+            username=HOMEASSISTANT_SYSTEM_USER, password="password123"
+        )
+    assert excinfo.value.translation_key == "username_taken"
+
+    set_current_user(user)
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(username=HOMEASSISTANT_SYSTEM_USER)
+    assert excinfo.value.translation_key == "username_taken"
+    unchanged_user = await auth_manager.get_user(user.user_id)
+    assert unchanged_user is not None
+    assert unchanged_user.username == "renamer"
+
+
+async def test_update_user_profile_keeps_an_existing_short_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that an account with a too short username can still save its profile."""
+    user = await auth_manager.create_user(username="x")
+    set_current_user(user)
+
+    for username, display_name in (("x", "Ex"), ("X", "Ex Again")):
+        updated_user = await auth_manager.update_user_profile(
+            username=username, display_name=display_name
+        )
+        assert updated_user.username == "x"
+        assert updated_user.display_name == display_name
+
+
+async def test_update_user_profile_renames_a_user(auth_manager: AuthenticationManager) -> None:
+    """Test that a user can take a free username, which is stored normalized."""
+    user = await auth_manager.create_user(username="oldname")
+    set_current_user(user)
+
+    updated_user = await auth_manager.update_user_profile(username=" NewName ")
+
+    assert updated_user.username == "newname"
+    assert await auth_manager.get_user_by_username("oldname") is None
+
+
 async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     """
     Test getting user's tokens.
@@ -1080,6 +1307,25 @@ async def test_get_user_tokens_returns_newest_first(auth_manager: Authentication
     assert tokens[0].name == "Newest Device"
     # the oldest row is the one that fell off the page, not the newest
     assert f"Old Device {TOKEN_LIST_LIMIT - 1}" not in [token.name for token in tokens]
+
+
+async def test_get_user_tokens_hides_the_token_hash(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the token listing leaves out the token hash.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="tokenhashuser", role=UserRole.USER)
+    set_current_user(user)
+    token = await auth_manager.create_token(user, "Device", is_long_lived=True)
+
+    tokens = await auth_manager.get_user_tokens()
+
+    assert len(tokens) == 1
+    assert tokens[0].token_hash == ""
+    row = await auth_manager.database.get_row("auth_tokens", {"token_id": tokens[0].token_id})
+    assert row is not None
+    assert row["token_hash"] == hashlib.sha256(token.encode()).hexdigest()
 
 
 async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
@@ -1219,6 +1465,43 @@ async def test_get_login_providers_ha_provider_without_url(
     assert not any(p["provider_id"] == "homeassistant" for p in providers)
 
 
+@pytest.fixture
+def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
+    """
+    Register a stub OAuth login provider as "oauth" on the auth manager.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    provider = MagicMock(requires_redirect=True)
+    provider.get_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
+    auth_manager.login_providers["oauth"] = provider
+    return provider
+
+
+@pytest.mark.parametrize("return_url", ["javascript:alert(1)", "https:///no-host"])
+async def test_get_auth_url_rejects_invalid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that an invalid return_url is rejected without asking the provider."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": None, "error": "Invalid return_url"}
+    oauth_provider.get_authorization_url.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "return_url", ["https://music.example.com/#/home", "musicassistant://auth/callback"]
+)
+async def test_get_auth_url_passes_valid_return_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+) -> None:
+    """Test that a valid return_url is passed to the provider and its URL is returned."""
+    result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert result == {"authorization_url": "https://idp.example.com/authorize"}
+    oauth_provider.get_authorization_url.assert_awaited_once_with(ANY, return_url)
+
+
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:
     """
     Test creating user via API command.
@@ -1253,11 +1536,12 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
     set_current_user(admin)
 
     # Test username too short
-    with pytest.raises(InvalidDataError, match="Username must be at least 2 characters"):
+    with pytest.raises(InvalidDataError, match="Username must be at least 2 characters") as excinfo:
         await auth_manager.create_user_with_api(
             username="a",
             password="password123",
         )
+    assert excinfo.value.translation_key == "username_too_short"
 
     # Test 2-character username is accepted (minimum allowed)
     user_2char = await auth_manager.create_user_with_api(
@@ -1272,6 +1556,46 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
             username="validuser",
             password="short",
         )
+
+
+async def test_create_user_api_refuses_taken_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that creating a user refuses a username another account has, also a disabled one."""
+    admin = await auth_manager.create_user(username="takenadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    disabled = await auth_manager.create_user_with_api(username="gone", password="password123")
+    await auth_manager.disable_user(disabled.user_id)
+
+    for username in (" Taken ", "gone"):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await auth_manager.create_user_with_api(username=username, password="password123")
+        assert excinfo.value.translation_key == "username_taken"
+
+
+async def test_update_user_profile_refuses_taken_username(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that renaming a user refuses a username another account has."""
+    admin = await auth_manager.create_user(username="renameadmin", role=UserRole.ADMIN)
+    set_current_user(admin)
+    await auth_manager.create_user_with_api(username="taken", password="password123")
+    user = await auth_manager.create_user_with_api(username="renamer", password="password123")
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(
+            user_id=user.user_id, username="Taken", role=UserRole.ADMIN
+        )
+    assert excinfo.value.translation_key == "username_taken"
+    # the refused update leaves the other fields untouched
+    unchanged = await auth_manager.get_user(user.user_id)
+    assert unchanged is not None
+    assert unchanged.role == UserRole.USER
+
+    # the user's own name in another case is not taken
+    renamed = await auth_manager.update_user_profile(user_id=user.user_id, username="Renamer")
+    assert renamed.username == "renamer"
 
 
 async def test_logout(auth_manager: AuthenticationManager) -> None:

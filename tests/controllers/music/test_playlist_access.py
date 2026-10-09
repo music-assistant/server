@@ -59,6 +59,9 @@ async def playlists(
     )
     # the database-only server runs no cache database
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    music_mass_module.streams = MagicMock()
+    music_mass_module.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     return music_mass_module.music.playlists
 
 

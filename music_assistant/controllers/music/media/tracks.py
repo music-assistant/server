@@ -75,9 +75,10 @@ from .base import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from music_assistant_models.media_items import MediaItemMetadata
+
     from music_assistant import MusicAssistant
-    from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +552,7 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
-            cross_prov = cast("MetadataProvider | PluginProvider", prov)
+            cross_prov = cast("MusicDiscoveryMixin", prov)
             result, error = await self._get_similar_tracks_from_provider(
                 cross_prov, ref_item, limit
             )
@@ -591,12 +592,12 @@ class TracksController(MediaControllerBase[Track]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(db_id)
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
         # delete entry(s) from trackartists table
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
-        # delete the track itself from db
-        await super().remove_item_from_library(db_id)
 
     async def set_identifiers(
         self,
@@ -1552,7 +1553,9 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        stored_metadata = await self._get_stored_metadata(db_id)
+        update_metadata = await self._metadata_without_album_thumbs(update)
+        metadata = update_metadata if overwrite else stored_metadata.update(update_metadata)
         metadata.lrc_lyrics = normalize_lrc_lyrics(
             metadata.lrc_lyrics or extract_lrc_lyrics(metadata.lyrics)
         )
@@ -1601,6 +1604,43 @@ class TracksController(MediaControllerBase[Track]):
     async def _update_library_item_for_merge(self, item_id: int, update: Track) -> None:
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
+
+    async def _metadata_without_album_thumbs(self, update: Track) -> MediaItemMetadata:
+        """
+        Return the metadata of a track update without the album thumbs of a library read.
+
+        A track read from the library carries its album thumb among its images, which
+        does not belong in the track's own stored images. An album thumb the track
+        stores as its own artwork is kept.
+
+        :param update: The track to store.
+        """
+        if update.provider != "library" or not update.metadata.images:
+            return update.metadata
+        source_id = int(update.item_id)
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.images') AS images "
+            f"FROM {DB_TABLE_ALBUM_TRACKS} JOIN {DB_TABLE_ALBUMS} "
+            f"ON {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = :track_id",
+            {"track_id": source_id},
+        )
+        album_thumbs = {
+            MediaItemImage.from_dict(image)
+            for row in rows
+            if row["images"]
+            for image in json_loads(row["images"])
+            if image["type"] == ImageType.THUMB.value
+        }
+        if not album_thumbs:
+            return update.metadata
+        own_images = (await self._get_stored_metadata(source_id)).images or ()
+        images = UniqueList(
+            image
+            for image in update.metadata.images
+            if image not in album_thumbs or image in own_images
+        )
+        return replace(update.metadata, images=images or None)
 
     async def _set_track_album(
         self,
@@ -1737,9 +1777,11 @@ class TracksController(MediaControllerBase[Track]):
             has_artists=bool(db_row["has_artists"]),
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> TrackSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> TrackSummary:
         """Parse a raw summary db row into a TrackSummary object."""
-        item = cast("TrackSummary", super()._parse_summary_row(db_row))
+        item = cast("TrackSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.duration = db_row["duration"] or 0
         item.metadata.explicit = None if db_row["explicit"] is None else bool(db_row["explicit"])
@@ -1748,18 +1790,7 @@ class TracksController(MediaControllerBase[Track]):
         item.artists = self._parse_summary_artist_mappings(db_row)
         if raw_album := db_row["track_album"]:
             album: dict[str, Any] = json_loads(raw_album)
-            album_thumb: MediaItemImage | None = None
-            if album_images := album.get("images"):
-                for image in album_images:
-                    if image["type"] != ImageType.THUMB.value:
-                        continue
-                    album_thumb = MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image["path"],
-                        provider=image["provider"],
-                        remotely_accessible=image.get("remotely_accessible", False),
-                    )
-                    break
+            album_thumb = self._summary_thumb(album.get("images"), hidden_sources)
             item.album = ItemMappingSummary(
                 media_type=MediaType.ALBUM,
                 item_id=str(album["item_id"]),
@@ -1778,7 +1809,7 @@ class TracksController(MediaControllerBase[Track]):
 
     async def _get_similar_tracks_from_provider(
         self,
-        provider: MusicProvider | MetadataProvider | PluginProvider,
+        provider: MusicProvider | MusicDiscoveryMixin,
         ref_item: Track,
         limit: int,
         provider_track_id: str | None = None,

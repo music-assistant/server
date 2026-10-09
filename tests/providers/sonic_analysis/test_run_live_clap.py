@@ -57,7 +57,7 @@ async def test_no_targets_short_circuits_silently() -> None:
     assert analysis.instrumentalness is None
     assert analysis.acousticness is None
     assert analysis.speechiness is None
-    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
+    assert analysis.clap_embedding is None
     fake_logger.warning.assert_not_called()
 
 
@@ -82,7 +82,7 @@ async def test_no_completions_raises_retryable() -> None:
     assert analysis.instrumentalness is None
     assert analysis.acousticness is None
     assert analysis.speechiness is None
-    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
+    assert analysis.clap_embedding is None
     fake_logger.warning.assert_called_once()
 
 
@@ -103,7 +103,7 @@ async def test_partial_completions_raises_retryable() -> None:
         await p._run_live_clap_if_eligible(session, analysis)
 
     assert analysis.danceability is None
-    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
+    assert analysis.clap_embedding is None
     fake_logger.warning.assert_called_once()
 
 
@@ -127,8 +127,8 @@ async def test_mean_pools_and_calibrates_scalars() -> None:
     await p._run_live_clap_if_eligible(session, analysis)
 
     # Embedding: pre-norm = 0.5 across 1024 dims; ||v|| = sqrt(1024 * 0.25) = 16.0; normalized = 1/32
-    assert analysis.extra_data is not None
-    emb = np.asarray(analysis.extra_data["clap_embedding"], dtype=np.float32)
+    assert analysis.clap_embedding is not None
+    emb = np.asarray(analysis.clap_embedding, dtype=np.float32)
     expected_norm = math.sqrt(1024 * 0.25)
     expected_value = 0.5 / expected_norm
     np.testing.assert_array_almost_equal(emb, np.full(1024, expected_value), decimal=5)

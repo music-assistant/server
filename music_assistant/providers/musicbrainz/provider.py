@@ -23,7 +23,6 @@ from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata,
 from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_album_name, compare_strings
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
@@ -41,6 +40,7 @@ from .constants import (
     DISCOGRAPHY_PRIMARY_TYPES,
     LUCENE_SPECIAL,
     MAX_BARCODE_DETAIL_FETCHES,
+    MAX_NAME_SEARCH_DETAIL_FETCHES,
     MAX_REF_ITEMS,
     MAX_REVERSE_URL_LOOKUPS,
     MIN_FIRST_RELEASE_CORRECTION_YEARS,
@@ -175,11 +175,14 @@ class MusicbrainzProvider(MetadataProvider):
         The album's MusicBrainz release id wins outright. Otherwise its streaming service
         links, its barcodes and finally its release group are tried, in that order; a
         release group only identifies the album when it holds a single official digital
-        edition (of the given track count).
+        edition (of the given track count). An album without a release group that none of
+        these identify is searched by title and primary artist, and only taken when its
+        track count matches too.
 
         :param album: The album to identify.
         :param library_track_count: Number of tracks the album has in the library, to tell
-            the editions of a release group apart.
+            the editions of a release group apart. Without it an album is never searched
+            by name.
         :return: The release with tracklist, labels and URL relations, or None if no single
             release could be identified.
         """
@@ -195,6 +198,8 @@ class MusicbrainzProvider(MetadataProvider):
                 return release
         if release_group_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
             return await self._release_by_release_group(release_group_id, library_track_count)
+        if library_track_count:
+            return await self._release_by_name(album, library_track_count)
         return None
 
     async def resolve_recording(self, track: Track) -> MusicBrainzRecording | None:
@@ -420,35 +425,9 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
-    @use_cache(86400 * 30)
-    async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
-        """
-        Get ISRCs for a MusicBrainz Recording ID.
-
-        :param recording_id: MusicBrainz recording ID, or a track ID as
-            handed out by e.g. Last.fm.
-        :return: List of ISRCs, or empty list if not found.
-        """
-        # the search response includes the ISRCs, so either ID kind costs one call
-        safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
-        query = f"rid:{safe_id} OR tid:{safe_id}"
-        if (result := await self._api_client.get_data("recording", query=query)) and (
-            recordings := result.get("recordings")
-        ):
-            return recordings[0].get("isrcs") or []
-        # merged (redirected) recording MBIDs are absent from the search
-        # index but still resolve via direct lookup
-        with suppress(InvalidDataError):
-            recording = await self.get_recording_details(recording_id)
-            return recording.isrcs or []
-        return []
-
     async def get_recordings_by_isrc(self, isrc: str) -> list[MusicBrainzRecording]:
         """
         Get the recordings MusicBrainz has on file for an ISRC.
-
-        Inverse of :meth:`get_isrcs_for_recording`: that one goes from a
-        recording to its ISRCs, this one goes from an ISRC back to recordings.
 
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
@@ -1033,6 +1012,50 @@ class MusicbrainzProvider(MetadataProvider):
             return await self.get_release_details(editions[0].id)
         return None
 
+    async def _release_by_name(self, album: Album, track_count: int) -> MusicBrainzRelease | None:
+        """Return the release a name search finds as the given album, if it is unambiguous."""
+        if not album.artists:
+            return None
+        artist_name = album.artists[0].name
+        search_album = re.sub(LUCENE_SPECIAL, r"\\\1", album.name)
+        search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
+        result = await self._api_client.get_data(
+            "release",
+            query=f'release:"{search_album}" AND artist:"{search_artist}"',
+            limit="100",
+        )
+        releases = (result or {}).get("releases") or []
+        # the hits are only known to be unambiguous when every one of them is seen
+        if result and result.get("count", len(releases)) > len(releases):
+            return None
+        candidates: list[MusicBrainzBarcodeRelease] = []
+        for raw_release in releases:
+            try:
+                candidate = MusicBrainzBarcodeRelease.from_raw(raw_release)
+            except MissingField, InvalidFieldValue:
+                return None
+            if (
+                compare_album_name(candidate.title or "", album.name)
+                and _track_count(candidate) == track_count
+                and _credits_primary_artist(candidate.artist_credit, artist_name)
+            ):
+                candidates.append(candidate)
+        # editions of one album share its release group; hits in several groups are
+        # different albums by the same name, which a name alone cannot tell apart
+        if len({candidate.release_group.id for candidate in candidates}) != 1:
+            return None
+        candidates.sort(key=_edition_rank)
+        for candidate in candidates[:MAX_NAME_SEARCH_DETAIL_FETCHES]:
+            with suppress(InvalidDataError):
+                release = await self.get_release_details(candidate.id)
+                if (
+                    compare_album_name(release.title, album.name)
+                    and _credits_primary_artist(release.artist_credit, artist_name)
+                    and sum(medium.track_count for medium in release.media) == track_count
+                ):
+                    return release
+        return None
+
     async def _recording_by_isrc(self, isrc: str, track: Track) -> MusicBrainzRecording | None:
         """Return the recording carrying an ISRC that is the given track, if any."""
         # an ISRC is occasionally reused, so the recording must also match the track's
@@ -1163,6 +1186,15 @@ def _matching_artist_credit(
                 if compare_strings(alias.name, artist_name, strict):
                     return artist_credit.artist
     return None
+
+
+def _credits_primary_artist(
+    artist_credits: Sequence[MusicBrainzArtistCredit] | None, artist_name: str
+) -> bool:
+    """Return whether the first artist credit of a release is the given artist."""
+    if not artist_credits:
+        return False
+    return bool(_matching_artist_credit(artist_credits[:1], artist_name))
 
 
 def _edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool, str]:

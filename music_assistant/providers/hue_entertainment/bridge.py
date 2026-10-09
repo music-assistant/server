@@ -21,6 +21,7 @@ from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
+    VisualizerStatePayload,
 )
 from hue_entertainment import EntertainmentSession
 from music_assistant_models.enums import PlayerType
@@ -124,11 +125,11 @@ class HueEntertainmentBridge:
         if sendspin_prov:
             sendspin_prov.register_bridge_player_type(client_id, PlayerType.LIGHT)
 
-        support = ClientHelloVisualizerSupport(
-            # Beat + small bundle of periodic features. Each periodic frame
-            # is ~20-30 bytes; one second's worth fits comfortably under
-            # the buffer cap below.
-            buffer_capacity=2048,
+        # Beat + small bundle of periodic features. Each periodic frame
+        # is ~20-30 bytes; one second's worth fits comfortably under
+        # the buffer cap below.
+        support = ClientHelloVisualizerSupport(buffer_capacity=2048)
+        request = VisualizerStatePayload(
             rate_max=_VISUALIZER_RATE_HZ,
             # Peaks requested as a fallback for when beats aren't computed yet.
             types=["beat", "peak", "spectrum"],
@@ -164,7 +165,7 @@ class HueEntertainmentBridge:
                 on_stream_clear=self._on_stream_clear,
                 on_stream_end=self._on_stream_end,
             )
-            viz_role.setup_visualizer(support)
+            viz_role.setup_visualizer(request)
         if color_roles := self._sendspin_client.roles_by_family("color"):
             color_role = cast("BridgeColorRole", color_roles[0])
             color_role.set_callbacks(on_color=self._on_color)

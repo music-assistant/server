@@ -34,6 +34,8 @@ from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.controllers.storage.conftest import FakeProbes, MountTable, mount_line, store_source
 
+pytestmark = pytest.mark.usefixtures("discoverable_tmp_path")
+
 MEMBER = User(user_id="member", username="member", role=UserRole.USER)
 # the root filesystem: a Linux mount table is never empty
 ROOT_MOUNT = mount_line("/", "ext4")
@@ -44,17 +46,6 @@ def empty_mount_table() -> Iterator[None]:
     """Keep the mount table of the machine running the tests out of the locations."""
     with patch.object(controller_module, "read_mountinfo", return_value=""):
         yield
-
-
-@pytest.fixture(autouse=True)
-def discoverable_tmp_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Let discovery find a mount in the temporary folder of a test.
-
-    :param monkeypatch: Pytest monkeypatch fixture.
-    """
-    # the temporary folder of the tests may lie below a system path, which discovery leaves out
-    monkeypatch.setattr(mountinfo, "SYSTEM_PATHS", ())
 
 
 def _location(locations: list[StorageLocation], path: Path) -> StorageLocation:

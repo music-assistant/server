@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -125,9 +125,7 @@ class RadioController(MediaControllerBase[Radio]):
         )
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
-            item_id
-        )
+        return await cast("MediaCatalogMixin", provider).get_dynamic_radio_tracks(item_id)
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -334,9 +332,11 @@ class RadioController(MediaControllerBase[Radio]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
-        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item = cast("RadioSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.is_dynamic = bool(db_row["is_dynamic"])
         item.metadata.description = db_row["description"]
         return item

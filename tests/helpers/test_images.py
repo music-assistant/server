@@ -11,7 +11,7 @@ from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientSession, web
@@ -299,6 +299,59 @@ async def test_player_provider_can_resolve_image_bytes(
 
     assert data == b"player-image-bytes"
     fake_provider.resolve_image.assert_awaited_once_with("player/artwork")
+
+
+async def test_provider_resolved_ffmpeg_locator_never_reaches_ffmpeg(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ffmpeg protocol locator reported as artwork is refused without spawning ffmpeg."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="concat:/etc/passwd|/etc/hosts")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    with (
+        patch("music_assistant.helpers.tags.AsyncProcess") as mock_process,
+        pytest.raises(FileNotFoundError),
+    ):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
+    mock_process.assert_not_called()
+
+
+async def test_own_imageproxy_url_with_control_chars_is_refused_before_resolving(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An own image-proxy URL carrying CR/LF is refused before its id is resolved."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    resolve_id = AsyncMock(return_value=("builtin", "logo.png"))
+    monkeypatch.setattr(
+        mass_minimal, "metadata", MagicMock(resolve_image_id=resolve_id), raising=False
+    )
+    image_id = "a" * 64
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(
+            mass_minimal, f"http://127.0.0.1:8095/imageproxy/{image_id}?size=0\r\nX: 1", "builtin"
+        )
+    resolve_id.assert_not_awaited()
+
+
+async def test_provider_resolved_url_with_control_chars_is_not_fetched(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider resolving a clean path to a URL with CR/LF does not trigger a fetch."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="http://host/a.jpg\r\nX-Injected: 1")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    fetch_remote = AsyncMock(return_value=b"never")
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
+
+    with pytest.raises(FileNotFoundError, match="Invalid image reference"):
+        await get_image_data(mass_minimal, "player/artwork", "player--1")
+    fetch_remote.assert_not_called()
 
 
 async def test_local_file_read_cached_on_disk(

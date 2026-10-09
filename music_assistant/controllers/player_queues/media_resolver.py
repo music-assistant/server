@@ -46,7 +46,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -239,7 +239,12 @@ class MediaResolver:
             except PROVIDER_FETCH_ERRORS as err:
                 # the genre is sampled best-effort: one failing album must not abort it
                 provider_error = err
-                self.logger.warning("Unable to fetch tracks for album %s: %s", album.name, err)
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for album %s: %s",
+                    album.name,
+                    err,
+                )
                 continue
             result.extend(album_tracks[:5])
 
@@ -259,7 +264,12 @@ class MediaResolver:
                     artist_tracks = [track for track in all_tracks if track.available]
             except PROVIDER_FETCH_ERRORS as err:
                 provider_error = err
-                self.logger.warning("Unable to fetch tracks for artist %s: %s", artist.name, err)
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for artist %s: %s",
+                    artist.name,
+                    err,
+                )
                 continue
             random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
@@ -691,7 +701,8 @@ class MediaResolver:
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing provider must not drop the tracks of the artist's other providers
-                self.logger.warning(
+                self.logger.log(
+                    provider_fetch_log_level(err),
                     "Unable to fetch tracks for artist %s from provider %s: %s",
                     artist.name,
                     mapping.provider_instance,
