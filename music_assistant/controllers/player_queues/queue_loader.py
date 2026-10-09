@@ -912,8 +912,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # an artist's tracks don't depend on the shuffle state, so the artist is
                     # resolved first: it plays in order when it plays its albums. A lookup that
                     # fails leaves the decision unsettled, like any item that can't be fetched.
+                    # An artist added to a dynamic queue is only kept as a source, so it isn't
+                    # resolved here.
                     if (
                         shuffle is None
+                        and not already_dynamic
                         and isinstance(media_item, Artist)
                         and media_item.artist_type not in (ArtistType.AUTHOR, ArtistType.NARRATOR)
                     ):

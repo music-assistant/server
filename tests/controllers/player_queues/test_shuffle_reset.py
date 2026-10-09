@@ -391,6 +391,20 @@ async def test_an_artist_that_fails_to_load_leaves_the_shuffle_unsettled() -> No
     assert _queue(ctrl).smart_shuffle_active is False
 
 
+async def test_an_artist_added_to_a_dynamic_queue_is_not_looked_up() -> None:
+    """An artist added to a dynamic queue only becomes a source, so its albums aren't loaded."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl._queue_data["q1"].source_items = [_dynamic_playlist()]
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+
+    await ctrl.play_media("q1", _artist(), QueueOption.ADD)
+
+    assert _queue(ctrl).is_dynamic is True
+
+    ctrl._media_resolver._artist_albums.assert_not_awaited()
+
+
 async def test_an_artist_without_albums_keeps_the_queue_shuffle() -> None:
     """An artist with no albums to play gets shuffled tracks, so the queue's shuffle stays on."""
     ctrl = _controller(shuffle_enabled=True)
