@@ -304,7 +304,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if "state" in changed_keys and queue.state == PlaybackState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
 
-        # refill the queue (dynamic mode or autoplay) when running low on tracks
+        # refill the queue (dynamic mode or autoplay) when running low on tracks, and keep the
+        # Smart Fades ordering ahead of playback
         if "current_item_id" in changed_keys:
             running_low = (
                 queue.current_index is not None and (queue.items - queue.current_index) < 5
@@ -318,6 +319,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # next podcast episode/audiobook, or nothing at all)
                 task_id = f"fill_autoplay_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+            if queue.shuffle_enabled:
+                self._smart_shuffle.schedule_next_batch(queue)
 
     def _get_output_player_ids(self, player: Player) -> set[str]:
         """Return destination player IDs represented in the processing chain."""

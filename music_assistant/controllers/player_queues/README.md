@@ -257,15 +257,18 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. Because the ordering reads every track's stored analysis,
-only the first `SMART_FADE_ORDERING_LIMIT` upcoming tracks of a shuffle get it; the tracks after
-them keep the regular Smart Shuffle spacing, and every later shuffle or shuffled add orders the
-first ones again. Within each recency tier, all of those first tracks can be considered when
-choosing the next track. The last fixed track is used as the starting point.
+part it already considers safe to move, one batch of `SMART_FADE_ORDERING_BATCH` tracks at a time
+(the size of a dynamic refill batch). A shuffle orders the first batch; when playback gets close to
+the last ordered track, the next batch is ordered in the background with fresh recency data, and
+written back only if the queue did not change meanwhile. Tracks only move inside their batch, so
+Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once favours tracks
+that already have analysis, which for streaming providers are the tracks played before. Within each
+recency tier of a batch, every track can be considered when choosing the next one. The last fixed
+track is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail. Both modes consider every remaining track in the run
-being ordered; Dynamic Mode simply orders one refill batch at a time.
+accepted batch from the existing queue tail. Both modes order one batch at a time and consider every
+track in it.
 
 No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
 key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing

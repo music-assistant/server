@@ -4,9 +4,9 @@ Smart Fades-aware ordering for Smart Shuffle.
 This only reorders tracks MA has already selected. It uses stored tempo, key and end-to-start
 energy; missing analysis stays neutral and nothing is analysed just to place a track in the queue.
 
-Both dynamic refills and fixed queues consider every remaining track in the run being ordered;
-a fixed queue only hands over its first upcoming tracks, dynamic mode one refill batch at a time
-from the queue tail. Close choices retain some randomness.
+Both modes order one batch of upcoming tracks at a time and consider every track in it: a fixed
+queue its next batch once playback gets close, dynamic mode each refill batch from the queue tail.
+Close choices retain some randomness.
 
 This does not call the full transition planner to rank candidates. Smart Fades still decides the
 actual transition.

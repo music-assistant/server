@@ -80,9 +80,10 @@ SMART_SHUFFLE_SONG_RECENCY_OPTIONS = (
 )
 SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS = (0, 300, 900, 1800, 3600, 7200)
 SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400)
-# Smart Fades ordering reads every item's stored analysis, which would make (re)shuffling a large
-# queue slow. Only this many upcoming items get it; the rest keeps the regular smart shuffle order.
-SMART_FADE_ORDERING_LIMIT = 100
+# Smart Fades ordering reads the stored analysis of every item it orders and only reorders inside a
+# batch of upcoming items, the size of a dynamic refill batch. A shuffle orders the first batch, and
+# playback orders the next one when it gets close, so smart shuffle still decides which tracks play.
+SMART_FADE_ORDERING_BATCH = 25
 
 # Managed-pool sizing: a queue with dynamic sources is kept as a small bounded pool, topped up
 # near the end instead of enqueuing thousands of tracks.

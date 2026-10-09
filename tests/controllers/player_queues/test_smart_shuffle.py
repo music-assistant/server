@@ -13,7 +13,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_VALUE_DISABLED, CONF_VALUE_ENABLED
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
-from music_assistant.controllers.player_queues.constants import SMART_FADE_ORDERING_LIMIT
+from music_assistant.controllers.player_queues.constants import SMART_FADE_ORDERING_BATCH
 from music_assistant.controllers.player_queues.smart_shuffle import (
     SmartShuffle,
     _arrange,
@@ -258,8 +258,8 @@ async def test_smart_fades_ordering_stays_inside_recency_tiers(
 
 
 @pytest.mark.asyncio
-async def test_smart_fades_ordering_reads_only_the_first_upcoming_items() -> None:
-    """A large queue only has the analysis of its first upcoming items read; nothing is dropped."""
+async def test_smart_fades_ordering_reads_only_the_first_batch() -> None:
+    """A large queue only has the analysis of its first batch read, and nothing is dropped."""
     items = [_item(f"s{i}", artist=f"A{i % 50}") for i in range(1000)]
     looked_up: set[str] = set()
 
@@ -273,15 +273,15 @@ async def test_smart_fades_ordering_reads_only_the_first_upcoming_items() -> Non
         mass, list(items), _snapshot(), RecencyWindows(), preceding_item=None
     )
 
-    assert len(looked_up) == SMART_FADE_ORDERING_LIMIT
+    assert len(looked_up) == SMART_FADE_ORDERING_BATCH
     assert sorted(_ids(result)) == sorted(_ids(items))
 
 
 @pytest.mark.asyncio
-async def test_smart_fades_ordering_limit_spans_the_recency_tiers(
+async def test_the_first_batch_spans_the_recency_tiers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The ordered first items fill up tier by tier, and the tiers keep their order."""
+    """The first batch fills up tier by tier, and the tiers keep their order."""
     fresh = [_item(f"f{i}", artist=f"F{i}") for i in range(3)]
     recent = [_item(f"r{i}", artist=f"R{i}") for i in range(3)]
     snapshot = _snapshot(song_recent=("r0", "r1", "r2"))
@@ -301,14 +301,14 @@ async def test_smart_fades_ordering_limit_spans_the_recency_tiers(
         record_run,
     )
     monkeypatch.setattr(
-        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_LIMIT", 4
+        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_BATCH", 4
     )
 
     result = await _arrange_for_smart_fades(
         MagicMock(), [*recent, *fresh], snapshot, windows, preceding_item=None
     )
 
-    # the three fresh items and one recent item use up the limit and lead the queue
+    # the three fresh items and one recent item make up the batch and lead the queue
     assert [len(run) for run in ordered_runs] == [3, 1]
     assert _ids(result)[:4] == [*ordered_runs[0], *ordered_runs[1]]
     index = {_song_id(item): position for position, item in enumerate(result)}
@@ -317,10 +317,10 @@ async def test_smart_fades_ordering_limit_spans_the_recency_tiers(
 
 
 @pytest.mark.asyncio
-async def test_items_past_the_limit_start_clear_of_the_last_ordered_artist(
+async def test_items_after_the_first_batch_start_clear_of_its_last_artist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The items past the limit keep the regular spacing, starting clear of the last ordered one."""
+    """The items after the first batch keep the regular spacing, clear of the last ordered one."""
     first = _item("a1", artist="A")
     same_artist = _item("a2", artist="A")
     other_artist = _item("b1", artist="B")
@@ -338,7 +338,7 @@ async def test_items_past_the_limit_start_clear_of_the_last_ordered_artist(
         keep_order,
     )
     monkeypatch.setattr(
-        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_LIMIT", 1
+        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_BATCH", 1
     )
 
     result = await _arrange_for_smart_fades(
