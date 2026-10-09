@@ -1399,11 +1399,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self,
         queue_id: str,
         current_item_id: str,
+        *,
+        allow_same_item: bool = True,
     ) -> QueueItem:
         """
         Call when a player wants the next queue item to play.
 
         Raises QueueEmpty if there are no more tracks left.
+
+        :param allow_same_item: Allow loading the current item again for repeat playback.
         """
         queue = self.get(queue_id)
         if not queue:
@@ -1425,6 +1429,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if idx >= 10:
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
+            if not allow_same_item and queue_item.queue_item_id == current_item_id:
+                raise QueueEmpty("Next item repeats the currently playing item.")
             try:
                 # a repeat plays the item over from the start, not from where it was left off
                 seek_position = (

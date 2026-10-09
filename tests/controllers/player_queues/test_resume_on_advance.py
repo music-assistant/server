@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Audiobook, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
@@ -224,11 +225,13 @@ async def test_non_flow_repeat_preloads_and_enqueues(repeat_mode: RepeatMode) ->
     controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, item)
 
 
-async def test_preload_next_audiobook_still_resumes_and_enqueues() -> None:
+@pytest.mark.parametrize("flow_mode", [False, True])
+async def test_preload_next_audiobook_still_resumes_and_enqueues(flow_mode: bool) -> None:
     """A distinct upcoming audiobook is still prepared at its bookmark and enqueued."""
     items = [_book("book-a"), _book("book-b", resume_position_ms=60000)]
     controller, get_stream_details = _controller(items)
     controller._queue_data[QUEUE_ID].queue.current_item = items[0]
+    controller._queue_data[QUEUE_ID].queue.flow_mode = flow_mode
     tasks: list[asyncio.Task[None]] = []
     cast("MagicMock", controller.mass).create_task.side_effect = lambda coro, **_kwargs: (
         tasks.append(asyncio.create_task(coro))
@@ -262,12 +265,8 @@ async def test_preload_reaches_item_beyond_next_item_scan(flow_mode: bool) -> No
     controller._preload_next_item(QUEUE_ID, items[0].queue_item_id)
     await asyncio.gather(*tasks)
 
-    if flow_mode:
-        get_stream_details.assert_not_awaited()
-        controller._enqueue_next_item.assert_not_called()
-    else:
-        assert get_stream_details.call_args.kwargs["queue_item"] is items[-1]
-        controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[-1])
+    assert get_stream_details.call_args.kwargs["queue_item"] is items[-1]
+    controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[-1])
 
 
 async def test_flow_preload_does_not_wrap_past_unavailable_items() -> None:
@@ -292,6 +291,42 @@ async def test_flow_preload_does_not_wrap_past_unavailable_items() -> None:
     await asyncio.gather(*tasks)
 
     get_stream_details.assert_not_awaited()
+    controller._enqueue_next_item.assert_not_called()
+    assert items[0].streamdetails is details
+    assert details.seek_position == 59
+
+
+@pytest.mark.parametrize("unavailable_count", [0, 5])
+async def test_flow_preload_failed_candidate_does_not_reload_playing_item(
+    unavailable_count: int,
+) -> None:
+    """A candidate failing to load must not let repeat all reset the playing item's offset."""
+    items = [
+        _book("playing"),
+        *[_book(f"unavailable-{idx}") for idx in range(unavailable_count)],
+        _book("next"),
+    ]
+    for item in items[1:-1]:
+        item.available = False
+    controller, get_stream_details = _controller(items, repeat_mode=RepeatMode.ALL)
+    queue = controller._queue_data[QUEUE_ID].queue
+    queue.current_item = items[0]
+    queue.flow_mode = True
+    details = MagicMock(seek_position=59)
+    items[0].streamdetails = details
+    get_stream_details.side_effect = MediaNotFoundError("Candidate cannot be loaded")
+    tasks: list[asyncio.Task[None]] = []
+    cast("MagicMock", controller.mass).create_task.side_effect = lambda coro, **_kwargs: (
+        tasks.append(asyncio.create_task(coro))
+    )
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+    controller._preload_next_item(QUEUE_ID, "playing")
+    await asyncio.gather(*tasks)
+
+    get_stream_details.assert_awaited_once()
+    assert get_stream_details.call_args.kwargs["queue_item"] is items[-1]
+    assert not items[-1].available
     controller._enqueue_next_item.assert_not_called()
     assert items[0].streamdetails is details
     assert details.seek_position == 59
