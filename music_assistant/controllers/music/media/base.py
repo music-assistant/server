@@ -151,6 +151,9 @@ EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     NotImplementedError,
     *PROVIDER_FETCH_ERRORS,
 )
+# expected failures of re-reading a library item from one of its providers. On top of the
+# fetch failures: a file that can not be read from a (network) share
+REFRESH_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (OSError, *PROVIDER_FETCH_ERRORS)
 
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
@@ -1511,6 +1514,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         images_changed = not any(
             x.provider_instance == provider_instance_id for x in remaining_mappings
         ) and await self._remove_provider_images(db_id, provider_instance_id)
+        # data merged in from the removed mapping (e.g. its artists) can only be told apart
+        # from the rest when a single source is left, so the item is rebuilt from that one
+        refreshed = len(remaining_mappings) == 1 and await self._refresh_from_provider_mapping(
+            db_id, next(iter(remaining_mappings))
+        )
+        await self._after_provider_mapping_removed(db_id, provider_instance_id)
         self.logger.debug(
             "removed provider_mapping %s/%s from item id %s",
             provider_instance_id,
@@ -1519,9 +1528,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         # the removed provider mapping is itself a change to the item, so always notify
         # (unless suppressed during a bulk cleanup); re-fetch first when images were
-        # stripped so the event payload stays accurate
+        # stripped or the item was rebuilt so the event payload stays accurate
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-            event_item = await self.get_library_item(db_id) if images_changed else library_item
+            event_item = (
+                await self.get_library_item(db_id) if images_changed or refreshed else library_item
+            )
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
 
     @final
@@ -1581,6 +1592,49 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
             event_item = await self.get_library_item(db_id) if images_changed else library_item
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
+
+    @final
+    async def remove_missing_provider_mappings(
+        self, item_id: str | int, provider_instance_id: str
+    ) -> None:
+        """
+        Remove the item's mappings to a provider instance that no longer has them.
+
+        A mapping is only removed when the provider reports it as not found, and never the
+        last mapping of the item. A provider that can not be reached leaves the mappings as is.
+
+        :param item_id: The library item id.
+        :param provider_instance_id: The provider instance whose mappings are checked.
+        """
+        db_id = int(item_id)  # ensure integer
+        try:
+            library_item = await self.get_library_item(db_id)
+        except MediaNotFoundError:
+            return
+        mapping_count = len(library_item.provider_mappings)
+        for mapping in library_item.provider_mappings:
+            if mapping_count == 1:
+                break
+            if mapping.provider_instance != provider_instance_id:
+                continue
+            try:
+                await self.get_provider_item(
+                    mapping.item_id,
+                    provider_instance_id,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except MediaNotFoundError:
+                await self.remove_provider_mapping(db_id, provider_instance_id, mapping.item_id)
+                mapping_count -= 1
+            except REFRESH_FETCH_ERRORS as err:
+                self.logger.debug(
+                    "Unable to check mapping %s/%s of item id %s: %s",
+                    provider_instance_id,
+                    mapping.item_id,
+                    db_id,
+                    err,
+                )
 
     @final
     async def set_provider_mappings(
@@ -3118,6 +3172,45 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def _update_library_item_for_merge(self, item_id: int, update: ItemCls) -> None:
         """Merge model state into an existing library item."""
         await self._update_library_item(item_id, update)
+
+    async def _update_library_item_from_provider(self, item_id: int, update: ItemCls) -> None:
+        """Replace the library item's data with the given provider item."""
+        await self._update_library_item(item_id, update, overwrite=True)
+
+    async def _after_provider_mapping_removed(  # noqa: B027
+        self, db_id: int, provider_instance_id: str
+    ) -> None:
+        """Handle a single provider mapping removed from a library item that is kept."""
+
+    async def _refresh_from_provider_mapping(self, db_id: int, mapping: ProviderMapping) -> bool:
+        """Rebuild a library item from one of its provider mappings, return True on success."""
+        try:
+            update = await self.get_provider_item(
+                mapping.item_id,
+                mapping.provider_instance,
+                allow_fallback=False,
+                strict_provider_instance=True,
+            )
+        except REFRESH_FETCH_ERRORS as err:
+            self.logger.debug(
+                "Unable to refresh item id %s from %s/%s: %s",
+                db_id,
+                mapping.provider_instance,
+                mapping.item_id,
+                err,
+            )
+            return False
+        # the overwrite re-inserts the mapping rows, so carry over the stored in_library state
+        for prov_mapping in update.provider_mappings:
+            if prov_mapping.in_library is None and (
+                prov_mapping.provider_instance,
+                prov_mapping.item_id,
+            ) == (mapping.provider_instance, mapping.item_id):
+                prov_mapping.in_library = mapping.in_library
+        self.mass.music.match_provider_instances(update)
+        async with self.mass.music.database.deferred_commit():
+            await self._update_library_item_from_provider(db_id, update)
+        return True
 
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""

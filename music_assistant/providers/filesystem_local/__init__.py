@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -813,7 +814,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        if not await self._album_folder_exists(prov_album_id):
+            msg = f"Album folder does not exist: {prov_album_id}"
+            raise MediaNotFoundError(msg)
         parsed_cue_paths: set[str] = set()
+        missing_file_error: FileNotFoundError | None = None
         # early returns below stop iterating this generator before it's exhausted; without an
         # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
         # reset) to whenever the event loop's async-generator finalizer happens to run, instead
@@ -838,11 +843,18 @@ class LocalFileSystemProvider(MusicProvider):
                             if isinstance(cue_track.album, Album):
                                 return cue_track.album
                         continue
-                    file_item = await self.resolve(prov_mapping.item_id)
+                    try:
+                        file_item = await self.resolve(prov_mapping.item_id)
+                    except FileNotFoundError as err:
+                        # a file moved away that the deletion pass has not unlinked yet
+                        missing_file_error = err
+                        continue
                     tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
+        if missing_file_error:
+            raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
@@ -1998,6 +2010,25 @@ class LocalFileSystemProvider(MusicProvider):
         # "Artist 1" vs "Artist 2"), only an (almost) exact one after normalization
         return bool(nfo_name) and compare_strings(str(nfo_name), name)
 
+    async def _album_folder_exists(self, prov_album_id: str) -> bool:
+        """Return False when a library album's own folder is gone, raise when it can't be told."""
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        # an album not in the library is looked up on disk anyway, and one built from tags
+        # alone has no folder of its own
+        if db_album is None or not any(
+            x.provider_instance == self.instance_id and x.item_id == prov_album_id and x.url
+            for x in db_album.provider_mappings
+        ):
+            return True
+        if await self.exists(prov_album_id):
+            return True
+        if not await self._is_reachable():
+            msg = f"Storage of {self.base_path} is not available"
+            raise ProviderUnavailableError(msg)
+        return False
+
     async def _iter_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track]:
         """
         Yield an album's tracks, lazily, so a caller needing only the first can stop early.
@@ -2395,24 +2426,24 @@ class LocalFileSystemProvider(MusicProvider):
                     x.provider_instance == self.instance_id and x.item_id == file_path
                     for x in library_item.provider_mappings
                 )
-                # a track that is kept via another provider still references its
-                # album and artists, so those need no orphan check
-                if is_track(library_item) and is_last_mapping:
-                    if library_item.album:
-                        album_ids.add(library_item.album.item_id)
-                        # need to fetch the library album to resolve the itemmapping
-                        db_album = await self.mass.music.albums.get_library_item(
-                            library_item.album.item_id
-                        )
-                        for artist in db_album.artists:
-                            artist_ids.add(artist.item_id)
-                    for artist in library_item.artists:
-                        artist_ids.add(artist.item_id)
+                prev_artist_ids = (
+                    await self._library_track_artist_ids(library_item.item_id)
+                    if is_track(library_item)
+                    else set()
+                )
                 # the library item may also be mapped to other providers,
                 # so only drop this file's mapping
                 await controller.remove_provider_mapping(
                     library_item.item_id, self.instance_id, file_path
                 )
+                if is_track(library_item):
+                    # the album is orphaned only with the track's last file, an artist whenever
+                    # the track or its (rebuilt) album no longer names it
+                    if is_last_mapping and library_item.album:
+                        album_ids.add(library_item.album.item_id)
+                    artist_ids |= prev_artist_ids - await self._library_track_artist_ids(
+                        library_item.item_id
+                    )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
@@ -2423,6 +2454,20 @@ class LocalFileSystemProvider(MusicProvider):
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
+
+    async def _library_track_artist_ids(self, track_id: str) -> set[str]:
+        """Return the ids of a library track's artists and its album's artists, if it exists."""
+        try:
+            track = await self.mass.music.tracks.get_library_item(track_id)
+        except MediaNotFoundError:
+            return set()
+        artist_ids = {artist.item_id for artist in track.artists}
+        if track.album:
+            # need to fetch the library album to resolve the itemmapping
+            with contextlib.suppress(MediaNotFoundError):
+                db_album = await self.mass.music.albums.get_library_item(track.album.item_id)
+                artist_ids.update(artist.item_id for artist in db_album.artists)
+        return artist_ids
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
