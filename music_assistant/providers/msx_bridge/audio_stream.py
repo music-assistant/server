@@ -69,7 +69,6 @@ class AudioPipeline:
     ) -> web.StreamResponse:
         """Serve this player's current media on this request."""
         player_id = player.player_id
-
         if not player.config.enabled:
             raise web.HTTPNotFound(text="Player not found")
 
@@ -354,9 +353,9 @@ async def _collect_prebuffer(
 
 def build_audio_params(
     output_format_str: str,
-    duration: int,
+    duration: int,  # noqa: ARG001 - retained public helper contract
     *,
-    include_content_length: bool = True,
+    include_content_length: bool = False,  # noqa: ARG001 - legacy config compatibility
 ) -> tuple[AudioFormat, AudioFormat, dict[str, str]]:
     """Build PCM input format, encoded output format, and HTTP headers."""
     pcm_format = AudioFormat(
@@ -377,16 +376,14 @@ def build_audio_params(
         bit_depth=16,
         channels=2,
     )
-    bitrate_map = {"mp3": 40_000, "aac": 32_000}
-    bytes_per_sec = bitrate_map.get(output_format_str, 0)
     headers: dict[str, str] = {
         "Content-Type": mime_type,
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "Accept-Ranges": "none",
     }
-    if include_content_length and duration and bytes_per_sec:
-        headers["Content-Length"] = str(duration * bytes_per_sec)
+    # Streaming encoders add headers/padding and AAC may use variable bitrate.
+    # Keep the legacy argument for config compatibility, never advertise an estimate.
     return pcm_format, out_format, headers
 
 

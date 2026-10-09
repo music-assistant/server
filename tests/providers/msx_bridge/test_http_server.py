@@ -2368,18 +2368,17 @@ async def test_msx_audio_arms_wait_before_enqueue(
 # --- Served audio length (Content-Length) ---
 
 
-@pytest.mark.parametrize(("codec", "expected"), [("mp3", "1872000000"), ("aac", "1497600000")])
-def test_long_audio_content_length_covers_the_full_item(codec: str, expected: str) -> None:
-    """A thirteen-hour item must not be truncated to twelve hours by its headers."""
+@pytest.mark.parametrize("codec", ["mp3", "aac", "flac"])
+def test_long_audio_never_advertises_an_estimated_length(codec: str) -> None:
+    """Unknown encoded size remains chunked even for thirteen-hour items."""
     _pcm, _out, headers = build_audio_params(codec, 46800)
-    assert headers["Content-Length"] == expected
+    assert "Content-Length" not in headers
 
 
-def test_audio_params_include_content_length_by_default() -> None:
-    """The compatibility header remains enabled by default."""
+def test_audio_params_omit_content_length_by_default() -> None:
+    """Native playback must receive the encoder's actual EOF."""
     _pcm, _out, headers = build_audio_params("mp3", 180)
-
-    assert headers["Content-Length"] == str(180 * 40_000)
+    assert "Content-Length" not in headers
 
 
 def test_audio_params_can_omit_content_length() -> None:

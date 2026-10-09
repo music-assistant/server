@@ -112,6 +112,7 @@ class MSXBridgeProvider(PlayerProvider):
             ConfigEntry(
                 key=CONF_INCLUDE_CONTENT_LENGTH,
                 type=ConfigEntryType.BOOLEAN,
+                hidden=True,
                 required=False,
                 default_value=DEFAULT_INCLUDE_CONTENT_LENGTH,
                 advanced=True,
