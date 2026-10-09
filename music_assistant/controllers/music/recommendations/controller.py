@@ -79,9 +79,14 @@ class RecommendationsController:
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
         # the rows listing leaves out the music sources the user may not see, and only lists
-        # providers declaring the feature; a row of any other provider does not exist
+        # providers declaring the feature; a row of any other provider does not exist, nor
+        # does another account of the same service stand in for its rows
         prov = self.mass.music.get_visible_provider(provider)
-        if prov is None or ProviderFeature.RECOMMENDATIONS not in prov.supported_features:
+        if (
+            prov is None
+            or prov.instance_id != provider
+            or ProviderFeature.RECOMMENDATIONS not in prov.supported_features
+        ):
             return UniqueList()
         try:
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
