@@ -1505,7 +1505,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
         """Handle UNGROUP command for all the given players."""
         for player_id in list(player_ids):
-            await self.cmd_ungroup(player_id)
+            with suppress(PlayerUnavailableError):
+                await self.cmd_ungroup(player_id)
 
     @api_command("players/create_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def create_group_player(

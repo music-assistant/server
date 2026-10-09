@@ -20,7 +20,11 @@ from music_assistant_models.enums import (
     PlayerType,
     QueueOption,
 )
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
@@ -1013,9 +1017,10 @@ class YandexStationPlayer(Player):
         if target_vol != self._last_mirrored_volume:
             try:
                 await self.mass.players.cmd_volume_set(target_id, target_vol)
-            except UnsupportedFeaturedException:
+            except UnsupportedFeaturedException, PlayerUnavailableError:
                 _LOGGER.debug(
-                    "[%s] target %s does not support volume_set — skipping mirror",
+                    "[%s] target %s does not support volume_set or is unavailable"
+                    " — skipping mirror",
                     self.player_id,
                     target_id,
                 )
@@ -1038,9 +1043,9 @@ class YandexStationPlayer(Player):
         if abs(progress - expected) > 2:
             try:
                 await self.mass.players.cmd_seek(target_id, progress)
-            except UnsupportedFeaturedException:
+            except UnsupportedFeaturedException, PlayerUnavailableError:
                 _LOGGER.debug(
-                    "[%s] target %s does not support seek — skipping mirror",
+                    "[%s] target %s does not support seek or is unavailable — skipping mirror",
                     self.player_id,
                     target_id,
                 )
