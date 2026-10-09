@@ -218,7 +218,7 @@ class KionMusicStreamingManager:
         )
 
     def _select_best_quality(
-        self, download_infos: list[Any], preferred_quality: str | None
+        self, download_infos: list[DownloadInfo], preferred_quality: str | None
     ) -> DownloadInfo | None:
         """
         Select the best quality download info based on user preference.
