@@ -25,6 +25,7 @@ from music_assistant.controllers.metadata.constants import (
 )
 from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMixin
 from music_assistant.controllers.music.helpers import fill_track_from_recording
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzRecording,
@@ -186,6 +187,34 @@ async def test_track_enrichment_survives_provider_error() -> None:
     _logger(enrichment).warning.assert_called_once()
     _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once()
     assert track.metadata.last_refresh == NOW
+
+
+@pytest.mark.asyncio
+async def test_track_enrichment_asks_only_the_sources_the_user_may_see() -> None:
+    """A mapping on a source hidden from the current user is left out of the enrichment."""
+    enrichment = _enrichment()
+    mine = MagicMock(spec=MusicProvider)
+    mine.instance_id, mine.domain, mine.is_streaming_provider = "spotify_mine", "spotify", False
+    _mass(enrichment).music.get_visible_provider = MagicMock(
+        side_effect={"spotify_mine": mine, "spotify_theirs": None}.get
+    )
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
+        return_value=Track(
+            item_id="t1", provider="spotify_mine", name="Test Track", provider_mappings=set()
+        )
+    )
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Test Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="spotify", provider_instance=instance)
+            for instance in ("spotify_theirs", "spotify_mine")
+        },
+    )
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
+    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with("t1", "spotify_mine")
 
 
 @pytest.mark.asyncio

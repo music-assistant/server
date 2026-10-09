@@ -352,10 +352,8 @@ class MetadataEnrichmentMixin:
         # prefer local providers over online providers
         unique_keys: set[str] = set()
         for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
-            prov = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if prov is None:
+            prov = self.mass.music.get_visible_provider(prov_mapping.provider_instance)
+            if not isinstance(prov, MusicProvider):
                 continue
             # prefer domain for streaming providers as the catalog is the same across instances
             prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
