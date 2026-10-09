@@ -60,7 +60,6 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, AudioFormat, Track
-from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
@@ -91,6 +90,7 @@ from music_assistant.constants import (
     STREAM_START_TIMEOUT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.player_queues.state import FlowPlayLogEntry
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_PROVIDER_PRIORITY,
 )
@@ -181,7 +181,7 @@ from music_assistant.models.music_provider import MusicProvider, ProviderStreamL
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType, ProviderMapping
-    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -2762,7 +2762,10 @@ class StreamsAudio:
                     overlay_enabled=overlay_active(queue),
                 )
                 # append to play log so the queue controller can work out which track is playing
-                play_log_entry = PlayLogEntry(queue_track.queue_item_id)
+                play_log_entry = FlowPlayLogEntry(
+                    queue_track.queue_item_id,
+                    seek_position=queue_track.streamdetails.seek_position,
+                )
                 flow_log.append(play_log_entry)
 
                 bytes_written = 0
@@ -2941,6 +2944,7 @@ class StreamsAudio:
                                 remaining_bytes = b""
                                 # mix failed — undo the eager seek_position
                                 queue_track.streamdetails.seek_position = raw_seek_position
+                                play_log_entry.seek_position = raw_seek_position
                                 # The mixer teardown cancels its feeder, which was
                                 # likely parked reading item_stream - that ends the
                                 # stream itself. Play the track from a fresh stream
@@ -2991,6 +2995,7 @@ class StreamsAudio:
                                 raw_seek_position
                                 + blended / pcm_sample_size * track_playback_speed,
                             )
+                            play_log_entry.seek_position = queue_track.streamdetails.seek_position
                             last_fadeout_part = b""
                             last_streamdetails = None
                             last_queue_track = None
@@ -3026,6 +3031,7 @@ class StreamsAudio:
                     if last_fadeout_part:
                         # crossfade into this item never happened — undo the eager seek_position
                         queue_track.streamdetails.seek_position = raw_seek_position
+                        play_log_entry.seek_position = raw_seek_position
                     continue
 
                 #### HANDLE END OF TRACK
@@ -3040,6 +3046,7 @@ class StreamsAudio:
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
                         queue_track.streamdetails.seek_position = raw_seek_position
+                        play_log_entry.seek_position = raw_seek_position
                     continue
                 if last_fadeout_part:
                     # edge case: we did not get enough data to make the crossfade
@@ -3049,6 +3056,7 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                     # no crossfade happened — undo the eager seek_position
                     queue_track.streamdetails.seek_position = raw_seek_position
+                    play_log_entry.seek_position = raw_seek_position
                     # full tail was pre-counted and is now yielded as-is
                     last_fadeout_part = b""
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
