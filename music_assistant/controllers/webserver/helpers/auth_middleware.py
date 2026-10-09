@@ -257,19 +257,22 @@ async def resolve_impersonated_user(
     provider_type: AuthProviderType,
     provider_user_id: str,
     required: bool = True,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
 ) -> User | None:
     """
     Resolve and validate the user to impersonate for the current call.
 
     A builtin user is looked up by user_id or username, users of other auth providers
     by their provider link. The authenticated caller may always impersonate itself,
-    impersonating another user requires the users.impersonate scope.
+    impersonating another user requires the users.impersonate scope. The target must hold
+    the command's required scope itself, so impersonation never grants more than its role.
 
     :param mass: The MusicAssistant instance.
     :param provider_type: The auth provider the user reference belongs to.
     :param provider_user_id: The user's id at that provider.
     :param required: Raise if the user cannot be found, instead of
         resolving to None (no impersonation).
+    :param required_scope: The scope(s) the command requires, None for no check.
     """
     authenticated_user = current_user.get()
     if authenticated_user is None:
@@ -302,6 +305,11 @@ async def resolve_impersonated_user(
         raise InsufficientPermissions(
             "The users.impersonate scope is required to impersonate another user."
         )
+    if required_scope and not has_scope(target_user, required_scope):
+        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
+        raise InsufficientPermissions(
+            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        )
     return target_user
 
 
@@ -333,15 +341,12 @@ async def resolve_command_impersonation(
     if not target:
         return None
     if isinstance(target, Mapping):
-        target_user = await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
-    else:
-        target_user = await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
-    if target_user and required_scope and not has_scope(target_user, required_scope):
-        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
-        raise InsufficientPermissions(
-            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        return await resolve_impersonated_user(
+            mass, *_parse_provider_user_arg(target), required_scope=required_scope
         )
-    return target_user
+    return await resolve_impersonated_user(
+        mass, AuthProviderType.BUILTIN, str(target), required_scope=required_scope
+    )
 
 
 def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:

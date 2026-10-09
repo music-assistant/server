@@ -18,7 +18,7 @@ import pytest
 from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
-from music_assistant_models.auth import AuthProviderType, Scope
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InsufficientPermissions, UserNotFoundError
@@ -724,10 +724,34 @@ async def test_impersonation_resolves_a_builtin_ma_user(
         resolve,
     )
 
-    result = await adapter._resolve_impersonated_user(None, "listener")
+    result = await adapter._resolve_impersonated_user(None, "listener", "library.read")
 
     assert result is expected_user
-    resolve.assert_awaited_once_with(adapter.mass, AuthProviderType.BUILTIN, "listener")
+    resolve.assert_awaited_once_with(
+        adapter.mass, AuthProviderType.BUILTIN, "listener", required_scope=Scope.LIBRARY_READ
+    )
+
+
+@pytest.mark.parametrize(
+    ("required_scope", "allowed"),
+    [("library.read", True), ("library.write", False)],
+    ids=["target_holds_the_scope", "target_lacks_the_scope"],
+)
+async def test_impersonation_needs_the_target_to_hold_the_commands_scope(
+    required_scope: str, allowed: bool
+) -> None:
+    """A SERVICE caller may act as a guest only for commands the guest may run itself."""
+    service = User(user_id="service", username="service", role=UserRole.SERVICE)
+    guest = User(user_id="guest", username="guest", role=UserRole.GUEST)
+    adapter = _real_adapter(_handler("music/search", lambda: None), user=service)
+    adapter.mass.webserver.auth.get_user = AsyncMock(return_value=guest)
+    auth = (AccessToken(token="secret", client_id="u1", scopes=[]), service)
+    if allowed:
+        target = await adapter._resolve_impersonated_user(auth, "guest", required_scope)
+        assert target.user_id == "guest"
+    else:
+        with pytest.raises(ToolError):
+            await adapter._resolve_impersonated_user(auth, "guest", required_scope)
 
 
 @pytest.mark.parametrize(
