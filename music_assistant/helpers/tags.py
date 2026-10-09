@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, get_subprocess_env
+from music_assistant.helpers.rating import percentage_to_rating, popm_to_rating
 from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
@@ -320,6 +321,27 @@ class AudioTags:
             if len(title_parts) >= 2:
                 return title_parts[1].strip()
         return title
+
+    @property
+    def rating(self) -> float | None:
+        """
+        Return the rating embedded in the file, normalized to 0.0-10.0.
+
+        Returns None when the file carries no rating. The three formats store it
+        differently -- ID3 in a POPM frame, Vorbis in a RATING field, MP4 in the
+        rate atom -- so the raw value is normalized before it is returned.
+        """
+        if (popm := self.tags.get("popm")) is not None:
+            try:
+                return popm_to_rating(int(popm))
+            except TypeError, ValueError:
+                return None
+        if (raw_rating := self.tags.get("rating")) is not None:
+            try:
+                return percentage_to_rating(float(str(raw_rating).strip()))
+            except TypeError, ValueError:
+                return None
+        return None
 
     @property
     def version(self) -> str:
@@ -1085,6 +1107,12 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
+    # Rating: taggers use the rate atom or a freeform RATING tag, both 0-100
+    if "rate" in tags:
+        result["rating"] = str(tags["rate"][0])
+    elif "----:com.apple.iTunes:RATING" in tags:
+        result["rating"] = _decode_mp4_freeform_single(tags["----:com.apple.iTunes:RATING"])
+
     # album type may be multi-value; join them
     if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
         albumtypes = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:MusicBrainz Album Type"])
@@ -1239,6 +1267,11 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
     )
     _store_series_tags(result, user_frames)
 
+    # Rating: ID3 keeps it in a POPM (popularimeter) frame. A file may carry one
+    # frame per rater, so the highest value is the one the user most likely set.
+    if popm_ratings := [frame.rating for frame in tags.getall("POPM")]:  # type: ignore[no-untyped-call]
+        result["popm"] = max(popm_ratings)
+
     return result
 
 
@@ -1362,6 +1395,10 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     # Compilation flag
     if compilation := _vorbis_get_single(tags, "COMPILATION"):
         result["compilation"] = compilation
+
+    # Rating, written as a 0-100 value by the taggers that support the field
+    if rating := _vorbis_get_single(tags, "RATING"):
+        result["rating"] = rating
 
     # album type may be multi-value (repeated fields); join them
     if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):

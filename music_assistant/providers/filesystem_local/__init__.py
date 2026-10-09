@@ -84,6 +84,7 @@ from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.rating import favorite_from_rating
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
@@ -116,6 +117,12 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CONF_ENTRY_RATING_DISLIKE_THRESHOLD,
+    CONF_ENTRY_RATING_FAVORITE_THRESHOLD,
+    CONF_ENTRY_RATING_IMPORT_ENABLED,
+    CONF_RATING_DISLIKE_THRESHOLD,
+    CONF_RATING_FAVORITE_THRESHOLD,
+    CONF_RATING_IMPORT_ENABLED,
     CUE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
@@ -271,6 +278,9 @@ class LocalFileSystemProvider(MusicProvider):
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_RATING_IMPORT_ENABLED,
+            CONF_ENTRY_RATING_FAVORITE_THRESHOLD,
+            CONF_ENTRY_RATING_DISLIKE_THRESHOLD,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
             CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
@@ -2242,7 +2252,10 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
-                # TODO: implement favorite status based on rating ?
+                if prev_checksum is None:
+                    # import the rating-derived favorite for a new file only: a rescan must
+                    # never overwrite a favorite the user set inside Music Assistant
+                    track.favorite = self._favorite_from_tags(tags)
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
@@ -2536,6 +2549,23 @@ class LocalFileSystemProvider(MusicProvider):
             if codec_name := streams[0].get("codec_name"):
                 return ContentType.try_parse(codec_name)
         return ContentType.UNKNOWN
+
+    def _favorite_from_tags(self, tags: AudioTags) -> bool | None:
+        """
+        Derive the favorite state from the rating embedded in the file's tags.
+
+        Returns None when rating import is disabled (the default) or when the file
+        carries no rating, so the item keeps whatever favorite state it already had.
+
+        :param tags: The parsed tags of the file.
+        """
+        if not cast("bool", self.config.get_value(CONF_RATING_IMPORT_ENABLED)):
+            return None
+        return favorite_from_rating(
+            tags.rating,
+            favorite_threshold=cast("float", self.config.get_value(CONF_RATING_FAVORITE_THRESHOLD)),
+            dislike_threshold=cast("float", self.config.get_value(CONF_RATING_DISLIKE_THRESHOLD)),
+        )
 
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False

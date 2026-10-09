@@ -11,6 +11,11 @@ from music_assistant_models.enums import ConfigEntryType, ImageType
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
+# Import of the rating embedded in the file's tags, see music_assistant.helpers.rating
+CONF_RATING_IMPORT_ENABLED = "rating_import_enabled"
+CONF_RATING_FAVORITE_THRESHOLD = "rating_favorite_threshold"
+CONF_RATING_DISLIKE_THRESHOLD = "rating_dislike_threshold"
+
 # Hidden conf: Do we still need to promote authors/ narrators to full artists?
 CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
 
@@ -29,6 +34,38 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
         ConfigValueOption("various_artists"),
         ConfigValueOption("folder_name"),
     ],
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
+
+CONF_ENTRY_RATING_IMPORT_ENABLED = ConfigEntry(
+    key=CONF_RATING_IMPORT_ENABLED,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    help_link="https://music-assistant.io/music-providers/local-files/#tagging-files",
+    required=False,
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
+# thresholds are on the normalized 0-10 scale, matching the Plex provider
+CONF_ENTRY_RATING_FAVORITE_THRESHOLD = ConfigEntry(
+    key=CONF_RATING_FAVORITE_THRESHOLD,
+    type=ConfigEntryType.FLOAT,
+    default_value=8.0,
+    range=(0, 10),
+    required=False,
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
+CONF_ENTRY_RATING_DISLIKE_THRESHOLD = ConfigEntry(
+    key=CONF_RATING_DISLIKE_THRESHOLD,
+    type=ConfigEntryType.FLOAT,
+    default_value=2.0,
+    range=(0, 10),
+    required=False,
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )
