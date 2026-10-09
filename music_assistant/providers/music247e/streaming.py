@@ -87,6 +87,8 @@ class Music247eStreamingManager:
             streamdetails.seconds_streamed,
         )
 
+         if seconds_streamed < 1:
+            return
         variables = {
             "playbackUrl": streamdetails.path,
             "playbackContext": b64encode(
