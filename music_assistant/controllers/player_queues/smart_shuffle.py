@@ -9,8 +9,9 @@ shuffle in the controller.
 
 The algorithm always keeps recency tiers authoritative. Within each tier, duplicate copies are
 interleaved first. Regular Smart Shuffle then applies its bounded same-artist spacing pass. When
-Smart Fades ordering is enabled and Smart Fades is active, the local transition selector handles
-artist adjacency itself while reordering only inside the same recency tier.
+Smart Fades ordering is enabled and Smart Fades is active, the local transition selector orders the
+first upcoming items instead and handles their artist adjacency itself, reordering only inside the
+same recency tier. The items after them keep the regular spacing.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    SMART_FADE_ORDERING_LIMIT,
     SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
     SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
@@ -166,7 +168,12 @@ async def _arrange_for_smart_fades(
     *,
     preceding_item: QueueItem | None,
 ) -> list[QueueItem]:
-    """Keep recency tiers fixed and improve the order only inside each tier."""
+    """
+    Keep recency tiers fixed and improve the transitions of the first upcoming items.
+
+    The first SMART_FADE_ORDERING_LIMIT items are reordered inside their own tier; the items after
+    them keep the regular smart shuffle spacing.
+    """
     counts = Counter(_song_key(item) for item in items)
     tiers: dict[int, list[QueueItem]] = {0: [], 1: [], 2: []}
     for item in items:
@@ -174,19 +181,29 @@ async def _arrange_for_smart_fades(
 
     result: list[QueueItem] = []
     preceding = preceding_item
+    budget = SMART_FADE_ORDERING_LIMIT
     for tier in (0, 1, 2):
         if not (bucket := tiers[tier]):
             continue
         # Spread duplicates first. Artist spacing happens in the local selector so we do
-        # not reshuffle the result afterwards.
-        bucket = await order_queue_items(
-            mass,
-            _interleave(bucket),
-            get_track=_queue_item_track,
-            preceding_track=_queue_item_track(preceding) if preceding is not None else None,
-        )
-        result.extend(bucket)
-        preceding = bucket[-1]
+        # not reshuffle the ordered part afterwards.
+        bucket = _interleave(bucket)
+        ordered, rest = bucket[:budget], bucket[budget:]
+        if ordered:
+            ordered = await order_queue_items(
+                mass,
+                ordered,
+                get_track=_queue_item_track,
+                preceding_track=_queue_item_track(preceding) if preceding is not None else None,
+            )
+            budget -= len(ordered)
+            preceding = ordered[-1]
+        if rest:
+            rest = _space_artists(
+                rest, preceding=_artist_name_set(preceding) if preceding is not None else None
+            )
+            preceding = rest[-1]
+        result.extend(ordered + rest)
     return result
 
 

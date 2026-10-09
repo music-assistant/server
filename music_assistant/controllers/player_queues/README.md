@@ -165,11 +165,14 @@ While an action is in progress an "action in progress" flag is surfaced on the q
 subscribers.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
-player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
-preloading the next item, buffer preparation, radio fill, resume-on-idle, delayed clear/resume — is
-dispatched as tasks or timers rather than run inline, and the relevant tasks/timers are cancelled on
-player removal and on stop so stale work cannot enqueue after a queue has stopped. Long passes (such
-as a full shuffle) yield to the event loop while running.
+player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares
+its new items from the list it started with, so `update_items` keeps the queue on its current item:
+when the player moved on in the meantime, the index follows that item to where it now sits.
+Background and delayed work — preloading the next item, buffer preparation, radio fill,
+resume-on-idle, delayed clear/resume — is dispatched as tasks or timers rather than run inline, and
+the relevant tasks/timers are cancelled on player removal and on stop so stale work cannot enqueue
+after a queue has stopped. Long passes (such as a full shuffle) yield to the event loop while
+running.
 
 ## Player-to-Queue State Reconciliation
 
@@ -254,8 +257,11 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. Within each recency tier, the full movable population can
-be considered when choosing the next track. The last fixed track is used as the starting point.
+part it already considers safe to move. Because the ordering reads every track's stored analysis,
+only the first `SMART_FADE_ORDERING_LIMIT` upcoming tracks of a shuffle get it; the tracks after
+them keep the regular Smart Shuffle spacing, and every later shuffle or shuffled add orders the
+first ones again. Within each recency tier, all of those first tracks can be considered when
+choosing the next track. The last fixed track is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
 accepted batch from the existing queue tail. Both modes consider every remaining track in the run

@@ -1644,15 +1644,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue.items = len(self._queue_data[queue_id].items)
         current_item = queue.current_item
-        if (
-            current_item
-            and queue.index_in_buffer is not None
-            and self.index_by_id(queue_id, current_item.queue_item_id) is None
-        ):
-            # the item the queue is positioned on is no longer in it, so follow the index rather
-            # than keep pointing at an item the queue no longer holds. A replace clears the
-            # buffered index while it swaps the items and sets the position itself right after.
-            self._resync_position(queue_id)
+        if current_item and queue.index_in_buffer is not None:
+            current_index = self.index_by_id(queue_id, current_item.queue_item_id)
+            if current_index is None:
+                # the item the queue is positioned on is no longer in it, so follow the index rather
+                # than keep pointing at an item the queue no longer holds. A replace clears the
+                # buffered index while it swaps the items and sets the position itself right after.
+                self._resync_position(queue_id)
+            elif current_index != queue.current_index:
+                # the player moved on while these items were prepared, so the index still points
+                # into the previous list: follow the item to where it sits now
+                queue.current_index = current_index
+                queue.next_item = self.get_next_item(queue_id, current_index)
         self.signal_update(queue_id, True)
         self.update_next_item_on_player(queue_id)
 
