@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import weakref
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -15,7 +14,8 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players import controller as players_controller
+from tests.common import bare_player_controller
 
 QUEUE_ID = "q1"
 DURATION = 3600
@@ -49,23 +49,13 @@ def _controller(
     # a MagicMock satisfies `async with` but serializes nothing, so the tests that care about
     # overlapping presses ask for the real lock instead
     ctrl.mass.players.get_group_and_player_lock = (
-        _lock_provider().get_group_and_player_lock if real_lock else MagicMock()
+        bare_player_controller().get_group_and_player_lock if real_lock else MagicMock()
     )
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     seek = AsyncMock()
     ctrl.seek = seek  # type: ignore[method-assign]
     return ctrl, queue, seek
-
-
-def _lock_provider() -> PlayerController:
-    """Return a bare players controller, carrying just enough state for its real lock."""
-    players = PlayerController.__new__(PlayerController)
-    players._player_command_locks = {}
-    players._players = {}
-    players._task_held_locks = weakref.WeakKeyDictionary()
-    players.logger = MagicMock()
-    return players
 
 
 def _seeked_position(seek: AsyncMock) -> int:
@@ -177,3 +167,34 @@ async def test_previous_restarts_the_track_when_past_the_threshold() -> None:
 
     # corrected position is 6.5s, so the current track restarts rather than stepping back
     assert queue.current_index == 1
+
+
+async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A play action waits for the running one however long it takes, never runs alongside it."""
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 1.0)
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    release = asyncio.Event()
+    seeks: list[int] = []
+
+    async def _slow_seek(_queue_id: str, position: int) -> None:
+        seeks.append(position)
+        # the first press stands in for a play request that outlasts the lock timeout
+        if len(seeks) == 1:
+            await release.wait()
+
+    seek.side_effect = _slow_seek
+
+    first = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
+    # well past the point where the lock used to be given up on
+    await asyncio.sleep(0.1)
+    assert len(seeks) == 1
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert len(seeks) == 2
