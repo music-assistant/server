@@ -391,6 +391,51 @@ async def test_create_playlist_records_the_creator_as_owner(
     assert created.access == expected
 
 
+@pytest.mark.parametrize("strict", [True, False], ids=["strict", "domain-fallback"])
+async def test_create_playlist_only_on_a_source_of_the_user(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, strict: bool
+) -> None:
+    """A member creates a playlist on its own account, never on a hidden one."""
+    providers: dict[str, MagicMock] = {}
+    for instance_id in ("spotify_theirs", "spotify_mine"):
+        provider = providers[instance_id] = MagicMock(spec=MusicProvider)
+        provider.domain, provider.instance_id, provider.name = "spotify", instance_id, instance_id
+        provider.type, provider.available = ProviderType.MUSIC, True
+        provider.supported_features = {ProviderFeature.PLAYLIST_CREATE_TRACKS}
+        provider.create_playlist = AsyncMock(
+            return_value=_playlist("Created", provider_domain=instance_id)
+        )
+    sources = {
+        "spotify_theirs": ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+        "spotify_mine": ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE),
+    }
+    set_music_source_access(music_mass_module, sources)
+    try:
+        with (
+            _as_user(MEMBER),
+            patch.object(
+                music_mass_module, "get_provider", side_effect=lambda x, **_: providers.get(x)
+            ),
+            patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        ):
+            with pytest.raises(InsufficientPermissions):
+                await playlists.create_playlist(
+                    "Created",
+                    provider_instance_or_domain="spotify_theirs",
+                    strict_provider_instance=strict,
+                )
+            providers["spotify_theirs"].create_playlist.assert_not_awaited()
+            created = await playlists.create_playlist(
+                "Created",
+                provider_instance_or_domain="spotify_mine",
+                strict_provider_instance=strict,
+            )
+        assert {m.provider_instance for m in created.provider_mappings} == {"spotify_mine"}
+    finally:
+        for instance_id in sources:
+            music_mass_module.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
+
+
 async def test_owner_shares_its_playlist(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:

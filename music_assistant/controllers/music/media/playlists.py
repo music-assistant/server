@@ -132,6 +132,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"music/{api_base}/create_playlist",
             self.create_playlist,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/playlist_tracks",
@@ -278,18 +279,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param strict_provider_instance: Do not fall back to another provider instance.
         """
         # if provider is omitted, just pick builtin provider
-        if provider_instance_or_domain:
-            provider = self.mass.get_provider(
-                provider_instance_or_domain,
-                return_unavailable=strict_provider_instance,
-            )
-            if provider is None or (
-                strict_provider_instance
-                and (provider.instance_id != provider_instance_or_domain or not provider.available)
-            ):
-                raise ProviderUnavailableError
-        else:
-            provider = self.mass.get_provider("builtin")
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_or_domain or "builtin", strict=strict_provider_instance
+        )
 
         # Default is track for backwards compatibility.
         media_types_set = {MediaType.TRACK} if not media_types else set(media_types)
@@ -793,6 +785,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"music/{self.api_base}/update",
             self.update_playlist,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
 
     async def _handle_migrate_playlist(
