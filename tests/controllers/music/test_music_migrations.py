@@ -264,6 +264,36 @@ async def test_migration_renames_current_playlog_and_keeps_unique_progress_state
     assert not any(name.startswith(f"{DB_TABLE_LEGACY_PLAYLOG}_") for name in indexes)
 
 
+async def test_migration_retries_interrupted_playlog_rename(
+    database: DatabaseConnection,
+) -> None:
+    """An older migration can resume when the table rename already happened."""
+    await _create_legacy_playlog_table(database)
+    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
+    await database.execute(
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_MEDIA_PROGRESS}"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=48,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS)
+    assert len(rows) == 1
+    assert rows[0]["userid"] == "user1"
+    assert not await database.get_row(
+        "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+    )
+    assert await database.get_rows(DB_TABLE_PLAY_HISTORY) == []
+
+
 async def test_migrate_database_rejects_too_old_schema() -> None:
     """Schema versions older than the minimum supported version are refused up-front."""
     create_tables = AsyncMock()

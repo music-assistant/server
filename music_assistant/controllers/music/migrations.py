@@ -123,6 +123,24 @@ async def migrate_database(  # noqa: PLR0915
     if prev_version < 15:
         raise MusicAssistantError("Database schema version too old to migrate")
 
+    if prev_version <= 64:
+        tables = {
+            row["name"]
+            for row in await database.get_rows_from_query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN (:legacy_table, :progress_table)",
+                {
+                    "legacy_table": DB_TABLE_LEGACY_PLAYLOG,
+                    "progress_table": DB_TABLE_MEDIA_PROGRESS,
+                },
+                limit=0,
+            )
+        }
+        if DB_TABLE_MEDIA_PROGRESS in tables and DB_TABLE_LEGACY_PLAYLOG not in tables:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} RENAME TO {DB_TABLE_LEGACY_PLAYLOG}"
+            )
+
     if prev_version <= 15:
         # add search_name and search_sort_name columns to all tables
         # and populate them with the name and sort_name values
