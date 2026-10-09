@@ -486,9 +486,10 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
    another user via the injected `user` argument (requires the `users.impersonate` scope
    when targeting another user). The impersonated user must hold the command's
    `required_scope` as well, so impersonation never grants more than that user's own role.
-   Inside the handler, `get_current_user()` is the impersonated user; any provider resolved
-   for the caller must be one of that user's music sources (`helpers/provider_access.py`
-   `visible_provider`), never the plain `mass.get_provider` lookup
+   Inside the handler, `get_current_user()` is the impersonated user; any music provider
+   resolved for the caller must be one of that user's music sources
+   (`helpers/provider_access.py` `visible_provider`, which leaves the other provider types
+   unrestricted), never the plain `mass.get_provider` lookup
 
 ### Testing Authentication
 
