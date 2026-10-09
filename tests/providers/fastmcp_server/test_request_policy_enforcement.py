@@ -36,7 +36,7 @@ from music_assistant.providers.fastmcp_server.token_identity import TokenIdentit
 def _handler(
     command: str,
     target: Any,
-    scope: str = "library.read",
+    scope: Any = "library.read",
     *,
     allow_impersonation: bool = False,
 ) -> Any:
@@ -821,6 +821,56 @@ async def test_exact_identity_revoked_during_final_preflight_blocks_execution(
             ctx=MagicMock(),
         )
     assert called is False
+
+
+async def test_impersonation_checks_the_handlers_own_scope() -> None:
+    """The target's scope check gets the handler's scope value, not the rendered catalog label."""
+
+    async def save(provider_domain: str, values: dict[str, Any]) -> None:
+        del provider_domain, values
+
+    token = AccessToken(token="config", client_id="id-config", scopes=[])
+    handler = _handler(
+        "config/providers/save",
+        save,
+        (Scope.CONFIG_PROVIDERS_WRITE, Scope.LIBRARY_MANAGE),
+        allow_impersonation=True,
+    )
+    adapter = _adapter(
+        [handler],
+        current_token=[token],
+        policies={
+            "config": _custom(
+                config__write__provider=PolicyMode.ALLOW,
+                config__write__secret=PolicyMode.ALLOW,
+            )
+        },
+    )
+    adapter.mass.config.get_provider_config_entries = AsyncMock(return_value=[])
+    seen: list[Any] = []
+
+    async def resolve(_auth: Any, _requested: str, scope: Any = None) -> Any:
+        seen.append(scope)
+        return SimpleNamespace(
+            user_id="target", enabled=True, role="user", player_filter=[], provider_filter=[]
+        )
+
+    cast("Any", adapter)._resolve_impersonated_user = resolve
+    await adapter.call(
+        "ma_api:config/providers/save",
+        {"provider_domain": "demo", "values": {"token": "new-secret"}, "user": "target"},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=cast(
+            "Context",
+            SimpleNamespace(
+                elicit=AsyncMock(return_value=SimpleNamespace(action="accept", data=True))
+            ),
+        ),
+    )
+    assert seen
+    assert all(scope == handler.required_scope for scope in seen)
 
 
 @pytest.mark.parametrize(

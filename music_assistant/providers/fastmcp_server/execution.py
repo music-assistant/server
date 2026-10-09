@@ -1016,8 +1016,11 @@ class DynamicAPIAdapter:
         """Refresh authorization, impersonation, target filters and request preflight."""
         policy = self._request_policy(auth)
         entry = self._reauthorize_entry(entry, auth, policy)
+        # the handler's own scope value, the entry only carries its rendered catalog label
         impersonated_user = (
-            await self._resolve_impersonated_user(auth, str(impersonated), entry.required_scope)
+            await self._resolve_impersonated_user(
+                auth, str(impersonated), getattr(entry.handler, "required_scope", None)
+            )
             if impersonated
             else None
         )
@@ -1069,7 +1072,7 @@ class DynamicAPIAdapter:
         preflight = await self._preflight(decision, invocation.arguments, invocation.auth)
         auth, impersonated_user = await self._final_authentication(
             impersonated=impersonated,
-            required_scope=invocation.entry.required_scope,
+            required_scope=getattr(invocation.entry.handler, "required_scope", None),
         )
         # No authorization-sensitive await is permitted below this point.
         preflight = revalidate_preflight_command_sync(
