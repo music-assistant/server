@@ -1266,6 +1266,7 @@ class AuthenticationManager:
         # key enforcement is off on our connections, so remove those rows here.
         for table in ("auth_tokens", "join_codes", "user_auth_providers"):
             await self.database.delete(table, {"user_id": user_id})
+        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
         await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()

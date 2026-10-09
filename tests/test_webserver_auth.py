@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 from aiohttp import web
@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
 from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
 )
@@ -123,6 +124,9 @@ async def auth_manager(mass_minimal: MusicAssistant) -> AuthenticationManager:
     # deleting a user releases its playlists and drops its favorites through the music
     # controller, which the minimal server does not run
     mass_minimal.music = MagicMock()
+    music_database = MagicMock()
+    music_database.delete = AsyncMock()
+    mass_minimal.music.database = music_database
     mass_minimal.music.playlists.release_user_playlists = AsyncMock()
     mass_minimal.music.favorites = AsyncMock()
     return mass_minimal.webserver.auth
@@ -896,8 +900,8 @@ async def test_delete_user_removes_dependent_rows(
     await auth_manager.create_token(user, "Device", is_long_lived=False)
     await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
     await auth_manager.generate_join_code(user)
-    history_delete = AsyncMock()
-    monkeypatch.setattr(auth_manager.mass.music.database, "delete", history_delete)
+    progress_delete = AsyncMock()
+    monkeypatch.setattr(auth_manager.mass.music.database, "delete", progress_delete)
     tables = ("auth_tokens", "join_codes", "user_auth_providers")
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
@@ -907,7 +911,10 @@ async def test_delete_user_removes_dependent_rows(
 
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
-    history_delete.assert_awaited_once_with(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
+    assert progress_delete.await_args_list == [
+        call(DB_TABLE_MEDIA_PROGRESS, {"userid": user.user_id}),
+        call(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id}),
+    ]
 
 
 async def test_delete_user_releases_its_playlists(auth_manager: AuthenticationManager) -> None:
