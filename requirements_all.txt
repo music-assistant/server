@@ -86,7 +86,7 @@ pywam==0.2.0
 pywidevine==1.9.0
 pywiim==2.3.0
 PyYAML==6.0.3
-qqmusic-api-python==0.7.3
+qqmusic-api-python==0.8.2
 radios==0.3.2
 rokuecp==0.19.5
 segno==1.6.6
