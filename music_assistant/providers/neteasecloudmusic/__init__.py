@@ -442,7 +442,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """
         album_id = await self._get_track_album_id(track_id)
         if not album_id:
-            raise ResourceTemporarilyUnavailable(
+            raise InvalidDataError(
                 f"NetEase track {track_id} has no album to check in against"
             )
         await self._client.get(
