@@ -945,7 +945,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             return [item for item in songs if isinstance(item, dict)]
         return []
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, cache_none=False)
     async def _get_track_album_id(self, track_id: str) -> str | None:
         """Return the album id of a NetEase track, used as the scrobble source id."""
         songs = await self._get_song_detail(track_id)
