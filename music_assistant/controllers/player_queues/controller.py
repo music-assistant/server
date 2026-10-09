@@ -1297,7 +1297,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         finally:
             self._set_transitioning(queue_id, False)
 
-    @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/transfer",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def transfer_queue(  # noqa: PLR0915
         self,
         source_queue_id: str,
@@ -1305,6 +1309,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         auto_play: bool | None = None,
     ) -> None:
         """Transfer queue to another queue."""
+        self._check_player_permission(source_queue_id)
+        self._check_player_permission(target_queue_id)
         if not (source_queue := self.get(source_queue_id)):
             raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")
         if not (target_queue := self.get(target_queue_id)):
