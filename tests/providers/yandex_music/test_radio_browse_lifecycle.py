@@ -16,6 +16,8 @@ from music_assistant.providers.yandex_music.browse import _BrowseRouter
 from music_assistant.providers.yandex_music.constants import CONF_WAVE_PRESETS_DATA
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
 
+from .conftest import use_real_create_task
+
 
 @pytest.fixture
 def radio_provider() -> tuple[YandexMusicProvider, ClientAsync]:
@@ -148,4 +150,102 @@ async def test_browse_pagination_follows_session_completion(
         f"43@{station}"
     ]
     assert any(isinstance(item, BrowseFolder) for item in items) is not ended
+    assert wave.batch_id == "final"
+
+
+@pytest.mark.parametrize("cached_empty_page", [False, True])
+async def test_my_wave_playlist_restarts_on_page_zero_only(
+    radio_provider: tuple[YandexMusicProvider, ClientAsync], cached_empty_page: bool
+) -> None:
+    """Fresh playback restarts completed sessions while later pages remain terminal."""
+    provider, raw = radio_provider
+    provider.mass.cache = Mock(
+        get_with_freshness=AsyncMock(
+            return_value=([], True, True) if cached_empty_page else (None, False, False)
+        ),
+        set=AsyncMock(),
+    )
+    use_real_create_task(provider.mass)
+    wave = _WaveState()
+    wave.session_id = "old"
+    wave.last_track_id = "42"
+    wave.radio_started_sent = True
+    wave.settings = {"language": "russian"}
+    provider._wave_states["user:onyourwave"] = wave
+    responses = iter(
+        [
+            {"terminated": True},
+            {
+                "radioSessionId": "fresh",
+                "batchId": "fresh-batch",
+                "sequence": [{"type": "track", "track": {"id": 43}, "liked": False}],
+            },
+            [{"id": 43}],
+            {"terminated": True},
+            {
+                "radioSessionId": "fresh-again",
+                "batchId": "next-batch",
+                "sequence": [{"type": "track", "track": {"id": 44}, "liked": False}],
+            },
+            [{"id": 44}],
+            {"terminated": True},
+        ]
+    )
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "feedback" in url:
+            return {}
+        return next(responses)
+
+    post = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "post", post):
+        assert await provider.get_rotor_station_tracks("user:onyourwave") == ([], None)
+        tracks = await provider.get_playlist_tracks("my_wave", page=0)
+        assert [track.item_id for track in tracks] == ["43@user:onyourwave"]
+        assert wave.session_id == "fresh"
+        after_completion = post.await_count
+        assert await provider.get_playlist_tracks("my_wave", page=1) == []
+        assert await provider.get_playlist_tracks("my_wave", page=2) == []
+        assert post.await_count == after_completion
+        tracks = await provider.get_playlist_tracks("my_wave", page=0)
+        assert [track.item_id for track in tracks] == ["44@user:onyourwave"]
+    creations = [call for call in post.await_args_list if "/rotor/session/new" in call.args[0]]
+    assert len(creations) == 2
+    assert all("settingLanguage:russian" in call.kwargs["json"]["seeds"] for call in creations)
+    feedback = [call for call in post.await_args_list if "feedback" in call.args[0]]
+    assert len(feedback) == 2
+    assert "fresh/feedback" in feedback[0].args[0]
+    assert "fresh-again/feedback" in feedback[1].args[0]
+
+
+async def test_my_wave_playlist_later_page_continues_active_session(
+    radio_provider: tuple[YandexMusicProvider, ClientAsync],
+) -> None:
+    """Playlist pagination keeps its session and delivers the final batch once."""
+    provider, raw = radio_provider
+    use_real_create_task(provider.mass)
+    wave = _WaveState()
+    wave.session_id = "active"
+    wave.last_track_id = "42"
+    wave.playlist_next_cursor = "42"
+    wave.seen_track_ids.add("42")
+    wave.radio_started_sent = True
+    provider._wave_states["user:onyourwave"] = wave
+    post = AsyncMock(
+        side_effect=[
+            {
+                "terminated": True,
+                "batchId": "final",
+                "sequence": [{"type": "track", "track": {"id": 43}, "liked": False}],
+            },
+            [{"id": 43}],
+        ]
+    )
+    with patch.object(raw.request, "post", post):
+        tracks = await provider.get_playlist_tracks("my_wave", page=1)
+        assert [track.item_id for track in tracks] == ["43@user:onyourwave"]
+        assert await provider.get_playlist_tracks("my_wave", page=2) == []
+    assert post.await_count == 2
+    assert "/rotor/session/active/tracks" in post.await_args_list[0].args[0]
+    assert wave.session_id == "active"
     assert wave.batch_id == "final"
