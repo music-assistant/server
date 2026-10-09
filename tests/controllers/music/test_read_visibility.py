@@ -1,0 +1,235 @@
+"""Tests for how a user's music sources narrow the single-item read commands."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from contextlib import ExitStack
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderSharing,
+    ProviderType,
+)
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
+from music_assistant_models.media_items import (
+    Audiobook,
+    MediaItemCollection,
+    ProviderMapping,
+    UniqueList,
+)
+
+from music_assistant.controllers.music import MusicController
+from music_assistant.helpers.collections import get_collection_item_id
+from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
+from tests.common import set_music_source_access
+
+from .helpers import ISRC, create_track
+
+# the owner's Spotify and the member's Tidal; a Spotify account of the member is added
+# where a test needs the member's own account of the owner's service
+THEIRS = "spotify_theirs"
+MINE = "tidal_mine"
+MY_SPOTIFY = "spotify_mine"
+OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
+MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
+GUEST = User(user_id="user-guest", username="guest", role=UserRole.GUEST)
+
+
+def _provider(instance_id: str) -> MagicMock:
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = instance_id
+    provider.domain = instance_id.split("_", maxsplit=1)[0]
+    provider.type = ProviderType.MUSIC
+    provider.available = True
+    provider.is_streaming_provider = True
+    provider.supported_features = set()
+    provider.get_track = AsyncMock(return_value=create_track(instance_id, "t1"))
+    provider.get_track_by_external_id = AsyncMock(return_value=None)
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+    return provider
+
+
+def _mock(music: MusicController, instance_id: str) -> MagicMock:
+    """Return the mocked provider instance loaded under the given id."""
+    return cast("MagicMock", music.mass._providers[instance_id])
+
+
+def _add_my_spotify(music: MusicController) -> MagicMock:
+    """Give the member an account of the owner's service, loaded after the library was seeded."""
+    provider = _provider(MY_SPOTIFY)
+    music.mass._providers[MY_SPOTIFY] = provider
+    set_music_source_access(
+        music.mass,
+        {MY_SPOTIFY: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    return provider
+
+
+@pytest.fixture
+async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]:
+    """Return a music controller whose server has a private source of each of two members."""
+    controller = MusicController(mass_minimal)
+    mass_minimal.music = controller
+    mass_minimal.streams = MagicMock()
+    mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    mass_minimal.streams.audio_analysis.get_track_audio_metadata = AsyncMock(return_value=None)
+    mass_minimal.metadata = MagicMock()
+    mass_minimal.webserver = MagicMock()
+    mass_minimal.webserver.auth.get_user = AsyncMock(return_value=None)
+    mass_minimal.webserver.auth.list_users = AsyncMock(return_value=[])
+    # the minimal server runs no cache database
+    mass_minimal.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    mass_minimal.cache.set = AsyncMock()  # type: ignore[method-assign]
+    mass_minimal.cache.delete = AsyncMock()  # type: ignore[method-assign]
+    await controller._setup_database()
+    mass_minimal._providers = {THEIRS: _provider(THEIRS), MINE: _provider(MINE)}
+    set_music_source_access(
+        mass_minimal,
+        {
+            THEIRS: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+            MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    yield controller
+    if controller._database:
+        await controller._database.close()
+
+
+def _as_user(user: User | None) -> ExitStack:
+    """Run the enclosed block as the given user (None for an internal caller)."""
+    stack = ExitStack()
+    for module in ("media.base", "controller"):
+        stack.enter_context(
+            patch(f"music_assistant.controllers.music.{module}.get_current_user", return_value=user)
+        )
+    return stack
+
+
+async def test_resolve_visible_provider(music: MusicController) -> None:
+    """A source is served to its owner, swapped for the member's own account, or refused."""
+    with _as_user(OWNER):
+        assert music.resolve_visible_provider(THEIRS).instance_id == THEIRS
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        music.resolve_visible_provider(THEIRS)
+    with _as_user(GUEST), pytest.raises(ProviderUnavailableError):
+        music.resolve_visible_provider("unknown")
+
+    _add_my_spotify(music)
+    with _as_user(MEMBER):
+        # the member's own account of the service stands in for the hidden one...
+        assert music.resolve_visible_provider(THEIRS).instance_id == MY_SPOTIFY
+        # ...unless exactly that account is required
+        with pytest.raises(InsufficientPermissions):
+            music.resolve_visible_provider(THEIRS, strict=True)
+    # a visible source that is not loaded is unavailable, not forbidden
+    _mock(music, MINE).available = False
+    with _as_user(MEMBER), pytest.raises(ProviderUnavailableError):
+        music.resolve_visible_provider(MINE, strict=True)
+
+
+async def test_get_serves_a_library_item_only_from_a_visible_source(
+    music: MusicController,
+) -> None:
+    """A library item on a hidden source is fetched from the user's own account instead."""
+    library_track = await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    my_spotify = _add_my_spotify(music)
+
+    with _as_user(OWNER):
+        assert (await music.tracks.get("t1", THEIRS)).item_id == library_track.item_id
+    with _as_user(MEMBER):
+        assert (await music.tracks.get("t1", THEIRS)).provider == MY_SPOTIFY
+    my_spotify.get_track.assert_awaited_once_with("t1")
+    with _as_user(GUEST), pytest.raises(InsufficientPermissions):
+        await music.tracks.get("t1", THEIRS)
+
+
+async def test_get_library_item_command_hides_items_of_hidden_sources(
+    music: MusicController,
+) -> None:
+    """The library lookup command only hands out an item on one of the user's sources."""
+    library_track = await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    lookup = music.get_library_item_by_prov_id
+
+    with _as_user(OWNER):
+        found = await lookup(MediaType.TRACK, "t1", THEIRS)
+        assert found is not None
+        assert found.item_id == library_track.item_id
+    with _as_user(MEMBER):
+        assert await lookup(MediaType.TRACK, "t1", THEIRS) is None
+    with _as_user(None):
+        assert await lookup(MediaType.TRACK, "t1", THEIRS) is not None
+
+
+async def test_get_item_by_external_id_skips_a_library_item_of_a_hidden_source(
+    music: MusicController,
+) -> None:
+    """An external id lookup passes over a hidden library item and asks the user's sources."""
+    library_track = await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    for instance_id in (THEIRS, MINE):
+        provider = _mock(music, instance_id)
+        provider.supported_features = {ProviderFeature.TRACK_BY_EXTERNAL_ID}
+        provider.get_track_by_external_id.return_value = create_track(instance_id, "t2")
+
+    with _as_user(OWNER):
+        found = await music.tracks.get_item_by_external_id(ISRC, ExternalID.ISRC)
+        assert found is not None
+        assert found.item_id == library_track.item_id
+    with _as_user(MEMBER):
+        found = await music.tracks.get_item_by_external_id(ISRC, ExternalID.ISRC)
+        assert found is not None
+        assert found.provider == MINE
+    _mock(music, THEIRS).get_track_by_external_id.assert_not_awaited()
+
+
+async def test_get_collection_needs_a_visible_source(music: MusicController) -> None:
+    """A collection whose books are all on hidden sources does not exist for the user."""
+    book = Audiobook(
+        item_id="b1",
+        provider=THEIRS,
+        name="Book",
+        provider_mappings={
+            ProviderMapping(
+                item_id="b1", provider_domain="spotify", provider_instance=THEIRS, in_library=True
+            )
+        },
+    )
+    book.metadata.collections = UniqueList([MediaItemCollection(title="Saga")])
+    await music.audiobooks.add_item_to_library(book)
+    collection_id = get_collection_item_id("Saga", MediaType.AUDIOBOOK)
+
+    with _as_user(OWNER):
+        assert (await music.audiobooks.get_collection(collection_id)).name == "Saga"
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music.audiobooks.get_collection(collection_id)
+
+
+async def test_playlist_tracks_are_served_by_one_visible_provider(music: MusicController) -> None:
+    """Playlist pages come from the resolved visible account; a hidden one is refused."""
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        _ = [track async for track in music.playlists.tracks("p1", THEIRS)]
+
+    my_spotify = _add_my_spotify(music)
+    my_spotify.get_playlist_tracks.side_effect = [[create_track(MY_SPOTIFY, "t1")], []]
+    with _as_user(MEMBER):
+        tracks = [track async for track in music.playlists.tracks("p1", THEIRS)]
+    assert [track.item_id for track in tracks] == ["t1"]
+    assert my_spotify.get_playlist_tracks.await_count == 2
+    _mock(music, THEIRS).get_playlist_tracks.assert_not_awaited()
+
+
+async def test_sound_effect_of_a_hidden_source_is_not_found(music: MusicController) -> None:
+    """A sound effect is only resolved through a music source the user may see."""
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music.get_item(MediaType.SOUND_EFFECT, "rain", THEIRS)

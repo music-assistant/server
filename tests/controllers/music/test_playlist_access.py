@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
+    ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
     Genre,
@@ -209,7 +210,9 @@ async def test_get_and_tracks_hide_a_playlist_the_caller_may_not_see(
 
     with _as_user(OWNER):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        # the access check passes; the database-only server runs no builtin provider
+        with pytest.raises(ProviderUnavailableError):
+            _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await playlists.get(added.item_id, "library")
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
@@ -225,7 +228,8 @@ async def test_internal_callers_see_every_playlist(playlists: PlaylistController
 
     with _as_user(None):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        with pytest.raises(ProviderUnavailableError):
+            _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
         playlists.check_removal_allowed(added)
 
 

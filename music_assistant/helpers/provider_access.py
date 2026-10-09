@@ -11,6 +11,7 @@ account only.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -22,6 +23,7 @@ from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
+    from music_assistant_models.media_items import ProviderMapping
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -176,25 +178,62 @@ def music_sources_access(mass: MusicAssistant) -> dict[str, ProviderAccess | Non
 
 
 def visible_provider(
-    mass: MusicAssistant, instance_id_or_domain: str, user: User | None
+    mass: MusicAssistant, instance_id_or_domain: str, user: User | None, strict: bool = False
 ) -> ProviderInstanceType | None:
     """
     Return the loaded provider serving this instance id or domain, if the user may see it.
 
     An unavailable account of a streaming service resolves to another loaded account of that
-    service (see `mass.get_provider`), so the account actually serving is the one checked.
+    service (see `mass.get_provider`), so the account actually serving is the one checked; one
+    hidden from the user gives way to a visible account of the same service, if there is one.
     Only music sources are narrowed; None for the user means no narrowing at all.
 
     :param mass: The MusicAssistant instance.
     :param instance_id_or_domain: The provider instance id or domain to look up.
     :param user: The user to check the source for, None for unfiltered access.
+    :param strict: Serve exactly this instance, never another account of the service.
     """
-    provider = mass.get_provider(instance_id_or_domain)
+    if strict:
+        provider = exact_provider(mass, instance_id_or_domain)
+    else:
+        provider = mass.get_provider(instance_id_or_domain)
     if provider is None or user is None or provider.type != ProviderType.MUSIC:
         return provider
-    if provider.instance_id in hidden_music_sources(mass, user):
+    hidden = hidden_music_sources(mass, user)
+    if provider.instance_id not in hidden:
+        return provider
+    if strict or not getattr(provider, "is_streaming_provider", False):
         return None
-    return provider
+    return next(
+        (
+            other
+            for other in mass.get_provider_instances(provider.domain)
+            if other.instance_id not in hidden
+        ),
+        None,
+    )
+
+
+def has_visible_source(
+    mass: MusicAssistant, provider_mappings: Iterable[ProviderMapping], user: User | None
+) -> bool:
+    """
+    Return whether at least one of the mappings is on a source the user may see.
+
+    Mappings on anything but a music source always count as visible, as does an item
+    without mappings.
+
+    :param mass: The MusicAssistant instance.
+    :param provider_mappings: The provider mappings of the item.
+    :param user: The user to check the sources for, None for unfiltered access.
+    """
+    if user is None:
+        return True
+    mappings = list(provider_mappings)
+    if not mappings:
+        return True
+    hidden = hidden_music_sources(mass, user)
+    return any(mapping.provider_instance not in hidden for mapping in mappings)
 
 
 def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:
