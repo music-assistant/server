@@ -200,9 +200,20 @@ class DashboardController(CoreController):
             player_id=player_id,
         )
 
+        # every show gets a fresh viewer key, so a replaced cast's url stops working;
+        # the endpoint's url resolution below mints it
+        previous_key = self._viewer_keys.pop(dashboard_id, None)
+
         if registration.on_show is not None:
             # the consumer resolves its own url if needed; raises before showing on failure
-            await registration.on_show(dashboard, player_id)
+            try:
+                await registration.on_show(dashboard, player_id)
+            except BaseException:
+                # the display may still show the earlier cast: give it its key back
+                self._viewer_keys.pop(dashboard_id, None)
+                if previous_key is not None:
+                    self._viewer_keys[dashboard_id] = previous_key
+                raise
         else:
             # API registration: url-based clients resolve their own url via `dashboard/get_url`
             self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
