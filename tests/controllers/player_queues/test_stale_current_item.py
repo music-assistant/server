@@ -35,6 +35,7 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueue]:
     queue.items = len(items)
     queue.state = PlaybackState.IDLE
     queue.current_index = CURRENT_INDEX
+    queue.index_in_buffer = CURRENT_INDEX
     queue.current_item = items[CURRENT_INDEX]
     queue.next_item = items[CURRENT_INDEX + 1]
     queue.elapsed_time = 42.0
@@ -108,6 +109,20 @@ def test_a_change_that_keeps_the_current_item_leaves_the_position_alone() -> Non
     assert queue.current_item is items[CURRENT_INDEX]
     assert queue.elapsed_time == 42.0
     assert queue.resume_pos == 42
+
+
+def test_a_replace_in_flight_leaves_the_position_to_its_caller() -> None:
+    """A replace drops the buffered index while it swaps the items and sets the position itself."""
+    ctrl, queue = _controller()
+    queue.state = PlaybackState.PLAYING
+    queue.index_in_buffer = None
+    old_current = queue.current_item
+
+    _replace_tail(ctrl)
+
+    assert queue.current_index == CURRENT_INDEX
+    assert queue.current_item is old_current
+    assert queue.elapsed_time == 42.0
 
 
 async def test_resume_falls_back_to_the_index_when_the_current_item_is_gone() -> None:
