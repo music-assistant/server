@@ -154,7 +154,7 @@ async def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album
         album.artists.append(feat_artist)
 
     if album_genre := album_obj.get("genre"):
-        album.metadata.genres = set(album_genre)
+        album.metadata.genres = {album_genre} if isinstance(album_genre, str) else set(album_genre)
 
     if album_obj.get("type") == "COMPILATION":
         album.album_type = AlbumType.COMPILATION
