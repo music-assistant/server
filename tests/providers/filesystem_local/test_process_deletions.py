@@ -334,6 +334,21 @@ async def test_two_files_left_keep_both_artists(mass: MusicAssistant, tmp_path: 
     assert await _track_artists(mass, track_id) == {OLD, NEW}
 
 
+async def test_track_with_all_files_deleted_is_removed(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """Deleting both files of one track in the same pass removes it and the pass completes."""
+    provider = _sync_provider(mass, tmp_path, [])
+    (track_id,) = await _add(mass, _fs_track(OLD, OLD, 1))
+    await _add(mass, _fs_track(NEW, NEW, 1))
+
+    await provider._process_deletions({f"{OLD}/01.flac", f"{NEW}/01.flac"})
+
+    cast("AsyncMock", provider.get_track).assert_not_called()
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_id)
+
+
 @pytest.mark.parametrize("error", [MediaNotFoundError("gone"), OSError("share went away")])
 async def test_unreadable_file_keeps_the_stored_data(
     mass: MusicAssistant, tmp_path: Path, error: Exception
