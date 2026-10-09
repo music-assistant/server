@@ -7426,10 +7426,6 @@ class TestAddCurrentlyPlayingToFavorites:
         assert acting_users == [expected]
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 @contextlib.asynccontextmanager
 async def _lock_held_elsewhere(controller: PlayerController, player_id: str) -> AsyncIterator[None]:
     """Hold the player's playback lock from another task for the duration of the block."""
@@ -7478,14 +7474,14 @@ class TestPlayerLockTimeouts:
         """A strict command that would overlap with the holder is refused as busy."""
         ran = False
         async with _lock_held_elsewhere(controller, "p1"):
-            with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+            with caplog.at_level(logging.INFO), pytest.raises(ResourceBusyError):
                 async with controller.get_player_lock(
                     "p1", PlayerLockPurpose.PLAYBACK, strict=True
                 ):
                     ran = True
 
         assert not ran
-        assert "still waiting" in caplog.text
+        assert "still busy" in caplog.text
         # the lock itself is left intact for the next command
         async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
             ran = True
@@ -7531,3 +7527,7 @@ class TestPlayerLockTimeouts:
             pass
 
         assert acquisitions == [("group", True), ("member", True)]
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

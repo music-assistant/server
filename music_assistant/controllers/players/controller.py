@@ -2573,6 +2573,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Wait for a player lock, logging a wait that gets long.
 
+        :param lock: The lock to acquire.
+        :param purpose: The lock's category, named in the log lines and the error.
+        :param player_id: The player the lock belongs to.
+        :param strict: Keep waiting past the lock timeout and fail at the strict timeout,
+            instead of giving up on the lock.
         :return: Whether the lock was acquired. A non-strict wait gives up at the lock
             timeout and returns False, so the caller runs without the lock; a strict
             wait raises ResourceBusyError at the strict timeout instead.
@@ -2602,9 +2607,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     player_id,
                 )
                 return False
-            self.logger.warning(
-                "Timed out (%ss) acquiring %s lock for player %s — "
-                "previous holder appears stuck; still waiting, giving up after %ss in total",
+            self.logger.info(
+                "Waited %ss for the %s lock of player %s — previous holder is still busy; "
+                "waiting on, giving up after %ss in total",
                 PLAYER_LOCK_TIMEOUT,
                 purpose.value,
                 player_id,
@@ -2615,8 +2620,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await lock.acquire()
             return True
         except TimeoutError:
+            name = player.display_name if (player := self.get_player(player_id)) else player_id
             msg = (
-                f"Player {player_id} is still busy with a previous {purpose.value} command "
+                f"Player {name} is still busy with a previous {purpose.value} command "
                 f"after {PLAYER_LOCK_STRICT_TIMEOUT}s"
             )
             raise ResourceBusyError(msg) from None
