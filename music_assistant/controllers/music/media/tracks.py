@@ -479,7 +479,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             unique_ids.add(unique_id)
             # prefer db item
-            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
+            if db_item := await self.mass.music.albums.get_visible_library_item_by_prov_id(
                 prov_item.album.item_id, prov_item.album.provider
             ):
                 result.append(db_item)

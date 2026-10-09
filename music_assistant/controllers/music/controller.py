@@ -143,7 +143,6 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
-    has_visible_source,
     hidden_music_sources,
     own_music_sources,
     playback_instance_for,
@@ -1395,13 +1394,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | None:
         """Get the library item for the given provider item, if present on the user's sources."""
         ctrl = self.get_controller(media_type)
-        item = await ctrl.get_library_item_by_prov_id(
+        item = await ctrl.get_visible_library_item_by_prov_id(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
-        if item is None or not has_visible_source(
-            self.mass, item.provider_mappings, get_current_user()
-        ):
+        if item is None:
             return None
         if isinstance(item, Playlist) and not self.playlists.visible_to_caller(item):
             return None
@@ -3068,7 +3065,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ctrl = self.get_controller(media_type)
         except NotImplementedError:
             return None
-        if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
+        if library_item := await ctrl.get_visible_library_item_by_prov_id(
+            item_id, provider_instance
+        ):
             return f"library://{media_type.value}/{library_item.item_id}"
         return None
 

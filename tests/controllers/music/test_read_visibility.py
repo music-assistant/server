@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import ExitStack
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     MediaItemCollection,
+    MediaItemType,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -40,7 +41,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
 
-from .helpers import ISRC, create_track
+from .helpers import ISRC, create_album, create_track
 
 # the owner's Spotify and the member's Tidal; a Spotify account of the member is added
 # where a test needs the member's own account of the owner's service
@@ -110,6 +111,21 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     yield controller
     if controller._database:
         await controller._database.close()
+
+
+def _artist(provider_instance: str, item_id: str) -> Artist:
+    return Artist(
+        item_id=item_id,
+        provider=provider_instance,
+        name="Test Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_instance.split("_", maxsplit=1)[0],
+                provider_instance=provider_instance,
+            )
+        },
+    )
 
 
 async def _drain(items: AsyncGenerator[object]) -> list[object]:
@@ -356,6 +372,51 @@ async def test_album_tracks_come_from_the_resolved_visible_account(
     my_spotify.get_album_tracks.assert_awaited_once_with("a1")
     my_spotify.get_album.assert_awaited_once_with("a1")
     _mock(music, THEIRS).get_album_tracks.assert_not_called()
+
+
+async def test_album_tracks_of_a_hidden_library_album_come_from_the_users_account(
+    music: MusicController,
+) -> None:
+    """A library album held only by a hidden account does not turn the listing empty."""
+    await music.albums.add_item_to_library(create_album(THEIRS, "a1"))
+    my_spotify = _add_my_spotify(music)
+    my_spotify.get_album_tracks = AsyncMock(return_value=[create_track(MY_SPOTIFY, "t1")])
+    my_spotify.get_album = AsyncMock(return_value=create_album(MY_SPOTIFY, "a1"))
+
+    with _as_user(MEMBER):
+        tracks = await music.albums.tracks("a1", THEIRS)
+
+    assert [track.item_id for track in tracks] == ["t1"]
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        pytest.param(lambda music, prov: music.artists.top_tracks("ar1", prov), id="top_tracks"),
+        pytest.param(lambda music, prov: music.artists.top_albums("ar1", prov), id="top_albums"),
+        pytest.param(
+            lambda music, prov: music.artists.similar_artists("ar1", prov), id="similar_artists"
+        ),
+    ],
+)
+async def test_provider_listings_keep_the_served_item_over_a_hidden_library_copy(
+    music: MusicController,
+    listing: Callable[[MusicController, str], Awaitable[Sequence[MediaItemType]]],
+) -> None:
+    """A library copy held only by a hidden account is not swapped in for the served item."""
+    await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    await music.albums.add_item_to_library(create_album(THEIRS, "a1"))
+    await music.artists.add_item_to_library(_artist(THEIRS, "ar2"))
+    for account in (_add_my_spotify(music), _mock(music, THEIRS)):
+        # a streaming provider stamps its domain on the items it serves
+        account.get_artist_toptracks = AsyncMock(return_value=[create_track("spotify", "t1")])
+        account.get_artist_topalbums = AsyncMock(return_value=[create_album("spotify", "a1")])
+        account.get_similar_artists = AsyncMock(return_value=[_artist("spotify", "ar2")])
+
+    with _as_user(MEMBER):
+        assert [item.provider for item in await listing(music, MY_SPOTIFY)] == ["spotify"]
+    with _as_user(OWNER):
+        assert [item.provider for item in await listing(music, THEIRS)] == ["library"]
 
 
 async def test_similar_tracks_skip_a_mapping_on_a_hidden_source(music: MusicController) -> None:

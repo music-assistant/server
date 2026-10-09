@@ -406,8 +406,8 @@ class AlbumsController(MediaControllerBase[Album]):
         in_library_only: bool = False,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        # always check if we have a library item for this album
-        library_album = await self.get_library_item_by_prov_id(
+        # always check if we have a library item for this album (on the user's sources)
+        library_album = await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_album:

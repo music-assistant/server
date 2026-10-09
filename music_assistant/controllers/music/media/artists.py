@@ -496,11 +496,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
         # always check if we have a library item for this artist (on the user's sources)
-        library_artist = await self.get_library_item_by_prov_id(
+        library_artist = await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if library_artist and not self._has_visible_source(library_artist):
-            library_artist = None
         if library_artist and library_artist.artist_type == ArtistType.SINGER:
             self.logger.debug(
                 "Ignoring audiobook request for artist of type %s", library_artist.artist_type
@@ -570,7 +568,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 unique_ids.add(unique_id)
                 # prefer db item
-                if db_item := await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                if db_item := await self.mass.music.audiobooks.get_visible_library_item_by_prov_id(
                     provider_audiobook.item_id, provider_audiobook.provider
                 ):
                     result.append(db_item)
@@ -666,7 +664,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.mass.music.tracks.get_library_item_by_prov_id(track.item_id, track.provider)
+                self.mass.music.tracks.get_visible_library_item_by_prov_id(
+                    track.item_id, track.provider
+                )
                 for track in tracks
             )
         )
@@ -754,7 +754,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.mass.music.albums.get_library_item_by_prov_id(album.item_id, album.provider)
+                self.mass.music.albums.get_visible_library_item_by_prov_id(
+                    album.item_id, album.provider
+                )
                 for album in albums
             )
         )
@@ -989,7 +991,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.get_library_item_by_prov_id(artist.item_id, artist.provider)
+                self.get_visible_library_item_by_prov_id(artist.item_id, artist.provider)
                 for artist in artists
             )
         )

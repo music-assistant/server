@@ -727,20 +727,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             Set to False when fetching items in bulk (e.g. provider sync).
         """
         # always prefer the full library item if we have it (on a source the user may see)
-        if (
-            library_item := await self.get_library_item_by_prov_id(
-                item_id,
-                provider_instance_id_or_domain,
-            )
-        ) and self._has_visible_source(library_item):
+        if library_item := await self.get_visible_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        ):
             # schedule a refresh of the metadata on access of the item
             # e.g. the item is being played or opened in the UI
             if allow_update_metadata:
                 assert library_item.uri is not None
                 self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
-        if library_item and provider_instance_id_or_domain == "library":
-            # the library item exists but none of its sources is one of the user's
+        if provider_instance_id_or_domain == "library":
+            # a library item is either served above, or on no source the user may see
             raise MediaNotFoundError(f"{self.media_type.value} {item_id} not found in library")
         # grab full details from the provider
         return await self.get_provider_item(
@@ -863,6 +860,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_item_id=item_id,
         ):
             return item
+        return None
+
+    @final
+    async def get_visible_library_item_by_prov_id(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> ItemCls | None:
+        """
+        Return the library item for the provider item, if present on one of the user's sources.
+
+        A streaming provider stamps its domain on the items it serves, so the plain lookup
+        also finds a library copy that only another account of the service holds.
+        """
+        library_item = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if library_item and self._has_visible_source(library_item):
+            return library_item
         return None
 
     @final
@@ -1078,12 +1094,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if result:
                     if result.provider == "library":
                         return result
-                    library_match = await self.get_library_item_by_prov_id(
+                    library_match = await self.get_visible_library_item_by_prov_id(
                         result.item_id, result.provider
                     )
-                    if library_match and self._has_visible_source(library_match):
-                        return library_match
-                    return result
+                    return library_match or result
             except NotImplementedError, MediaNotFoundError:
                 continue
             except ProviderUnavailableError as err:
