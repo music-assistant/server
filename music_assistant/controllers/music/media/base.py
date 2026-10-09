@@ -2522,20 +2522,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             db_row_dict["album"] = track_album
             db_row_dict["disc_number"] = track_album["disc_number"]
             db_row_dict["track_number"] = track_album["track_number"]
-            # always prefer album image over track image
+            # Track.image prefers this album thumb; it stays out of the track's own images,
+            # which get stored with the track
             if album_thumb := preferred_thumb(track_album.get("images"), hidden_sources):
                 # copy album image to itemmapping single image (on the track)
                 db_row_dict["image"] = album_thumb
                 # also set image on the album dict for ItemMapping compatibility
                 track_album["image"] = album_thumb
-                if db_row_dict["metadata"].get("images"):
-                    # merge album image with existing images
-                    db_row_dict["metadata"]["images"] = [
-                        album_thumb,
-                        *db_row_dict["metadata"]["images"],
-                    ]
-                else:
-                    db_row_dict["metadata"]["images"] = [album_thumb]
 
         if audiobook_artists := db_row_dict.get("audiobook_artists"):
             _narrators = []
@@ -2740,10 +2733,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:
         """
         Return the metadata as stored for a library item.
-
-        Unlike the metadata of a library item read via get_library_item, this holds
-        nothing that is only added at read time (such as the album thumb among a
-        track's images), so it is safe to update and write back.
 
         :param db_id: The library (database) id of the item.
         """
