@@ -1,5 +1,7 @@
 """Tests for the filesystem provider's deletion pass."""
 
+from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,17 +175,18 @@ async def test_deleted_file_keeps_other_provider_mappings(
 
 
 INSTANCE_ID = "filesystem_local--test"
-RECORDING_MBID = "5f4e0a1c-0000-4000-8000-000000000001"
 RELEASE_MBID = "5f4e0a1c-0000-4000-8000-0000000000a1"
-OLD_NAME = "Tchaikovsky"
-NEW_NAME = "Pyotr Ilyich Tchaikovsky"
+OLD = "Tchaikovsky"
+NEW = "Pyotr Ilyich Tchaikovsky"
 
 
-def _fs_mapping(item_id: str) -> set[ProviderMapping]:
-    """Return a single mapping of the test filesystem provider."""
+def _fs_mapping(item_id: str, instance_id: str = INSTANCE_ID) -> set[ProviderMapping]:
+    """Return a single provider mapping for the given item id."""
     return {
         ProviderMapping(
-            item_id=item_id, provider_domain="filesystem_local", provider_instance=INSTANCE_ID
+            item_id=item_id,
+            provider_domain=instance_id.split("--", maxsplit=1)[0],
+            provider_instance=instance_id,
         )
     }
 
@@ -195,9 +198,8 @@ def _fs_artist(name: str) -> Artist:
     )
 
 
-def _fs_track(folder: str, artist: str) -> Track:
-    """Return the first track of an album folder, tagged with the given artist."""
-    path = f"{folder}/01.flac"
+def _fs_track(folder: str, artist: str, number: int = 1) -> Track:
+    """Return a track file in an album folder, with the artist as track and album artist."""
     album = Album(
         item_id=folder,
         provider=INSTANCE_ID,
@@ -207,81 +209,126 @@ def _fs_track(folder: str, artist: str) -> Track:
     )
     album.mbid = RELEASE_MBID
     return Track(
-        item_id=path,
+        item_id=f"{folder}/{number:02d}.flac",
         provider=INSTANCE_ID,
-        name="Scene",
+        name=f"Scene {number}",
         duration=200,
-        track_number=1,
-        external_ids={(ExternalID.MB_RECORDING, RECORDING_MBID)},
-        provider_mappings=_fs_mapping(path),
+        track_number=number,
+        external_ids={(ExternalID.MB_RECORDING, f"5f4e0a1c-0000-4000-8000-{number:012d}")},
+        provider_mappings=_fs_mapping(f"{folder}/{number:02d}.flac"),
         artists=UniqueList([_fs_artist(artist)]),
         album=album,
     )
 
 
-async def _add_tracks(mass: MusicAssistant, *tracks: Track) -> str:
-    """Add the tracks the way a sync adds new files and return the library id they share."""
-    library_ids = {(await mass.music.tracks.add_item_to_library(track)).item_id for track in tracks}
-    assert len(library_ids) == 1
-    return library_ids.pop()
+def _sync_provider(
+    mass: MusicAssistant, base_path: Path, files_on_disk: list[Track]
+) -> LocalFileSystemProvider:
+    """Return a provider on a real folder layout that reads the given tracks from disk."""
+    provider, _ = _create_provider()
+    provider.mass = mass
+    provider.base_path = str(base_path)
+    for track in files_on_disk:
+        file_path = base_path / track.item_id
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.touch()
+    by_path = {track.item_id: track for track in files_on_disk}
+    provider.get_track = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda path: by_path[path]
+    )
+    return provider
 
 
-async def _artist_names(mass: MusicAssistant, track_id: str) -> tuple[set[str], set[str]]:
-    """Return the names of the artists of a library track and of its album."""
+async def _add(mass: MusicAssistant, *tracks: Track) -> list[str]:
+    """Add the tracks the way a sync adds new files and return their library ids."""
+    return [(await mass.music.tracks.add_item_to_library(track)).item_id for track in tracks]
+
+
+async def _track_artists(mass: MusicAssistant, track_id: str) -> set[str]:
+    """Return the names of the artists of a library track."""
+    return {a.name for a in (await mass.music.tracks.get_library_item(track_id)).artists}
+
+
+async def _album(mass: MusicAssistant, track_id: str) -> tuple[set[str], set[str]]:
+    """Return the artist names and mapped folders of the album of a library track."""
     track = await mass.music.tracks.get_library_item(track_id)
     assert track.album
     album = await mass.music.albums.get_library_item(track.album.item_id)
-    return {a.name for a in track.artists}, {a.name for a in album.artists}
+    return {a.name for a in album.artists}, {m.item_id for m in album.provider_mappings}
 
 
-async def test_renamed_file_drops_the_old_artist(mass: MusicAssistant) -> None:
-    """The renamed file used to leave the track and album under both spellings."""
-    provider, _ = _create_provider()
-    provider.mass = mass
-    new_track = _fs_track(NEW_NAME, NEW_NAME)
-    provider.get_track = AsyncMock(return_value=new_track)  # type: ignore[method-assign]
-    track_id = await _add_tracks(mass, _fs_track(OLD_NAME, OLD_NAME), new_track)
+async def test_renamed_album_drops_the_old_artist(mass: MusicAssistant, tmp_path: Path) -> None:
+    """A whole album moved to a new folder used to keep the old artist and folder."""
+    moved = [_fs_track(NEW, NEW, 1), _fs_track(NEW, NEW, 2)]
+    provider = _sync_provider(mass, tmp_path, moved)
+    old_ids = await _add(mass, _fs_track(OLD, OLD, 1), _fs_track(OLD, OLD, 2))
+    assert await _add(mass, *moved) == old_ids
 
-    await provider._process_deletions({f"{OLD_NAME}/01.flac"})
+    await provider._process_deletions({f"{OLD}/01.flac", f"{OLD}/02.flac"})
     await provider._process_orphaned_albums_and_artists()
 
-    provider.get_track.assert_awaited_once_with(f"{NEW_NAME}/01.flac")
-    assert await _artist_names(mass, track_id) == ({NEW_NAME}, {NEW_NAME})
+    for track_id in old_ids:
+        assert await _track_artists(mass, track_id) == {NEW}
+        assert await _album(mass, track_id) == ({NEW}, {NEW})
+    rows = await mass.music.database.get_rows_from_query("SELECT name FROM artists")
+    assert {row["name"] for row in rows} == {NEW}
+
+
+async def test_partly_moved_album_keeps_both_folders(mass: MusicAssistant, tmp_path: Path) -> None:
+    """A track still in the old folder keeps that folder and its artist on the album."""
+    moved = _fs_track(NEW, NEW, 1)
+    provider = _sync_provider(mass, tmp_path, [moved, _fs_track(OLD, OLD, 2)])
+    track_id, _ = await _add(mass, _fs_track(OLD, OLD, 1), _fs_track(OLD, OLD, 2))
+    await _add(mass, moved)
+
+    await provider._process_deletions({f"{OLD}/01.flac"})
+
+    assert await _track_artists(mass, track_id) == {NEW}
+    assert await _album(mass, track_id) == ({OLD, NEW}, {OLD, NEW})
+
+
+async def test_album_of_another_provider_is_left_alone(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """The album data may have come from the other provider, so it stays merged."""
+    moved = _fs_track(NEW, NEW, 1)
+    provider = _sync_provider(mass, tmp_path, [moved])
+    (track_id,) = await _add(mass, _fs_track(OLD, OLD, 1))
     track = await mass.music.tracks.get_library_item(track_id)
     assert track.album
     album = await mass.music.albums.get_library_item(track.album.item_id)
-    assert {m.item_id for m in album.provider_mappings} == {NEW_NAME}
-    rows = await mass.music.database.get_rows_from_query("SELECT name FROM artists")
-    assert {row["name"] for row in rows} == {NEW_NAME}
+    await mass.music.albums.add_provider_mappings(album.item_id, _fs_mapping("a1", "spotify--x"))
+    await _add(mass, moved)
+
+    await provider._process_deletions({f"{OLD}/01.flac"})
+
+    assert await _track_artists(mass, track_id) == {NEW}
+    assert (await _album(mass, track_id))[0] == {OLD, NEW}
 
 
-async def test_two_files_left_keep_both_artists(mass: MusicAssistant) -> None:
+async def test_two_files_left_keep_both_artists(mass: MusicAssistant, tmp_path: Path) -> None:
     """With two copies still on disk, neither copy's artists are stale."""
-    provider, _ = _create_provider()
-    provider.mass = mass
-    provider.get_track = AsyncMock()  # type: ignore[method-assign]
-    track_id = await _add_tracks(
-        mass,
-        _fs_track(OLD_NAME, OLD_NAME),
-        _fs_track(NEW_NAME, NEW_NAME),
-        _fs_track("Copy", NEW_NAME),
-    )
+    copies = [_fs_track(NEW, NEW, 1), _fs_track("Copy", NEW, 1)]
+    provider = _sync_provider(mass, tmp_path, copies)
+    (track_id,) = await _add(mass, _fs_track(OLD, OLD, 1))
+    await _add(mass, *copies)
 
-    await provider._process_deletions({f"{OLD_NAME}/01.flac"})
+    await provider._process_deletions({f"{OLD}/01.flac"})
 
-    provider.get_track.assert_not_called()
-    assert await _artist_names(mass, track_id) == ({OLD_NAME, NEW_NAME}, {OLD_NAME, NEW_NAME})
+    cast("AsyncMock", provider.get_track).assert_not_called()
+    assert await _track_artists(mass, track_id) == {OLD, NEW}
 
 
-async def test_unreadable_remaining_file_keeps_the_stored_artists(mass: MusicAssistant) -> None:
-    """A file that can not be read again leaves the track as it is stored."""
-    provider, _ = _create_provider()
-    provider.mass = mass
-    provider.get_track = AsyncMock(  # type: ignore[method-assign]
-        side_effect=MediaNotFoundError("gone")
-    )
-    track_id = await _add_tracks(mass, _fs_track(OLD_NAME, OLD_NAME), _fs_track(NEW_NAME, NEW_NAME))
+@pytest.mark.parametrize("error", [MediaNotFoundError("gone"), OSError("share went away")])
+async def test_unreadable_file_keeps_the_stored_data(
+    mass: MusicAssistant, tmp_path: Path, error: Exception
+) -> None:
+    """A file that can not be read again leaves the track as stored and the pass completes."""
+    provider = _sync_provider(mass, tmp_path, [])
+    provider.get_track = AsyncMock(side_effect=error)  # type: ignore[method-assign]
+    (track_id,) = await _add(mass, _fs_track(OLD, OLD, 1))
+    await _add(mass, _fs_track(NEW, NEW, 1))
 
-    await provider._process_deletions({f"{OLD_NAME}/01.flac"})
+    await provider._process_deletions({f"{OLD}/01.flac"})
 
-    assert await _artist_names(mass, track_id) == ({OLD_NAME, NEW_NAME}, {OLD_NAME, NEW_NAME})
+    assert await _track_artists(mass, track_id) == {OLD, NEW}
