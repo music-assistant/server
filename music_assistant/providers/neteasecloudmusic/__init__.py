@@ -2063,7 +2063,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Fetch the cached playlist detail object of an official radar playlist."""
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             payload = await self._get_recommend_payload_cached(
-                f"radar_playlist_{source_playlist_id}",
+                f"radar_playlist_{self._uid}_{source_playlist_id}",
                 _RECOMMEND_RADAR_TTL,
                 "/playlist/detail",
                 {"id": source_playlist_id, "cookie": self._cookie},
@@ -2074,12 +2074,14 @@ class NeteaseCloudMusicProvider(MusicProvider):
         return None
 
     async def _get_radar_cover_url(
-        self, source_playlist_id: str, detail: dict[str, Any] | None = None
+        self, source_playlist_id: str, detail: dict[str, Any] | None
     ) -> str | None:
         """Return the cover image of an official radar playlist."""
+        # the detail is resolved once by the caller: a failed fetch (None) must not be
+        # retried here, and only a successful coverless detail falls back to the tracks
         if detail is None:
-            detail = await self._get_radar_playlist_detail(source_playlist_id)
-        if detail and (cover := _playlist_cover_url(detail)):
+            return None
+        if cover := _playlist_cover_url(detail):
             return cover
         # some api backends do not expose a cover on the radar playlist detail:
         # fall back to the album art of the first track in the playlist

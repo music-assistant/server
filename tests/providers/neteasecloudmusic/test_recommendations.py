@@ -348,6 +348,44 @@ async def test_radar_tracks_cache_key_includes_account(
 
 
 @pytest.mark.asyncio
+async def test_personal_recommend_radar_detail_failure_is_not_retried(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """A failed radar detail fetch is not retried for the cover, nor triggers the track fallback."""
+    _install_cache_mocks(provider)
+    client_mock = _stub_client_get(provider, fail_paths={"/playlist/detail"})
+
+    result = await provider.get_recommendation_items("personal_recommend")
+
+    ids = [item.item_id for item in result]
+    assert "personal_radar_dynamic" in ids
+    assert "time_radar_dynamic" in ids
+    called_paths = [call.args[0] for call in client_mock.call_args_list]
+    # each radar detail is attempted exactly once, never retried for the cover
+    assert called_paths.count("/playlist/detail") == 2
+    # a failed detail fetch must not fall back to the radar track listing
+    assert "/playlist/track/all" not in called_paths
+
+
+@pytest.mark.asyncio
+async def test_radar_metadata_cache_key_includes_account(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """The radar detail cache is scoped per account, so it is not reused across accounts."""
+    provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cache_set = AsyncMock()
+    provider.mass.cache.set = cache_set  # type: ignore[method-assign]
+    _stub_client_get(provider)
+
+    await provider._get_radar_playlist_detail("3136952023")
+
+    assert cache_set.await_count == 1
+    cache_key = cache_set.call_args.kwargs["key"]
+    # the uid (fixture uid is 42) is part of the key
+    assert "radar_playlist_42_3136952023" in cache_key
+
+
+@pytest.mark.asyncio
 async def test_get_recommendation_items_new_songs(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
