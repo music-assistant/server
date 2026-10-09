@@ -66,6 +66,26 @@ def _seeked_position(seek: AsyncMock) -> int:
     return position
 
 
+def _anchoring_seek(
+    ctrl: PlayerQueuesController, queue: PlayerQueue, gate: asyncio.Event | None = None
+) -> list[int]:
+    """Stub seek to record its targets and anchor the queue there, optionally held on a gate."""
+    positions: list[int] = []
+
+    async def _fake_seek(_queue_id: str, position: int) -> None:
+        positions.append(position)
+        # stand in for the stream rebuild, then anchor the queue the way play_index does
+        if gate is None:
+            await asyncio.sleep(0.01)
+        else:
+            await gate.wait()
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+
+    ctrl.seek = AsyncMock(side_effect=_fake_seek)  # type: ignore[method-assign]
+    return positions
+
+
 async def test_skip_uses_live_position_while_playing() -> None:
     """The queue clock only ticks once a second, so a skip must work out the position now."""
     ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=2.0)
@@ -115,23 +135,91 @@ async def test_skip_back_past_the_start_clamps_to_zero() -> None:
 
 
 async def test_repeated_presses_accumulate() -> None:
-    """Each press must start from where the previous one left off, not the same stale position."""
+    """Each seek must start from where the previous one left off, not the same stale position."""
     ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
-    positions: list[int] = []
-
-    async def _fake_seek(_queue_id: str, position: int) -> None:
-        positions.append(position)
-        # stand in for the stream rebuild, then anchor the queue the way play_index does
-        await asyncio.sleep(0.01)
-        queue.elapsed_time = position
-        queue.elapsed_time_last_updated = time.time()
-
-    ctrl.seek = AsyncMock(side_effect=_fake_seek)  # type: ignore[method-assign]
+    positions = _anchoring_seek(ctrl, queue)
 
     await asyncio.gather(*(ctrl.skip(QUEUE_ID, -10) for _ in range(3)))
 
-    # without the playback lock all three read ~100 before any of them writes, giving [90, 90, 90]
-    assert positions == [90, 80, 70]
+    # the first press finds the lock free and seeks at once; the other two wait for it and
+    # land together from the position it published
+    assert positions == [90, 70]
+
+
+async def test_rapid_presses_coalesce_into_one_seek() -> None:
+    """Presses that pile up behind a running seek are applied as a single jump."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    gate = asyncio.Event()
+    positions = _anchoring_seek(ctrl, queue, gate)
+
+    presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(6)]
+    await asyncio.sleep(0.01)
+    gate.set()
+    await asyncio.gather(*presses)
+
+    assert positions == [170, 120]
+
+
+async def test_pending_skips_are_dropped_when_the_item_changes() -> None:
+    """Presses meant for one chapter must not move the next one."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    gate = asyncio.Event()
+    positions = _anchoring_seek(ctrl, queue, gate)
+
+    presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(3)]
+    await asyncio.sleep(0.01)
+    queue.current_item = QueueItem(
+        queue_id=QUEUE_ID, queue_item_id="item2", name="chapter two", duration=DURATION
+    )
+    gate.set()
+    await asyncio.gather(*presses)
+
+    assert positions == [170]
+
+
+async def test_pending_skips_start_from_a_position_set_meanwhile() -> None:
+    """Waiting presses are relative to wherever playback is once they get their turn."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
+        presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(2)]
+        await asyncio.sleep(0.01)
+        queue.elapsed_time = 500
+        queue.elapsed_time_last_updated = time.time()
+    await asyncio.gather(*presses)
+
+    assert positions == [480]
+
+
+async def test_failed_seek_does_not_carry_into_the_next_skip() -> None:
+    """A skip that could not be applied must not add its offset to a later one."""
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0)
+    seek.side_effect = [InvalidCommand("seek failed"), None]
+
+    with pytest.raises(InvalidCommand, match="seek failed"):
+        await ctrl.skip(QUEUE_ID, -30)
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert seek.await_args is not None
+    assert seek.await_args.args[1] == 110
+    assert ctrl._queue_data[QUEUE_ID].pending_skip_item_id is None
+
+
+async def test_cancelled_skip_does_not_carry_into_the_next_skip() -> None:
+    """A press cancelled while waiting for its turn must not add its offset to a later one."""
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
+        press = asyncio.create_task(ctrl.skip(QUEUE_ID, -30))
+        await asyncio.sleep(0.01)
+        press.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await press
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert positions == [110]
 
 
 async def test_skip_requires_an_item_with_a_duration() -> None:
