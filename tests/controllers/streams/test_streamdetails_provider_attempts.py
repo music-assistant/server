@@ -381,6 +381,32 @@ async def test_an_account_without_a_mapping_stands_in_on_the_siblings_best_mappi
     other.get_stream_details.assert_not_awaited()
 
 
+async def test_an_account_that_no_longer_finds_the_item_is_no_stand_in_for_it() -> None:
+    """An account whose own mapping of the item is unavailable is not retried as a stand-in."""
+    hifi_instance = "tidal--hifi"
+    gone_instance = "tidal--gone"
+    other_instance = "spotify--other"
+    hifi = _music_provider(hifi_instance)
+    gone = _music_provider(gone_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({hifi_instance: hifi, gone_instance: gone, other_instance: other})
+    cast("MagicMock", audio.mass).providers = [hifi, gone, other]
+    gone_mapping = _mapping(gone_instance, content_type=ContentType.FLAC)
+    gone_mapping.available = False
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            gone_mapping,
+            _mapping(other_instance),
+        ),
+        excluded_provider_instances={hifi_instance},
+    )
+
+    assert streamdetails.provider == other_instance
+    gone.get_stream_details.assert_not_awaited()
+
+
 async def test_a_sibling_account_with_a_mapping_of_its_own_is_marked_on_that_mapping() -> None:
     """An account that maps the item itself marks its own mapping when it no longer finds it."""
     hifi_instance = "tidal--hifi"

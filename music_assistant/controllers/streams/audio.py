@@ -3784,6 +3784,12 @@ class StreamsAudio:
         :return: Ordered provider mapping candidates.
         """
         candidates: dict[tuple[str, str], SourceCandidate] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in provider_mappings
+            if not mapping.available
+        }
         # best mapping first, so an account standing in for a sibling's item id is backed by
         # the sibling's best mapping
         for mapping in rank_provider_mappings(provider_mappings):
@@ -3794,6 +3800,8 @@ class StreamsAudio:
                 if provider.instance_id in excluded_provider_instances:
                     continue
                 candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
                 # a sibling account only stands in for an item id when the item has no
                 # mapping of its own on that account
                 if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
