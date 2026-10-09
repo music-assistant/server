@@ -7,6 +7,8 @@ playlog row that was still in progress must leave the count alone.
 
 from __future__ import annotations
 
+import asyncio
+
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ItemMapping, ProviderMapping
 
@@ -149,25 +151,51 @@ async def test_provider_sync_appends_history_only_when_progress_completes(
     )
     assert not await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
 
-    await mass.music.mark_item_played(
-        audiobook,
-        fully_played=True,
-        seconds_played=3600,
-        user_initiated=False,
-        userid=user.user_id,
-    )
-    await mass.music.mark_item_played(
-        audiobook,
-        fully_played=True,
-        seconds_played=3600,
-        user_initiated=False,
-        userid=user.user_id,
+    await asyncio.gather(
+        mass.music.mark_item_played(
+            audiobook,
+            fully_played=True,
+            seconds_played=3600,
+            user_initiated=False,
+            userid=user.user_id,
+        ),
+        mass.music.mark_item_played(
+            audiobook,
+            fully_played=True,
+            seconds_played=3600,
+            user_initiated=False,
+            userid=user.user_id,
+        ),
     )
 
     rows = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
     assert len(rows) == 1
     assert rows[0]["media_type"] == MediaType.AUDIOBOOK.value
     assert await _play_count(mass, db_item_id) == 1
+
+
+async def test_unattributed_completion_does_not_fan_out_into_history(
+    mass: MusicAssistant,
+) -> None:
+    """Progress may fan out to users, but an unknown listener is not a history event."""
+    await mass.webserver.auth.create_user("historyfanout1")
+    await mass.webserver.auth.create_user("historyfanout2")
+    db_item_id = await _add_library_audiobook(mass, play_count=0)
+    audiobook = await mass.music.audiobooks.get_library_item(db_item_id)
+
+    await mass.music.mark_item_played(audiobook, fully_played=True, queue_id="anonymous-queue")
+
+    progress_rows = await mass.music.database.get_rows(
+        DB_TABLE_MEDIA_PROGRESS,
+        {"item_id": db_item_id, "media_type": MediaType.AUDIOBOOK.value},
+    )
+    history_rows = await mass.music.database.get_rows(
+        DB_TABLE_PLAY_HISTORY,
+        {"item_id": db_item_id, "media_type": MediaType.AUDIOBOOK.value},
+    )
+    assert len(progress_rows) == 2
+    assert not history_rows
+    assert await _play_count(mass, db_item_id) == 0
 
 
 async def test_manual_mark_played_does_not_append_history_or_increment_count(

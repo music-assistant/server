@@ -1798,7 +1798,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 params["playback_speed"] = playback_speed
             for user_id in user_ids:
                 params["userid"] = user_id
-                recorded_play = await self._record_completed_play(params)
+                recorded_play = await self._record_completed_play(
+                    params, user_is_resolved=user is not None
+                )
                 await self._upsert_playlog(params)
                 play_history_written = recorded_play or play_history_written
             self._signal_playlog_updated(
@@ -3508,19 +3510,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             entry,
         )
 
-    async def _record_completed_play(self, progress: dict[str, Any]) -> bool:
+    async def _record_completed_play(
+        self, progress: dict[str, Any], *, user_is_resolved: bool
+    ) -> bool:
         """Append a completed queue play or a provider's transition to completed."""
-        if not progress["fully_played"]:
+        if not user_is_resolved or not progress["fully_played"]:
             return False
 
         if progress["queue_id"] is None:
             if progress["user_initiated"]:
                 return False
-            previous_progress = await self.database.get_row(
-                DB_TABLE_MEDIA_PROGRESS,
-                {key: progress[key] for key in PLAYLOG_CONFLICT_KEYS},
+            conflict_params = {key: progress[key] for key in PLAYLOG_CONFLICT_KEYS}
+            conflict_clause = " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+            cursor = await self.database.execute(
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET fully_played = 1 "
+                f"WHERE {conflict_clause} AND COALESCE(fully_played, 0) = 0",
+                conflict_params,
             )
-            if not previous_progress or parse_optional_bool(previous_progress["fully_played"]):
+            try:
+                transitioned = cursor.rowcount > 0
+            finally:
+                await cursor.close()
+            if not transitioned:
                 return False
 
         await self.database.insert(
