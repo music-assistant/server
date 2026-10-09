@@ -3065,9 +3065,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ctrl = self.get_controller(media_type)
         except NotImplementedError:
             return None
-        if library_item := await ctrl.get_visible_library_item_by_prov_id(
-            item_id, provider_instance
-        ):
+        if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
             return f"library://{media_type.value}/{library_item.item_id}"
         return None
 
