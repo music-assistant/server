@@ -433,15 +433,37 @@ class NeteaseCloudMusicProvider(MusicProvider):
             self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
 
-    @property
-    def api_client(self) -> NcmApiClient:
-        """Return the underlying NetEase API client (read-only, for companion plugins)."""
-        return self._client
+    async def scrobble(self, track_id: str, seconds_played: int) -> None:
+        """
+        Check in a played track to this NetEase account (scrobble).
 
-    @property
-    def cookie(self) -> str:
-        """Return the login cookie used for the NetEase API (read-only, for companion plugins)."""
-        return self._cookie
+        :param track_id: The NetEase track id that was played.
+        :param seconds_played: The real listened time in seconds.
+        """
+        album_id = await self._get_track_album_id(track_id)
+        if not album_id:
+            raise ResourceTemporarilyUnavailable(
+                f"NetEase track {track_id} has no album to check in against"
+            )
+        await self._client.get(
+            "/scrobble",
+            # the login cookie must also travel as a query param: some NCM api backends only
+            # attribute the play when it is sent that way, and silently drop it (still
+            # answering success) when it is only in the Cookie header.
+            params={
+                "id": track_id,
+                "sourceid": album_id,
+                "time": seconds_played,
+                "cookie": self._cookie,
+            },
+            cookie=self._cookie,
+        )
+        self.logger.debug(
+            "Checked in track %s to NetEase (source %s, played %ss)",
+            track_id,
+            album_id,
+            seconds_played,
+        )
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
@@ -922,6 +944,17 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if isinstance(songs, list):
             return [item for item in songs if isinstance(item, dict)]
         return []
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_track_album_id(self, track_id: str) -> str | None:
+        """Return the album id of a NetEase track, used as the scrobble source id."""
+        songs = await self._get_song_detail(track_id)
+        if songs:
+            # compatible NetEase API backends return the album as "album" instead of "al"
+            album = songs[0].get("al") or songs[0].get("album")
+            if isinstance(album, dict) and album.get("id"):
+                return str(album["id"])
+        return None
 
     async def _get_song_music_detail(self, song_id: str) -> dict[str, Any] | None:
         """Fetch extended quality info (jm/je/hr...) for a single song."""

@@ -9,7 +9,6 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     ResourceTemporarilyUnavailable,
-    SetupFailedError,
 )
 
 from music_assistant.helpers.provider_access import (
@@ -35,20 +34,12 @@ SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 NETEASE_DOMAIN: Final[str] = "neteasecloudmusic"
-# namespace for this plugin's cache entries
-_CACHE_PROVIDER: Final[str] = "neteasecloudmusic_scrobble"
-_CACHE_CATEGORY_SCROBBLE: Final[int] = 1
-# a track's album (the scrobble source id) is stable catalog data
-_SOURCEID_CACHE_TTL: Final[int] = 60 * 60 * 24 * 30
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    ncm_prov = mass.get_provider(NETEASE_DOMAIN)
-    if not isinstance(ncm_prov, NeteaseCloudMusicProvider):
-        raise SetupFailedError("A NetEase Cloud Music source must be configured first.")
     return NeteaseScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -130,13 +121,10 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
                 if isinstance(prov, NeteaseCloudMusicProvider):
                     return prov, mapping.item_id
             return None, item_id
-        if provider_instance_id_or_domain.startswith(NETEASE_DOMAIN):
-            # the item was played from this exact NetEase instance, so only that one may be
-            # reported to; an unavailable instance is never stood in for by another one
-            prov = exact_provider(self.mass, provider_instance_id_or_domain)
-            if isinstance(prov, NeteaseCloudMusicProvider):
-                return prov, item_id
-            return None, item_id
+        # not a library item: only the exact instance that played it may be reported to
+        prov = exact_provider(self.mass, provider_instance_id_or_domain)
+        if isinstance(prov, NeteaseCloudMusicProvider):
+            return prov, item_id
         return None, item_id
 
     async def _preferred_mappings(
@@ -163,60 +151,4 @@ class NeteaseScrobbleHandler(ScrobblerHelper):
         )
         if not prov:
             return
-        source_id = await self._get_source_id(prov, track_id)
-        if not source_id:
-            return
-        await prov.api_client.get(
-            "/scrobble",
-            # the login cookie must also travel as a query param: some NCM api backends only
-            # attribute the play to the account when it is sent that way, and silently drop
-            # it (still answering success) when it is only in the Cookie header. Mirrors the
-            # same workaround the NCM music provider applies to its personalized endpoints.
-            params={
-                "id": track_id,
-                "sourceid": source_id,
-                "time": report.seconds_played,
-                "cookie": prov.cookie,
-            },
-            cookie=prov.cookie,
-        )
-        self.logger.debug(
-            "Checked in track %s to NetEase (source %s, played %ss)",
-            track_id,
-            source_id,
-            report.seconds_played,
-        )
-
-    async def _get_source_id(self, prov: NeteaseCloudMusicProvider, track_id: str) -> str | None:
-        """Return the album id of a NetEase track (cached), used as the scrobble source id."""
-        cache_key = f"sourceid:{track_id}"
-        cached = await self.mass.cache.get(
-            key=cache_key,
-            provider=_CACHE_PROVIDER,
-            category=_CACHE_CATEGORY_SCROBBLE,
-            default=None,
-        )
-        if isinstance(cached, str) and cached:
-            return cached
-
-        payload = await prov.api_client.get(
-            "/song/detail", params={"ids": track_id}, cookie=prov.cookie
-        )
-        songs = payload.get("songs")
-        if not isinstance(songs, list) and isinstance(payload.get("data"), dict):
-            songs = payload["data"].get("songs")
-        source_id: str | None = None
-        if isinstance(songs, list) and songs and isinstance(songs[0], dict):
-            # compatible NetEase API backends return the album as "album" instead of "al"
-            album = songs[0].get("al") or songs[0].get("album")
-            if isinstance(album, dict) and album.get("id"):
-                source_id = str(album["id"])
-        if source_id is not None:
-            await self.mass.cache.set(
-                key=cache_key,
-                provider=_CACHE_PROVIDER,
-                category=_CACHE_CATEGORY_SCROBBLE,
-                data=source_id,
-                expiration=_SOURCEID_CACHE_TTL,
-            )
-        return source_id
+        await prov.scrobble(track_id, report.seconds_played)
