@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from qqmusic_api import ApiDataError, GlobalApiError, HTTPError, LoginError, NetworkError
@@ -14,6 +15,7 @@ from qqmusic_api.models.request import Credential
 from qqmusic_api.modules.login_utils import QRCodeLoginSession
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
+from music_assistant.providers.qqmusic import setup_flow as qqmusic_setup_flow
 from music_assistant.providers.qqmusic.setup_flow import _qr_data_uri, _run_qr_login, _wait_qr_login
 
 
@@ -200,3 +202,23 @@ async def test_run_qr_login_converts_mobile_credential_validation_error() -> Non
 
     with pytest.raises(SetupFlowError, match="QQ Music app login failed"):
         await _run_qr_login(_FakeSetupSession(), SimpleNamespace(login=_MalformedCredentialLogin()))
+
+
+@pytest.mark.asyncio
+async def test_run_setup_rejects_credential_without_encrypt_uin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incomplete QR credential is rejected before the setup data is persisted."""
+    client = SimpleNamespace(close=AsyncMock())
+    session = SimpleNamespace(finish=AsyncMock())
+    credential = Credential.model_validate(
+        {"musicid": 123, "musickey": "key", "str_musicid": "123", "loginType": 2}
+    )
+    monkeypatch.setattr(qqmusic_setup_flow, "QQClient", Mock(return_value=client))
+    monkeypatch.setattr(qqmusic_setup_flow, "_run_qr_login", AsyncMock(return_value=credential))
+
+    with pytest.raises(SetupFlowError, match="incomplete credential"):
+        await qqmusic_setup_flow.run_setup(session)
+
+    session.finish.assert_not_awaited()
+    client.close.assert_awaited_once()

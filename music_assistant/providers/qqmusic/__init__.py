@@ -60,14 +60,11 @@ from qqmusic_api.modules.song import SongFileInfo, SongFileType, SpecialSongFile
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
     CONF_CREDENTIAL_JSON,
-    CONF_LOGIN_TYPE,
-    CONF_MUSICID,
-    CONF_MUSICKEY,
     CONF_QUALITY,
-    CONF_UIN,
     QUALITY_FLAC,
     QUALITY_HI_RES,
     QUALITY_MP3_128,
@@ -128,8 +125,8 @@ async def setup(
 
 
 def _store_credential(values: dict[str, ConfigValueType], credential: Credential) -> None:
-    if not credential.musicid or not credential.musickey:
-        raise LoginFailed("QR login succeeded but credential is incomplete")
+    if not credential.musicid or not credential.musickey or not credential.encrypt_uin:
+        raise SetupFlowError("QQ Music app login returned an incomplete credential")
     values[CONF_CREDENTIAL_JSON] = credential.model_dump_json(by_alias=True)
 
 
@@ -178,39 +175,23 @@ class QQMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Validate auth and initialize qqmusic api adapters."""
-        credential: Credential | None = None
-        if credential_json := str(self.get_setup_value(CONF_CREDENTIAL_JSON) or "").strip():
-            try:
-                credential = Credential.model_validate_json(credential_json)
-            except ValidationError as err:
-                self.logger.warning(
-                    "Failed to parse persisted QQ credential_json, fallback to legacy fields: %s",
-                    err,
-                )
-
-        if not credential or not credential.musicid or not credential.musickey:
-            config_musicid = self.get_setup_value(CONF_MUSICID) or self.get_setup_value(CONF_UIN)
-            config_musickey = self.get_setup_value(CONF_MUSICKEY)
-            config_login_type = self.get_setup_value(CONF_LOGIN_TYPE)
-            if not (config_musicid and config_musickey):
-                raise LoginFailed("No QQ Music authentication configured, please login by QR code")
-            login_type_raw = str(config_login_type or "2")
-            login_type = int(login_type_raw) if login_type_raw.isdigit() else 2
-            credential = Credential.model_validate(
-                {
-                    "musicid": int(str(config_musicid).strip()),
-                    "musickey": str(config_musickey),
-                    "str_musicid": str(config_musicid).strip(),
-                    "loginType": login_type,
-                }
+        credential_json = str(self.get_setup_value(CONF_CREDENTIAL_JSON) or "").strip()
+        if not credential_json:
+            raise LoginFailed(
+                "QQ Music authentication is missing; please remove and re-add the integration"
+            )
+        try:
+            credential = Credential.model_validate_json(credential_json)
+        except ValidationError as err:
+            raise LoginFailed(
+                "QQ Music authentication is invalid; please remove and re-add the integration"
+            ) from err
+        if not credential.musicid or not credential.musickey or not credential.encrypt_uin:
+            raise LoginFailed(
+                "QQ Music authentication is invalid; please remove and re-add the integration"
             )
         if not credential.str_musicid and credential.musicid:
             credential = credential.model_copy(update={"str_musicid": str(credential.musicid)})
-        if not credential.encrypt_uin:
-            raise LoginFailed(
-                "QQ Music credential is missing encryptUin, "
-                "please remove and re-add the integration"
-            )
 
         self._qq_client = QQClient(credential=credential)
         self._qq_search = self._qq_client.search

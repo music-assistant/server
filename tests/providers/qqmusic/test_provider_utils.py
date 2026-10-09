@@ -85,7 +85,13 @@ def test_store_credential_writes_only_current_format() -> None:
     _store_credential(
         values,
         Credential.model_validate(
-            {"musicid": 123, "musickey": "key", "str_musicid": "123", "loginType": 2}
+            {
+                "musicid": 123,
+                "musickey": "key",
+                "str_musicid": "123",
+                "encryptUin": "encrypted-uin",
+                "loginType": 2,
+            }
         ),
     )
 
@@ -835,16 +841,52 @@ async def test_create_playlist_uses_typed_id_and_dirid() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_async_init_rejects_legacy_credential_without_encrypt_uin() -> None:
-    """Legacy scalar credentials cannot support library sync without encryptUin."""
+@pytest.mark.parametrize(
+    "credential_json",
+    [
+        None,
+        "not-json",
+        Credential.model_validate(
+            {"musicid": 123, "musickey": "key", "str_musicid": "123", "loginType": 2}
+        ).model_dump_json(by_alias=True),
+    ],
+)
+async def test_handle_async_init_requires_valid_complete_credential_json(
+    credential_json: str | None,
+) -> None:
+    """Provider setup requires a complete credential_json from the app QR login."""
     provider = QQMusicProvider.__new__(QQMusicProvider)
     provider.logger = Mock(level=INFO)
     provider.get_setup_value = lambda key: {  # type: ignore[attr-defined]
+        "credential_json": credential_json,
         "musicid": "123",
         "musickey": "key",
         "login_type": "2",
     }.get(key)
     provider._update_setup_data = Mock()
 
-    with pytest.raises(LoginFailed, match="missing encryptUin"):
+    with pytest.raises(LoginFailed, match="remove and re-add the integration"):
         await provider.handle_async_init()
+
+
+@pytest.mark.asyncio
+async def test_handle_async_init_uses_complete_credential_json() -> None:
+    """A complete app credential initializes the provider."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    provider.logger = Mock(level=INFO)
+    credential_json = Credential.model_validate(
+        {
+            "musicid": 123,
+            "musickey": "key",
+            "str_musicid": "123",
+            "encryptUin": "encrypted-uin",
+            "loginType": 2,
+        }
+    ).model_dump_json(by_alias=True)
+    provider.get_setup_value = lambda key: {"credential_json": credential_json}.get(key)  # type: ignore[attr-defined]
+    provider._update_setup_data = Mock()
+
+    await provider.handle_async_init()
+
+    assert provider._credential.encrypt_uin == "encrypted-uin"
+    await provider._qq_client.close()
