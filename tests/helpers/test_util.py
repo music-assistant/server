@@ -816,12 +816,17 @@ class TestGuardSingleRequest:
         assert caller.calls == 1
 
     @pytest.mark.asyncio
-    async def test_callers_of_different_users_do_not_share_a_request(
+    async def test_callers_of_different_identities_do_not_share_a_request(
         self, mass_minimal: MusicAssistant
     ) -> None:
-        """A request resolves per user, so only callers of the same user join one flight."""
+        """A request resolves per user and role, so only the same identity joins one flight."""
         caller = _GuardedCaller(mass_minimal)
-        users = [User(user_id=name, username=name, role=UserRole.USER) for name in ("a", "a", "b")]
+        users = [
+            User(user_id=name, username=name, role=role)
+            for name, role in (("a", UserRole.USER), ("a", UserRole.USER), ("b", UserRole.USER))
+        ]
+        # the same account after a role change is a different identity as well
+        users.append(User(user_id="a", username="a", role=UserRole.GUEST))
 
         async def fetch_as(user: User) -> str:
             set_current_user(user)
@@ -829,9 +834,9 @@ class TestGuardSingleRequest:
 
         calls = [asyncio.create_task(fetch_as(user)) for user in users]
         await asyncio.sleep(0)
-        assert caller.calls == 2
+        assert caller.calls == 3
         caller.release.set()
-        assert await asyncio.gather(*calls) == ["result-123"] * 3
+        assert await asyncio.gather(*calls) == ["result-123"] * 4
 
     @pytest.mark.asyncio
     async def test_failure_reaches_the_caller_without_being_logged(
