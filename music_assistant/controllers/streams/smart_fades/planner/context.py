@@ -22,13 +22,17 @@ from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
     detect_low_groove_entry,
     detect_low_mix_out,
+    kick_runs,
+    window_duty,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
+    SEGUE_ENERGY_FRACTION,
     SMART_CROSSFADE_DURATION,
     detect_effective_audio_end,
     detect_groove_entry,
     detect_mix_out_point,
+    detect_rise_point,
     extrapolate_downbeats,
     keys_compatible,
 )
@@ -36,6 +40,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
     QuickFadeTrigger,
     SmartFadeNotApplicable,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.structure import (
@@ -93,6 +98,36 @@ _CODA_MIN_SECONDS: float = 4.0
 _CODA_MIN_BARS: int = 2
 _CODA_LEVEL_HOLD: float = 0.5
 
+# Longest segue overlap; also the edge window the kickless check reads
+SEGUE_MAX_SECONDS: float = 15.0
+# A deck's edge is kickless when at most this share of its bars carries a kick
+_KICKLESS_DUTY_MAX: float = 0.125
+# A segue point snaps to a downbeat only when the 4 downbeats before it are this regular
+_SNAP_GRID_STD_MAX: float = 0.1
+# a downbeat this close to a segue point sits on it (RMS bins are ~0.1 s wide)
+_SNAP_SLACK_S: float = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class SegueFacts:
+    """
+    Where the outgoing tail and the incoming head are quiet enough to overlap.
+
+    ``point`` and ``quiet_tail`` are buffer-local; ``rise`` and ``quiet_head``
+    are head-local seconds of the incoming track.
+    """
+
+    # last moment the outgoing tail is at or above the segue level; 0.0 = quiet throughout
+    point: float
+    # first moment the incoming head reaches the segue level
+    rise: float
+    quiet_tail: float
+    quiet_head: float
+    snapped_out: bool
+    snapped_in: bool
+    # quiet tail plus quiet head, capped to the segue maximum and the room
+    overlap: float
+
 
 @dataclass(frozen=True, slots=True)
 class TransitionContext:
@@ -139,6 +174,22 @@ class TransitionContext:
     vocal_collision_reliable: bool = True
     # what made ``tier`` a quick fade; None when the tier is a blend
     quick_fade_trigger: QuickFadeTrigger | None = None
+    # runs of kick bars: outgoing buffer-local up to audio_end, incoming head-local;
+    # None without a band profile
+    kick_out: tuple[tuple[float, float], ...] | None = None
+    kick_in: tuple[tuple[float, float], ...] | None = None
+    # the outgoing last / incoming first SEGUE_MAX_SECONDS carry (almost) no kick
+    out_kickless: bool = False
+    in_kickless: bool = False
+    # None without RMS energy on both decks
+    segue: SegueFacts | None = None
+
+    @property
+    def preferred_style(self) -> TransitionStyle:
+        """The style this pair should ship: a beatmatchable tier blends, any other pair segues."""
+        if self.tier is TransitionTier.QUICK_FADE:
+            return TransitionStyle.SEGUE
+        return TransitionStyle.BLEND
 
 
 def build_transition_context(
@@ -286,6 +337,11 @@ def build_transition_context(
         fade_out_analysis.duration or 0.0,
     )
 
+    kick_out, kick_in, out_kickless, in_kickless = _kick_facts(
+        outgoing_profile, incoming_profile, buffer_offset, audio_end
+    )
+    segue = _segue_facts(outgoing, incoming, protective_downbeats, buffer_duration, audio_end)
+
     if vocal_out_scoring is not None and vocal_in_scoring is not None:
         vocal_coverage = "both"
     elif vocal_out_scoring is not None:
@@ -298,7 +354,7 @@ def build_transition_context(
         VERBOSE_LOG_LEVEL,
         "transition context: tier=%s bpm=%.1f->%.1f (diff=%.1f%%) cross_meter=%s buffer=%.1fs "
         "offset=%.1fs audio_end=%.1fs anchor=%.2f mix_out=%.2f kick=%s fade_onset=%s coda=%s "
-        "natural_entry=%.2f vocals=%s",
+        "natural_entry=%.2f vocals=%s kickless=%s/%s quiet_tail=%s quiet_head=%s",
         tier,
         outgoing.bpm,
         incoming.bpm,
@@ -314,6 +370,10 @@ def build_transition_context(
         coda_zone,
         natural_entry,
         vocal_coverage,
+        out_kickless,
+        in_kickless,
+        f"{segue.quiet_tail:.2f}" if segue is not None else None,
+        f"{segue.quiet_head:.2f}" if segue is not None else None,
     )
 
     return TransitionContext(
@@ -340,6 +400,11 @@ def build_transition_context(
         protective_downbeats=tuple(float(x) for x in protective_downbeats),
         vocal_collision_reliable=vocal_collision_reliable,
         quick_fade_trigger=quick_fade_trigger,
+        kick_out=kick_out,
+        kick_in=kick_in,
+        out_kickless=out_kickless,
+        in_kickless=in_kickless,
+        segue=segue,
     )
 
 
@@ -491,6 +556,134 @@ def _detect_incoming_entry(incoming: Deck, incoming_profile: BandProfile | None)
     return detect_groove_entry(
         incoming.analysis.rms_energy, incoming.analysis.duration, incoming.downbeats
     )
+
+
+def _kick_facts(
+    outgoing_profile: BandProfile | None,
+    incoming_profile: BandProfile | None,
+    buffer_offset: float,
+    audio_end: float,
+) -> tuple[
+    tuple[tuple[float, float], ...] | None, tuple[tuple[float, float], ...] | None, bool, bool
+]:
+    """
+    Return ``(kick_out, kick_in, out_kickless, in_kickless)`` for the two decks.
+
+    :param outgoing_profile: The outgoing deck's band profile, if any.
+    :param incoming_profile: The incoming deck's band profile, if any.
+    :param buffer_offset: Media time where the outgoing buffer starts.
+    :param audio_end: Buffer-local RMS-audible boundary.
+    """
+    kick_out = kick_in = None
+    out_kickless = in_kickless = False
+    if outgoing_profile is not None:
+        end = buffer_offset + audio_end
+        kick_out = tuple(
+            (left - buffer_offset, right - buffer_offset)
+            for left, right in kick_runs(
+                outgoing_profile, _LOW_ANCHOR_BAR_FRACTION, buffer_offset, end
+            )
+        )
+        out_duty = window_duty(
+            outgoing_profile, "low", end - SEGUE_MAX_SECONDS, end, k=_LOW_ANCHOR_BAR_FRACTION
+        )
+        out_kickless = out_duty <= _KICKLESS_DUTY_MAX
+    if incoming_profile is not None:
+        kick_in = tuple(
+            kick_runs(
+                incoming_profile, _LOW_ANCHOR_BAR_FRACTION, 0.0, float(SMART_CROSSFADE_DURATION)
+            )
+        )
+        in_duty = window_duty(
+            incoming_profile, "low", 0.0, SEGUE_MAX_SECONDS, k=_LOW_ANCHOR_BAR_FRACTION
+        )
+        in_kickless = in_duty <= _KICKLESS_DUTY_MAX
+    return kick_out, kick_in, out_kickless, in_kickless
+
+
+def _segue_facts(
+    outgoing: Deck,
+    incoming: Deck,
+    protective_downbeats: npt.NDArray[np.float32],
+    buffer_duration: float,
+    audio_end: float,
+) -> SegueFacts | None:
+    """
+    Measure the outgoing quiet tail and the incoming quiet head, or None without RMS energy.
+
+    :param outgoing: The outgoing deck, with buffer-local grids.
+    :param incoming: The incoming deck, with head-local grids.
+    :param protective_downbeats: Buffer-local outgoing downbeats up to the audible end.
+    :param buffer_duration: Length in seconds of the fade-out holdback.
+    :param audio_end: Buffer-local RMS-audible boundary.
+    """
+    out_a, in_a = outgoing.analysis, incoming.analysis
+    if not (out_a.rms_energy and in_a.rms_energy and out_a.duration and in_a.duration):
+        return None
+    raw_point = detect_mix_out_point(
+        out_a.rms_energy,
+        out_a.duration,
+        buffer_duration,
+        outgoing.bpm,
+        fraction=SEGUE_ENERGY_FRACTION,
+        beats_per_bar=outgoing.beats_per_bar,
+    )
+    raw_rise = detect_rise_point(
+        in_a.rms_energy,
+        in_a.duration,
+        incoming.bpm,
+        SEGUE_ENERGY_FRACTION,
+        beats_per_bar=incoming.beats_per_bar,
+    )
+    # each point snaps into its own quiet side only, so no loud bar counts as quiet
+    point, snapped_out = _snap_segue_point(
+        min(raw_point, audio_end),
+        protective_downbeats[protective_downbeats <= audio_end],
+        outgoing.beats_per_bar * 60.0 / outgoing.bpm,
+        later=True,
+    )
+    rise, snapped_in = _snap_segue_point(
+        raw_rise, incoming.downbeats, incoming.beats_per_bar * 60.0 / incoming.bpm, later=False
+    )
+    quiet_tail = audio_end - point
+    return SegueFacts(
+        point=point,
+        rise=rise,
+        quiet_tail=quiet_tail,
+        quiet_head=rise,
+        snapped_out=snapped_out,
+        snapped_in=snapped_in,
+        overlap=min(
+            quiet_tail + rise, SEGUE_MAX_SECONDS, audio_end, float(SMART_CROSSFADE_DURATION)
+        ),
+    )
+
+
+def _snap_segue_point(
+    point: float, downbeats: npt.NDArray[np.float32], bar_seconds: float, *, later: bool
+) -> tuple[float, bool]:
+    """
+    Snap a segue point to the nearest downbeat on one side within one bar, on a regular grid only.
+
+    Returns the (possibly snapped) point and whether it snapped.
+
+    :param point: The measured point.
+    :param downbeats: The deck's downbeats, in the point's time base.
+    :param bar_seconds: Length of one bar of the deck.
+    :param later: Snap to a downbeat at or after the point, else at or before it.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    before = downbeats[downbeats <= point + _SNAP_SLACK_S][-4:]
+    if len(before) < 4 or float(np.std(np.diff(before))) >= _SNAP_GRID_STD_MAX:
+        return point, False
+    if later:
+        side = downbeats[(downbeats >= point - _SNAP_SLACK_S) & (downbeats <= point + bar_seconds)]
+    else:
+        side = downbeats[(downbeats <= point + _SNAP_SLACK_S) & (downbeats >= point - bar_seconds)]
+    if not len(side):
+        return point, False
+    return float(side[np.argmin(np.abs(side - point))]), True
 
 
 def _build_vocal_masks(
