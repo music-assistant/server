@@ -29,6 +29,9 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
 from .candidates import RUNG_LADDER, Candidate, VocalOnsetEntryGenerator
 from .context import TransitionContext
 
+# Weighted bars of both decks' kicks together above which the drum check rejects
+RHYTHM_CLASH_LIMIT_BARS: float = 2.0
+
 # Ambition ordering of the transition tiers, most ambitious first
 _TIER_ORDER: tuple[TransitionTier, ...] = (
     TransitionTier.FULL_BLEND,
@@ -92,15 +95,17 @@ class VocalCollisionPolicy(Policy):
 
 
 class RhythmClashPolicy(Policy):
-    """Reject or penalize an unsynced transition that plays both decks' kicks together."""
+    """Reject or penalize a segue or a dressed transition that plays both decks' kicks together."""
 
-    clash_bars_limit: float = 2.0
+    clash_bars_limit: float = RHYTHM_CLASH_LIMIT_BARS
     penalty_scale: float = 20.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
-        # a blend beatmatches its kicks
-        if candidate.plan.style is TransitionStyle.BLEND:
+        # a blend beatmatches its kicks, and a cut keeps the quick fade it always was: a
+        # clashing cut gives way to a dressed transition at selection instead
+        style = candidate.plan.style
+        if style is not TransitionStyle.SEGUE and style not in DRESSED_STYLES:
             return Verdict.ok()
         if ctx.kick_out is None or ctx.kick_in is None:
             return Verdict.ok()
@@ -207,11 +212,9 @@ class OverlapPreferencePolicy(Policy):
     segue_halving_penalty: float = 4.0
     # a candidate of another style than the context prefers
     style_penalty: float = 15.0
-    # Where the context prefers a segue, a dressed transition stands in for a cut (it only
-    # ever replaces one). The dressed style that suits the tempo gap pays less than the cut,
-    # by about what a few seconds of dropped tail cost; the other one pays the mismatch on
-    # top, which outweighs the kick clash a 4-bar filter out keeps from two kicked decks
-    dressed_style_penalty: float = 10.0
+    # A dressed transition only competes with other dressed transitions: the one whose style
+    # doesn't suit the tempo gap pays this, which outweighs the kick clash a 4-bar filter
+    # out keeps from two kicked decks
     dressing_mismatch_penalty: float = 12.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
@@ -229,14 +232,12 @@ class OverlapPreferencePolicy(Policy):
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
-        if ctx.preferred_style is TransitionStyle.SEGUE:
-            style = candidate.plan.style
-            if style not in DRESSED_STYLES:
-                penalty += self.style_penalty
-            else:
-                penalty += self.dressed_style_penalty
-                if style is not ctx.dressed_style:
-                    penalty += self.dressing_mismatch_penalty
+        style = candidate.plan.style
+        if style in DRESSED_STYLES:
+            if style is not ctx.dressed_style:
+                penalty += self.dressing_mismatch_penalty
+        elif ctx.preferred_style is TransitionStyle.SEGUE:
+            penalty += self.style_penalty
         return Verdict.ok(penalty)
 
 

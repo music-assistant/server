@@ -79,9 +79,14 @@ def _ctx() -> TransitionContext:
     )
 
 
-def _named(source: str, style: TransitionStyle | None = None, duration: float = 20.0) -> Candidate:
+def _named(
+    source: str,
+    style: TransitionStyle | None = None,
+    duration: float = 20.0,
+    rhythm_clash: float = 0.0,
+) -> Candidate:
     """Build a test candidate distinguishable by its ``spec.source``."""
-    candidate = build_test_candidate(style=style, duration=duration)
+    candidate = build_test_candidate(style=style, duration=duration, rhythm_clash=rhythm_clash)
     return dataclasses.replace(candidate, spec=dataclasses.replace(candidate.spec, source=source))
 
 
@@ -264,7 +269,7 @@ class TestCandidateSelector:
         assert result.candidate is cut
 
 class TestDressedSelection:
-    """A dressed transition only ever replaces the cut that would ship otherwise."""
+    """The best dressed transition replaces a winning cut that stacks two kicks, nothing else."""
 
     def _select(
         self, candidates: list[Candidate], penalties: dict[str, float]
@@ -276,31 +281,42 @@ class TestDressedSelection:
         )
         return selector.select(candidates, _ctx())
 
-    def test_a_cheaper_dressed_transition_replaces_the_winning_cut(self) -> None:
-        """A shorter, cheaper filter out ships in place of the cut."""
-        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
-        dressed = _named("filter", style=TransitionStyle.FILTER_OUT, duration=4.0)
+    def test_a_clashing_cut_gives_way_to_the_best_dressed_transition(self) -> None:
+        """A cut past the drum limit is replaced, however its penalty compares."""
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0, rhythm_clash=2.67)
+        echo = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
+        filter_out = _named("filter", style=TransitionStyle.FILTER_OUT, duration=8.0)
 
-        result = self._select([cut, dressed], {"cut": 15.0, "filter": 2.0})
+        result = self._select([cut, echo, filter_out], {"cut": 5.0, "echo": 22.0, "filter": 20.0})
 
         assert result is not None
-        assert result.candidate is dressed
+        assert result.candidate is filter_out
 
-    def test_a_dearer_dressed_transition_leaves_the_cut(self) -> None:
-        """A dressed transition scoring worse than the cut does not ship."""
-        cut = _named("cut", style=TransitionStyle.CUT)
-        dressed = _named("echo", style=TransitionStyle.ECHO_OUT)
+    def test_a_cut_within_the_drum_limit_stays_a_cut(self) -> None:
+        """A clean or mildly clashing cut ships, though a dressed transition scores lower."""
+        for clash in (0.0, 2.0):
+            cut = _named("cut", style=TransitionStyle.CUT, rhythm_clash=clash)
+            dressed = _named("filter", style=TransitionStyle.FILTER_OUT)
 
-        result = self._select([cut, dressed], {"cut": 15.0, "echo": 16.0})
+            result = self._select([cut, dressed], {"cut": 15.0, "filter": 0.0})
+
+            assert result is not None
+            assert result.candidate is cut
+
+    def test_a_clashing_cut_without_a_dressed_survivor_ships(self) -> None:
+        """No dressed alternative leaves the clashing cut as it is."""
+        cut = _named("cut", style=TransitionStyle.CUT, rhythm_clash=2.67)
+
+        result = self._select([cut], {"cut": 15.0})
 
         assert result is not None
         assert result.candidate is cut
 
     def test_a_dressed_transition_never_replaces_a_blend_or_a_segue(self) -> None:
         """Against a winning blend or segue the cheapest dressed transition stays out."""
-        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
+        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0, rhythm_clash=3.0)
         segue = _named("segue", style=TransitionStyle.SEGUE, duration=10.0)
-        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0, rhythm_clash=2.67)
         dressed = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
         penalties = {"blend": 10.0, "segue": 5.0, "cut": 15.0, "echo": 0.0}
 
@@ -311,17 +327,6 @@ class TestDressedSelection:
         assert over_blend.candidate is blend
         assert over_segue is not None
         assert over_segue.candidate is segue
-
-    def test_a_dressed_transition_does_not_shorten_what_a_segue_must_match(self) -> None:
-        """A segue as long as the cut competes even when a shorter dressed one scores better."""
-        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
-        segue = _named("segue", style=TransitionStyle.SEGUE, duration=8.0)
-        dressed = _named("filter", style=TransitionStyle.FILTER_OUT, duration=4.0)
-
-        result = self._select([cut, dressed, segue], {"cut": 15.0, "filter": 0.0, "segue": 4.0})
-
-        assert result is not None
-        assert result.candidate is segue
 
     def test_dressed_transitions_alone_win_only_the_rescue_pass(self) -> None:
         """Without a surviving blend or cut, a dressed transition wins the rescue pass only."""

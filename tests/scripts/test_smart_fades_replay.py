@@ -259,26 +259,27 @@ def test_replayer_reports_a_segue_and_its_cause(
     assert (row["rhythm_clash_bars"] > 0.0) is kick_in_head
 
 
-def test_replayer_reports_an_echo_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two loud kicked ends 25% apart ship an echo out, which reports its audible trim."""
+def test_replayer_reports_a_filter_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two loud kicked ends 11.7% apart ship a filter out, with its kick clash and trim."""
     monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
     monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
     out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
     fade_in = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
-    fade_in.bpm = 150.0
+    fade_in.bpm = 134.0
     analyses = {out_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3), in_key: fade_in}
     tracks = {key: TrackInfo(name=key[0]) for key in analyses}
 
     row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
 
-    assert row["style"] == "ECHO_OUT"
-    assert row["source"] == "echo-out"
+    assert row["style"] == "FILTER_OUT"
+    assert row["source"] == "filter-out"
+    assert row["bars"] == 4
     assert row["cause"] == "QF: tempo"
-    assert (row["fadeout_curve"], row["fadein_curve"]) == ("nofade", "nofade")
-    assert row["overlap_s"] == pytest.approx(2.0)
-    # the echo ends on the last downbeat, 2s before the loud end of the buffer
+    assert (row["fadeout_curve"], row["fadein_curve"]) == ("qsin", "qsin")
+    assert row["overlap_s"] == pytest.approx(8.0)
+    # the filter ends on the last downbeat, 2s before the loud end of the buffer
     assert row["audible_trim_s"] == pytest.approx(2.0)
-    assert row["rhythm_clash_bars"] == 0.0
+    assert 0.0 < row["rhythm_clash_bars"] <= 2.0
 
 
 def _data_files(folder: Path) -> dict[str, bytes]:

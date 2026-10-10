@@ -28,6 +28,14 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
+from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    CandidateFactory,
+    EchoOutGenerator,
+)
+from music_assistant.controllers.streams.smart_fades.planner.context import (
+    build_transition_context,
+)
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
@@ -302,7 +310,9 @@ async def test_echo_out_repeats_the_last_beat_and_cuts_the_dry_signal() -> None:
 @pytest.mark.asyncio
 async def test_a_filter_out_plan_sweeps_the_outgoing_bass_away() -> None:
     """A planned filter out removes the outgoing bass over its overlap and nothing else."""
-    out_analysis, in_analysis = _analysis(120.0, 240.0), _analysis(138.0, 240.0)
+    # two kicked decks 11.7% apart: the 4-bar cut clashes, so a filter out replaces it
+    out_analysis = _with_bands(_analysis(120.0, 240.0), 0.5, 0.3, 0.3, 0.3)
+    in_analysis = _with_bands(_analysis(134.0, 240.0), 0.5, 0.3, 0.3, 0.3)
     fade_out = (_tone(60.0, 45.0) + _tone(3000.0, 45.0)).tobytes()
     fade_in = (_tone(90.0, 45.0) + _tone(5000.0, 45.0)).tobytes()
     swept_mix, swept = await _render(out_analysis, in_analysis, fade_out, fade_in)
@@ -335,13 +345,18 @@ async def test_a_filter_out_plan_sweeps_the_outgoing_bass_away() -> None:
 
 @pytest.mark.asyncio
 async def test_an_echo_out_plan_echoes_the_last_beat_over_the_next_track() -> None:
-    """A planned echo out stops the outgoing track at its cut and echoes the beat before it."""
-    fade = SmartCrossFade(logging.getLogger(), _analysis(120.0, 240.0), _analysis(156.0, 240.0))
-    fade_in = _tone(5000.0, 45.0)
-    fade.build(len(_tone(1.0, 45.0).tobytes()), len(fade_in.tobytes()), PCM)
-    plan = fade.plan
-    assert plan is not None
+    """A finalized echo out stops the outgoing track at its cut and echoes the beat before it."""
+    logger = logging.getLogger()
+    out_analysis, in_analysis = _analysis(120.0, 240.0), _analysis(156.0, 240.0)
+    ctx = build_transition_context(out_analysis, in_analysis, 45.0, logger)
+    candidate = CandidateFactory(ctx, logger).build(next(iter(EchoOutGenerator().generate(ctx))))
+    assert candidate is not None
+    plan = PlanAssembler(ctx, logger).finalize(candidate)
     assert plan.style is TransitionStyle.ECHO_OUT
+    fade_in = _tone(5000.0, 45.0)
+    # the mixer renders exactly this plan
+    fade = SmartCrossFade(logger, out_analysis, in_analysis)
+    fade.filters, fade.timing_info = fade.renderer.render(plan, PCM, len(fade_in.tobytes()))
     assert plan.echo is not None
     cut, beat = plan.echo.cut_s, plan.echo.beat_s
     # a Hann-shaped burst on every outgoing beat: 1 kHz on the one before the cut, else 2 kHz

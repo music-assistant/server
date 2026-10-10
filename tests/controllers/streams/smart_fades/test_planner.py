@@ -584,9 +584,7 @@ class TestPlanSummaryLog:
         """A tempo-gap quick fade logs the tempo trigger and a negative gap for a slower B."""
         line = _summary_line(caplog, _analysis(150.0), _analysis(120.0))
 
-        assert line.startswith(
-            "planned transition: style=filter_out tier=quick_fade trigger=tempo "
-        )
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=tempo ")
         assert line.endswith(" bpm=150.0->120.0 (-20.0%)")
 
     def test_cross_meter_quick_fade_names_the_meter_trigger(
@@ -598,9 +596,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, _analysis(120.0), inc)
 
-        assert line.startswith(
-            "planned transition: style=filter_out tier=quick_fade trigger=meter "
-        )
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=meter ")
 
     def test_re_anchored_quick_fade_names_the_beat_grid(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
@@ -634,7 +630,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, _analysis(120.0), _analysis(150.0))
 
-        assert " source=echo-out (rescue pass) overlap=" in line
+        assert " source=trim-closing-anchor (rescue pass) bars=1 " in line
 
     def test_fallback_logs_its_source_without_bars(self, caplog: pytest.LogCaptureFixture) -> None:
         """The plain fallback crossfade logs its own source name and no bar count."""

@@ -12,11 +12,18 @@ from music_assistant.controllers.streams.smart_fades.models import (
     DRESSED_STYLES,
     TransitionPlan,
     TransitionStyle,
-    TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
+from music_assistant.controllers.streams.smart_fades.planner import (
+    SmartCrossFadePlanner,
+    planner,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
 from music_assistant.controllers.streams.smart_fades.planner.context import TransitionContext
+from music_assistant.controllers.streams.smart_fades.planner.policies import (
+    Policy,
+    Verdict,
+    default_policies,
+)
 from music_assistant.controllers.streams.smart_fades.planner.selection import (
     CandidateSelector,
     ScoredCandidate,
@@ -112,35 +119,30 @@ def _main_pass(
 
 
 class TestDressedScenarios:
-    """Two loud kicked ends at very different tempos get a dressed short transition."""
-
-    def test_kick_against_kick_25_percent_apart_echoes_out(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The outgoing track stops on a downbeat and echoes over the next for one bar."""
-        out, inc = _track(120.0), _track(150.0)
-
-        plan = _plan(out, inc)
-
-        assert plan.style is TransitionStyle.ECHO_OUT
-        assert plan.tier is TransitionTier.QUICK_FADE
-        assert plan.echo is not None
-        assert plan.echo.cut_s == pytest.approx(41.0)
-        assert plan.crossfade_duration == pytest.approx(4 * 0.5)
-        assert not plan.tempo_plan
-        # as long as the 1-bar cut it replaces
-        today = _plan_undressed(monkeypatch, out, inc)
-        assert today.style is TransitionStyle.CUT
-        assert plan.crossfade_duration >= today.crossfade_duration - 1e-6
+    """A cut that stacks two kicks past the drum limit gives way to a dressed transition."""
 
     def test_kick_against_kick_12_percent_apart_filters_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Four outgoing bars lose their low end while the next track fades in at full range."""
-        out, inc = _track(120.0), _track(134.4)
+        """
+        The 4-bar cut stacks two kicks for 2.67 weighted bars; a 4-bar filter out replaces it.
 
+        The outgoing low end is swept away while the next track fades in at full range,
+        and the filter out lasts as long as the cut it replaces.
+        """
+        out, inc = _track(120.0), _track(134.0)
+
+        scored, winner = _main_pass(monkeypatch, out, inc)
         plan = _plan(out, inc)
 
+        four_bar_cut = next(
+            e
+            for e in scored
+            if e.candidate.plan.style is TransitionStyle.CUT and e.candidate.spec.bars == 4
+        )
+        assert not four_bar_cut.rejected
+        assert four_bar_cut.candidate.metrics.rhythm_clash_bars == pytest.approx(8 / 3)
+        assert winner is not None
         assert plan.style is TransitionStyle.FILTER_OUT
         assert plan.crossfade_duration == pytest.approx(8.0)
         assert plan.highpass is not None
@@ -148,54 +150,70 @@ class TestDressedScenarios:
         assert plan.highpass.start_s == pytest.approx(plan.fade_out_window - 8.0)
         assert plan.eq_plan.low_in is None
         assert not plan.tempo_plan
-        # the 4-bar filter out keeps the 4 bars the quick fade had
-        assert plan.crossfade_duration >= _plan_undressed(monkeypatch, out, inc).crossfade_duration
+        today = _plan_undressed(monkeypatch, out, inc)
+        assert today.style is TransitionStyle.CUT
+        assert today.crossfade_duration == pytest.approx(8.0)
 
-    def test_a_four_bar_cut_that_stacks_two_kicks_gives_way_to_a_filter_out(
+    def test_kick_against_kick_25_percent_apart_keeps_its_cut(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """11.7% apart the 4-bar cut clashes past the drum limit; a 4-bar filter out replaces it."""
-        out, inc = _track(120.0), _track(134.0)
+        """Two kicks under a 1-bar cut stay within the drum limit, so the cut ships as before."""
+        out, inc = _track(120.0), _track(150.0)
 
-        scored, winner = _main_pass(monkeypatch, out, inc)
+        scored, _winner = _main_pass(monkeypatch, out, inc)
+        plan = _plan(out, inc)
 
-        four_bar_cut = next(
-            e
-            for e in scored
-            if e.candidate.plan.style is TransitionStyle.CUT and e.candidate.spec.bars == 4
+        assert any(
+            e.candidate.plan.style is TransitionStyle.ECHO_OUT and not e.rejected for e in scored
         )
-        assert four_bar_cut.candidate.plan.crossfade_duration == pytest.approx(8.0)
-        assert four_bar_cut.rejected
-        assert any(v.reason == "kick clash exceeds the guard limit" for v in four_bar_cut.verdicts)
-        assert winner is not None
-        assert winner.candidate.plan.style is TransitionStyle.FILTER_OUT
-        assert winner.candidate.plan.crossfade_duration == pytest.approx(8.0)
-        # without the dressed transitions a shorter cut would ship
-        assert _plan_undressed(monkeypatch, out, inc).crossfade_duration == pytest.approx(4.0)
+        assert plan.style is TransitionStyle.CUT
+        assert plan.metrics.rhythm_clash_bars == pytest.approx(2 / 3)
+        assert plan == _plan_undressed(monkeypatch, out, inc)
 
-    def test_a_clean_dressed_transition_beats_every_clean_cut(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without kick or vocal clashes the echo out wins and no tie decides it."""
-        out = _track(120.0)
-        inc = _track(150.0)
-        for track in (out, inc):
-            track.band_rms_low = _envelope(0.01)
+    def test_a_clean_cut_stays_a_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without kicks on both decks the cut ships, though a dressed transition scores lower."""
+        # a sung head keeps the kickless intro from riding a long segue
+        out, inc = _track(120.0), _track(134.0, vocals=_vocals((0.0, 30.0)))
+        inc.band_rms_low = _envelope(0.5, (0.0, 20.0, 0.01))
 
         scored, winner = _main_pass(monkeypatch, out, inc)
 
         assert winner is not None
-        assert winner.candidate.plan.style is TransitionStyle.ECHO_OUT
-        cuts = [
+        assert winner.candidate.plan.style is TransitionStyle.CUT
+        dressed = [
             e.total_penalty
             for e in scored
-            if e.candidate.plan.style is TransitionStyle.CUT and not e.rejected
+            if e.candidate.plan.style is TransitionStyle.FILTER_OUT and not e.rejected
         ]
-        assert min(cuts) > winner.total_penalty
+        assert min(dressed) < winner.total_penalty
+        assert _plan(out, inc) == _plan_undressed(monkeypatch, out, inc)
+
+    def test_a_clashing_cut_without_a_dressed_alternative_ships_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When every dressed transition is rejected the clashing cut ships unchanged."""
+
+        class _RejectDressed(Policy):
+            def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+                if candidate.plan.style in DRESSED_STYLES:
+                    return Verdict.reject("dressed rejected")
+                return Verdict.ok()
+
+        out, inc = _track(120.0), _track(134.0)
+        today = _plan_undressed(monkeypatch, out, inc)
+        monkeypatch.setattr(
+            planner, "default_policies", lambda: (*default_policies(), _RejectDressed())
+        )
+
+        plan = _plan(out, inc)
+
+        assert plan.style is TransitionStyle.CUT
+        assert plan.metrics.rhythm_clash_bars > 2.0
+        assert plan == today
 
 
 class TestDressedLeavesTheOtherStyles:
-    """A dressed transition only ever replaces a cut: blends and segues ship as before."""
+    """A dressed transition only ever replaces a clashing cut: blends and segues ship as before."""
 
     def test_a_beatmatchable_pair_keeps_its_blend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A same-tempo pair emits no dressed spec and blends exactly as before."""
@@ -219,21 +237,15 @@ class TestDressedLeavesTheOtherStyles:
 
 
 def test_the_plan_line_names_the_dressed_style(caplog: pytest.LogCaptureFixture) -> None:
-    """A shipped echo out logs its style without a bar count, a filter out with its bars."""
+    """A shipped filter out logs its style and its bars."""
     with caplog.at_level(logging.DEBUG, logger=LOGGER.name):
-        _plan(_track(120.0), _track(150.0))
-        _plan(_track(120.0), _track(134.4))
+        _plan(_track(120.0), _track(134.0))
 
-    lines = [
+    line = next(
         r.getMessage() for r in caplog.records if r.getMessage().startswith("planned transition: ")
-    ]
-    assert lines[0].startswith("planned transition: style=echo_out tier=quick_fade trigger=tempo ")
-    assert " source=echo-out overlap=2.00s " in lines[0]
-    assert " bars=" not in lines[0]
-    assert lines[1].startswith(
-        "planned transition: style=filter_out tier=quick_fade trigger=tempo "
     )
-    assert " source=filter-out bars=4 overlap=8.00s " in lines[1]
+    assert line.startswith("planned transition: style=filter_out tier=quick_fade trigger=tempo ")
+    assert " source=filter-out bars=4 overlap=8.00s " in line
 
 
 def test_dressed_styles_are_filter_out_and_echo_out() -> None:

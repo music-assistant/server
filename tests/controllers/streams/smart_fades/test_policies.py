@@ -194,7 +194,7 @@ class TestVocalCollisionPolicy:
 
 
 class TestRhythmClashPolicy:
-    """Reject/penalize two kicks playing on top of each other, unless beatmatched."""
+    """Reject/penalize two kicks on top of each other, in a segue or a dressed transition."""
 
     policy = RhythmClashPolicy()
     kicks = ((0.0, 45.0),)
@@ -203,16 +203,10 @@ class TestRhythmClashPolicy:
         return dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=self.kicks)
 
     @pytest.mark.parametrize(
-        "style",
-        [
-            TransitionStyle.SEGUE,
-            TransitionStyle.CUT,
-            TransitionStyle.FILTER_OUT,
-            TransitionStyle.ECHO_OUT,
-        ],
+        "style", [TransitionStyle.SEGUE, TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT]
     )
-    def test_rejects_an_unsynced_transition_above_the_limit(self, style: TransitionStyle) -> None:
-        """Any unsynced style clashing for more than 2 weighted bars is rejected."""
+    def test_rejects_above_the_limit(self, style: TransitionStyle) -> None:
+        """A segue or a dressed transition clashing for more than 2 weighted bars is rejected."""
         candidate = _candidate(style=style, rhythm_clash=2.01)
 
         assert self.policy.evaluate(candidate, self._kick_ctx()).rejected is True
@@ -225,9 +219,10 @@ class TestRhythmClashPolicy:
         assert self.policy.evaluate(at_limit, self._kick_ctx()).penalty == pytest.approx(20.0)
         assert self.policy.evaluate(half, self._kick_ctx()).penalty == pytest.approx(5.0)
 
-    def test_a_blend_is_not_judged(self) -> None:
-        """A beatmatched blend is never rejected or penalized for its kicks."""
-        candidate = _candidate(style=TransitionStyle.BLEND, rhythm_clash=9.0)
+    @pytest.mark.parametrize("style", [TransitionStyle.BLEND, TransitionStyle.CUT])
+    def test_a_blend_or_a_cut_is_not_judged(self, style: TransitionStyle) -> None:
+        """A blend or a cut is never rejected or penalized for its kicks."""
+        candidate = _candidate(style=style, rhythm_clash=9.0)
 
         verdict = self.policy.evaluate(candidate, self._kick_ctx())
 
@@ -419,20 +414,18 @@ class TestOverlapPreferencePolicy:
 
     @pytest.mark.parametrize(
         ("gap", "echo", "filter_4", "filter_2", "cut"),
-        [(25.0, 10.0, 22.0, 32.0, 15.0), (12.0, 22.0, 10.0, 20.0, 15.0)],
+        [(25.0, 0.0, 12.0, 22.0, 15.0), (12.0, 12.0, 0.0, 10.0, 15.0)],
     )
-    def test_the_dressed_style_that_suits_the_gap_outranks_the_cut_and_the_other(
+    def test_the_dressed_style_that_suits_the_gap_outranks_the_other(
         self, gap: float, echo: float, filter_4: float, filter_2: float, cut: float
     ) -> None:
         """
         Spell out the short styles' costs in a quick fade context.
 
         The dressed style that suits the tempo gap (an echo out past 20 %, else a filter
-        out) pays 10, a cut the style penalty of 15, and the other dressed style 22. A clean
-        cut never beats the clean dressed transition that suits the gap; it only wins where
-        that one carries more than 5 points (5 s of dropped tail, say) more than the cut. The
-        12 between the dressed styles cover the kick clash a 4-bar filter out keeps from two
-        kicked decks (1.44 weighted bars, 10.4 points).
+        out) pays nothing, the other one 12, which covers the kick clash a 4-bar filter
+        out keeps from two kicked decks (1.44 weighted bars, 10.4 points). A cut pays the
+        style penalty as before; it never competes with a dressed transition on penalty.
         """
         ctx = _ctx(tier=TransitionTier.QUICK_FADE, bpm_diff_percent=gap)
         tier = TransitionTier.QUICK_FADE
