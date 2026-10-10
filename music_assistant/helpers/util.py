@@ -859,6 +859,14 @@ def infer_album_type(title: str, version: str) -> AlbumType:
     return AlbumType.UNKNOWN
 
 
+_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
+
+
+def is_disc_dir(name: str) -> bool:
+    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
+    return bool(_DISC_DIR_RE.match(name.strip()))
+
+
 def strip_ads(line: str) -> str:
     """Strip Ads from line."""
     if ad_pattern.search(line):

@@ -270,14 +270,6 @@ def is_image_file(item: FileSystemItem) -> bool:
 
 # folder names that denote a disc/volume subfolder underneath an album folder; its own NFO is
 # never trusted as the album's identity, only the parent's is
-_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
-
-
-def is_disc_dir(name: str) -> bool:
-    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
-    return bool(_DISC_DIR_RE.match(name.strip()))
-
-
 def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
     """
     Parse an NFO file's bytes and return its expected root element, or None when malformed.

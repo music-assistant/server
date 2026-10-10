@@ -48,8 +48,8 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
+from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
-from music_assistant.providers.filesystem_local.helpers import is_disc_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
