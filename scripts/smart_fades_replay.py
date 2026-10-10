@@ -2,10 +2,10 @@ r"""
 Replay the smart fades planner over random track pairs from a server's stored analysis.
 
 Plans the transition of each pair the way playback would, without playing anything, and writes
-``pairs.csv`` (one row per pair) and ``summary.txt`` (tiers and overlap lengths, quick fade
-triggers, vocal and drum overlap, music style) into ``--out``. To measure a planner change, run
-it on both sides of the change with the same databases, seed and buffer; ``--code`` loads
-``music_assistant`` from another checkout.
+``pairs.csv`` (one row per pair) and ``summary.txt`` (tiers, transition styles and overlap
+lengths, quick fade triggers, vocal and drum overlap, music style) into ``--out``. To measure a
+planner change, run it on both sides of the change with the same databases, seed and buffer;
+``--code`` loads ``music_assistant`` from another checkout.
 
 Both databases are copied into a temporary directory with SQLite's backup API, so the server may
 keep running, and only those copies are read. The given databases are opened read-only; SQLite
@@ -140,7 +140,10 @@ CAUSES = (
     "rejection -> rescue/fallback/handoff",
     "blend: longer rungs rejected",
     "blend: short top rung",
+    "segue: shrunk for a clash",
+    "segue: short quiet material",
 )
+STYLES = ("BLEND", "SEGUE", "CUT")
 VOCAL_CLASSES = ("both sing", "outgoing only", "incoming only", "neither", "unknown")
 # shipped via and source of the plans that no selection pass won
 _UNPHRASED = {
@@ -392,6 +395,18 @@ def vocal_class(out_duty: float | None, in_duty: float | None) -> str:
     return "neither"
 
 
+def drum_class(kickless: bool, clash_bars: float) -> str:
+    """
+    Classify how the kicks of a pair meet over the measuring window.
+
+    :param kickless: Whether either deck has no kick bar in the window.
+    :param clash_bars: Gain-weighted bars both decks kick together.
+    """
+    if kickless:
+        return "kickless"
+    return "clash > 2" if clash_bars > CLASH_LIMIT_BARS else "overlap"
+
+
 def random_pairs(
     keys: list[TrackKey],
     tracks: dict[TrackKey, TrackInfo],
@@ -444,6 +459,7 @@ def summarize(rows: list[Row], tracks: dict[TrackKey, TrackInfo], header: str) -
     lines = [header]
     lines += _outcome_section(rows, plans)
     lines += _overlap_section(plans)
+    lines += _transition_style_section(plans)
     lines += _trigger_section(plans)
     lines += _vocal_section(plans)
     lines += _rhythm_section(plans)
@@ -622,14 +638,20 @@ def _bucket_pool(
 
 
 def _plan_facts(ctx: TransitionContext, plan: TransitionPlan, passes: list[_SelectionPass]) -> Row:
-    """Tier, shape and provenance of a shipped plan."""
+    """Tier, style, shape, curves and provenance of a shipped plan."""
     quick_fade = plan.tier.name == "QUICK_FADE"
+    segue = plan.style.name == "SEGUE"
     strategy = plan.metrics.strategy.name
     winner = next((p.winner for p in passes if p.winner is not None), None)
     bars: int | str = ""
     longer_rejected = 0
+    ideal_overlap: float | str = ""
     if winner is None:
         via, source = _UNPHRASED[strategy]
+    elif segue:
+        via = "main" if passes[0].winner is not None else "rescue"
+        source = winner.candidate.spec.source
+        ideal_overlap = round(winner.candidate.spec.ideal_overlap_s or 0.0, 3)
     else:
         via = "main" if passes[0].winner is not None else "rescue"
         source, bars = winner.candidate.spec.source, winner.candidate.spec.bars
@@ -643,15 +665,24 @@ def _plan_facts(ctx: TransitionContext, plan: TransitionPlan, passes: list[_Sele
         # as the planner logs it: only the beat grid depends on the anchor a candidate moved to
         "qf_trigger": str(ctx.quick_fade_trigger or "beat_grid") if quick_fade else "",
         "strategy": strategy,
+        "style": plan.style.name,
         "shipped_via": via,
         "source": source,
         "bars": bars,
         "longer_rejected": longer_rejected,
         "overlap_s": round(plan.crossfade_duration, 3),
+        "segue_ideal_s": ideal_overlap,
         "anchor_s": round(plan.fade_out_window, 3),
         "fadeout_trim_s": round(plan.fadeout_trim.trimmed_seconds, 3) if plan.fadeout_trim else 0.0,
         "fadein_trim_s": round(plan.fadein_trim_start or 0.0, 3),
         "tempo_stretch": bool(plan.tempo_plan),
+        "fadeout_curve": plan.fadeout_curve,
+        "fadein_curve": plan.fadein_curve,
+        "quiet_tail_s": round(ctx.segue.quiet_tail, 3) if ctx.segue else "",
+        "quiet_head_s": round(ctx.segue.quiet_head, 3) if ctx.segue else "",
+        "rhythm_clash_bars": round(plan.metrics.rhythm_clash_bars, 3),
+        "collision_s": round(plan.metrics.collision_seconds, 3),
+        "weighted_collision_s": round(plan.metrics.weighted_collision_seconds, 3),
     }
 
 
@@ -678,7 +709,7 @@ def _rhythm_facts(ctx: TransitionContext, plan: TransitionPlan) -> Row:
     """Kick overlap if the 8 outgoing bars before the anchor faded over the trimmed incoming head."""
     out_track, in_track = _kick_track(ctx.outgoing_profile), _kick_track(ctx.incoming_profile)
     if out_track is None or in_track is None:
-        return {"rhythm_safe": ""}
+        return {"rhythm_safe": "", "drum_class": ""}
     bar_out = _bar_seconds(ctx.outgoing)
     anchor, trim = plan.fade_out_window, plan.fadein_trim_start or 0.0
     length = min(WINDOW_BARS * bar_out, anchor)
@@ -690,11 +721,13 @@ def _rhythm_facts(ctx: TransitionContext, plan: TransitionPlan) -> Row:
     out_kick_bars = int(out_track.kick[out_bars].sum())
     in_kick_bars = int(in_track.kick[in_bars].sum())
     clash_bars = round(float(((out_kick & in_kick) * weight).sum() * SAMPLE_STEP) / bar_out, 3)
+    kickless = not out_kick_bars or not in_kick_bars
     return {
         "out_kick_bars": out_kick_bars,
         "in_kick_bars": in_kick_bars,
         "kick_clash_bars": clash_bars,
-        "rhythm_safe": not out_kick_bars or not in_kick_bars or clash_bars <= CLASH_LIMIT_BARS,
+        "rhythm_safe": kickless or clash_bars <= CLASH_LIMIT_BARS,
+        "drum_class": drum_class(kickless, clash_bars),
     }
 
 
@@ -733,6 +766,10 @@ def _cause(row: Row) -> str:
     """Name what kept the shipped fade as short as it is; meaningful for short fades only."""
     if row["shipped_via"] != "main":
         return "rejection -> rescue/fallback/handoff"
+    if row["style"] == "SEGUE":
+        if row["overlap_s"] < row["segue_ideal_s"] - 1e-3:
+            return "segue: shrunk for a clash"
+        return "segue: short quiet material"
     if row["tier"] == "QUICK_FADE":
         return f"QF: {row['qf_trigger']}"
     if row["longer_rejected"]:
@@ -777,6 +814,25 @@ def _overlap_section(plans: list[Row]) -> list[str]:
             f"  {tier:12s} {len(values):5d} {median:6.2f} {p10:6.2f} {p90:6.2f} "
             f"{100 * np.mean(values < 4):5.1f}% {100 * np.mean(values < SHORT_FADE_SECONDS):5.1f}%"
         )
+    return lines
+
+
+def _transition_style_section(plans: list[Row]) -> list[str]:
+    """Shipped overlap length per transition style, and the curves the segues ship with."""
+    lines = ["", "== shipped style (s): style n median p10 p90 <4s <8s"]
+    for style in STYLES:
+        values = np.array([row["overlap_s"] for row in plans if row["style"] == style])
+        if not len(values):
+            continue
+        p10, median, p90 = np.percentile(values, (10, 50, 90))
+        lines.append(
+            f"  {style:12s} {len(values):5d} {median:6.2f} {p10:6.2f} {p90:6.2f} "
+            f"{100 * np.mean(values < 4):5.1f}% {100 * np.mean(values < SHORT_FADE_SECONDS):5.1f}%"
+        )
+    curves = Counter(
+        f"{row['fadeout_curve']}/{row['fadein_curve']}" for row in plans if row["style"] == "SEGUE"
+    )
+    lines.append(f"  segue curves: {dict(curves.most_common())}")
     return lines
 
 
