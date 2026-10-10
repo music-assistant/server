@@ -1,6 +1,7 @@
 """Helpers for Bose soundtouch."""
 
 from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
 
 
 def source_id(source: str, source_account: str | None) -> str:
@@ -16,7 +17,7 @@ def extract_preset_id(message: str) -> int | None:
     """
     try:
         root = DefusedET.fromstring(message)
-    except DefusedET.ParseError:
+    except DefusedET.ParseError, DefusedXmlException:
         return None
 
     preset_id = next(
