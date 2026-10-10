@@ -25,6 +25,8 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
@@ -701,7 +703,8 @@ class MetaDataController(
                 phase.query,
                 phase.params,
                 limit=budget,
-                order_by="timestamp_added_desc",
+                sort_field=SortField.TIMESTAMP_ADDED,
+                sort_direction=SortDirection.DESC,
             )
             for item in items:
                 if musicbrainz.rate_limited:
@@ -878,13 +881,15 @@ class MetaDataController(
         query_params: dict[str, Any] | None = None,
         *,
         limit: int = METADATA_SCAN_BATCH_SIZE,
-        order_by: str = "random",
+        sort_field: SortField = SortField.RANDOM,
+        sort_direction: SortDirection | None = None,
     ) -> list[ItemCls]:
         """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=limit,
-                order_by=order_by,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
                 extra_query_parts=[query],
                 extra_query_params=query_params,
             )
@@ -894,7 +899,8 @@ class MetaDataController(
             await self._report_corrupt_metadata_rows(table)
             return await media_controller.get_library_items_by_query(
                 limit=limit,
-                order_by=order_by,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
                 extra_query_params=query_params,
             )

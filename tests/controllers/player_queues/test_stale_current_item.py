@@ -1,17 +1,18 @@
 """
-Tests for a queue whose current item is no longer among its items.
+Tests for a queue whose items change underneath its current item.
 
 The playback tracker can move the queue's position into a region of the queue that a concurrent
-load replaces right after, which leaves the current item pointing at a track the queue no longer
-holds. Pressing play then failed on that missing track every time, even though the queue was full.
-The position follows the items instead, and resuming never trusts a current item that is gone.
+load replaces or reorders right after. A replaced current item left the queue pointing at a track it
+no longer holds, and pressing play then failed on that missing track every time, even though the
+queue was full. The position follows the items instead, and resuming never trusts a current item
+that is gone.
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, Mock
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, QueueOption
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -99,7 +100,7 @@ def test_the_index_is_clamped_when_the_replacement_is_shorter() -> None:
 
 
 def test_a_change_that_keeps_the_current_item_leaves_the_position_alone() -> None:
-    """Only a vanished current item moves the queue; items added around it change nothing."""
+    """Items added around the current item leave the position alone."""
     ctrl, queue = _controller()
     items = ctrl._queue_data[QUEUE_ID].items
 
@@ -109,6 +110,57 @@ def test_a_change_that_keeps_the_current_item_leaves_the_position_alone() -> Non
     assert queue.current_item is items[CURRENT_INDEX]
     assert queue.elapsed_time == 42.0
     assert queue.resume_pos == 42
+
+
+def test_a_reorder_that_moved_the_current_item_moves_the_index_with_it() -> None:
+    """The index follows the current item to its new place, and the playback position is kept."""
+    ctrl, queue = _controller()
+    items = ctrl._queue_data[QUEUE_ID].items
+    current = queue.current_item
+    assert current is not None
+    reordered = [*items[:3], *reversed(items[3:])]
+
+    ctrl.update_items(QUEUE_ID, reordered)
+
+    new_index = reordered.index(current)
+    assert new_index != CURRENT_INDEX
+    assert queue.current_index == new_index
+    assert queue.current_item is current
+    assert queue.next_item is reordered[new_index + 1]
+    assert queue.elapsed_time == 42.0
+    assert queue.resume_pos == 42
+
+
+async def test_a_player_that_moves_on_during_a_shuffled_add_keeps_its_track() -> None:
+    """A shuffled add that lands after the player moved on leaves the queue on the playing track."""
+    ctrl, queue = _controller()
+    items = ctrl._queue_data[QUEUE_ID].items
+    queue.state = PlaybackState.PLAYING
+    queue.shuffle_enabled = True
+    queue.current_index = queue.index_in_buffer = 2
+    queue.current_item = items[2]
+    playing = items[6]
+
+    async def arrange(
+        _queue: PlayerQueue, to_arrange: list[QueueItem], **_kwargs: object
+    ) -> list[QueueItem]:
+        # the player moves on while the shuffle runs, and the queue follows it in the list it
+        # still holds
+        queue.current_index = ctrl.index_by_id(QUEUE_ID, playing.queue_item_id)
+        queue.current_item = playing
+        return list(reversed(to_arrange))
+
+    ctrl._smart_shuffle = Mock()
+    ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=arrange)
+
+    await ctrl._enqueue_with_option(QUEUE_ID, [_item("new0"), _item("new1")], QueueOption.ADD)
+
+    new_items = ctrl._queue_data[QUEUE_ID].items
+    assert new_items.index(playing) != items.index(playing)
+    assert queue.current_item is playing
+    assert queue.current_index == new_items.index(playing)
+    assert queue.next_item is new_items[new_items.index(playing) + 1]
 
 
 def test_a_replace_in_flight_leaves_the_position_to_its_caller() -> None:

@@ -30,6 +30,12 @@ RELEASE_GROUP_MBID = "7d4d1f70-1c99-4c1b-b0f1-9f2c1b2a3d44"
 ALBUM_IMAGE = "http://images/album1.jpg"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 def _detailed_album(item_id: str = "album1") -> Album:
     """Return an album carrying the details only a full provider fetch delivers."""
     album = create_album("spotify_1", item_id)
@@ -421,6 +427,23 @@ async def test_album_tracks_sort_an_unknown_disc_as_the_first(mass: MusicAssista
     ):
         tracks = await mass.music.albums.tracks(album.item_id, "library")
     assert [track.item_id for track in tracks] == ["t1", "t2"]
+
+
+async def test_album_tracks_show_the_album_image_through_the_album(mass: MusicAssistant) -> None:
+    """A provider track listed on a library album shows its album image, its own images untouched."""
+    album = await mass.music.albums.add_item_to_library(_detailed_album())
+    track = create_track("spotify_1", "t1", name="One")
+    track_image = MediaItemImage(
+        type=ImageType.THUMB, path="http://images/track1.jpg", provider="spotify_1"
+    )
+    track.metadata.images = UniqueList([track_image])
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=[track])
+    ):
+        tracks = await mass.music.albums.tracks(album.item_id, "library")
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == ALBUM_IMAGE
+    assert tracks[0].metadata.images == [track_image]
 
 
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
