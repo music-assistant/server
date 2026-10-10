@@ -614,11 +614,13 @@ class AIArtworkProvider(MetadataProvider):
             template = str(self.config.get_value(CONF_CUSTOM_PROMPT) or DEFAULT_CUSTOM_PROMPT)
             return _format_template(template, values).strip()
         preset = STYLE_PRESETS[style]
+        art = preset.art
         if self.config.get_value(CONF_TITLE_OVERLAY):
+            art = preset.art_without_title or art
             text_rules = NO_TEXT_RULES.format(area=preset.title_area)
         else:
             text_rules = f"{preset.typography.format(title=playlist.name)} {TITLE_RULES}"
-        values["style"] = f"{preset.art} {text_rules} {FULL_BLEED}"
+        values["style"] = f"{art} {text_rules} {FULL_BLEED}"
         return BASE_PROMPT.format(**values)
 
     async def _concept(self, playlist: Playlist, context: PlaylistContext) -> str:

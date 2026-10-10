@@ -19,6 +19,9 @@ CONF_KEEP_EXISTING_ARTWORK: Final = "keep_existing_artwork"
 CONF_MAX_PER_HOUR: Final = "max_generations_per_hour"
 CONF_ACTION_REGENERATE: Final = "regenerate"
 CONF_PREVIEW_PLAYLIST: Final = "preview_playlist"
+CONF_PREVIEW_STYLE: Final = "preview_style"
+CONF_PREVIEW_CUSTOM_PROMPT: Final = "preview_custom_prompt"
+CONF_PREVIEW_TITLE_OVERLAY: Final = "preview_title_overlay"
 CONF_ACTION_PREVIEW: Final = "preview"
 CONF_PREVIEW_IMAGE: Final = "preview_image"
 
@@ -72,6 +75,9 @@ class Style(StrEnum):
     MUSIC_ASSISTANT = "music_assistant"
     SPOTIFY = "spotify"
     APPLE_MUSIC = "apple_music"
+    RISOGRAPH = "risograph"
+    TYPE_CUTOUT = "type_cutout"
+    GOUACHE = "gouache"
     CUSTOM = "custom"
 
 
@@ -93,6 +99,8 @@ class StylePreset:
     # the area to keep clear when the title is overlaid afterwards
     title_area: str
     layout: TitleLayout
+    # the art when the title is overlaid afterwards, for a style whose art is built from the title
+    art_without_title: str | None = None
 
 
 BASE_PROMPT: Final = (
@@ -134,19 +142,18 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
     ),
     Style.MUSIC_ASSISTANT: StylePreset(
         art=(
-            "Style: a Music Assistant playlist cover. Abstract flowing sound waves, soft light "
-            "trails and gentle geometric shapes in Music Assistant's brand blues (bright sky blue "
-            "#03A9F4 fading into deep navy) on a dark background, with a subtle glow and depth, "
-            "modern and calm, cohesive with a series of playlist covers. Let the waves take on "
-            "the mood of the playlist through their rhythm and a single accent color."
+            "Style: a Music Assistant playlist cover. A night scene that captures the playlist, "
+            "drawn as glowing neon light lines and long-exposure light trails over a nearly black "
+            "background, like a neon sign or light painting: the main subject outlined in sky "
+            "blue #03A9F4 neon with one second neon color from the mood, soft bloom, reflections "
+            "and haze. Electric, nocturnal, minimal, cohesive with a series of playlist covers."
         ),
         typography=(
-            'Typography: the playlist title "{title}" as the only text, centered, set in a clean '
-            "bold modern sans-serif (like Inter or Roboto), white, crisp and legible against the "
-            "dark background."
+            'Typography: the playlist title "{title}" as the only text, as a crisp white '
+            "neon-tube script or clean sans-serif sign, centered near the bottom."
         ),
-        title_area="center",
-        layout=TitleLayout.CENTER,
+        title_area="lower area",
+        layout=TitleLayout.BOTTOM_LEFT_SMALL,
     ),
     Style.APPLE_MUSIC: StylePreset(
         art=(
@@ -162,6 +169,59 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
         ),
         title_area="bottom-left corner",
         layout=TitleLayout.BOTTOM_LEFT_SMALL,
+    ),
+    Style.RISOGRAPH: StylePreset(
+        art=(
+            "Style: a Music Assistant playlist cover. A two-color risograph print: a bold "
+            "illustration of a scene that captures the playlist, printed in sky blue #03A9F4 and "
+            "one fluorescent warm ink (pink, orange or yellow, matching the mood) on off-white "
+            "paper, with visible halftone dots, slight ink misregistration, overprint where the "
+            "colors overlap and paper grain. Indie, handmade, joyful, cohesive with a series of "
+            "playlist covers."
+        ),
+        typography=(
+            'Typography: the playlist title "{title}" as the only text, large, in a chunky '
+            "condensed sans-serif printed in the same ink, at the top."
+        ),
+        title_area="top band",
+        layout=TitleLayout.TOP_LEFT_LARGE,
+    ),
+    Style.TYPE_CUTOUT: StylePreset(
+        art=(
+            "Style: a Music Assistant playlist cover. A typography-led cover on a flat, solid "
+            "deep navy background with a thin sky blue #03A9F4 accent line below the title. Bold, "
+            "graphic, editorial, cohesive with a series of playlist covers."
+        ),
+        typography=(
+            'Typography: the playlist title "{title}" set enormous in a heavy, tightly spaced '
+            "sans-serif that fills most of the square, and the letters themselves are filled with "
+            "a vivid photograph of a scene that captures the playlist, as if cut out of the "
+            "photo. The title is the only text."
+        ),
+        title_area="center",
+        layout=TitleLayout.CENTER,
+        art_without_title=(
+            "Style: a Music Assistant playlist cover. A bold, graphic editorial cover: a vivid "
+            "photograph of a scene that captures the playlist, framed by a wide flat deep navy "
+            "border band with a thin sky blue #03A9F4 accent line, cohesive with a series of "
+            "playlist covers."
+        ),
+    ),
+    Style.GOUACHE: StylePreset(
+        art=(
+            "Style: a Music Assistant playlist cover. A warm, painterly editorial illustration in "
+            "gouache: a scene that captures the playlist with simplified shapes, visible brush "
+            "texture and a rich, harmonious palette led by the mood of the playlist, with a touch "
+            "of sky blue #03A9F4 somewhere in the scene (the sky, water, a light, clothing). "
+            "Feels like a magazine cover illustration, nostalgic and human, cohesive with a "
+            "series of playlist covers."
+        ),
+        typography=(
+            'Typography: the playlist title "{title}" as the only text, in a clean bold '
+            "sans-serif, white or cream, in a calm area at the top."
+        ),
+        title_area="top area",
+        layout=TitleLayout.TOP_LEFT_LARGE,
     ),
 }
 

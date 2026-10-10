@@ -168,8 +168,11 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider
     ("style", "expected"),
     [
         ("spotify", "Spotify editorial playlist cover"),
-        ("music_assistant", "Music Assistant's brand blues"),
+        ("music_assistant", "glowing neon light lines"),
         ("apple_music", "mesh gradient"),
+        ("risograph", "two-color risograph print"),
+        ("type_cutout", "letters themselves are filled with a vivid photograph"),
+        ("gouache", "painterly editorial illustration in gouache"),
     ],
 )
 async def test_each_style_has_its_own_prompt(
@@ -181,6 +184,18 @@ async def test_each_style_has_its_own_prompt(
     await provider.get_playlist_metadata(_smart_playlist())
 
     assert expected in _sent_prompt(provider)
+
+
+async def test_title_overlay_swaps_art_built_from_the_title(provider: AIArtworkProvider) -> None:
+    """A style whose art is made of the title asks for its own art when the title is overlaid."""
+    _set_config(provider, **{CONF_STYLE: "type_cutout", CONF_TITLE_OVERLAY: True})
+
+    await provider.get_playlist_metadata(_smart_playlist())
+
+    prompt = _sent_prompt(provider)
+    assert "framed by a wide flat deep navy border band" in prompt
+    assert "letters themselves" not in prompt
+    assert "No text, letters, numbers" in prompt
 
 
 async def test_title_overlay_asks_for_artwork_without_text(provider: AIArtworkProvider) -> None:
