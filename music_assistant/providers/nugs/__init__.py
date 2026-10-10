@@ -444,13 +444,26 @@ class NugsProvider(MusicProvider):
             track.duration = int(duration)
         return track
 
+    # both are fixed for the account, so track starts spend no requests on account lookups
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_subscription_info(self) -> dict[str, Any]:
+        """Return the subscription details of the nugs.net account."""
+        subscription_info: dict[str, Any] = await self._get_data("subscription", "")
+        return subscription_info
+
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_user_id(self) -> str:
+        """Return the user id of the nugs.net account."""
+        user_info = await self._get_data("user", "")
+        return str(user_info["userId"])
+
     async def _get_stream_url(self, item_id: str) -> str:
         """
         Return the stream url for a track in the configured quality, or lossy when unavailable.
 
         :param item_id: The nugs.net track id.
         """
-        subscription_info = await self._get_data("subscription", "")
+        subscription_info = await self._get_subscription_info()
         # trial and promo accounts have no regular plan: their plan sits on the promo object
         plan = subscription_info.get("plan") or (subscription_info.get("promo") or {}).get("plan")
         if not plan:
@@ -462,7 +475,6 @@ class NugsProvider(MusicProvider):
         dt_end = datetime.strptime(subscription_info["endsAt"], "%m/%d/%Y %H:%M:%S").replace(
             tzinfo=UTC
         )
-        user_info = await self._get_data("user", "")
         params: dict[str, Any] = {
             "app": 1,
             "HLS": 1,
@@ -472,7 +484,7 @@ class NugsProvider(MusicProvider):
             "subCostplanIDAccessList": plan["id"],
             "startDateStamp": int(dt_start.timestamp()),
             "endDateStamp": int(dt_end.timestamp()),
-            "nn_userID": user_info["userId"],
+            "nn_userID": await self._get_user_id(),
             "subscriptionID": subscription_info["legacySubscriptionId"],
         }
         quality = self._get_quality(plan)
