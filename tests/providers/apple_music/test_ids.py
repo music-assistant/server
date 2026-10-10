@@ -33,7 +33,15 @@ def test_is_library_id_rejects_invalid_values() -> None:
 
 def test_is_apple_id_accepts_catalog_and_prefixed_ids() -> None:
     """Catalog, library, playlist and station ids are recognised."""
-    for value in ("1613600188", "i.ABC123", "l.abc", "r.XyZ", "pl.u-ABC_1", "ra.1498157166"):
+    for value in (
+        "1613600188",
+        "a.ABC123",
+        "i.ABC123",
+        "l.abc",
+        "r.XyZ",
+        "pl.u-ABC_1",
+        "ra.1498157166",
+    ):
         assert is_apple_id(value)
 
 

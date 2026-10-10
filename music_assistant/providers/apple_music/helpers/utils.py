@@ -34,7 +34,7 @@ def is_apple_id(item_id: Any) -> bool:
         return False
     # catalog ids are numeric; library songs, albums, playlists and artists, catalog playlists
     # and stations carry their own type prefix
-    return bool(re.fullmatch(r"\d+|(?:i|l|p|r|pl|ra)\.[A-Za-z0-9_-]+", item_id))
+    return bool(re.fullmatch(r"\d+|(?:a|i|l|p|r|pl|ra)\.[A-Za-z0-9_-]+", item_id))
 
 
 def translate_media_type_to_apple_type(media_type: MediaType) -> str:
