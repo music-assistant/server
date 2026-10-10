@@ -1405,6 +1405,7 @@
   "provider.filesystem_local.config_entries.setup_content_type.options.sound_effects": "Sound effects",
   "provider.filesystem_local.errors.folder_not_allowed": "The folder {0} is not in a storage location you can use.",
   "provider.filesystem_local.errors.music_directory_not_found": "The folder {0} does not exist.",
+  "provider.filesystem_local.errors.path_outside_folder": "{0} lies outside the folder of this source and can not be read.",
   "provider.filesystem_local.errors.storage_location_unavailable": "The storage location at {0} is not available right now.",
   "provider.filesystem_local.manifest.description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares.",
   "provider.filesystem_local.manifest.name": "Local files",

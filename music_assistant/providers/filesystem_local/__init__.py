@@ -12,6 +12,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -142,6 +143,7 @@ from .cue import (
 from .helpers import (
     FileSystemItem,
     ScanErrors,
+    check_real_path,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
@@ -167,7 +169,6 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
-exists = wrap(os.path.exists)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -345,6 +346,19 @@ class LocalFileSystemProvider(MusicProvider):
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
+                translation_owner=self.translation_owner,
+                translation_args=[self.base_path],
+            )
+        # reads stay inside the real folder resolved here, so a symlink re-pointed later cannot
+        # move the source; it must still lie in the storage location of the configured folder
+        real_base_path = await asyncio.to_thread(lambda: self._real_base_path)
+        storage = self.mass.storage
+        location = storage.get_location_for_path(self.base_path)
+        if location is not None and storage.get_location_for_path(real_base_path) != location:
+            msg = f"Folder {self.base_path} is not in a storage location this source may use"
+            raise SetupFailedError(
+                msg,
+                translation_key="folder_not_allowed",
                 translation_owner=self.translation_owner,
                 translation_args=[self.base_path],
             )
@@ -955,6 +969,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Get all sound effect items this provider offers."""
 
         def _walk() -> list[FileSystemItem]:
+            check_real_path(self._real_base_path, self.base_path)
             return sorted(
                 recursive_iter(
                     self.base_path, self.base_path, SOUND_EFFECT_EXTENSIONS, self.logger
@@ -1234,10 +1249,15 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def resolve(self, file_path: str) -> FileSystemItem:
-        """Resolve (absolute or relative) path to FileSystemItem."""
+        """
+        Resolve (absolute or relative) path to FileSystemItem.
+
+        :raises MediaNotFoundError: If the path lies outside the folder of this source.
+        """
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
+            check_real_path(self._real_base_path, absolute_path)
             if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
@@ -1259,15 +1279,20 @@ class LocalFileSystemProvider(MusicProvider):
         return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
-        """Return bool is this FileSystem musicprovider has given file/dir."""
+        """
+        Return bool is this FileSystem musicprovider has given file/dir.
+
+        :raises MediaNotFoundError: If the path lies outside the folder of this source.
+        """
         if not file_path:
             return False
-        try:
-            abs_path = self.get_absolute_path(file_path)
-        except MediaNotFoundError:
-            # a path that escapes the base directory simply does not exist here
-            return False
-        return bool(await exists(abs_path))
+        abs_path = self.get_absolute_path(file_path)
+
+        def _exists() -> bool:
+            check_real_path(self._real_base_path, abs_path)
+            return Path(abs_path).exists()
+
+        return await asyncio.to_thread(_exists)
 
     def get_absolute_path(self, file_path: str) -> str:
         """Return absolute path for given file path."""
@@ -1307,6 +1332,11 @@ class LocalFileSystemProvider(MusicProvider):
         )
 
         def _walk() -> None:
+            try:
+                check_real_path(self._real_base_path, self.base_path)
+            except MediaNotFoundError as err:
+                scan_errors.record_dir_error(err, is_root=True)
+                return
             for scanned, item in enumerate(
                 recursive_iter(
                     self.base_path,
@@ -1476,10 +1506,10 @@ class LocalFileSystemProvider(MusicProvider):
 
         :param name: The artist name (or a sort-name alias) to match against a root folder.
         """
-        if await self.exists(name):
+        if await self._has_path(name):
             return name
         safe_name = create_safe_string(name, lowercase=False, replace_space=False)
-        if await self.exists(safe_name):
+        if await self._has_path(safe_name):
             return safe_name
         return None
 
@@ -2734,7 +2764,7 @@ class LocalFileSystemProvider(MusicProvider):
         # the actual file location - just change the file extension
         assert file_item.ext is not None  # for type checking
         lrc_path = f"{file_item.relative_path.removesuffix(file_item.ext)}lrc"
-        if await self.exists(lrc_path):
+        if await self._has_path(lrc_path):
             try:
                 raw = await self._read_file(lrc_path)
                 track.metadata.lrc_lyrics = raw.decode("utf-8")
@@ -3924,7 +3954,7 @@ class LocalFileSystemProvider(MusicProvider):
             return cast("dict[str, Any]", cache)
         data: dict[str, Any] = {}
         metadata_file = os.path.join(podcast_folder, "metadata.json")
-        if await self.exists(metadata_file):
+        if await self._has_path(metadata_file):
             # found json file with metadata
             raw = await self._read_file(metadata_file)
             data.update(json_loads(raw.decode("utf-8")))
@@ -3948,12 +3978,41 @@ class LocalFileSystemProvider(MusicProvider):
         # raw scandir order depends on the underlying filesystem (e.g. hash order
         # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
+
+        def _list() -> list[FileSystemItem]:
+            check_real_path(self._real_base_path, abs_path)
+            return sorted_scandir(self.base_path, abs_path, sort=True)
+
+        return await asyncio.to_thread(_list)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""
-        async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
-            return cast("bytes", await f.read())
+        abs_path = self.get_absolute_path(path)
+
+        def _read() -> bytes:
+            check_real_path(self._real_base_path, abs_path)
+            return Path(abs_path).read_bytes()
+
+        return await asyncio.to_thread(_read)
+
+    @cached_property
+    def _real_base_path(self) -> str:
+        """
+        Return the folder of this source with its symlinks resolved, as found on first use.
+
+        Not async friendly on first use.
+        """
+        return os.path.realpath(self.base_path)
+
+    async def _has_path(self, file_path: str) -> bool:
+        """
+        Return whether an optional file or folder, such as a lyrics file, can be read here.
+
+        :param file_path: The path to look for; one this source refuses to read counts as absent.
+        """
+        with contextlib.suppress(MediaNotFoundError):
+            return await self.exists(file_path)
+        return False
 
     def _get_sibling_paths(self) -> list[str]:
         """Return the folders of the other configured sources of this provider domain."""
