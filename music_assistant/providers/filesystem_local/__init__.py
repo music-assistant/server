@@ -12,6 +12,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -60,6 +61,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import (
     CONF_PATH,
+    CONF_PROVIDERS,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -130,7 +132,6 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
-    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -142,6 +143,7 @@ from .cue import (
 from .helpers import (
     FileSystemItem,
     ScanErrors,
+    check_real_path,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
@@ -167,7 +169,6 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
-exists = wrap(os.path.exists)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -267,7 +268,6 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
-            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -319,7 +319,15 @@ class LocalFileSystemProvider(MusicProvider):
 
     @property
     def instance_name_postfix(self) -> str | None:
-        """Return a (default) instance name postfix for this provider instance."""
+        """Return the end of the folder path that tells this source apart from its siblings."""
+        own = Path(self.base_path).parts
+        others = [Path(path).parts for path in self._get_sibling_paths()]
+        # the shortest tail that no other source of this kind ends with, e.g. "nas/music"
+        # next to "usb/music"
+        for depth in range(1, len(own) + 1):
+            tail = own[-depth:]
+            if all(other[-depth:] != tail for other in others):
+                return str(Path(*tail))
         return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
@@ -338,6 +346,19 @@ class LocalFileSystemProvider(MusicProvider):
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
+                translation_owner=self.translation_owner,
+                translation_args=[self.base_path],
+            )
+        # reads stay inside the real folder resolved here, so a symlink re-pointed later cannot
+        # move the source; it must still lie in the storage location of the configured folder
+        real_base_path = await asyncio.to_thread(lambda: self._real_base_path)
+        storage = self.mass.storage
+        location = storage.get_location_for_path(self.base_path)
+        if location is not None and storage.get_location_for_path(real_base_path) != location:
+            msg = f"Folder {self.base_path} is not in a storage location this source may use"
+            raise SetupFailedError(
+                msg,
+                translation_key="folder_not_allowed",
                 translation_owner=self.translation_owner,
                 translation_args=[self.base_path],
             )
@@ -554,7 +575,7 @@ class LocalFileSystemProvider(MusicProvider):
         query = (
             f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             f"WHERE provider_instance = '{self.instance_id}' "
-            f"AND media_type in ('track', 'playlist', 'audiobook', 'podcast_episode')"
+            f"AND media_type in ('track', 'playlist', 'audiobook', 'podcast')"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
@@ -645,6 +666,13 @@ class LocalFileSystemProvider(MusicProvider):
                     and item.absolute_path.rsplit(".", 1)[0] in cue_stems
                 )
             ]
+            if self.media_content_type == "podcasts":
+                items_to_process = self._changed_podcast_folders(
+                    [item for item, _ in items_to_process],
+                    metadata_files,
+                    file_checksums,
+                    cur_filenames,
+                )
             # register synthetic track IDs for unchanged CUE files so the
             # deletion pass does not treat them as removed
             for cue_item in unchanged_cue_items:
@@ -664,7 +692,9 @@ class LocalFileSystemProvider(MusicProvider):
                 self.name,
             )
 
-            # _SYNC_CONCURRENCY caps parallelism per provider (NFS/SMB/WebDAV friendly)
+            # _SYNC_CONCURRENCY caps parallelism per provider (NFS/SMB/WebDAV friendly);
+            # a podcast folder already parses its episodes in parallel, so those go one by one
+            concurrency = 1 if self.media_content_type == "podcasts" else self._SYNC_CONCURRENCY
             processed_count = 0
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
@@ -682,7 +712,7 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
             with self._ondemand_listing_scope():
-                async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+                async with TaskManager(self.mass, concurrency) as tm:
                     for item, prev_checksum in items_to_process:
                         await tm.create_task_with_limit(_process(item, prev_checksum))
         finally:
@@ -740,7 +770,7 @@ class LocalFileSystemProvider(MusicProvider):
             # no db item yet (e.g. browsing, or a manual refresh's second fetch after a
             # normal/NFO match resolved a new path before its mapping was persisted).
             # Recover identity from that path instead of falling back to its basename
-            if await self.exists(prov_artist_id):
+            if await self._has_path(prov_artist_id):
                 with self._ondemand_listing_scope():
                     name = Path(prov_artist_id).name
                     sort_name: str | None = None
@@ -777,9 +807,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # prov_artist_id is either an actual (relative) path or a name (as fallback)
         safe_artist_name = create_safe_string(prov_artist_id, lowercase=False, replace_space=False)
-        if await self.exists(prov_artist_id):
+        if await self._has_path(prov_artist_id):
             artist_path = prov_artist_id
-        elif await self.exists(safe_artist_name):
+        elif await self._has_path(safe_artist_name):
             artist_path = safe_artist_name
         else:
             for prov_mapping in db_artist.provider_mappings:
@@ -939,6 +969,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Get all sound effect items this provider offers."""
 
         def _walk() -> list[FileSystemItem]:
+            check_real_path(self._real_base_path, self.base_path)
             return sorted(
                 recursive_iter(
                     self.base_path, self.base_path, SOUND_EFFECT_EXTENSIONS, self.logger
@@ -1218,10 +1249,15 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def resolve(self, file_path: str) -> FileSystemItem:
-        """Resolve (absolute or relative) path to FileSystemItem."""
+        """
+        Resolve (absolute or relative) path to FileSystemItem.
+
+        :raises MediaNotFoundError: If the path lies outside the folder of this source.
+        """
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
+            check_real_path(self._real_base_path, absolute_path)
             if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
@@ -1243,15 +1279,20 @@ class LocalFileSystemProvider(MusicProvider):
         return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
-        """Return bool is this FileSystem musicprovider has given file/dir."""
+        """
+        Return bool is this FileSystem musicprovider has given file/dir.
+
+        :raises MediaNotFoundError: If the path lies outside the folder of this source.
+        """
         if not file_path:
             return False
-        try:
-            abs_path = self.get_absolute_path(file_path)
-        except MediaNotFoundError:
-            # a path that escapes the base directory simply does not exist here
-            return False
-        return bool(await exists(abs_path))
+        abs_path = self.get_absolute_path(file_path)
+
+        def _exists() -> bool:
+            check_real_path(self._real_base_path, abs_path)
+            return Path(abs_path).exists()
+
+        return await asyncio.to_thread(_exists)
 
     def get_absolute_path(self, file_path: str) -> str:
         """Return absolute path for given file path."""
@@ -1291,6 +1332,11 @@ class LocalFileSystemProvider(MusicProvider):
         )
 
         def _walk() -> None:
+            try:
+                check_real_path(self._real_base_path, self.base_path)
+            except MediaNotFoundError as err:
+                scan_errors.record_dir_error(err, is_root=True)
+                return
             for scanned, item in enumerate(
                 recursive_iter(
                     self.base_path,
@@ -1362,6 +1408,11 @@ class LocalFileSystemProvider(MusicProvider):
         if not self._is_imported_file(item):
             cur_filenames.add(item.relative_path)
             return
+        if self.media_content_type == "podcasts":
+            # an episode is not stored in the library: its podcast folder is what a sync
+            # tracks, compared once the walk has found all of the folder's episodes
+            items_to_process.append((item, None))
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1404,6 +1455,48 @@ class LocalFileSystemProvider(MusicProvider):
             return item.ext in PODCAST_EPISODE_EXTENSIONS
         return False
 
+    def _changed_podcast_folders(
+        self,
+        episodes: list[FileSystemItem],
+        metadata_files: list[FileSystemItem],
+        file_checksums: dict[str, str],
+        cur_filenames: set[str],
+    ) -> list[tuple[FileSystemItem, str | None]]:
+        """
+        Return one item per podcast folder whose episodes or artwork changed since the last sync.
+
+        Each returned item is the folder itself, with its new signature as checksum, paired
+        with the signature stored by the previous sync (None for a new podcast).
+
+        :param episodes: The episode files found by the scan.
+        :param metadata_files: The local metadata files (NFO/images) found by the scan.
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cur_filenames: Receives the unchanged podcast folders.
+        """
+        files_by_folder: dict[str, list[FileSystemItem]] = {}
+        for episode in episodes:
+            files_by_folder.setdefault(episode.relative_parent_path, []).append(episode)
+        # the podcast takes its artwork from the folder, so a cover change is a change too
+        for item in metadata_files:
+            if is_image_file(item) and item.relative_parent_path in files_by_folder:
+                files_by_folder[item.relative_parent_path].append(item)
+        changed: list[tuple[FileSystemItem, str | None]] = []
+        for folder, folder_files in files_by_folder.items():
+            signature = get_folder_signature(folder_files)
+            prev_signature = file_checksums.get(folder)
+            if signature == prev_signature:
+                cur_filenames.add(folder)
+                continue
+            folder_item = FileSystemItem(
+                filename=Path(folder).name,
+                relative_path=folder,
+                absolute_path=os.path.dirname(folder_files[0].absolute_path),
+                is_dir=True,
+                checksum=signature,
+            )
+            changed.append((folder_item, prev_signature))
+        return changed
+
     async def _root_artist_path(self, name: str) -> str | None:
         """
         Return a root-level artist folder matching this exact name, if any.
@@ -1413,10 +1506,10 @@ class LocalFileSystemProvider(MusicProvider):
 
         :param name: The artist name (or a sort-name alias) to match against a root folder.
         """
-        if await self.exists(name):
+        if await self._has_path(name):
             return name
         safe_name = create_safe_string(name, lowercase=False, replace_space=False)
-        if await self.exists(safe_name):
+        if await self._has_path(safe_name):
             return safe_name
         return None
 
@@ -2202,7 +2295,7 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Process a single item asynchronously.
 
-        :param item: The filesystem item to process.
+        :param item: The filesystem item to process (the podcast folder for a podcasts source).
         :param prev_checksum: Previous checksum from the database, or None for new items.
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
@@ -2212,6 +2305,15 @@ class LocalFileSystemProvider(MusicProvider):
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
+
+            if item.is_dir and self.media_content_type == "podcasts":
+                podcast = await self.get_podcast(item.relative_path)
+                for prov_mapping in podcast.provider_mappings:
+                    prov_mapping.details = item.checksum
+                # merged, not overwritten: the folder changes with every new episode and an
+                # overwrite would drop the mappings matched on other providers
+                await self.mass.music.podcasts.add_item_to_library(podcast)
+                return True
 
             if prev_checksum is not None:
                 # the file changed on disk: drop cached artwork derived from it
@@ -2256,15 +2358,6 @@ class LocalFileSystemProvider(MusicProvider):
                     return True
                 await self.mass.music.audiobooks.add_item_to_library(
                     audiobook, overwrite_existing=prev_checksum is not None
-                )
-                return True
-
-            if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                tags = await async_parse_tags(item.absolute_path, item.file_size)
-                episode = await self._parse_podcast_episode(item, tags)
-                assert isinstance(episode.podcast, Podcast)
-                await self.mass.music.podcasts.add_item_to_library(
-                    episode.podcast, overwrite_existing=prev_checksum is not None
                 )
                 return True
 
@@ -2362,7 +2455,10 @@ class LocalFileSystemProvider(MusicProvider):
         album_ids = set()
         artist_ids = set()
         for file_path in deleted_files:
-            if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
+            if self.media_content_type == "podcasts":
+                # a podcast is tracked by its folder
+                controller = self.mass.music.get_controller(MediaType.PODCAST)
+            elif parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
             elif not file_path:
                 # an empty id matches no single library item
@@ -2376,9 +2472,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             else:
                 ext = file_path.rsplit(".", 1)[1].lower()
-                if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                    controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
-                elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
+                if ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
                     controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
                 elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
                     controller = self.mass.music.get_controller(MediaType.PLAYLIST)
@@ -2670,7 +2764,7 @@ class LocalFileSystemProvider(MusicProvider):
         # the actual file location - just change the file extension
         assert file_item.ext is not None  # for type checking
         lrc_path = f"{file_item.relative_path.removesuffix(file_item.ext)}lrc"
-        if await self.exists(lrc_path):
+        if await self._has_path(lrc_path):
             try:
                 raw = await self._read_file(lrc_path)
                 track.metadata.lrc_lyrics = raw.decode("utf-8")
@@ -2872,7 +2966,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if cleaned_mbid:
             artist.mbid = cleaned_mbid
-        if not artist_path or not await self.exists(artist_path):
+        if not artist_path or not await self._has_path(artist_path):
             return artist
 
         # grab additional metadata within the Artist's folder
@@ -3860,7 +3954,7 @@ class LocalFileSystemProvider(MusicProvider):
             return cast("dict[str, Any]", cache)
         data: dict[str, Any] = {}
         metadata_file = os.path.join(podcast_folder, "metadata.json")
-        if await self.exists(metadata_file):
+        if await self._has_path(metadata_file):
             # found json file with metadata
             raw = await self._read_file(metadata_file)
             data.update(json_loads(raw.decode("utf-8")))
@@ -3884,9 +3978,50 @@ class LocalFileSystemProvider(MusicProvider):
         # raw scandir order depends on the underlying filesystem (e.g. hash order
         # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
+
+        def _list() -> list[FileSystemItem]:
+            check_real_path(self._real_base_path, abs_path)
+            return sorted_scandir(self.base_path, abs_path, sort=True)
+
+        return await asyncio.to_thread(_list)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""
-        async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
-            return cast("bytes", await f.read())
+        abs_path = self.get_absolute_path(path)
+
+        def _read() -> bytes:
+            check_real_path(self._real_base_path, abs_path)
+            return Path(abs_path).read_bytes()
+
+        return await asyncio.to_thread(_read)
+
+    @cached_property
+    def _real_base_path(self) -> str:
+        """
+        Return the folder of this source with its symlinks resolved, as found on first use.
+
+        Not async friendly on first use.
+        """
+        return os.path.realpath(self.base_path)
+
+    async def _has_path(self, file_path: str) -> bool:
+        """
+        Return whether an optional file or folder, such as a lyrics file, can be read here.
+
+        :param file_path: The path to look for; one this source refuses to read counts as absent.
+        """
+        with contextlib.suppress(MediaNotFoundError):
+            return await self.exists(file_path)
+        return False
+
+    def _get_sibling_paths(self) -> list[str]:
+        """Return the folders of the other configured sources of this provider domain."""
+        paths: list[str] = []
+        for instance_id, conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
+            if instance_id == self.instance_id or conf.get("domain") != self.domain:
+                continue
+            with contextlib.suppress(InvalidDataError):
+                path = self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+                if isinstance(path, str):
+                    paths.append(path)
+        return paths

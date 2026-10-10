@@ -8,7 +8,10 @@ import logging
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    SmartFadeNotApplicable,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -143,6 +146,31 @@ def test_context_mix_out_anchor_is_downbeat_snapped() -> None:
     assert anchor == pytest.approx(25.0, abs=0.3)
     assert context.audio_end > anchor + 1.0
     assert float(np.min(np.abs(context.outgoing.downbeats - anchor))) < 0.05
+
+
+def test_context_quiet_audible_outro_reports_an_early_mix_out() -> None:
+    """An outro that stays audible but under the mix-out floor is not reported as silent."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    t = np.linspace(0, 240.0, 1800)
+    bins[t >= 190.0] = 0.2  # audible but below 0.7*sustained for the whole buffered tail
+
+    with pytest.raises(
+        SmartFadeNotApplicable,
+        match=r"^outgoing tail mixes out too early \(energy mix-out at 0\.0s of 45\.0s audible\)$",
+    ):
+        _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
+
+
+def test_context_silent_tail_reports_mostly_silent() -> None:
+    """A tail that goes silent early is reported as silent, with its audible length."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    t = np.linspace(0, 240.0, 1800)
+    bins[t >= 200.0] = 0.001  # silent from buffer-local 5s on
+
+    with pytest.raises(
+        SmartFadeNotApplicable, match=r"^outgoing tail is mostly silent \(5\.0s audible\)$"
+    ):
+        _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
 
 
 def test_context_is_frozen() -> None:

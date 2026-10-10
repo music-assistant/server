@@ -193,7 +193,8 @@ Manages individual WebSocket connections:
 1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...` (or the
    `auth/authorization_url` command) answers with the Home Assistant `authorization_url`
 2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant
-3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state
+3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state, on the
+   External URL when the sign-in started there or in the Remote Access app, else on the base URL
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
 6. **Token Generation**: A short-lived MA token is created and the callback answers with
@@ -201,11 +202,12 @@ Manages individual WebSocket connections:
    the `return_url` with the token appended as `code` parameter
 7. **Client Handling**: The page asks for consent first when `return_url` is valid but not
    trusted. Trusted are the same origin, localhost, a private network address, the configured
-   base URL and the allowlisted Home Assistant and app URLs (see `is_allowed_redirect_url` in
-   [redirect_validation.py](../../helpers/redirect_validation.py)). A popup whose `return_url`
-   is an absolute URL on the server's own origin posts the token to its opener (an
-   `oauth_success` message) and closes; otherwise the page navigates to `return_url` (`/` when
-   none or an invalid one was given), where the client reads the token from the `code` parameter
+   base URL and External URL, and the allowlisted Home Assistant and app URLs (see
+   `is_allowed_redirect_url` in [redirect_validation.py](../../helpers/redirect_validation.py)).
+   A popup whose `return_url` is an absolute URL on the server's own origin posts the token to
+   its opener (an `oauth_success` message) and closes; otherwise the page navigates to
+   `return_url` (`/` when none or an invalid one was given), where the client reads the token
+   from the `code` parameter
 
 ### Ingress Authentication (Home Assistant Add-on)
 
@@ -470,7 +472,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 2. Implement the abstract members: the `provider_type` property (its `AuthProviderType`), the
    `requires_redirect` property and `authenticate(credentials)`, which returns an `AuthResult`
 3. Override the optional members where needed: `get_authorization_url(redirect_uri, return_url)`
-   and `handle_oauth_callback(code, state, redirect_uri)` for a redirect (OAuth) provider, and
+   and `handle_oauth_callback(code, state)` for a redirect (OAuth) provider, and
    `allow_self_registration` (default `False`), which the provider checks itself before it
    creates an account for a user signing in for the first time
 4. Register provider in `AuthenticationManager._setup_login_providers()`, passing its

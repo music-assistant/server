@@ -148,7 +148,8 @@ def build_transition_context(
     Build the immutable per-transition context from the two tracks' analysis.
 
     Raises ``SmartFadeNotApplicable`` when the outgoing tail is too short
-    (mostly silent, or too short once anchored) for any candidate to be built.
+    (mostly silent, mixed out too early, or too short once anchored) for any
+    candidate to be built.
 
     :param fade_out_analysis: Analysis data for the outgoing track.
     :param fade_in_analysis: Analysis data for the incoming track.
@@ -375,9 +376,14 @@ def _cue_outgoing_tail(
     # and masking the grids, so applicability and the blendability window (and
     # thus the tier) are kick-aware; the fold stays tier-decision-local here
     folded_mix_out = kick_anchor if kick_anchor is not None else raw_mix_out
+    if silence_end < MIN_EFFECTIVE_FADE_BUFFER:
+        raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({silence_end:.1f}s audible)")
+    if folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER:
+        raise SmartFadeNotApplicable(
+            "outgoing tail mixes out too early "
+            f"(energy mix-out at {folded_mix_out:.1f}s of {silence_end:.1f}s audible)"
+        )
     tier_anchor = min(silence_end, folded_mix_out)
-    if tier_anchor < MIN_EFFECTIVE_FADE_BUFFER:
-        raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({tier_anchor:.1f}s audible)")
 
     # Shift fade-out beats from full-track to buffer-local coordinates
     beats = outgoing.beats - buffer_offset

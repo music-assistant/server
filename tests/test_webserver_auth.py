@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiohttp import web
@@ -1457,6 +1457,68 @@ async def test_get_auth_url_passes_valid_return_url(
 
     assert result == {"authorization_url": "https://idp.example.com/authorize"}
     oauth_provider.get_authorization_url.assert_awaited_once_with(ANY, return_url)
+
+
+@pytest.mark.parametrize(
+    ("external_url", "return_url", "expected_callback_base"),
+    [
+        (None, "https://ma.example.com/#/home", "http://192.168.1.10:8095"),
+        (None, "https://app.music-assistant.io/#/home", "http://192.168.1.10:8095"),
+        ("https://ma.example.com", None, "http://192.168.1.10:8095"),
+        ("https://ma.example.com", "http://192.168.1.10:8095/#/home", "http://192.168.1.10:8095"),
+        ("https://ma.example.com", "https://ma.example.com/#/home", "https://ma.example.com"),
+        ("https://example.com/ma", "https://example.com/ma/#/home", "https://example.com/ma"),
+        (
+            "https://ma.example.com",
+            "https://app.music-assistant.io/#/home",
+            "https://ma.example.com",
+        ),
+        ("https://ma.example.com", "https://other.example.com/#/home", "http://192.168.1.10:8095"),
+    ],
+    ids=[
+        "no_external_url",
+        "remote_app_without_external_url",
+        "no_return_url",
+        "local_return_url",
+        "external_url_return_url",
+        "external_url_with_path",
+        "remote_app",
+        "other_origin",
+    ],
+)
+async def test_get_authorization_url_picks_callback_base(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    external_url: str | None,
+    return_url: str | None,
+    expected_callback_base: str,
+) -> None:
+    """
+    Test that the OAuth callback is on the External URL for sign-ins started there or in the app.
+
+    :param external_url: The configured External URL.
+    :param return_url: The URL the sign-in returns to.
+    :param expected_callback_base: The server URL the callback is expected on.
+    """
+    with (
+        patch.object(
+            WebserverController,
+            "base_url",
+            new_callable=PropertyMock,
+            return_value="http://192.168.1.10:8095",
+        ),
+        patch.object(
+            WebserverController,
+            "external_url",
+            new_callable=PropertyMock,
+            return_value=external_url,
+        ),
+    ):
+        await auth_manager.get_authorization_url("oauth", return_url)
+
+    oauth_provider.get_authorization_url.assert_awaited_once_with(
+        f"{expected_callback_base}/auth/callback?provider_id=oauth", return_url
+    )
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:

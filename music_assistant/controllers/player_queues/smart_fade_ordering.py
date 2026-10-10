@@ -4,9 +4,9 @@ Smart Fades-aware ordering for Smart Shuffle.
 This only reorders tracks MA has already selected. It uses stored tempo, key and end-to-start
 energy; missing analysis stays neutral and nothing is analysed just to place a track in the queue.
 
-Both dynamic refills and fixed queues consider every remaining track in the run being ordered;
-dynamic mode simply orders one refill batch at a time from the queue tail. Close choices retain
-some randomness.
+Both modes order one batch of upcoming tracks at a time and consider every track in it: a fixed
+queue its next batch once playback gets close, dynamic mode each refill batch from the queue tail.
+Close choices retain some randomness.
 
 This does not call the full transition planner to rank candidates. Smart Fades still decides the
 actual transition.
@@ -29,9 +29,11 @@ from music_assistant.controllers.streams.smart_fades.helpers import camelot_affi
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
 )
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -94,15 +96,25 @@ async def order_queue_items(
     items: list[ItemT],
     *,
     get_track: Callable[[ItemT], Track | None],
-    preceding_track: Track | None = None,
+    get_streamdetails: Callable[[ItemT], StreamDetails | None] | None = None,
+    preceding_item: ItemT | None = None,
 ) -> list[ItemT]:
-    """Reorder tracks only; a non-track item starts a new run."""
+    """
+    Reorder tracks only; a non-track item starts a new run.
+
+    :param mass: The MusicAssistant instance.
+    :param items: The items to reorder.
+    :param get_track: Returns an item's track, or None for a non-track item.
+    :param get_streamdetails: Returns the stream details an item has already resolved, if
+        any; the analysis of the copy that plays is then read instead of a best guess.
+    :param preceding_item: The item playing before ``items``, anchoring the first choice.
+    """
     if len(items) <= 1:
         return list(items)
 
     result: list[ItemT] = []
     run: list[ItemT] = []
-    anchor = preceding_track
+    anchor = preceding_item
 
     async def flush_run() -> None:
         nonlocal anchor
@@ -112,10 +124,11 @@ async def order_queue_items(
             mass,
             run,
             get_track=get_track,
-            preceding_track=anchor,
+            get_streamdetails=get_streamdetails,
+            preceding_item=anchor,
         )
         result.extend(ordered)
-        anchor = get_track(ordered[-1]) if ordered else None
+        anchor = ordered[-1] if ordered else None
         run.clear()
 
     for item in items:
@@ -142,7 +155,8 @@ async def order_tracks(
         mass,
         list(tracks),
         get_track=lambda track: track,
-        preceding_track=preceding_track,
+        get_streamdetails=None,
+        preceding_item=preceding_track,
     )
 
 
@@ -151,7 +165,8 @@ async def _order_run(
     items: list[ItemT],
     *,
     get_track: Callable[[ItemT], Track | None],
-    preceding_track: Track | None,
+    get_streamdetails: Callable[[ItemT], StreamDetails | None] | None,
+    preceding_item: ItemT | None,
 ) -> list[ItemT]:
     """Pick good neighbours and keep randomness between close choices."""
     if len(items) <= 1:
@@ -162,18 +177,34 @@ async def _order_run(
         # The public wrapper splits non-track boundaries before calling this function.
         return list(items)
     typed_tracks = [track for track in tracks if track is not None]
+    preceding_track = get_track(preceding_item) if preceding_item is not None else None
 
     distinct_tracks = list(dict.fromkeys(typed_tracks))
     if preceding_track is not None and preceding_track not in distinct_tracks:
         distinct_tracks.append(preceding_track)
 
+    # the copy each track is streamed from, where that is already decided
+    played: dict[Track, tuple[str, str]] = {}
+    if get_streamdetails is not None:
+        for item in items if preceding_item is None else [*items, preceding_item]:
+            track = get_track(item)
+            streamdetails = get_streamdetails(item)
+            if track is not None and streamdetails is not None:
+                played[track] = (streamdetails.provider, streamdetails.item_id)
+
     analysis_by_track: dict[Track, AudioAnalysisData | None] = {}
     for start in range(0, len(distinct_tracks), _ANALYSIS_BATCH_SIZE):
         batch = distinct_tracks[start : start + _ANALYSIS_BATCH_SIZE]
-        loaded = await asyncio.gather(*(_stored_analysis(mass, track) for track in batch))
+        loaded = await asyncio.gather(
+            *(_stored_analysis(mass, track, played.get(track)) for track in batch)
+        )
         analysis_by_track.update(zip(batch, loaded, strict=True))
 
-    features = [_features(analysis_by_track[track]) for track in typed_tracks]
+    # Extracting the features scans each track's whole energy curve: too much CPU work for the
+    # event loop.
+    features = await asyncio.to_thread(
+        _features_of, [analysis_by_track[track] for track in typed_tracks]
+    )
     seam_features = (
         _features(analysis_by_track[preceding_track]) if preceding_track is not None else None
     )
@@ -205,6 +236,11 @@ async def _order_run(
         )
 
     return [items[index] for index in order]
+
+
+def _features_of(analyses: list[AudioAnalysisData | None]) -> list[_TrackFeatures]:
+    """Return the ordering features of each analysis, in the same order."""
+    return [_features(analysis) for analysis in analyses]
 
 
 def _pick_order(
@@ -271,9 +307,17 @@ def _artist_names(track: Track | None) -> set[str]:
 async def _stored_analysis(
     mass: MusicAssistant,
     track: Track,
+    played: tuple[str, str] | None = None,
 ) -> AudioAnalysisData | None:
-    """Read stored Smart Fades analysis only; never start analysis here."""
-    for mapping in sorted(track.provider_mappings, key=lambda item: item.quality, reverse=True):
+    """
+    Read stored Smart Fades analysis only; never start analysis here.
+
+    :param mass: The MusicAssistant instance.
+    :param track: The track to read the analysis of.
+    :param played: The (provider instance, item id) the track is streamed from, if known;
+        that copy's analysis is read before the others'.
+    """
+    for mapping in rank_provider_mappings(track.provider_mappings, pinned=played):
         provider = mapping.provider_instance or mapping.provider_domain
         analysis = await mass.streams.audio_analysis.get_audio_analysis(
             mapping.item_id,

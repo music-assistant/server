@@ -112,10 +112,10 @@ class TimelineMixin:
         ]
 
         if self.play_queue_id and queue:
-            if queue.current_index is not None:
-                play_queue_item_id = self.play_queue_item_ids.get(
-                    queue.current_index, queue.current_index + 1
-                )
+            if queue.current_index is not None and (
+                play_queue_item_id := self.play_queue_item_ids.get(queue.current_index)
+            ):
+                # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
                 attrs.append(f'playQueueItemID="{play_queue_item_id}"')
             attrs.append(f'playQueueID="{self.play_queue_id}"')
             attrs.append(f'playQueueVersion="{self.play_queue_version}"')
@@ -264,12 +264,14 @@ class TimelineMixin:
 
             container_key = ""
             play_queue_item_id = ""
-            if self.play_queue_id:
+            # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
+            if (
+                self.play_queue_id
+                and queue.current_index is not None
+                and (known_item_id := self.play_queue_item_ids.get(queue.current_index))
+            ):
                 container_key = f"/playQueues/{self.play_queue_id}"
-                if queue.current_index is not None:
-                    play_queue_item_id = str(
-                        self.play_queue_item_ids.get(queue.current_index, queue.current_index + 1)
-                    )
+                play_queue_item_id = str(known_item_id)
 
             params: dict[str, str] = {
                 "ratingKey": rating_key,
