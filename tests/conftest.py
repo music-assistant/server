@@ -155,8 +155,8 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
         ),
-        # the Sendspin server runs its own zeroconf instance, whose mDNS probing alone
-        # holds up every boot for over a second
+        # the Sendspin server runs its own zeroconf instance: keep it off the network,
+        # its mDNS probing alone also holds up every boot for over a second
         patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
         patch(
             "aiosendspin.server.server.AsyncServiceBrowser",

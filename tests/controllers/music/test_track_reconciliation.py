@@ -56,8 +56,8 @@ class _TrackSpec(NamedTuple):
     mbid: str | None = None
 
 
-@pytest.fixture
-def mass(music_mass: MusicAssistant) -> MusicAssistant:
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
     """Run on a library-only instance: reconciliation only touches the library database."""
     return music_mass
 
