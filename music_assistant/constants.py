@@ -767,7 +767,7 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     ],
     default_value="default",
     advanced=True,
-    requires_reload=True,
+    requires_reload=False,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
