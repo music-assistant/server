@@ -542,7 +542,6 @@ class QobuzProvider(MusicProvider):
         else:
             msg = f"Unsupported mime type for {item_id}"
             raise MediaNotFoundError(msg)
-        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -558,6 +557,13 @@ class QobuzProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item started streaming."""
+        await self._report_playback_started(streamdetails.data)
 
     async def on_streamed(
         self,

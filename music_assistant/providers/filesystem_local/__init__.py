@@ -130,7 +130,6 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
-    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -267,7 +266,6 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
-            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,

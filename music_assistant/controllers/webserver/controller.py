@@ -37,6 +37,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    PlayerUnavailableError,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -81,7 +82,7 @@ from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
     resolve_command_impersonation,
     set_current_peer_address,
     set_current_token,
@@ -821,6 +822,8 @@ class WebserverController(CoreController):
             return web.Response(status=403, text=str(e))
         except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
+        except PlayerUnavailableError as e:
+            return web.Response(status=404, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -949,7 +952,7 @@ class WebserverController(CoreController):
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
-        is_ingress_request = is_request_from_ingress(request)
+        is_ingress_request = is_request_from_ingress_proxy(request)
 
         if (not self.auth.has_users or not self.mass.config.onboard_done) and is_ingress_request:
             # a non-admin user tries to access the index via HA ingress

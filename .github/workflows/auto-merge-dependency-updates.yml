@@ -211,8 +211,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Security check 7: Wait for package to be available on PyPI
-      - name: Wait for package availability on PyPI
+      - name: Determine bumped package
+        id: package
         run: |
           # Extract the package name and version from the added lines of the diff
           DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" | grep '^+' || true)
@@ -228,6 +228,19 @@ jobs:
             exit 1
           fi
 
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Security check 7: Wait for package to be available on PyPI.
+      # No GH_TOKEN here and --only-binary: pip may otherwise run sdist build
+      # hooks with the step's token in its environment.
+      - name: Wait for package availability on PyPI
+        env:
+          PACKAGE: ${{ steps.package.outputs.package }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
           echo "Waiting for $PACKAGE version $VERSION to be available on PyPI..."
 
           # Retry for up to 20 minutes (20 attempts with 60 second intervals)
@@ -249,7 +262,7 @@ jobs:
                 # Additional verification: try to download the package.
                 # --ignore-requires-python so the check is not tied to the
                 # runner's Python; we only verify the artifact is fetchable.
-                if python3 -m pip download --no-deps --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                if python3 -m pip download --no-deps --only-binary=:all: --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
                   echo "✅ Package $PACKAGE==$VERSION can be downloaded"
                   exit 0
                 else
@@ -276,8 +289,6 @@ jobs:
           echo "  - PyPI is experiencing delays"
           echo "  - The version number in the PR is incorrect"
           exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # All security checks passed - approve the PR
       - name: Auto-approve PR

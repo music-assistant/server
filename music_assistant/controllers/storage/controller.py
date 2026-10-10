@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.auth import Scope
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     SetupFailedError,
@@ -79,12 +80,14 @@ from music_assistant.controllers.storage.constants import (
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
     SIZE_DECIMALS,
+    STORAGE_DOCS_URL,
 )
 from music_assistant.controllers.storage.helpers import is_within, share_key
 from music_assistant.controllers.storage.models import (
     MountBackend,
     NetworkShareSpec,
     ShareType,
+    SourceFolder,
     StorageInfo,
     StorageKind,
     StorageLocation,
@@ -95,8 +98,9 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.provider_access import access_allows, source_access
 from music_assistant.helpers.security import is_safe_path
-from music_assistant.helpers.util import get_folder_size, get_ip_from_host
+from music_assistant.helpers.util import get_folder_size, get_ip_from_host, join_task
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -122,6 +126,7 @@ class StorageController(CoreController):
         self.manifest.name = "Storage"
         self.manifest.description = "Keeps track of the storage the server can use."
         self.manifest.icon = "harddisk"
+        self.manifest.documentation = STORAGE_DOCS_URL
         self._locations: list[StorageLocation] = []
         self._in_container = False
         # the data and cache directory of the server, as given until setup resolves them
@@ -139,6 +144,7 @@ class StorageController(CoreController):
         self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
         self._dir_sizes_requested: float | None = None
+        self._dir_sizes_task: asyncio.Task[None] | None = None
         # the mount backends this server can use, in the order of priority
         self._mounters: dict[MountBackend, ShareMounter] = {}
         # why a mount backend can not be used
@@ -168,7 +174,7 @@ class StorageController(CoreController):
         await self._resolve_server_folders()
         # the mount table only: a location is probed once a caller needs its state
         await self._periodic_refresh()
-        self._request_dir_sizes()
+        # the directories are measured once the Storage page asks, as they still fill up at start
         self.mass.create_task(self._setup_network_shares(), task_id=SHARES_SETUP_TASK_ID)
 
     async def close(self) -> None:
@@ -202,6 +208,9 @@ class StorageController(CoreController):
         # only a caller that can add a share makes the server look for a mount backend again
         mounter = await self._get_mounter() if manages_all_sources else self._find_mounter()
         share_versions = mounter.supported_versions if mounter is not None else {}
+        if manages_all_sources and not self._dir_sizes and self._dir_sizes_task is not None:
+            # the Storage page asks once, so its first answer waits for the first measurement
+            await join_task(self._dir_sizes_task)
         locations = self.get_locations(manages_all_sources)
         if not manages_all_sources:
             # a folder picker needs no connection details, nor the sources that use a location
@@ -225,6 +234,38 @@ class StorageController(CoreController):
         :param path: A media location the caller may see, or a folder inside one.
         """
         return await self.list_folders(path, _caller_manages_all_sources())
+
+    @api_command("storage/source_folder", required_scope=READ_SCOPES)
+    async def get_source_folder(self, instance_id: str) -> SourceFolder:
+        """
+        Return the folder a Local files music source reads from, and its storage location.
+
+        The location is given as last seen, without looking at it again.
+
+        :param instance_id: The instance id of a Local files music source the caller may use.
+        :raises InsufficientPermissions: The caller may not use this music source.
+        :raises InvalidDataError: The instance is not a Local files music source.
+        """
+        manages_all_sources = _caller_manages_all_sources()
+        if not manages_all_sources and not access_allows(
+            source_access(self.mass, instance_id), get_current_user()
+        ):
+            raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
+        conf = self.mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
+        folder = (
+            self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+            if conf.get("domain") in FILESYSTEM_PROVIDER_DOMAINS
+            else None
+        )
+        if not isinstance(folder, str):
+            msg = f"{instance_id} is not a Local files music source"
+            raise self._error(InvalidDataError, msg, "not_a_folder_source")
+        path = os.path.normpath(folder)
+        location = self.get_location_for_path(path)
+        if location is not None and not manages_all_sources:
+            visible = self._is_visible(location, manages_all_sources)
+            location = _without_private_details(location) if visible else None
+        return SourceFolder(path=path, location=location)
 
     @api_command("storage/local_folders/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def add_local_folder(self, path: str) -> StorageLocation:
@@ -953,7 +994,9 @@ class StorageController(CoreController):
         ):
             return
         self._dir_sizes_requested = now
-        self.mass.create_task(self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID)
+        self._dir_sizes_task = self.mass.create_task(
+            self._update_dir_sizes(), task_id=DIR_SIZES_TASK_ID
+        )
 
     async def _update_dir_sizes(self) -> None:
         """Measure the data and cache directories and show the result on their rows."""

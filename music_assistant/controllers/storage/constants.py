@@ -29,6 +29,8 @@ SHARE_STATES_TIMEOUT: Final[float] = 3
 TRANSLATION_OWNER: Final[str] = "core.storage"
 # where the documentation explains how to make a network share available to Music Assistant
 SHARES_DOCS_URL: Final[str] = "https://music-assistant.io/installation/"
+# where the documentation explains the storage settings
+STORAGE_DOCS_URL: Final[str] = "https://music-assistant.io/settings/storage/"
 
 # files whose presence marks a Docker or Podman container
 CONTAINER_MARKER_FILES: Final[tuple[str, ...]] = ("/.dockerenv", "/run/.containerenv")

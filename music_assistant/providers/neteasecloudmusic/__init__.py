@@ -94,17 +94,34 @@ _RECOMMEND_PLAYLIST_TTL = 60 * 60
 _RECOMMEND_DAILY_TTL = 60 * 30
 _RECOMMEND_PERSONAL_FM_TTL = 60 * 5
 _RECOMMEND_HEART_MODE_TTL = 60 * 60
+_RECOMMEND_HEART_MODE_COVER_TTL = 60 * 10
+_RECOMMEND_RADAR_TTL = 60 * 60
 CACHE_CATEGORY_RECOMMENDATIONS = 1
+# bump to invalidate cached data written before the dynamic-playlist cover fix
+_CACHE_VERSION = "v3"
 # NetEase song-detail payload uses this bit in `hr`/`h` mark metadata to indicate
 # that the track has a Hi-Res tier in catalog metadata.
 # Value observed from NeteaseCloudMusicApi-compatible responses.
 _HIRES_MARK_FLAG = 17179869184
 _PLAYLIST_PERSONAL_FM_ID = "personal_fm_dynamic"
+_PLAYLIST_DAILY_RECOMMEND_ID = "daily_recommend_dynamic"
+_PLAYLIST_PERSONAL_RADAR_ID = "personal_radar_dynamic"
+_PLAYLIST_TIME_RADAR_ID = "time_radar_dynamic"
+# The NCM radar playlists are official dynamic playlists with fixed ids whose
+# contents are personalized per logged-in account.
+_RADAR_SOURCE_PLAYLIST_IDS = {
+    _PLAYLIST_PERSONAL_RADAR_ID: "3136952023",
+    _PLAYLIST_TIME_RADAR_ID: "5320167908",
+}
+# (fallback name, translation_key) for the dynamic playlists surfaced to the frontend.
+# The radars use the official (account-localized) NCM name instead of a translation key.
+_DYNAMIC_PLAYLIST_META = {
+    _PLAYLIST_PERSONAL_FM_ID: ("Personal FM", "personal_fm"),
+    _PLAYLIST_DAILY_RECOMMEND_ID: ("Daily Recommendations", "daily_recommendations"),
+    _PLAYLIST_PERSONAL_RADAR_ID: ("Personal Radar", None),
+    _PLAYLIST_TIME_RADAR_ID: ("Time Radar", None),
+}
 _PLAYLIST_HEART_MODE_PREFIX = "heart_mode_dynamic"
-_NCM_PROVIDER_ICON_URL = (
-    "https://raw.githubusercontent.com/NeteaseCloudMusicApiEnhanced/"
-    "api-enhanced/main/public/docs/netease.png"
-)
 
 
 def _to_positive_int(value: Any) -> int:
@@ -133,6 +150,14 @@ def _lrc_to_plain_text(lrc_text: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _playlist_cover_url(playlist_obj: dict[str, Any]) -> str | None:
+    """Extract the cover image URL from a playlist detail object."""
+    cover = playlist_obj.get("coverImgUrl") or playlist_obj.get("picUrl")
+    if isinstance(cover, str) and cover.strip():
+        return cover.strip()
+    return None
 
 
 def _extract_song_image_url(song_obj: dict[str, Any]) -> str | None:
@@ -431,22 +456,45 @@ class NeteaseCloudMusicProvider(MusicProvider):
             self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
 
+    async def scrobble(self, track_id: str, seconds_played: int) -> None:
+        """
+        Check in a played track to this NetEase account (scrobble).
+
+        :param track_id: The NetEase track id that was played.
+        :param seconds_played: The real listened time in seconds.
+        """
+        album_id = await self._get_track_album_id(track_id)
+        if not album_id:
+            raise InvalidDataError(f"NetEase track {track_id} has no album to check in against")
+        await self._client.get(
+            "/scrobble",
+            # the login cookie must also travel as a query param: some NCM api backends only
+            # attribute the play when it is sent that way, and silently drop it (still
+            # answering success) when it is only in the Cookie header.
+            params={
+                "id": track_id,
+                "sourceid": album_id,
+                "time": seconds_played,
+                "cookie": self._cookie,
+            },
+            cookie=self._cookie,
+        )
+        self.logger.debug(
+            "Checked in track %s to NetEase (source %s, played %ss)",
+            track_id,
+            album_id,
+            seconds_played,
+        )
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
         return [
             RecommendationFolder(
-                item_id="recommended_radios",
+                item_id="personal_recommend",
                 provider=self.instance_id,
-                name="Personal Radio",
-                translation_key="personal_radio",
-                icon="mdi:radio",
-            ),
-            RecommendationFolder(
-                item_id="daily_songs",
-                provider=self.instance_id,
-                name="Recommended tracks",
-                translation_key="recommended_tracks",
-                icon="mdi:star",
+                name="Personal Recommendations",
+                translation_key="personal_recommend",
+                icon="mdi:compass",
             ),
             RecommendationFolder(
                 item_id="recommended_new_songs",
@@ -474,24 +522,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """
         items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
 
-        if item_id == "recommended_radios":
-            return await self._build_radio_items()
-
-        if item_id == "daily_songs":
-            daily_payload = await self._get_recommend_payload_cached(
-                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
-            )
-            daily_data = _extract_data(daily_payload)
-            daily_songs = daily_data.get("dailySongs")
-            if isinstance(daily_songs, list):
-                for song_obj in daily_songs:
-                    if not isinstance(song_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        items.append(self._parse_track(song_obj))
-                daily_tracks = [item for item in items if isinstance(item, Track)]
-                await self._fill_track_durations(daily_tracks)
-            return items
+        if item_id == "personal_recommend":
+            return await self._build_personal_recommend_items()
 
         if item_id == "recommended_new_songs":
             new_song_payload = await self._get_recommend_payload_cached(
@@ -520,7 +552,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "recommended_playlists",
                 _RECOMMEND_PLAYLIST_TTL,
                 "/personalized",
-                {"limit": 25},
+                {"limit": 25, "cookie": self._cookie},
             )
             playlist_data = _extract_data(playlist_payload)
             raw_playlists = playlist_data.get("result")
@@ -883,8 +915,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
             },
             is_dynamic=True,
         )
-        # Prefer real station/source artwork, fallback to provider icon.
-        playlist.metadata.images = self._make_image_list(image_url or _NCM_PROVIDER_ICON_URL)
+        # only attach real station/source artwork; without it the frontend shows its
+        # own provider icon overlay, so never fall back to a remote placeholder that
+        # may be unreachable for the server's imageproxy
+        playlist.metadata.images = self._make_image_list(image_url)
         return playlist
 
     def _parse_heart_mode_playlist_id(self, playlist_id: str) -> tuple[str, str] | None:
@@ -907,6 +941,17 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if isinstance(songs, list):
             return [item for item in songs if isinstance(item, dict)]
         return []
+
+    @use_cache(3600 * 24 * 30, cache_none=False)
+    async def _get_track_album_id(self, track_id: str) -> str | None:
+        """Return the album id of a NetEase track, used as the scrobble source id."""
+        songs = await self._get_song_detail(track_id)
+        if songs:
+            # compatible NetEase API backends return the album as "album" instead of "al"
+            album = songs[0].get("al") or songs[0].get("album")
+            if isinstance(album, dict) and album.get("id"):
+                return str(album["id"])
+        return None
 
     async def _get_song_music_detail(self, song_id: str) -> dict[str, Any] | None:
         """Fetch extended quality info (jm/je/hr...) for a single song."""
@@ -1295,48 +1340,49 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 track.metadata.lyrics = tlyric_text
         return track
 
-    @use_cache(3600 * 24)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
-            return self._build_dynamic_playlist(
-                _PLAYLIST_PERSONAL_FM_ID, "Personal FM", translation_key="personal_fm"
-            )
+        # dynamic playlists are built from their own short-TTL payload caches;
+        # they must not be pinned by the long-lived static playlist cache below
+        if prov_playlist_id in _DYNAMIC_PLAYLIST_META:
+            return await self._build_dynamic_playlist_for_id(prov_playlist_id)
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
             seed_song_id, source_playlist_id = heart_parts
             return self._build_dynamic_playlist(
                 f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{source_playlist_id}",
                 "Heart Mode",
                 translation_key="heart_mode",
+                image_url=await self._get_heart_mode_image_url(seed_song_id, source_playlist_id),
             )
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
                 return playlist
             raise MediaNotFoundError("Heart mode is currently unavailable, please try again later")
+        return await self._get_static_playlist_details_cached(prov_playlist_id)
 
-        payload = await self._client.get(
-            "/playlist/detail",
-            params={"id": prov_playlist_id},
-            cookie=self._cookie,
-        )
-        data = _extract_data(payload)
-        playlist_obj = data.get("playlist")
-        if not isinstance(playlist_obj, dict):
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
-        return self._parse_playlist(playlist_obj)
-
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, cache_checksum=_CACHE_VERSION)
     async def _get_playlist_tracks_cached(
         self,
         prov_playlist_id: str,
         page: int = 0,
+        account_scope: str | None = None,
     ) -> Sequence[Track]:
-        """Get playlist tracks for static playlists (cached)."""
+        """
+        Get playlist tracks for static playlists (cached).
+
+        :param account_scope: Account discriminator for account-personalized playlists
+            (the radar playlists), so a listing is not reused across accounts.
+        """
         limit = 500
         offset = page * limit
         payload = await self._client.get(
             "/playlist/track/all",
-            params={"id": prov_playlist_id, "limit": limit, "offset": offset},
+            params={
+                "id": prov_playlist_id,
+                "limit": limit,
+                "offset": offset,
+                "cookie": self._cookie,
+            },
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1359,6 +1405,17 @@ class NeteaseCloudMusicProvider(MusicProvider):
         page: int = 0,
     ) -> Sequence[Track]:
         """Get all playlist tracks for given playlist id."""
+        if prov_playlist_id == _PLAYLIST_DAILY_RECOMMEND_ID:
+            if page > 0:
+                return []
+            tracks = await self._get_daily_recommend_tracks()
+            for idx, track in enumerate(tracks, start=1):
+                track.position = idx
+            return tracks
+        if source_playlist_id := _RADAR_SOURCE_PLAYLIST_IDS.get(prov_playlist_id):
+            return await self._get_playlist_tracks_cached(
+                source_playlist_id, page, account_scope=self._uid
+            )
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
             if page > 0:
                 return []
@@ -1544,18 +1601,22 @@ class NeteaseCloudMusicProvider(MusicProvider):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return recommendation payload from MA cache or fetch fresh."""
-        params_key = json.dumps(params or {}, sort_keys=True, separators=(",", ":"))
-        cache_key = f"{key}:{params_key}"
+        # the login cookie is sent as a query param for some backends, but it is a
+        # credential and must stay out of the cache key that gets persisted to disk
+        cache_params = {k: v for k, v in (params or {}).items() if k != "cookie"}
+        params_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
+        # every recommendation payload is account-personalized, so scope the key by the
+        # account uid; the uid is not a credential, unlike the cookie kept out above
+        cache_key = f"{_CACHE_VERSION}:{self._uid}:{key}:{params_key}"
         cached = await self.mass.cache.get(
             key=cache_key,
             provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
             default=None,
         )
-        if cached is not None:
-            if isinstance(cached, dict):
-                self.logger.debug("NCM recommendations %s payload cache hit", key)
-                return cached
+        if isinstance(cached, dict):
+            self.logger.debug("NCM recommendations %s payload cache hit", key)
+            return cached
         payload = await self._client.get(path, params=params, cookie=self._cookie)
         await self.mass.cache.set(
             key=cache_key,
@@ -1575,6 +1636,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_songs = fm_data.get("data")
@@ -1599,7 +1661,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for _ in range(attempts):
             fm_payload = await self._client.get(
                 "/personal_fm",
-                params={"timestamp": int(time.time() * 1000)},
+                params={"timestamp": int(time.time() * 1000), "cookie": self._cookie},
                 cookie=self._cookie,
             )
             fm_data = _extract_data(fm_payload)
@@ -1632,61 +1694,78 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 break
         return filter_tracks(result)
 
-    async def _get_heart_mode_seed(self) -> tuple[str, str, str | None] | None:
-        """Resolve heart mode seed ids as (seed_song_id, playlist_id, image_url)."""
-        daily_payload = await self._get_recommend_payload_cached(
-            "daily_songs",
-            _RECOMMEND_DAILY_TTL,
-            "/recommend/songs",
-        )
-        daily_data = _extract_data(daily_payload)
-        daily_songs = daily_data.get("dailySongs")
-        if not isinstance(daily_songs, list) or not daily_songs:
-            return None
+    async def _get_heart_mode_source_playlist(self) -> dict[str, Any] | None:
+        """Fetch (cached) the user's first playlist, the source of heart mode."""
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            payload = await self._get_recommend_payload_cached(
+                "heart_mode_playlist",
+                _RECOMMEND_HEART_MODE_TTL,
+                "/user/playlist",
+                {"uid": self._uid, "limit": 1, "offset": 0, "cookie": self._cookie},
+            )
+            rows = _extract_data(payload).get("playlist")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                return rows[0]
+        return None
+
+    async def _get_heart_mode_seed(
+        self, daily_rows: list[dict[str, Any]] | None = None
+    ) -> tuple[str, str] | None:
+        """Resolve heart mode seed ids as (seed_song_id, playlist_id)."""
         seed_song = next(
-            (item for item in daily_songs if isinstance(item, dict) and item.get("id")),
+            (row for row in await self._get_daily_recommend_rows(daily_rows) if row.get("id")),
             None,
         )
-        if not isinstance(seed_song, dict):
+        if seed_song is None:
             return None
         seed_song_id = str(seed_song.get("id") or "").strip()
         if not seed_song_id.isdigit():
             return None
-        seed_song_image = _extract_song_image_url(seed_song)
-
-        playlist_payload = await self._get_recommend_payload_cached(
-            "heart_mode_playlist",
-            _RECOMMEND_HEART_MODE_TTL,
-            "/user/playlist",
-            {"uid": self._uid, "limit": 1, "offset": 0},
-        )
-        playlist_data = _extract_data(playlist_payload)
-        playlist_rows = playlist_data.get("playlist")
-        if not isinstance(playlist_rows, list) or not playlist_rows:
-            return None
-        first_playlist = playlist_rows[0]
-        if not isinstance(first_playlist, dict):
+        first_playlist = await self._get_heart_mode_source_playlist()
+        if first_playlist is None:
             return None
         playlist_id = str(first_playlist.get("id") or "").strip()
         if not playlist_id.isdigit():
             return None
-        playlist_cover = first_playlist.get("coverImgUrl") or first_playlist.get("picUrl")
-        if not seed_song_image and isinstance(playlist_cover, str) and playlist_cover.strip():
-            seed_song_image = playlist_cover.strip()
+        return seed_song_id, playlist_id
 
-        return seed_song_id, playlist_id, seed_song_image
+    async def _get_heart_mode_image_url(self, seed_song_id: str, playlist_id: str) -> str | None:
+        """Return a heart mode cover: the first recommended track's art, or the source playlist."""
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            payload = await self._get_recommend_payload_cached(
+                "heart_mode_cover",
+                _RECOMMEND_HEART_MODE_COVER_TTL,
+                "/playmode/intelligence/list",
+                {
+                    "id": seed_song_id,
+                    "pid": playlist_id,
+                    "sid": seed_song_id,
+                    "count": 1,
+                    "cookie": self._cookie,
+                },
+            )
+            for track in self._parse_heart_mode_tracks(payload):
+                if track.metadata.images:
+                    return next(iter(track.metadata.images)).path
+        # fall back to the source playlist (我喜欢的音乐) cover
+        if first_playlist := await self._get_heart_mode_source_playlist():
+            if cover := _playlist_cover_url(first_playlist):
+                return cover
+        return None
 
-    async def _build_heart_mode_dynamic_playlist(self) -> Playlist | None:
+    async def _build_heart_mode_dynamic_playlist(
+        self, daily_rows: list[dict[str, Any]] | None = None
+    ) -> Playlist | None:
         """Build heart mode dynamic playlist item."""
-        heart_parts = await self._get_heart_mode_seed()
+        heart_parts = await self._get_heart_mode_seed(daily_rows)
         if heart_parts is None:
             return None
-        seed_song_id, playlist_id, image_url = heart_parts
+        seed_song_id, playlist_id = heart_parts
         return self._build_dynamic_playlist(
             f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{playlist_id}",
             "Heart Mode",
             translation_key="heart_mode",
-            image_url=image_url,
+            image_url=await self._get_heart_mode_image_url(seed_song_id, playlist_id),
         )
 
     async def _pick_heart_mode_tracks(
@@ -1704,26 +1783,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             },
             cookie=self._cookie,
         )
-        data = _extract_data(payload)
-        rows = data.get("data")
-        if not isinstance(rows, list) or not rows:
-            return []
-        result: list[Track] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            song_obj = None
-            for key in ("songInfo", "song", "songData", "trackData"):
-                if isinstance(row.get(key), dict):
-                    song_obj = row[key]
-                    break
-            if song_obj is None and isinstance(row.get("id"), (int, str)):
-                song_obj = row
-            if not isinstance(song_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                result.append(self._parse_track(song_obj))
-        return filter_tracks(result)
+        return filter_tracks(self._parse_heart_mode_tracks(payload))
 
     def _quality_candidates(self) -> list[str]:
         """Return ordered quality levels based on config."""
@@ -1952,42 +2012,204 @@ class NeteaseCloudMusicProvider(MusicProvider):
             )
         raise UnsupportedFeaturedException(f"Unsupported media type {media_type}")
 
-    async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """Build the dynamic radio playlist items for the recommended_radios row."""
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-        personal_fm_image_url: str | None = None
+    async def _get_personal_fm_image_url(
+        self, daily_rows: list[dict[str, Any]] | None = None
+    ) -> str | None:
+        """Return a best-effort cover image for the Personal FM dynamic playlist."""
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             fm_payload = await self._get_recommend_payload_cached(
                 "personal_fm",
                 _RECOMMEND_PERSONAL_FM_TTL,
                 "/personal_fm",
+                {"cookie": self._cookie},
             )
             fm_data = _extract_data(fm_payload)
             fm_rows = fm_data.get("data")
             if isinstance(fm_rows, list) and fm_rows and isinstance(fm_rows[0], dict):
                 fm_item = fm_rows[0]
                 song_obj = fm_item.get("song") if isinstance(fm_item.get("song"), dict) else fm_item
-                if isinstance(song_obj, dict):
-                    personal_fm_image_url = _extract_song_image_url(song_obj)
-        if not personal_fm_image_url:
-            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-                daily_payload = await self._get_recommend_payload_cached(
-                    "daily_songs",
-                    _RECOMMEND_DAILY_TTL,
-                    "/recommend/songs",
-                )
-                daily_data = _extract_data(daily_payload)
-                daily_rows = daily_data.get("dailySongs")
-                if isinstance(daily_rows, list) and daily_rows and isinstance(daily_rows[0], dict):
-                    personal_fm_image_url = _extract_song_image_url(daily_rows[0])
-        items.append(
-            self._build_dynamic_playlist(
-                _PLAYLIST_PERSONAL_FM_ID,
-                "Personal FM",
-                translation_key="personal_fm",
-                image_url=personal_fm_image_url,
-            )
+                if isinstance(song_obj, dict) and (image_url := _extract_song_image_url(song_obj)):
+                    return image_url
+        # fallback to the first daily song with artwork when no FM artwork is available
+        return await self._get_daily_recommend_image_url(daily_rows)
+
+    async def _get_daily_recommend_rows(
+        self, daily_rows: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return the raw daily recommendation song rows from /recommend/songs."""
+        if daily_rows is not None:
+            return daily_rows
+        # personalized endpoints return different (non-personalized) data on
+        # some NCM api backends unless the login cookie is also passed as a
+        # query param, so it is sent in the params of every call below too
+        daily_payload = await self._get_recommend_payload_cached(
+            "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs", {"cookie": self._cookie}
         )
-        if heart_playlist := await self._build_heart_mode_dynamic_playlist():
-            items.append(heart_playlist)
+        daily_data = _extract_data(daily_payload)
+        daily_songs = daily_data.get("dailySongs")
+        if not isinstance(daily_songs, list):
+            return []
+        return [row for row in daily_songs if isinstance(row, dict)]
+
+    async def _get_daily_recommend_tracks(self) -> list[Track]:
+        """Fetch and parse the daily personalized tracks (/recommend/songs)."""
+        tracks: list[Track] = []
+        for song_obj in await self._get_daily_recommend_rows():
+            with suppress(InvalidDataError):
+                tracks.append(self._parse_track(song_obj))
+        await self._fill_track_durations(tracks)
+        return tracks
+
+    async def _get_daily_recommend_image_url(
+        self, daily_rows: list[dict[str, Any]] | None = None
+    ) -> str | None:
+        """Return a cover for the daily recommendations from the first daily song."""
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            for row in await self._get_daily_recommend_rows(daily_rows):
+                if image_url := _extract_song_image_url(row):
+                    return image_url
+        return None
+
+    async def _get_dynamic_playlist_image_url(
+        self, dynamic_id: str, daily_rows: list[dict[str, Any]] | None = None
+    ) -> str | None:
+        """Resolve a best-effort cover for one of the dynamic playlist ids."""
+        if dynamic_id == _PLAYLIST_PERSONAL_FM_ID:
+            return await self._get_personal_fm_image_url(daily_rows)
+        if dynamic_id == _PLAYLIST_DAILY_RECOMMEND_ID:
+            return await self._get_daily_recommend_image_url(daily_rows)
+        return None
+
+    async def _build_dynamic_playlist_for_id(
+        self, dynamic_id: str, daily_rows: list[dict[str, Any]] | None = None
+    ) -> Playlist:
+        """Build a dynamic playlist item with best-effort real cover and name."""
+        name, translation_key = _DYNAMIC_PLAYLIST_META[dynamic_id]
+        if source_playlist_id := _RADAR_SOURCE_PLAYLIST_IDS.get(dynamic_id):
+            # radars carry the official (account-localized) NCM name, so no translation key;
+            # fetch the playlist detail once and reuse it for both the name and the cover
+            detail = await self._get_radar_playlist_detail(source_playlist_id)
+            if detail and (radar_name := str(detail.get("name") or "").strip()):
+                name = radar_name
+            translation_key = None
+            image_url = await self._get_radar_cover_url(source_playlist_id, detail)
+        else:
+            image_url = await self._get_dynamic_playlist_image_url(dynamic_id, daily_rows)
+        return self._build_dynamic_playlist(
+            dynamic_id,
+            name,
+            translation_key=translation_key,
+            image_url=image_url,
+        )
+
+    async def _get_radar_playlist_detail(self, source_playlist_id: str) -> dict[str, Any] | None:
+        """Fetch the cached playlist detail object of an official radar playlist."""
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            payload = await self._get_recommend_payload_cached(
+                f"radar_playlist_{source_playlist_id}",
+                _RECOMMEND_RADAR_TTL,
+                "/playlist/detail",
+                {"id": source_playlist_id, "cookie": self._cookie},
+            )
+            playlist_obj = _extract_data(payload).get("playlist")
+            if isinstance(playlist_obj, dict):
+                return playlist_obj
+        return None
+
+    async def _get_radar_cover_url(
+        self, source_playlist_id: str, detail: dict[str, Any] | None
+    ) -> str | None:
+        """Return the cover image of an official radar playlist."""
+        # the detail is resolved once by the caller: a failed fetch (None) must not be
+        # retried here, and only a successful coverless detail falls back to the tracks
+        if detail is None:
+            return None
+        if cover := _playlist_cover_url(detail):
+            return cover
+        # some api backends do not expose a cover on the radar playlist detail:
+        # fall back to the album art of the first track in the playlist
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
+            tracks = await self._get_playlist_tracks_cached(
+                source_playlist_id, account_scope=self._uid
+            )
+            for track in tracks:
+                if track.metadata.images:
+                    return next(iter(track.metadata.images)).path
+        self.logger.debug("No cover image found for radar playlist %s", source_playlist_id)
+        return None
+
+    async def _build_personal_recommend_items(
+        self,
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Build the personalized items for the personal_recommend row."""
+        # the daily songs feed three of the builders (daily cover, personal FM
+        # fallback and heart mode seed), so fetch them once up front, then build
+        # the five playlists concurrently. a daily-songs failure must not take
+        # down the whole row, so fall back to an empty list (not None, so the
+        # builders do not retry the request)
+        try:
+            daily_rows = await self._get_daily_recommend_rows()
+        except (InvalidDataError, ResourceTemporarilyUnavailable) as err:
+            self.logger.warning(
+                "Failed to fetch daily recommendations for the personal recommend row: %s", err
+            )
+            daily_rows = []
+        results = await asyncio.gather(
+            self._build_dynamic_playlist_for_id(_PLAYLIST_PERSONAL_FM_ID, daily_rows),
+            self._build_dynamic_playlist_for_id(_PLAYLIST_DAILY_RECOMMEND_ID, daily_rows),
+            *(
+                self._build_dynamic_playlist_for_id(radar_id)
+                for radar_id in _RADAR_SOURCE_PLAYLIST_IDS
+            ),
+            self._build_heart_mode_dynamic_playlist(daily_rows),
+            return_exceptions=True,
+        )
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        for result in results:
+            if isinstance(result, BaseException):
+                if not isinstance(result, (InvalidDataError, ResourceTemporarilyUnavailable)):
+                    # unexpected failures are programming errors: let the
+                    # centralized recommendation error handling report them
+                    raise result
+                self.logger.warning("Failed to build a personal recommend item: %s", result)
+                continue
+            if result is not None:
+                items.append(result)
         return items
+
+    @use_cache(3600 * 24, cache_checksum=_CACHE_VERSION)
+    async def _get_static_playlist_details_cached(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details for a static (NCM) playlist, cached."""
+        payload = await self._client.get(
+            "/playlist/detail",
+            params={"id": prov_playlist_id, "cookie": self._cookie},
+            cookie=self._cookie,
+        )
+        data = _extract_data(payload)
+        playlist_obj = data.get("playlist")
+        if not isinstance(playlist_obj, dict):
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
+        return self._parse_playlist(playlist_obj)
+
+    def _parse_heart_mode_tracks(self, payload: dict[str, Any]) -> list[Track]:
+        """Parse heart mode tracks from a playmode/intelligence/list payload."""
+        data = _extract_data(payload)
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            return []
+        result: list[Track] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            song_obj = None
+            for key in ("songInfo", "song", "songData", "trackData"):
+                if isinstance(row.get(key), dict):
+                    song_obj = row[key]
+                    break
+            if song_obj is None and isinstance(row.get("id"), (int, str)):
+                song_obj = row
+            if not isinstance(song_obj, dict):
+                continue
+            with suppress(InvalidDataError):
+                result.append(self._parse_track(song_obj))
+        return result

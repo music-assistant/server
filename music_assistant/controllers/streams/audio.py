@@ -153,7 +153,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
-from music_assistant.helpers.provider_access import playback_sources
+from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -196,11 +196,10 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
 
-# Bounded wait at a boundary for the incoming track to start delivering.
-# Its buffer may only exist once its source produces audio, which can happen around
-# the moment the outgoing track's audio ends; the wait trades a little of the player's
-# lead for the fade, and a source that never shows up loses only the fade.
-FADE_SOURCE_WAIT = 5.0
+# Size of the tail slices played out while a fade waits for the incoming track's
+# audio. The fade is sized on what is left of the tail once that audio shows up,
+# so a small slice keeps it from losing more of the tail than the wait took.
+FADE_WAIT_SLICE_MS = 250
 
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
@@ -1714,6 +1713,7 @@ class StreamsAudio:
         first_chunk_received = False
         bytes_received = 0
         finished = False
+        start_reported = False
         next_buffer_triggered = False
         stream_started_at = asyncio.get_event_loop().time()
         try:
@@ -1728,6 +1728,11 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
+                    # the same streamdetails serve every stream of this playback (a seek,
+                    # a reconnect, a crossfade intro and its body); only the first one,
+                    # the one that finds no streamed seconds yet, starts the playback
+                    if streamdetails.seconds_streamed is None:
+                        start_reported = self._notify_provider_stream_started(streamdetails)
                 # trigger pre-buffering of the next item well before end
                 # to ensure the raw PCM is ready when the next item needs to be streamed.
                 # tracks and sound effects are finite files that fill and close immediately;
@@ -1791,7 +1796,9 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
+            self._notify_provider_streamed(
+                streamdetails, finished, seconds_streamed, start_reported
+            )
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -2036,12 +2043,22 @@ class StreamsAudio:
                     next_sample_rate=next_pcm.sample_rate,
                 )
                 if crossfade_allowed:
-                    # the incoming track's audio may still be on its way; make sure it is
-                    # being prepared and give it a bounded chance to show up
+                    # the incoming track's audio may still be on its way: make sure it is
+                    # being prepared, and play the tail out plainly meanwhile. A pause here
+                    # costs the player its lead, a shorter tail only costs the fade some
+                    # of its window.
                     preparation = self.mass.player_queues.prepare_next_audio_buffer(
                         queue.queue_id, queue_item.queue_item_id
                     )
-                    await self._await_fade_source(next_queue_item, preparation)
+                    played_out = 0
+                    async with aclosing(
+                        self._play_tail_out(tail_window, pcm_format, next_queue_item, preparation)
+                    ) as tail_play_out:
+                        async for pcm_slice in tail_play_out:
+                            yield pcm_slice
+                            played_out += len(pcm_slice)
+                            bytes_written += len(pcm_slice)
+                    del tail_window[:played_out]
                     transition_mode, fade_in_buffer_duration = self._select_buffered_crossfade(
                         next_queue_item.streamdetails,
                         crossfade_mode,
@@ -2504,8 +2521,10 @@ class StreamsAudio:
                 if last_fadeout_part and last_streamdetails:
                     incoming_duration = 0.0
                     if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
-                        # the incoming track's audio may still be on its way; make sure it
-                        # is being prepared and give it a bounded chance to show up
+                        # the incoming track's audio may still be on its way: make sure it
+                        # is being prepared, and play the tail out plainly meanwhile. A
+                        # pause here costs the player its lead, a shorter tail only costs
+                        # the fade some of its window.
                         preparation = (
                             self.mass.player_queues.prepare_next_audio_buffer(
                                 queue.queue_id, last_queue_track.queue_item_id
@@ -2513,7 +2532,18 @@ class StreamsAudio:
                             if last_queue_track is not None
                             else None
                         )
-                        await self._await_fade_source(queue_track, preparation)
+                        played_out = 0
+                        async with aclosing(
+                            self._play_tail_out(
+                                last_fadeout_part, pcm_format, queue_track, preparation
+                            )
+                        ) as tail_play_out:
+                            async for pcm_slice in tail_play_out:
+                                if _superseded():
+                                    return
+                                yield pcm_slice
+                                played_out += len(pcm_slice)
+                        last_fadeout_part = last_fadeout_part[played_out:]
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
                             item_crossfade_mode,
@@ -3195,20 +3225,49 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:
+        """
+        Report the start of an item's playback to the provider that owns it.
+
+        Returns whether the provider was told, so its end report is owed.
+        """
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
+            return False
+        # the base hook is a no-op: a provider that does not implement it never hears of
+        # the start, so it is not owed the matching end report either
+        if type(music_prov).on_stream_started is MusicProvider.on_stream_started:
+            return False
+        with request_priority(RequestPriority.LOW):
+            self.mass.create_task(music_prov.on_stream_started(streamdetails))
+        return True
+
     def _notify_provider_streamed(
-        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+        self,
+        streamdetails: StreamDetails,
+        finished: bool,
+        seconds_streamed: float,
+        start_reported: bool,
     ) -> None:
         """Report a (mostly) streamed item back to the provider that owns it."""
-        if not finished and seconds_streamed < 90:
+        # a stream that reported the start of playback always reports its end too
+        if not finished and not start_reported and seconds_streamed < 90:
             return
-        provider = self.mass.get_provider(streamdetails.provider)
-        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
-        if provider is None or provider.type != ProviderType.MUSIC:
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
             return
-        music_prov = cast("MusicProvider", provider)
         # a listening report is background work, whoever streamed
         with request_priority(RequestPriority.LOW):
             self.mass.create_task(music_prov.on_streamed(streamdetails))
+
+    def _get_reporting_provider(self, streamdetails: StreamDetails) -> MusicProvider | None:
+        """Return the music provider that receives the playback reports for an item."""
+        # only the account that served the stream reports its playback, never another
+        # instance of the same service
+        provider = exact_provider(self.mass, streamdetails.provider)
+        # plugin providers serve playable items too, but the playback callbacks are
+        # MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return None
+        return cast("MusicProvider", provider)
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
@@ -4282,35 +4341,67 @@ class StreamsAudio:
         )
         return handover
 
-    async def _await_fade_source(
+    def _fade_source_pending(
         self, queue_item: QueueItem, preparation: asyncio.Task[None] | None
-    ) -> None:
+    ) -> bool:
         """
-        Give the incoming track a bounded chance to start delivering.
-
-        Returns at once when its audio is ready or when no preparation is still running.
+        Return whether the incoming track's audio is still on its way.
 
         :param queue_item: The incoming (fade-in) queue item.
         :param preparation: The preparation of its audio, if one was started.
         """
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + FADE_SOURCE_WAIT
-        while True:
-            # read the details on every pass: a capacity reselection replaces them
-            streamdetails = queue_item.streamdetails
-            audio_buffer = cast(
-                "AudioBuffer | None", streamdetails.buffer if streamdetails else None
+        # read the details on every call: a capacity reselection replaces them
+        streamdetails = queue_item.streamdetails
+        audio_buffer = cast("AudioBuffer | None", streamdetails.buffer if streamdetails else None)
+        if audio_buffer is not None:
+            return not audio_buffer.has_error and not audio_buffer.ready.is_set()
+        # the buffer is attached once the preparation has its source; a preparation
+        # that is over without one has given up
+        return preparation is not None and not preparation.done()
+
+    async def _play_tail_out(
+        self,
+        tail: bytes | bytearray,
+        pcm_format: AudioFormat,
+        queue_item: QueueItem,
+        preparation: asyncio.Task[None] | None,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield the head of a held tail while the incoming track's audio is on its way.
+
+        Stops as soon as that audio is ready or will never be, leaving the rest of the
+        tail to the fade; the caller trims what was yielded. Never runs ahead of
+        playback speed, so a player reading ahead cannot take the whole tail before
+        the fade.
+
+        :param tail: The held tail of the outgoing track.
+        :param pcm_format: PCM format of the tail.
+        :param queue_item: The incoming (fade-in) queue item.
+        :param preparation: The preparation of its audio, if one was started.
+        """
+        frame_size = pcm_format.bit_depth // 8 * pcm_format.channels
+        slice_size = (
+            int(pcm_format.pcm_sample_size * FADE_WAIT_SLICE_MS / 1000) // frame_size * frame_size
+        )
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        played = 0
+        while played < len(tail) and self._fade_source_pending(queue_item, preparation):
+            if (delay := started + played / pcm_format.pcm_sample_size - loop.time()) > 0:
+                # a player still in its opening burst reads as fast as it is served:
+                # hold each slice until playback is due to reach it
+                await asyncio.sleep(delay)
+                if not self._fade_source_pending(queue_item, preparation):
+                    break
+            pcm_slice = bytes(tail[played : played + slice_size])
+            yield pcm_slice
+            played += len(pcm_slice)
+        if played:
+            self.logger.debug(
+                "Played %.2fs of the outgoing tail out while %s was on its way",
+                played / pcm_format.pcm_sample_size,
+                queue_item.name,
             )
-            if audio_buffer is not None:
-                if audio_buffer.has_error:
-                    return
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(audio_buffer.ready.wait(), deadline - loop.time())
-                return
-            if preparation is None or preparation.done() or loop.time() >= deadline:
-                return
-            # the buffer appears once the preparation starts producing
-            await asyncio.sleep(0.1)
 
     def _select_buffered_crossfade(
         self,
