@@ -61,15 +61,15 @@ RETAIL_SUFFIX_NAMES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# builders
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(name="mass")
 def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
     """Run on a library-only instance: these tests only touch the library."""
     return music_mass
+
+
+# ---------------------------------------------------------------------------
+# builders
+# ---------------------------------------------------------------------------
 
 
 def _artist() -> Artist:
