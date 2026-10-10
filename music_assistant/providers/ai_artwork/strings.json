@@ -55,10 +55,6 @@
       "label": "Custom prompt to preview",
       "description": "The prompt used when Custom is one of the styles to preview. You can use the same placeholders as the custom prompt above."
     },
-    "preview_title_overlay": {
-      "label": "Let Music Assistant add the playlist name to the preview",
-      "description": "Try the preview with the playlist name added by Music Assistant instead of designed by the image engine."
-    },
     "preview": {
       "label": "Preview cover",
       "description": "Generate a cover for the chosen playlist in each style to preview, and the description the text engine would write for it. They are only shown here and do not change your settings or the playlist.",

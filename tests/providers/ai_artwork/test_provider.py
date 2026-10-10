@@ -46,7 +46,6 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_PREVIEW_IMAGE,
     CONF_PREVIEW_PLAYLIST,
     CONF_PREVIEW_STYLE,
-    CONF_PREVIEW_TITLE_OVERLAY,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -592,7 +591,7 @@ async def test_preview_shows_covers_and_description_without_storing(
 
 
 async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) -> None:
-    """The preview tries its own style, prompt and title setting, not the configured ones."""
+    """The preview tries its own styles and prompt, and the configured title setting."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(
         return_value=_smart_playlist(name="Late Night Drive")
     )
@@ -602,7 +601,7 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
             CONF_PREVIEW_PLAYLIST: "234",
             CONF_PREVIEW_STYLE: ["custom"],
             CONF_PREVIEW_CUSTOM_PROMPT: "A tiny watercolor of {name}.",
-            CONF_PREVIEW_TITLE_OVERLAY: True,
+            CONF_TITLE_OVERLAY: True,
         },
     )
 
@@ -728,7 +727,7 @@ async def test_changing_preview_settings_does_not_reload(provider: AIArtworkProv
         base_update.assert_not_awaited()
 
         await provider.update_config(
-            config, {f"values/{CONF_PREVIEW_TITLE_OVERLAY}", f"values/{CONF_STYLE}"}
+            config, {f"values/{CONF_PREVIEW_STYLE}", f"values/{CONF_STYLE}"}
         )
         base_update.assert_awaited_once()
 

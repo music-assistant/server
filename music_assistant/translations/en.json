@@ -1023,8 +1023,6 @@
   "provider.ai_artwork.config_entries.preview_style.options.neon": "Neon",
   "provider.ai_artwork.config_entries.preview_style.options.risograph": "Risograph",
   "provider.ai_artwork.config_entries.preview_style.options.spotify": "Spotify",
-  "provider.ai_artwork.config_entries.preview_title_overlay.description": "Try the preview with the playlist name added by Music Assistant instead of designed by the image engine.",
-  "provider.ai_artwork.config_entries.preview_title_overlay.label": "Let Music Assistant add the playlist name to the preview",
   "provider.ai_artwork.config_entries.regenerate.action_label": "Regenerate covers and descriptions",
   "provider.ai_artwork.config_entries.regenerate.description": "Generate new covers and descriptions for all playlists. The current ones stay in place until their replacement is ready.",
   "provider.ai_artwork.config_entries.regenerate.label": "Regenerate everything",

@@ -67,7 +67,6 @@ from .constants import (
     CONF_PREVIEW_IMAGE,
     CONF_PREVIEW_PLAYLIST,
     CONF_PREVIEW_STYLE,
-    CONF_PREVIEW_TITLE_OVERLAY,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -129,7 +128,6 @@ PREVIEW_KEYS: Final = frozenset(
         CONF_PREVIEW_PLAYLIST,
         CONF_PREVIEW_STYLE,
         CONF_PREVIEW_CUSTOM_PROMPT,
-        CONF_PREVIEW_TITLE_OVERLAY,
     }
 )
 
@@ -329,6 +327,7 @@ class AIArtworkProvider(MetadataProvider):
                 type=ConfigEntryType.BOOLEAN,
                 required=False,
                 default_value=False,
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_PLAYLIST,
@@ -355,14 +354,6 @@ class AIArtworkProvider(MetadataProvider):
                 category="preview",
                 required=False,
                 default_value=DEFAULT_CUSTOM_PROMPT,
-                immediate_apply=True,
-            ),
-            ConfigEntry(
-                key=CONF_PREVIEW_TITLE_OVERLAY,
-                type=ConfigEntryType.BOOLEAN,
-                category="preview",
-                required=False,
-                default_value=False,
                 immediate_apply=True,
             ),
             ConfigEntry(
@@ -866,7 +857,7 @@ class AIArtworkProvider(MetadataProvider):
         if not styles:
             styles = [style for style in Style if style != Style.CUSTOM]
         custom_prompt = str(self.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or "")
-        title_overlay = bool(self.config.get_value(CONF_PREVIEW_TITLE_OVERLAY))
+        title_overlay = self._look().title_overlay
         return [
             CoverLook(style=style, custom_prompt=custom_prompt, title_overlay=title_overlay)
             for style in styles
