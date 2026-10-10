@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, ProviderMapping, Track
 
@@ -76,18 +81,35 @@ async def test_provider_artist_tracks_skip_failing_album(
     assert "Unable to fetch tracks for album Broken from provider streaming_inst" in caplog.text
 
 
-async def test_provider_artist_tracks_stop_when_provider_backs_off(
+def _album_tracks_failing_on(
+    failing: str, error: Exception, requested: list[str]
+) -> Callable[[str, str], Awaitable[list[Track]]]:
+    """Return a fake album tracklist fetch that records each album and fails on one."""
+
+    async def _tracks(item_id: str, _provider: str) -> list[Track]:
+        requested.append(item_id)
+        if item_id == failing:
+            raise error
+        return [_track(f"{item_id} track")]
+
+    return _tracks
+
+
+def _exhausted(cause: Exception) -> RetriesExhausted:
+    """Return the error a provider raises once it gave up retrying on the given failure."""
+    try:
+        raise RetriesExhausted("Retries exhausted, failed after 8 attempts") from cause
+    except RetriesExhausted as err:
+        return err
+
+
+async def test_provider_artist_tracks_stop_when_provider_is_rate_limited(
     mass: MusicAssistant,
 ) -> None:
-    """A provider that gave up on retrying is not asked for the remaining albums."""
+    """A provider that gave up on a rate limit is not asked for the remaining albums."""
     await set_global_cache_values({"available_providers": {_PROVIDER}})
     requested: list[str] = []
-
-    async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
-        requested.append(item_id)
-        if item_id == "Limited":
-            raise RetriesExhausted("Not retrying, asked to wait 120 seconds")
-        return [_track(f"{item_id} track")]
+    error = _exhausted(RateLimited("Apple Music Rate Limiter"))
 
     with (
         patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
@@ -96,11 +118,41 @@ async def test_provider_artist_tracks_stop_when_provider_backs_off(
             "get_provider_artist_albums",
             return_value=[_album("Fine"), _album("Limited"), _album("Later")],
         ),
-        patch.object(mass.music.albums, "tracks", side_effect=_album_tracks),
+        patch.object(
+            mass.music.albums,
+            "tracks",
+            side_effect=_album_tracks_failing_on("Limited", error, requested),
+        ),
     ):
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
     assert requested == ["Fine", "Limited"]
     assert [track.name for track in tracks] == ["Fine track"]
+
+
+async def test_provider_artist_tracks_go_on_after_one_album_keeps_failing(
+    mass: MusicAssistant,
+) -> None:
+    """Retries running out on one album's own error do not cost the other albums."""
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
+    requested: list[str] = []
+    error = _exhausted(ResourceTemporarilyUnavailable("Apple Music API Timeout"))
+
+    with (
+        patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
+        patch.object(
+            mass.music.artists,
+            "get_provider_artist_albums",
+            return_value=[_album("Fine"), _album("Broken"), _album("Later")],
+        ),
+        patch.object(
+            mass.music.albums,
+            "tracks",
+            side_effect=_album_tracks_failing_on("Broken", error, requested),
+        ),
+    ):
+        tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+    assert requested == ["Fine", "Broken", "Later"]
+    assert [track.name for track in tracks] == ["Fine track", "Later track"]
 
 
 async def test_provider_artist_tracks_raise_when_every_album_fails(mass: MusicAssistant) -> None:

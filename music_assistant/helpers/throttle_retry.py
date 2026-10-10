@@ -309,6 +309,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
         honored_until = 0.0
+        last_error: ResourceTemporarilyUnavailable | None = None
         for attempt in range(throttler.retry_attempts):
             # every attempt goes through the gate: a cooldown another caller armed while
             # we were backing off must hold this retry too, and a retry is a request like
@@ -322,6 +323,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                     try:
                         return await func(self, *args, **kwargs)
                     except ResourceTemporarilyUnavailable as e:
+                        last_error = e
                         self.logger.info(
                             f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                         )
@@ -367,7 +369,8 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                 self.logger.debug("%s skipped during a rate limit cooldown: %s", func.__name__, e)
                 raise _give_up(e, e.backoff_time) from e
         msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
-        raise RetriesExhausted(msg)
+        # the last failure tells callers whether they were rate limited or had another error
+        raise RetriesExhausted(msg) from last_error
 
     return wrapper
 

@@ -24,6 +24,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -846,9 +847,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                     provider_instance_id_or_domain,
                     err,
                 )
-                if isinstance(err, RetriesExhausted):
-                    # the provider is backing off (e.g. rate limited), so every remaining
-                    # album would wait out the same backoff and fail as well
+                if isinstance(err, RetriesExhausted) and isinstance(err.__cause__, RateLimited):
+                    # a rate limit holds for the whole provider, so every remaining album
+                    # would wait out the same backoff and fail as well; any other failure
+                    # may be this album's own, so the others are still tried
                     break
                 continue
             for track in album_tracks:
