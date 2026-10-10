@@ -72,13 +72,20 @@ def test_overlay_active() -> None:
     assert not overlay_active(_make_queue(enabled=False, source=_make_source_mapping()))
 
 
+# --- overlay_mixed_in ---
+
+
 def test_overlay_mixed_in() -> None:
     """The flow stream always carries an active overlay, a per-item stream only for radio."""
     active = _make_queue(enabled=True, source=_make_source_mapping())
-    radio, track = _make_queue_item(MediaType.RADIO), _make_queue_item(MediaType.TRACK)
+    radio = _make_queue_item(MediaType.RADIO)
+    track = _make_queue_item(MediaType.TRACK)
+    live_source = _make_queue_item(MediaType.AUDIO_SOURCE)
     assert overlay_mixed_in(active, track, flow_mode=True)
+    assert overlay_mixed_in(active, radio, flow_mode=True)
     assert overlay_mixed_in(active, radio, flow_mode=False)
     assert not overlay_mixed_in(active, track, flow_mode=False)
+    assert not overlay_mixed_in(active, live_source, flow_mode=False)
     inactive = _make_queue(enabled=False, source=_make_source_mapping())
     assert not overlay_mixed_in(inactive, track, flow_mode=True)
     assert not overlay_mixed_in(inactive, radio, flow_mode=False)

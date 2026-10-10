@@ -311,9 +311,9 @@ def overlay_mixed_in(queue: PlayerQueue, queue_item: QueueItem, *, flow_mode: bo
     """
     Return True if the queue's audio overlay is mixed into the stream serving this item.
 
-    The overlay rides on the queue's continuous flow stream. Of the per-item streams only
-    radio carries it: a station never plays in flow mode and is one long-lived stream of
-    its own, so mixing it in there does not restart the overlay at a track boundary.
+    The overlay rides on the queue's continuous flow stream. Among per-item streams only
+    radio carries it, because a station never plays in flow mode and is one long-lived
+    stream of its own.
 
     :param queue: The queue the item plays on.
     :param queue_item: The item the stream serves.
