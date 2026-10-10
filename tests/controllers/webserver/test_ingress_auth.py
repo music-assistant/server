@@ -916,6 +916,39 @@ async def test_ha_network_urls_are_reused_between_sign_in_listings(
     hass_provider.hass.send_command.assert_awaited_once_with("network/url")
 
 
+async def test_concurrent_sign_in_listings_share_one_ha_lookup(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Sign-in listings that arrive together ask Home Assistant for its URLs once."""
+    mass = auth_manager.mass
+    ha_config: HomeAssistantProviderConfig = {"ha_url": "http://supervisor/core/api"}
+    provider = HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
+    hass_provider = _connected_hass_provider({"external": "https://ha.example.com"})
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        results = await asyncio.gather(*(provider.supports_remote_app() for _ in range(5)))
+
+    assert all(results)
+    hass_provider.hass.send_command.assert_awaited_once_with("network/url")
+
+
+async def test_a_failed_ha_lookup_is_not_retried_right_away(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """After Home Assistant fails to report its URLs, listings wait before asking again."""
+    mass = auth_manager.mass
+    ha_config: HomeAssistantProviderConfig = {"ha_url": "http://supervisor/core/api"}
+    provider = HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
+    hass_provider = _connected_hass_provider({})
+    hass_provider.hass.send_command.side_effect = TimeoutError
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        assert not await provider.supports_remote_app()
+        assert not await provider.supports_remote_app()
+
+    hass_provider.hass.send_command.assert_awaited_once_with("network/url")
+
+
 @pytest.mark.parametrize(
     ("disabled", "self_registration", "translation_key"),
     [(True, True, "user_account_disabled"), (False, False, "self_registration_disabled")],

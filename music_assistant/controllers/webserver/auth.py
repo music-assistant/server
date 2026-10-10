@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
@@ -58,7 +59,6 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AUTH_CODE_RE,
-    PENDING_LOGIN_TTL,
     PKCE_CHALLENGE_RE,
     AuthTransport,
     PendingLogin,
@@ -1172,7 +1172,9 @@ class AuthenticationManager:
         return {
             "authorization_url": auth_url,
             "state": pending.state,
-            "expires_at": (utc() + timedelta(seconds=PENDING_LOGIN_TTL)).isoformat(),
+            "expires_at": (
+                utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
+            ).isoformat(),
         }
 
     async def get_authorization_url(

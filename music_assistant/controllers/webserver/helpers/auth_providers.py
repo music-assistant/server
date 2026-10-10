@@ -41,8 +41,9 @@ DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 PRUNE_THRESHOLD: Final = 128
 # Salt for the password hash of a login with an unknown username
 UNKNOWN_USER_ID: Final = "unknown-user"
-# Seconds the URLs Home Assistant reports for itself are reused
+# Seconds the URLs Home Assistant reports for itself are reused, and after a failed lookup
 HA_NETWORK_URLS_TTL: Final = 300
+HA_NETWORK_URLS_RETRY: Final = 30
 
 
 def normalize_username(username: str) -> str:
@@ -629,6 +630,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
         super().__init__(mass, provider_id, config)
         self._network_urls: dict[str, str | None] = {}
         self._network_urls_expires_at = 0.0
+        self._network_urls_lock = asyncio.Lock()
 
     @property
     def allow_self_registration(self) -> bool:
@@ -841,23 +843,28 @@ class HomeAssistantOAuthProvider(LoginProvider):
         ha_provider = self.mass.get_provider("hass")
         if not ha_provider:
             return {}
-        ha_provider = cast("HomeAssistantProvider", ha_provider)
-        try:
-            # Access the hass client from the provider
-            hass_client = ha_provider.hass
-            if not hass_client or not hass_client.connected:
+        # the hass provider only creates its client during setup
+        hass_client = getattr(cast("HomeAssistantProvider", ha_provider), "hass", None)
+        if not hass_client or not hass_client.connected:
+            return {}
+        # auth/providers is public, so concurrent calls share one lookup
+        async with self._network_urls_lock:
+            if time.monotonic() < self._network_urls_expires_at:
+                return self._network_urls
+            try:
+                # Get network URLs from Home Assistant using WebSocket API
+                network_urls = await hass_client.send_command("network/url") or {}
+            except Exception as err:
+                self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
+                self._network_urls = {}
+                self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_RETRY
                 return {}
-            # Get network URLs from Home Assistant using WebSocket API
-            network_urls = await hass_client.send_command("network/url") or {}
             self._network_urls = {
                 key: url.strip() if isinstance(url, str) and url.strip() else None
                 for key, url in network_urls.items()
             }
-        except Exception as err:
-            self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
-            return {}
-        self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_TTL
-        return self._network_urls
+            self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_TTL
+            return self._network_urls
 
     async def _fetch_ha_user_id_via_websocket(self, ha_url: str, access_token: str) -> str | None:
         """
