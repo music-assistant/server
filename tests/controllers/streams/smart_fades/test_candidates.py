@@ -166,7 +166,7 @@ class TestRhythmClashMetric:
 
 
 class TestTempoRampKickGate:
-    """The tempo ramp runs only where both decks kick: the stretch window and the overlap."""
+    """The tempo ramp runs only when both decks kick in the overlap."""
 
     @staticmethod
     def _ramped_blend() -> tuple[TransitionContext, Candidate]:
@@ -209,13 +209,27 @@ class TestTempoRampKickGate:
 
         assert candidate == ramped
 
+    def test_a_breakdown_before_a_kicked_overlap_keeps_its_ramp(self) -> None:
+        """A kickless stretch window still ramps when both decks kick in the overlap."""
+        ctx, ramped = self._ramped_blend()
+        plan = ramped.plan
+        overlap_start = plan.fade_out_window - plan.crossfade_duration * 122.0 / 120.0
+        assert plan.tempo_plan.steps[0][0] < overlap_start
+        breakdown = dataclasses.replace(
+            ctx, kick_out=((overlap_start, 45.0),), kick_in=((0.0, 45.0),)
+        )
+
+        candidate = CandidateFactory(breakdown, LOGGER).build(_spec(ctx, 8))
+
+        assert candidate == ramped
+
     @pytest.mark.parametrize(
         "kickless",
-        ["outgoing stretch window", "outgoing overlap", "incoming overlap", "incoming graze"],
+        ["outgoing overlap", "incoming overlap", "incoming graze", "incoming, no outgoing data"],
     )
-    def test_a_kickless_side_blends_unstretched(self, kickless: str) -> None:
+    def test_a_kickless_overlap_blends_unstretched(self, kickless: str) -> None:
         """
-        A deck without a kick where the ramp plays drops the ramp; a graze under a beat counts.
+        A deck without a kick in the overlap drops the ramp; a graze under a beat counts.
 
         :param kickless: Where the kick is missing.
         """
@@ -224,10 +238,10 @@ class TestTempoRampKickGate:
         overlap_start = plan.fade_out_window - plan.crossfade_duration * 122.0 / 120.0
         everywhere = ((0.0, 45.0),)
         kicks_out, kicks_in = {
-            "outgoing stretch window": (((overlap_start, 45.0),), everywhere),
             "outgoing overlap": (((0.0, overlap_start),), everywhere),
             "incoming overlap": (everywhere, ((30.0, 45.0),)),
             "incoming graze": (everywhere, ((plan.crossfade_duration - 0.2, 45.0),)),
+            "incoming, no outgoing data": (None, ((30.0, 45.0),)),
         }[kickless]
         gated = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
 
@@ -236,6 +250,28 @@ class TestTempoRampKickGate:
         assert candidate is not None
         assert candidate.plan.style is TransitionStyle.BLEND
         assert not candidate.plan.tempo_plan
+        # rebuilt unstretched: 8 outgoing bars at 120 BPM, without the 122/120 compensation
+        assert candidate.plan.crossfade_duration == pytest.approx(16.0)
+        assert candidate.plan.fadein_trim_start == 0.0
+
+    def test_a_trim_onto_a_beatless_intro_drops_the_ramp(self) -> None:
+        """A rolling-intro trim that moves the overlap off a kicked head onto a breakdown."""
+        t = np.arange(1800) * (240.0 / 1800)
+        breakdown = (t >= 8.0) & (t < 30.0)
+        # the breakdown keeps its voice bands quiet, so the trim may cut into it
+        quiet = np.where(breakdown, 0.05, 0.3)
+        inc = _analysis_with_bands(np.where(breakdown, 0.02, 0.5), quiet, quiet, 0.3, bpm=122.0)
+        ctx = _ctx(_analysis_with_bands(0.5, 0.3, 0.3, 0.3), inc)
+        assert ctx.kick_in is not None
+        assert ctx.kick_in[0][0] == 0.0
+
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.spec.bars == 8
+        assert not candidate.plan.tempo_plan
+        assert candidate.plan.crossfade_duration == pytest.approx(16.0)
+        # the groove entry at ~29.5 s lands on the overlap end, the overlap on the breakdown
+        assert candidate.plan.fadein_trim_start == pytest.approx(13.77, abs=0.01)
 
     @pytest.mark.parametrize(("intro_kick", "ramps"), [(0.5, True), (0.02, False)])
     def test_a_beatless_intro_from_band_data_blends_unstretched(
@@ -248,8 +284,7 @@ class TestTempoRampKickGate:
         :param ramps: Whether the blend ramps its tempo.
         """
         t = np.arange(1800) * (240.0 / 1800)
-        inc = _analysis_with_bands(np.where(t < 40.0, intro_kick, 0.5), 0.3, 0.3, 0.3)
-        inc.bpm = 122.0
+        inc = _analysis_with_bands(np.where(t < 40.0, intro_kick, 0.5), 0.3, 0.3, 0.3, bpm=122.0)
         ctx = _ctx(_analysis_with_bands(0.5, 0.3, 0.3, 0.3), inc)
 
         candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
