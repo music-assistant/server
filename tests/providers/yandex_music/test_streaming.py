@@ -1204,3 +1204,44 @@ async def test_get_stream_details_raises_when_both_paths_fail(
 
     with pytest.raises(MediaNotFoundError):
         await streaming_manager.get_stream_details("777")
+
+
+async def test_encrypted_file_info_probes_lossless_audio_format(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Encrypted FLAC keeps its real format when file-info omits audio parameters."""
+    manager = streaming_manager
+    key = bytes.fromhex("0123456789abcdef" * 2)
+    payload = bytearray(34)
+    payload[10:14] = bytes.fromhex("0bb80370")
+    header = b"fLaC" + bytes.fromhex("80000022") + bytes(payload)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(bytes(16))).encryptor()
+    encrypted = encryptor.update(header) + encryptor.finalize()
+    response = unittest.mock.MagicMock()
+    response.status = 206
+    response.content.read = unittest.mock.AsyncMock(return_value=encrypted)
+    context = unittest.mock.MagicMock()
+    context.__aenter__ = unittest.mock.AsyncMock(return_value=response)
+    session = unittest.mock.MagicMock()
+    session.get.return_value = context
+    manager.mass = type("MassStub", (), {"http_session": session})()
+    manager.provider.get_track = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+        return_value=type("Track", (), {"duration": 120})()
+    )
+    manager.client.get_track_file_info = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "url": "https://cdn.example/audio",
+            "codec": "flac",
+            "bitrate": 0,
+            "needs_decryption": True,
+            "key": key.hex(),
+        }
+    )
+    result = await manager.get_stream_details("12345")
+    assert result.audio_format.sample_rate == 48000
+    assert result.audio_format.bit_depth == 24
+    assert result.data["decryption_key"] == key.hex()
+    assert result.stream_type is StreamType.CUSTOM
+    assert result.can_seek is False
+    assert result.allow_seek is False
+    assert session.get.call_args.kwargs["headers"] == {"Range": "bytes=0-63"}

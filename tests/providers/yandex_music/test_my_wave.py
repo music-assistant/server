@@ -12,6 +12,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.media_items import Track as MATrack
 
+from music_assistant.providers.yandex_music.browse import _BrowseRouter
 from music_assistant.providers.yandex_music.constants import (
     CONF_ACTION_DELETE_WAVE_PRESET,
     CONF_ACTION_SAVE_WAVE_PRESET,
@@ -99,6 +100,7 @@ async def test_browse_root_exposes_my_wave_as_playlist() -> None:
     )
     provider.get_playlist = AsyncMock(return_value=my_wave)
 
+    provider._browse_router = _BrowseRouter(provider)
     items = await YandexMusicProvider.browse(provider, f"{provider.instance_id}://")
 
     assert isinstance(items[0], Playlist)
@@ -153,7 +155,7 @@ async def test_fetch_rotor_session_batch_paginates_via_session_tracks_after_firs
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
     provider.client.rotor_session_new = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"
@@ -306,7 +308,7 @@ async def test_prefetch_rotor_session_fills_prefetched_when_idle() -> None:
     """With an active session + cursor and no prefetched tracks, fills wave.prefetched."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"

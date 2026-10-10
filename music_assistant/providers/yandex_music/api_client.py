@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import logging
 import random
 import re
@@ -23,11 +20,10 @@ from music_assistant_models.errors import (
 )
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
-from yandex_music import ClientAsync, MixLink, Search, TrackShort
+from yandex_music import ClientAsync, MixLink, Search, SessionEvent, TrackShort
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
-from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.throttle_retry import (
@@ -39,6 +35,7 @@ from music_assistant.helpers.throttle_retry import (
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
     from yandex_music import DownloadInfo
+    from yandex_music import Sequence as YandexSequence
     from yandex_music.feed.feed import Feed
     from yandex_music.landing.chart_info import ChartInfo
     from yandex_music.landing.landing import Landing
@@ -73,6 +70,14 @@ GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
 LOGGER = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+class RotorSessionExpiredError(Exception):
+    """The server no longer recognizes the requested radio session."""
+
+
+class RotorSessionTerminatedError(Exception):
+    """The server explicitly ended the requested radio session."""
 
 
 def _liked_track_sort_key(track: Any) -> datetime:
@@ -143,6 +148,7 @@ class YandexMusicClient:
         self._file_info_cache: OrderedDict[
             tuple[str, str, str, str], tuple[float, dict[str, Any]]
         ] = OrderedDict()
+        self._file_info_locks: dict[tuple[str, str, str, str], tuple[asyncio.Lock, int]] = {}
         # Per-endpoint concurrency locks. Yandex's edge layer reacts to
         # concurrent requests to the same URL family (per-endpoint scraper
         # signature), not steady-state RPS. Defense-in-depth on top of the
@@ -378,39 +384,42 @@ class YandexMusicClient:
                 val = settings.get(key)
                 if val:
                     seeds.append(f"{seed_name}:{val}")
-        body: dict[str, Any] = {
-            "seeds": seeds,
-            "queue": queue or [],
-            "includeTracksInResponse": True,
-            "includeWaveModel": True,
-            "interactive": True,
-        }
-        result = await self._rotor_session_request("new", body)
-        if not result:
+        result = await self._call_rotor_session(
+            lambda c: c.rotor_session_new(
+                seeds,
+                queue=queue or [],
+                include_tracks_in_response=True,
+                include_wave_model=True,
+                interactive=True,
+            )
+        )
+        if result is None:
             return (None, [], None)
-        session_id = result.get("radioSessionId")
-        batch_id = result.get("batchId")
-        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
-        return (session_id, tracks, batch_id)
+        tracks = await self._hydrate_session_tracks(result.sequence or [])
+        return (result.radio_session_id, tracks, result.batch_id)
 
     async def rotor_session_tracks(
         self, session_id: str, *, current_track_id: str
-    ) -> tuple[list[YandexTrack], str | None]:
+    ) -> tuple[list[YandexTrack], str | None, bool]:
         """
         Fetch the next batch of tracks for an active rotor session.
 
         :param session_id: radioSessionId from rotor_session_new().
         :param current_track_id: Track ID just consumed from the previous batch
             (Yandex uses it to decide what to return next).
-        :return: Tuple of (list of tracks, new batch_id).
+        :return: Tuple of (list of tracks, new batch_id, session ended).
         """
-        body = {"queue": [str(current_track_id)]}
-        result = await self._rotor_session_request(f"{session_id}/tracks", body)
-        if not result:
-            return ([], None)
-        batch_id = result.get("batchId")
-        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
-        return (tracks, batch_id)
+        result = await self._call_rotor_session(
+            lambda c: c.rotor_session_tracks(session_id, queue=[str(current_track_id)])
+        )
+        if result is None:
+            return ([], None, False)
+        if result.unknown_session:
+            raise RotorSessionExpiredError(session_id)
+        if result.terminated and not result.sequence:
+            raise RotorSessionTerminatedError(session_id)
+        tracks = await self._hydrate_session_tracks(result.sequence or [])
+        return (tracks, result.batch_id, bool(result.terminated))
 
     async def rotor_session_feedback(
         self,
@@ -426,41 +435,44 @@ class YandexMusicClient:
 
         Supports the Yandex rotor event types: radioStarted, trackStarted,
         trackFinished, skip, like, dislike. For radioStarted the track_id goes
-        into `event.from`; all other types use `event.trackId`. Only
-        trackFinished and skip carry `totalPlayedSeconds`.
+        into the top-level `from`; all other types use `event.trackId`. Only
+        trackFinished, skip and dislike carry `totalPlayedSeconds`.
 
         :param session_id: radioSessionId.
         :param event_type: rotor event type string.
         :param track_id: Yandex track ID the event refers to (required for
             everything except radioStarted without a seed).
         :param total_played_seconds: seconds of the track that were played
-            (only meaningful for trackFinished / skip).
+            (only meaningful for trackFinished / skip / dislike).
         :param batch_id: batchId from the most recent rotor_session_{new,tracks}
             response; anchors the event to a specific batch.
         :return: True if the POST succeeded.
         """
-        timestamp = utc().isoformat().replace("+00:00", "Z")
-        event: dict[str, Any] = {"type": event_type, "timestamp": timestamp}
-        if event_type == "radioStarted":
-            if track_id is not None:
-                event["from"] = str(track_id)
-        elif track_id is not None:
-            event["trackId"] = str(track_id)
-        if event_type in ("trackFinished", "skip") and total_played_seconds is not None:
-            event["totalPlayedSeconds"] = int(total_played_seconds)
-        body: dict[str, Any] = {"event": event}
-        if batch_id:
-            body["batchId"] = batch_id
-        LOGGER.debug(
-            "Rotor session feedback: session=%s event=%s track=%s secs=%s batch=%s",
-            session_id,
-            event_type,
-            track_id,
-            total_played_seconds,
-            batch_id,
+        event = SessionEvent(
+            type=event_type,
+            timestamp=utc().isoformat().replace("+00:00", "Z"),
+            track_id=str(track_id)
+            if track_id is not None and event_type != "radioStarted"
+            else None,
+            total_played_seconds=(
+                int(total_played_seconds)
+                if event_type in ("trackFinished", "skip", "dislike")
+                and total_played_seconds is not None
+                else None
+            ),
         )
-        result = await self._rotor_session_request(f"{session_id}/feedback", body, with_retry=False)
-        return result is not None
+        result = await self._call_rotor_session(
+            lambda c: c.rotor_session_feedback(
+                session_id,
+                event,
+                batch_id=batch_id or None,
+                from_=str(track_id)
+                if event_type == "radioStarted" and track_id is not None
+                else None,
+            ),
+            with_retry=False,
+        )
+        return bool(result)
 
     async def play_audio(
         self,
@@ -550,7 +562,7 @@ class YandexMusicClient:
             LOGGER.warning("Error fetching liked albums: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
 
-        album_ids = [
+        album_ids: list[str | int] = [
             str(like.album.id) for like in result if like.album is not None and like.album.id
         ]
         if not album_ids:
@@ -964,7 +976,7 @@ class YandexMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info(  # noqa: PLR0915
+    async def get_track_file_info(
         self,
         track_id: str,
         quality: str = "lossless",
@@ -988,153 +1000,28 @@ class YandexMusicClient:
         :param transport: Transport mode ("raw" or "encraw").
         :return: Parsed downloadInfo dict (url, codec, key?, ...) or None on error.
         """
-        # Normalize codecs: strip whitespace from each token to prevent HMAC mismatches
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
-        # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
-        # Bypass when refresh is in progress (playback priority): a refresh fires
-        # specifically because the previous URL expired on the CDN side, so the
-        # cached entry is useless.
-        # Include `codecs` in the key: the server may pick a different codec
-        # (and URL) based on the codec preference order, so two calls with the
-        # same (track, quality, transport) but different codec lists must not
-        # share a cache slot.
         cache_key = (track_id, quality, codecs, transport)
-        if current_priority() is not RequestPriority.HIGH:
-            # Check the file_info circuit-breaker BEFORE the cache lookup —
-            # otherwise a cooldown-period caller could be served a stale URL
-            # from before the block was engaged. Fail fast (return None) so
-            # MA's streaming layer treats the track as unavailable.
-            try:
-                self._check_block("file_info")
-            except ResourceTemporarilyUnavailable as err:
-                LOGGER.debug(
-                    "get-file-info for track %s: file_info cooldown active (%s)",
-                    track_id,
-                    err,
-                )
-                return None
-            cached = self._file_info_cache_get(cache_key)
-            if cached is not None:
-                LOGGER.debug(
-                    "get-file-info for track %s: cache hit (transport=%s)",
-                    track_id,
-                    transport,
-                )
-                return cached
-
-        def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
-            """
-            Build URL and signed params using current client and timestamp.
-
-            Called on each attempt by _call_with_retry, so the HMAC signature
-            is recomputed with a fresh timestamp on every retry.
-            """
-            timestamp = int(time.time())
-            params = {
-                "ts": timestamp,
-                "trackId": track_id,
-                "quality": quality,
-                "codecs": codecs,
-                "transports": transport,
-            }
-            # Build sign string: ts + trackId + quality + codecs (commas stripped) + transports.
-            codecs_for_sign = codecs.replace(",", "")
-            param_string = f"{timestamp}{track_id}{quality}{codecs_for_sign}{transport}"
-            hmac_sign = hmac.new(
-                DEFAULT_SIGN_KEY.encode(),
-                param_string.encode(),
-                hashlib.sha256,
-            )
-            # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
-            # Yandex API expects exactly 43 chars (one "=" removed).
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
-            url = f"{client.base_url}/get-file-info"
-            return url, params
-
-        def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
-            if not raw or not isinstance(raw, dict):
-                return None
-            # yandex-music v3 no longer normalises camelCase keys inside
-            # Response.result, so /get-file-info returns "downloadInfo" as-is.
-            download_info = raw.get("download_info") or raw.get("downloadInfo")
-            if not download_info or not download_info.get("url"):
-                return None
-
-            result = cast("dict[str, Any]", download_info)
-
-            if "key" in download_info:
-                result["needs_decryption"] = True
-                LOGGER.debug(
-                    "Encrypted URL received for track %s, will require decryption",
-                    track_id,
-                )
-            else:
-                result["needs_decryption"] = False
-
-            return result
-
-        async def _do_request(c: ClientAsync) -> dict[str, Any] | None:
-            url, params = _build_signed_params(c)
-            result = await c._request.get(url, params=params)
-            return result if isinstance(result, dict) else None
-
+        lock, users = self._file_info_locks.get(cache_key, (asyncio.Lock(), 0))
+        self._file_info_locks[cache_key] = (lock, users + 1)
+        cached_before_wait = self._file_info_cache.get(cache_key)
         try:
-            result = await self._call_with_retry(_do_request, kind="file_info")
-            parsed = _parse_file_info_result(result)
-            if parsed:
-                LOGGER.debug(
-                    "get-file-info for track %s: Success, codec=%s, transport=%s",
-                    track_id,
-                    parsed.get("codec"),
-                    transport,
+            async with lock:
+                # Joined playback refreshes may reuse only a URL replaced while waiting.
+                # Cancellation or failure leaves the old cache untouched, so fetch again.
+                reuse_refreshed = (
+                    users > 0 and self._file_info_cache.get(cache_key) is not cached_before_wait
                 )
-                # Always store the freshest URL — including under playback priority.
-                # A successful refresh proves the previously cached entry was
-                # stale, so replacing it avoids serving the old URL to the next
-                # non-bypass caller until its TTL expires.
-                self._file_info_cache_put(cache_key, parsed)
-                return parsed
-        except BadRequestError as err:
-            # 4xx is terminal for this URL/quality. Drop any cached entry so we
-            # don't replay a now-rejected response.
-            self._file_info_cache_invalidate(track_id)
-            LOGGER.debug(
-                "get-file-info for track %s: BadRequestError %s",
-                track_id,
-                getattr(err, "message", str(err)) or repr(err),
-            )
-        except (
-            NetworkError,
-            ProviderUnavailableError,
-            ResourceTemporarilyUnavailable,
-        ) as err:
-            LOGGER.debug(
-                "get-file-info for track %s: %s %s",
-                track_id,
-                type(err).__name__,
-                getattr(err, "message", str(err)) or repr(err),
-            )
-        except UnauthorizedError as err:
-            # Auth expired — invalidate any cached URL so the post-re-auth call
-            # doesn't replay a stale entry tied to the old session.
-            self._file_info_cache_invalidate(track_id)
-            LOGGER.debug(
-                "get-file-info for track %s: UnauthorizedError %s",
-                track_id,
-                getattr(err, "message", str(err)) or repr(err),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            LOGGER.warning(
-                "get-file-info for track %s: Unexpected %s: %s",
-                track_id,
-                type(err).__name__,
-                err,
-            )
-
-        return None
+                return await self._get_track_file_info(
+                    track_id, quality, codecs, transport, reuse_refreshed=reuse_refreshed
+                )
+        finally:
+            _, users = self._file_info_locks[cache_key]
+            if users == 1:
+                del self._file_info_locks[cache_key]
+            else:
+                self._file_info_locks[cache_key] = (lock, users - 1)
 
     # Discovery / recommendations
 
@@ -1195,7 +1082,7 @@ class YandexMusicClient:
         :return: List of album objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.albums(list(album_ids)))
+            result = await self._call_with_retry(lambda c: c.albums([*album_ids]))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching albums: %s", err)
@@ -1209,7 +1096,7 @@ class YandexMusicClient:
         :return: List of playlist objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.playlists_list(list(playlist_ids)))
+            result = await self._call_with_retry(lambda c: c.playlists_list([*playlist_ids]))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching playlists: %s", err)
@@ -1408,8 +1295,7 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_tracks_add(track_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_tracks_add(track_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error liking track %s: %s", track_id, err)
             return False
@@ -1422,8 +1308,7 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_tracks_remove(track_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_tracks_remove(track_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error unliking track %s: %s", track_id, err)
             return False
@@ -1436,8 +1321,7 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_albums_add(album_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_albums_add(album_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error liking album %s: %s", album_id, err)
             return False
@@ -1450,8 +1334,7 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_albums_remove(album_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_albums_remove(album_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error unliking album %s: %s", album_id, err)
             return False
@@ -1464,8 +1347,7 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_artists_add(artist_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_artists_add(artist_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error liking artist %s: %s", artist_id, err)
             return False
@@ -1478,11 +1360,129 @@ class YandexMusicClient:
         :return: True if successful.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.users_likes_artists_remove(artist_id))
-            return result is not None
+            return await self._call_with_retry(lambda c: c.users_likes_artists_remove(artist_id))
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error unliking artist %s: %s", artist_id, err)
             return False
+
+    async def _get_track_file_info(
+        self,
+        track_id: str,
+        quality: str,
+        codecs: str,
+        transport: str,
+        *,
+        reuse_refreshed: bool = False,
+    ) -> dict[str, Any] | None:
+        """Resolve one stream variant after acquiring its shared request lock."""
+        # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
+        # Bypass when refresh is in progress (playback priority): a refresh fires
+        # specifically because the previous URL expired on the CDN side, so the
+        # cached entry is useless.
+        # Include `codecs` in the key: the server may pick a different codec
+        # (and URL) based on the codec preference order, so two calls with the
+        # same (track, quality, transport) but different codec lists must not
+        # share a cache slot.
+        cache_key = (track_id, quality, codecs, transport)
+        is_playback = current_priority() is RequestPriority.HIGH
+        if not is_playback:
+            # Check the file_info circuit-breaker BEFORE the cache lookup —
+            # otherwise a cooldown-period caller could be served a stale URL
+            # from before the block was engaged. Fail fast (return None) so
+            # MA's streaming layer treats the track as unavailable.
+            try:
+                self._check_block("file_info")
+            except ResourceTemporarilyUnavailable as err:
+                LOGGER.debug(
+                    "get-file-info for track %s: file_info cooldown active (%s)",
+                    track_id,
+                    err,
+                )
+                return None
+        if not is_playback or reuse_refreshed:
+            cached = self._file_info_cache_get(cache_key)
+            if cached is not None:
+                LOGGER.debug(
+                    "get-file-info for track %s: cache hit (transport=%s)",
+                    track_id,
+                    transport,
+                )
+                return cached
+
+        async def _do_request(c: ClientAsync) -> dict[str, Any] | None:
+            file_info = await c.tracks_file_info(
+                track_id, quality=quality, codecs=codecs.split(","), transport=transport
+            )
+            if not file_info or not file_info.download_info or not file_info.download_info.url:
+                return None
+            info = file_info.download_info
+            result: dict[str, Any] = {
+                "url": info.url,
+                "codec": info.codec,
+                "bitrate": info.bitrate,
+                "quality": info.quality,
+                "transport": info.transport,
+                "needs_decryption": bool(info.key),
+            }
+            if info.key:
+                result["key"] = info.key
+            return result
+
+        try:
+            parsed = await self._call_with_retry(_do_request, kind="file_info")
+            if parsed:
+                LOGGER.debug(
+                    "get-file-info for track %s: Success, codec=%s, transport=%s",
+                    track_id,
+                    parsed.get("codec"),
+                    transport,
+                )
+                # Always store the freshest URL — including under playback priority.
+                # A successful refresh proves the previously cached entry was
+                # stale, so replacing it avoids serving the old URL to the next
+                # non-bypass caller until its TTL expires.
+                self._file_info_cache_put(cache_key, parsed)
+                return parsed
+        except BadRequestError as err:
+            # 4xx is terminal for this URL/quality. Drop any cached entry so we
+            # don't replay a now-rejected response.
+            self._file_info_cache_invalidate(track_id)
+            LOGGER.debug(
+                "get-file-info for track %s: BadRequestError %s",
+                track_id,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+        except (
+            NetworkError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+        ) as err:
+            LOGGER.debug(
+                "get-file-info for track %s: %s %s",
+                track_id,
+                type(err).__name__,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+        except UnauthorizedError as err:
+            # Auth expired — invalidate any cached URL so the post-re-auth call
+            # doesn't replay a stale entry tied to the old session.
+            self._file_info_cache_invalidate(track_id)
+            LOGGER.debug(
+                "get-file-info for track %s: UnauthorizedError %s",
+                track_id,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            LOGGER.warning(
+                "get-file-info for track %s: Unexpected %s: %s",
+                track_id,
+                type(err).__name__,
+                err,
+            )
+
+        return None
 
     def _get_throttler(self, kind: str) -> Throttler:
         return self._throttlers.get(kind, self._throttlers["default"])
@@ -1894,82 +1894,32 @@ class YandexMusicClient:
                 raise rate_limit_exc from NetworkError(self._truncate_err_msg(err))
             raise
 
-    # Rotor session API (new session-based endpoints)
-    #
-    # Yandex's newer rotor API models a wave as a long-lived session:
-    #   POST /rotor/session/new                     → {radioSessionId, sequence, batchId}
-    #   POST /rotor/session/{sessionId}/tracks      → {sequence, batchId}
-    #   POST /rotor/session/{sessionId}/feedback    → {result: "ok"}
-    # All feedback events carry the same sessionId, so we no longer need to
-    # thread per-batch batch_ids through call sites the way the stations-based
-    # API forced us to.
-
-    async def _rotor_session_request(
-        self, path: str, body: dict[str, Any], *, with_retry: bool = True
-    ) -> dict[str, Any] | None:
+    async def _call_rotor_session(
+        self, func: Callable[[ClientAsync], Awaitable[_T]], *, with_retry: bool = True
+    ) -> _T | None:
         """
-        POST a JSON body to /rotor/session/{path} and return parsed result.
+        Run a library rotor operation with provider throttling and error mapping.
 
-        Reuses the MarshalX ClientAsync internal request object so we inherit
-        its auth headers and parsing. `json=` is forwarded to `aiohttp.request`
-        by MarshalX's `**kwargs` passthrough.
-
-        :param path: Path suffix after /rotor/session/ (e.g. "new",
-            "{session_id}/tracks", "{session_id}/feedback").
-        :param body: JSON body to send.
-        :param with_retry: When True (default), uses the same reconnect-on-
-            transient-connection-error path as normal data fetches —
-            appropriate for ``new`` and ``tracks`` which sit on the
-            user-facing browse/play path. Set to False for ``feedback``,
-            where a dropped request should be silently lost rather than
-            hammered against a potentially rate-limiting server.
-        :return: Parsed result dict, or None on failure.
+        :param func: Session operation on the underlying client.
+        :param with_retry: Retry connection errors for fetches; never repeat feedback.
+        :return: Library result, or None after a recoverable failure.
         """
-
-        async def _do(c: ClientAsync) -> dict[str, Any] | None:
-            base = getattr(c, "base_url", "https://api.music.yandex.net")
-            url = f"{base}/rotor/session/{path}"
-            LOGGER.debug("Rotor session POST %s body_keys=%s", path, list(body.keys()))
-            try:
-                result = await c._request.post(url, json=body)
-            except NetworkError as err:
-                # Let the outer retry wrapper see transient drops. On the
-                # no-retry path swallow ordinary network blips silently, but
-                # 429/captcha errors MUST propagate so _call_no_retry can
-                # engage the rotor cooldown — otherwise feedback keeps
-                # hammering Yandex during an active edge ban.
-                if with_retry or self._is_rate_limit_error(err):
-                    raise
-                LOGGER.debug("Rotor session POST %s: network error (no retry)", path)
-                return None
-            except BadRequestError as err:
-                # 4xx is terminal — server rejected the body; retry would only
-                # reproduce the same failure.
-                LOGGER.warning("Rotor session POST %s failed: %s", path, err)
-                return None
-            if isinstance(result, dict):
-                LOGGER.debug("Rotor session POST %s → result keys=%s", path, list(result.keys()))
-                return result
-            LOGGER.debug("Rotor session POST %s → non-dict result: %r", path, result)
-            return None
-
         runner = self._call_with_retry if with_retry else self._call_no_retry
         try:
-            return await runner(_do, kind="rotor")
+            return await runner(func, kind="rotor")
         except UnauthorizedError as err:
-            # Expired/invalidated token. Surface as LoginFailed so MA prompts
-            # for re-auth instead of the raw yandex_music exception bubbling
-            # through browse / play and crashing the caller.
-            LOGGER.warning("Rotor session POST %s: token no longer valid", path)
+            LOGGER.warning("Rotor session: token no longer valid")
             raise LoginFailed("Invalid Yandex Music token") from err
-        except ResourceTemporarilyUnavailable as err:
-            LOGGER.warning("Rotor session POST %s rate-limited: %s", path, err)
-            return None
-        except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.warning("Rotor session POST %s failed: %s", path, self._truncate_err_msg(err))
+        except (
+            BadRequestError,
+            NetworkError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+        ) as err:
+            LOGGER.warning("Rotor session request failed: %s", self._truncate_err_msg(err))
             return None
 
-    async def _hydrate_session_tracks(self, sequence: list[dict[str, Any]]) -> list[YandexTrack]:
+    async def _hydrate_session_tracks(self, sequence: list[YandexSequence]) -> list[YandexTrack]:
         """
         Extract track IDs from a rotor session sequence and hydrate via get_tracks.
 
@@ -1981,14 +1931,11 @@ class YandexMusicClient:
         :param sequence: List of sequence items from a rotor session response.
         :return: List of full track objects in the same order as `sequence`.
         """
-        track_ids: list[str] = []
-        for seq in sequence:
-            tr = seq.get("track") if isinstance(seq, dict) else None
-            tid = None
-            if isinstance(tr, dict):
-                tid = tr.get("id") or tr.get("track_id")
-            if tid is not None:
-                track_ids.append(str(tid))
+        track_ids = [
+            str(item.track.id)
+            for item in sequence
+            if item.track is not None and item.track.id is not None
+        ]
         if not track_ids:
             return []
         try:
@@ -2011,12 +1958,9 @@ class YandexMusicClient:
         """
 
         async def _get(c: ClientAsync) -> dict[str, Any] | None:
-            # ``base_url`` is not part of the public ``ClientAsync`` contract;
-            # mirror ``_rotor_session_request`` and fall back defensively so a
-            # library rename does not crash this endpoint with AttributeError.
             base = getattr(c, "base_url", "https://api.music.yandex.net")
             url = f"{base}/landing-blocks/{block}"
-            result = await c._request.get(url)
+            result = await c.request.get(url)
             return result if isinstance(result, dict) else None
 
         try:
