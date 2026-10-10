@@ -55,8 +55,8 @@ _SECRET_KEY_SUFFIXES = (
 # a config values map (its secure entries can have any key) and a guest join code
 _SECRET_KEYS = ("values", "code")
 _RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
-# every redaction needs one of these in the (lowercased) message text: the end of a
-# secret key, a whole secret key or a JWT
+# without \u escapes, every redaction needs one of these in the (lowercased) message text:
+# the end of a secret key, a whole secret key or a JWT
 _SECRET_HINTS = (
     *(f'{suffix}"' for suffix in _SECRET_KEY_SUFFIXES),
     *(f'"{key}"' for key in _SECRET_KEYS),
@@ -349,7 +349,7 @@ def redact_json_secrets(message: str | bytes) -> str:
     """
     text = message.decode(errors="replace") if isinstance(message, bytes) else message
     lowered = text.lower()
-    if not any(hint in lowered for hint in _SECRET_HINTS):
+    if "\\u" not in text and not any(hint in lowered for hint in _SECRET_HINTS):
         return text
     try:
         return json_dumps(_redact_secrets(json_loads(text), secret=False))
@@ -771,10 +771,17 @@ def _redact_secrets(data: Any, secret: bool) -> Any:
         return [_redact_secrets(item, secret) for item in data]
     if isinstance(data, dict):
         return {
-            key: _redact_secrets(
-                value,
-                secret or key in _SECRET_KEYS or key.lower().endswith(_SECRET_KEY_SUFFIXES),
-            )
+            key: _redact_secrets(value, secret or _is_secret_key(key))
             for key, value in data.items()
         }
     return data
+
+
+def _is_secret_key(key: str) -> bool:
+    """
+    Return whether every string under the given key of API message data is a secret.
+
+    :param key: A key of decoded API message data.
+    """
+    lowered = key.lower()
+    return lowered in _SECRET_KEYS or lowered.endswith(_SECRET_KEY_SUFFIXES)

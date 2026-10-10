@@ -26,6 +26,8 @@ FAKE_JWT = "eyJmYWtl.eyJmYWtlLXBheWxvYWQ.ZmFrZS1zaWduYXR1cmU"
         "cookie",
         "Authorization",
         "code",
+        "Code",
+        "Values",
     ],
 )
 def test_secret_key_value_is_hidden(key: str) -> None:
@@ -98,6 +100,12 @@ def test_json_message_without_secrets_is_unchanged() -> None:
     """A message that holds no secret is returned as it is, also with look-alike keys."""
     message = '{"message_id": "1", "result": {"author": "Someone", "token_id": "abc"}}'
     assert redact_json_secrets(message) == message
+
+
+def test_json_message_with_escaped_key_is_redacted() -> None:
+    """A secret key spelled with escapes is hidden like the plain key."""
+    result = redact_json_secrets('{"pass\\u0077ord": "made-up-value"}')
+    assert json_loads(result) == {"password": "<redacted>"}
 
 
 def test_invalid_json_that_may_hold_a_secret_is_hidden() -> None:
