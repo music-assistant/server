@@ -2466,17 +2466,19 @@ class StreamsAudio:
                 # next track transition instead of the next stream session; a realtime
                 # source still gets its fade decided from what its boundary can
                 # actually deliver (see _select_buffered_crossfade)
-                tail_overlap = queue_track.streamdetails.tail_overlap
-                if tail_overlap is not None:
-                    # the item declares its own transition into the next one
-                    item_crossfade_mode = CrossfadeMode.VOICE_OVER
-                elif queue_track.media_type != MediaType.TRACK:
+                if queue_track.media_type != MediaType.TRACK:
                     item_crossfade_mode = CrossfadeMode.DISABLED
                 else:
                     item_crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
                     standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                         CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                     )
+                # the item before fades into this one as the queue is set; a declared
+                # overlap only concerns this item's own tail, into the item after it
+                incoming_mode = item_crossfade_mode
+                tail_overlap = queue_track.streamdetails.tail_overlap
+                if tail_overlap is not None:
+                    item_crossfade_mode = CrossfadeMode.VOICE_OVER
                 if item_crossfade_mode not in (crossfade_mode, CrossfadeMode.VOICE_OVER):
                     self.logger.debug(
                         "Crossfade mode for queue %s changed mid-session: %s -> %s",
@@ -2549,7 +2551,7 @@ class StreamsAudio:
                     incoming_duration = 0.0
                     # a tail overlap the outgoing item declared plays into the item it was
                     # planned against, whatever the queue's crossfade setting
-                    requested_mode = item_crossfade_mode
+                    requested_mode = incoming_mode
                     if (declared := last_streamdetails.tail_overlap) is not None:
                         requested_mode = (
                             CrossfadeMode.VOICE_OVER

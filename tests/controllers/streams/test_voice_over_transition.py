@@ -326,6 +326,34 @@ async def test_track_after_the_voice_over_crossfades_as_configured(
     ]
 
 
+async def test_a_track_that_declares_its_own_overlap_is_still_crossfaded_into(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declaration covers the item's own tail only; the boundary before it is the queue's."""
+    first = _track("item-0", "First")
+    first.streamdetails.duration = TRACK_SECONDS
+    declaring = _clip(next_queue_item_id="item-2")
+    declaring.media_type = MediaType.TRACK
+    declaring.streamdetails.duration = TRACK_SECONDS
+    track = _track("item-2", "Track")
+    track.streamdetails.duration = TRACK_SECONDS
+    audio, queue, mass = _voice_over_audio(
+        monkeypatch, next_item=declaring, load_next=[declaring, track, QueueEmpty]
+    )
+    mass.player_queues.get_next_item.side_effect = lambda _queue_id, item_id: (
+        declaring if item_id == "item-0" else track
+    )
+    _install_item_streams(monkeypatch, audio)
+
+    await _drain(_flow(audio, queue, first))
+
+    build = cast("Any", audio.smart_fades_mixer.build)
+    assert [call.kwargs["mode"] for call in build.await_args_list] == [
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.VOICE_OVER,
+    ]
+
+
 async def test_clip_cuts_to_the_track_when_its_audio_is_late(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
