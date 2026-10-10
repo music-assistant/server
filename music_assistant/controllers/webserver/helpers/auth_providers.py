@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import secrets
@@ -622,8 +623,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # OAuth state -> (return_url, redirect_uri, expires) to support concurrent sessions
-        self._oauth_sessions: dict[str, tuple[str | None, str, float]] = {}
+        # OAuth state -> (return_url, redirect_uri, expires, code_verifier) per pending sign-in
+        self._oauth_sessions: dict[str, tuple[str | None, str, float, str]] = {}
 
     @property
     def allow_self_registration(self) -> bool:
@@ -694,9 +695,15 @@ class HomeAssistantOAuthProvider(LoginProvider):
             raise RateLimited("Too many Home Assistant sign-ins are pending")
 
         state = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(64)
         # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
         # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = (return_url, redirect_uri, now + OAUTH_STATE_TTL)
+        self._oauth_sessions[state] = (
+            return_url,
+            redirect_uri,
+            now + OAUTH_STATE_TTL,
+            code_verifier,
+        )
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -709,6 +716,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 redirect_uri,
                 client_id=client_id,
                 state=state,
+                code_challenge=_pkce_challenge(code_verifier),
             ),
         )
 
@@ -724,7 +732,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
         # Verify state and retrieve return_url from session
         if session is None or session[2] <= time.monotonic():
             return AuthResult(success=False, error="Invalid or expired state parameter")
-        return_url, redirect_uri, _ = session
+        return_url, redirect_uri, _, code_verifier = session
 
         # Get the correct HA URL (external URL if running as add-on)
         # This must be the same URL used in get_authorization_url
@@ -738,7 +746,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
             # Use hass_client's get_token utility - no client_secret needed!
             try:
-                token_details = await get_token(ha_url, code, client_id=client_id)
+                token_details = await get_token(
+                    ha_url, code, client_id=client_id, code_verifier=code_verifier
+                )
             except Exception as token_error:
                 self.logger.error(
                     "Failed to get token from HA: %s (client_id: %s, ha_url: %s)",
@@ -896,3 +906,13 @@ class HomeAssistantOAuthProvider(LoginProvider):
             avatar_url,
             allow_create=self.allow_self_registration,
         )
+
+
+def _pkce_challenge(code_verifier: str) -> str:
+    """
+    Return the PKCE S256 code challenge for a code verifier.
+
+    :param code_verifier: The code verifier the token request will carry.
+    """
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
