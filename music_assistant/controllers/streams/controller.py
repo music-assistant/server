@@ -519,10 +519,7 @@ class StreamsController(CoreController):
         # initialize the audio sub-controller (needs mass.streams to be set)
         self.audio.setup()
         self._audio_analysis.setup()
-        # copy log level to audio/ffmpeg loggers
-        self.audio.logger.setLevel(self.logger.level)
-        FFMPEG_LOGGER.setLevel(self.logger.level)
-        self._setup_smart_fades_logger(config)
+        self._setup_derived_loggers(config)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
@@ -617,9 +614,8 @@ class StreamsController(CoreController):
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
         await super().update_config(config, changed_keys)
-        # with GLOBAL the smart fades logger follows the controller's own level
         if changed_keys & {f"values/{CONF_SMART_FADES_LOG_LEVEL}", f"values/{CONF_LOG_LEVEL}"}:
-            self._setup_smart_fades_logger(config)
+            self._setup_derived_loggers(config)
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
         """
@@ -2429,8 +2425,11 @@ class StreamsController(CoreController):
         # by a second config change runs again on the next reload
         self._network_fingerprint = current
 
-    def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
-        """Set up smart fades logger level."""
+    def _setup_derived_loggers(self, config: CoreConfig) -> None:
+        """Set up the log level of the audio, ffmpeg and smart fades loggers."""
+        # copy log level to audio/ffmpeg loggers
+        self.audio.logger.setLevel(self.logger.level)
+        FFMPEG_LOGGER.setLevel(self.logger.level)
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
