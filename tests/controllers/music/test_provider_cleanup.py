@@ -35,6 +35,12 @@ FS_INSTANCE = "filesystem_local--AbCd"
 STREAM_INSTANCE = "spotify--EfGh"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass_with_audio_analysis: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a real audio analysis database."""
+    return music_mass_with_audio_analysis
+
+
 def _artist_with_two_providers(name: str) -> Artist:
     """Build an artist that exists on both a filesystem and a streaming provider."""
     artist = Artist(

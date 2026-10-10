@@ -56,6 +56,12 @@ class _TrackSpec(NamedTuple):
     mbid: str | None = None
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: reconciliation only touches the library database."""
+    return music_mass
+
+
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
     """Create a provider mapping for a library fixture item."""
     return ProviderMapping(
@@ -771,7 +777,10 @@ async def test_a_completed_sync_does_not_restart_a_walk_in_progress() -> None:
     )
     ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
 
-    with patch.object(ctrl, "_queue_database_cleanup_task", Mock()):
+    with (
+        patch.object(ctrl, "_queue_database_cleanup_task", Mock()),
+        patch.object(ctrl, "cleanup_library_shortcuts", Mock()),
+    ):
         ctrl._handle_sync_completion_check()
     assert ctrl._track_reconciliation_cursor == (0, 0)
 
@@ -931,6 +940,7 @@ async def test_no_candidate_survives_a_sync_driven_rewind() -> None:
     with (
         patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(side_effect=_refuse)),
         patch.object(ctrl, "_queue_database_cleanup_task", Mock()),
+        patch.object(ctrl, "cleanup_library_shortcuts", Mock()),
     ):
         for _ in range(4):
             # a sync completes before every run, as a busy library would do
