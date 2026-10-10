@@ -2632,16 +2632,24 @@ class AuthenticationManager:
         """
         Return the server URL an OAuth sign-in returns the browser to.
 
-        A sign-in started from the External URL or the Remote Access app returns to the
+        A sign-in started from the External URL or over Remote Access returns to the
         External URL, any other sign-in to the base URL.
 
         :param return_url: The URL the browser returns to after signing in.
         """
         external_url = self.webserver.external_url
-        if external_url and return_url:
-            return_origin = _url_origin(return_url)
-            if return_origin in (_url_origin(external_url), APP_MA_HOST):
-                return external_url
+        if not external_url:
+            return self.webserver.base_url
+        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
+            return external_url
+        # A native app returns to its own URL scheme, so look at how its connection came in
+        client_id = get_current_client_id()
+        client = next((c for c in self.webserver.clients if c.client_id == client_id), None)
+        if client and (
+            client.webrtc_session_id
+            or client.request_host.lower() == urlparse(external_url).netloc.lower()
+        ):
+            return external_url
         return self.webserver.base_url
 
 
