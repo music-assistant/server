@@ -1731,9 +1731,6 @@ class StreamsController(CoreController):
                 ),
                 session_id=queue_session_id,
             )
-            # the HTTP route and the flow stream record the first chunk that goes out to the
-            # player; this stream is handed to the player provider itself, so record it here
-            inner_stream = self._mark_served_on_first_chunk(inner_stream, queue_item)
             if (
                 queue is not None
                 and queue_item.media_type == MediaType.RADIO
@@ -1753,6 +1750,10 @@ class StreamsController(CoreController):
                     queue_item=queue_item,
                     player_id=player_id or media.source_id,
                 )
+            # the HTTP route and the flow stream record the first chunk that goes out to the
+            # player; this stream is handed to the player provider itself, so record it here, on
+            # the final stream: an overlay mix that fails before emitting audio served nothing
+            inner_stream = self._mark_served_on_first_chunk(inner_stream, queue_item)
             return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
         # NOTE: this will fail if its an uri not playable by ffmpeg

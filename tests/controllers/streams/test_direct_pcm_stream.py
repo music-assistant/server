@@ -8,8 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.errors import AudioError
+from music_assistant_models.media_items import AudioFormat, ItemMapping, Radio
 from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -200,5 +202,56 @@ async def test_unconsumed_direct_pcm_stream_marks_nothing_served() -> None:
 
     stream = controller.get_stream(_media(), PCM_FORMAT)
     await stream.aclose()
+
+    cast("MagicMock", controller.mass.player_queues.mark_item_served).assert_not_called()
+
+
+async def _overlay_mix_that_fails(
+    _queue: PlayerQueue, audio_input: AsyncGenerator[bytes], _pcm_format: AudioFormat
+) -> AsyncGenerator[bytes]:
+    """Read the source like the overlay mixer does, then fail before any mixed audio comes out."""
+    async for _chunk in audio_input:
+        raise AudioError("overlay mixer failed")
+    yield b""  # not reached: the source has a chunk; the yield makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_direct_radio_stream_is_served_only_once_the_overlay_mix_emits_audio() -> None:
+    """A radio source whose overlay mix fails before producing audio leaves the item unserved."""
+    controller = _pcm_stream_controller()
+    queue = PlayerQueue(
+        queue_id=QUEUE_ID,
+        active=True,
+        display_name="Player",
+        available=True,
+        items=1,
+        overlay_enabled=True,
+        overlay_source=ItemMapping(
+            media_type=MediaType.SOUND_EFFECT, item_id="rain", provider="builtin", name="Rain"
+        ),
+    )
+    cast("Any", controller.mass.player_queues.get).return_value = queue
+    cast("Any", controller.mass.player_queues.get_item).return_value = QueueItem(
+        queue_id=QUEUE_ID,
+        queue_item_id=QUEUE_ITEM_ID,
+        name="Some Station",
+        duration=None,
+        media_item=Radio(
+            item_id="station-1", provider="builtin", name="Some Station", provider_mappings=set()
+        ),
+    )
+    cast("Any", controller.audio.get_overlay_mixed_stream).side_effect = _overlay_mix_that_fails
+
+    stream = controller.get_stream(
+        PlayerMedia(
+            uri="library://radio/1",
+            media_type=MediaType.RADIO,
+            source_id=QUEUE_ID,
+            queue_item_id=QUEUE_ITEM_ID,
+        ),
+        PCM_FORMAT,
+    )
+    with pytest.raises(AudioError):
+        await anext(stream)
 
     cast("MagicMock", controller.mass.player_queues.mark_item_served).assert_not_called()
