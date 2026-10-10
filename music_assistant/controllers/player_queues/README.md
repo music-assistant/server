@@ -165,11 +165,14 @@ While an action is in progress an "action in progress" flag is surfaced on the q
 subscribers.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
-player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
-preloading the next item, buffer preparation, radio fill, resume-on-idle, delayed clear/resume — is
-dispatched as tasks or timers rather than run inline, and the relevant tasks/timers are cancelled on
-player removal and on stop so stale work cannot enqueue after a queue has stopped. Long passes (such
-as a full shuffle) yield to the event loop while running.
+player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares
+its new items from the list it started with, so `update_items` keeps the queue on its current item:
+when the player moved on in the meantime, the index follows that item to where it now sits.
+Background and delayed work — preloading the next item, buffer preparation, radio fill,
+resume-on-idle, delayed clear/resume — is dispatched as tasks or timers rather than run inline, and
+the relevant tasks/timers are cancelled on player removal and on stop so stale work cannot enqueue
+after a queue has stopped. Long passes (such as a full shuffle) yield to the event loop while
+running.
 
 ## Player-to-Queue State Reconciliation
 
@@ -254,12 +257,20 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. Within each recency tier, the full movable population can
-be considered when choosing the next track. The last fixed track is used as the starting point.
+part it already considers safe to move, one batch of `SMART_FADE_ORDERING_BATCH` tracks at a time
+(the size of a dynamic refill batch). A shuffle orders the first batch inside its recency tiers.
+When playback gets close to the last ordered track, the next batch is ordered in the background:
+only its transitions change, items that are not tracks (such as DJ clips) keep their place, and the
+result is written back only if the queue did not change meanwhile. Tracks only move inside their
+batch, so Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once
+favours tracks that already have analysis, which for streaming providers are the tracks played
+before. The batch end is only kept in memory; after a restart, or once playback has passed it, the
+rest of the queue keeps the regular Smart Shuffle order until the next shuffle. The last fixed track
+is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail. Both modes consider every remaining track in the run
-being ordered; Dynamic Mode simply orders one refill batch at a time.
+accepted batch from the existing queue tail. Both modes order one batch at a time and consider every
+track in it.
 
 No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
 key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
