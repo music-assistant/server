@@ -5,7 +5,9 @@ Plans the transition of each pair the way playback would, without playing anythi
 ``pairs.csv`` (one row per pair) and ``summary.txt`` (tiers, transition styles and overlap
 lengths, quick fade triggers, vocal and drum overlap, music style) into ``--out``. To measure a
 planner change, run it on both sides of the change with the same databases, seed and buffer;
-``--code`` loads ``music_assistant`` from another checkout.
+``--code`` loads ``music_assistant`` from another checkout, which must carry the planner this
+script was written for (transition styles and segue facts); for an older planner, run that
+checkout's own copy of the script.
 
 Both databases are copied into a temporary directory with SQLite's backup API, so the server may
 keep running, and only those copies are read. The given databases are opened read-only; SQLite
@@ -648,16 +650,18 @@ def _plan_facts(ctx: TransitionContext, plan: TransitionPlan, passes: list[_Sele
     ideal_overlap: float | str = ""
     if winner is None:
         via, source = _UNPHRASED[strategy]
-    elif segue:
-        via = "main" if passes[0].winner is not None else "rescue"
-        source = winner.candidate.spec.source
-        ideal_overlap = round(winner.candidate.spec.ideal_overlap_s or 0.0, 3)
     else:
         via = "main" if passes[0].winner is not None else "rescue"
-        source, bars = winner.candidate.spec.source, winner.candidate.spec.bars
-        longer_rejected = sum(
-            1 for entry in passes[0].scored if entry.rejected and entry.candidate.spec.bars > bars
-        )
+        source = winner.candidate.spec.source
+        if segue:
+            ideal_overlap = round(winner.candidate.spec.ideal_overlap_s or 0.0, 3)
+        else:
+            bars = winner.candidate.spec.bars
+            longer_rejected = sum(
+                1
+                for entry in passes[0].scored
+                if entry.rejected and entry.candidate.spec.bars > bars
+            )
     return {
         "bpm_diff_pct": round(ctx.bpm_diff_percent, 2),
         "ctx_tier": ctx.tier.name,
