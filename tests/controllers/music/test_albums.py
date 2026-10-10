@@ -429,6 +429,23 @@ async def test_album_tracks_sort_an_unknown_disc_as_the_first(mass: MusicAssista
     assert [track.item_id for track in tracks] == ["t1", "t2"]
 
 
+async def test_album_tracks_show_the_album_image_through_the_album(mass: MusicAssistant) -> None:
+    """A provider track listed on a library album shows its album image, its own images untouched."""
+    album = await mass.music.albums.add_item_to_library(_detailed_album())
+    track = create_track("spotify_1", "t1", name="One")
+    track_image = MediaItemImage(
+        type=ImageType.THUMB, path="http://images/track1.jpg", provider="spotify_1"
+    )
+    track.metadata.images = UniqueList([track_image])
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=[track])
+    ):
+        tracks = await mass.music.albums.tracks(album.item_id, "library")
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == ALBUM_IMAGE
+    assert tracks[0].metadata.images == [track_image]
+
+
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
     """Distinct IDs and ISRCs preserve repeated movement names across two discs."""
     # this listing is one source: it is kept as-is whatever its identifiers say
