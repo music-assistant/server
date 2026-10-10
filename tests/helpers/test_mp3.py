@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
+from yarl import URL
 
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import (
@@ -85,9 +86,11 @@ class _FakeSession:
         self.status = status
         self.delay = delay
         self.requests: list[dict[str, str]] = []
+        self.urls: list[str | URL] = []
         self.responses: list[_FakeResponse] = []
 
-    def get(self, _url: str, headers: dict[str, str]) -> Any:
+    def get(self, url: str | URL, headers: dict[str, str]) -> Any:
+        self.urls.append(url)
         self.requests.append(headers)
         return self._respond(headers)
 
@@ -287,6 +290,18 @@ async def test_probe_mp3_seek_hints_error_status(status: int) -> None:
     session = _FakeSession(_frame() * 3, status=status)
 
     assert await probe_mp3_seek_hints(_session(session), "http://x/a.mp3", {}) is None
+
+
+@pytest.mark.asyncio
+async def test_probe_mp3_seek_hints_keeps_percent_encoding() -> None:
+    """An already percent-encoded URL reaches the server unchanged."""
+    url = "http://x/a.mp3?sig=a%3Fb"
+    session = _FakeSession(_frame(tag=b"Info"))
+
+    await probe_mp3_seek_hints(_session(session), url, {})
+
+    # aiohttp turns a plain str into a URL the same way, which would decode the %3F
+    assert [str(URL(requested)) for requested in session.urls] == [url]
 
 
 @pytest.mark.asyncio

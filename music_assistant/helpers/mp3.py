@@ -1,4 +1,4 @@
-"""Helpers for seeking in remote MP3 streams."""
+"""Helpers for starting and seeking in remote MP3 streams."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from aiohttp import ClientError
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
+from .aiohttp_client import encoded_request_url
 from .audio import HTTP_HEADERS
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ PROBE_TIMEOUT: Final[float] = 3.0
 
 
 class Mp3SeekHints(NamedTuple):
-    """What a remote file allows ffmpeg to skip when it seeks."""
+    """What a remote file allows ffmpeg to skip when it starts or seeks."""
 
     fastseek: bool
     skip_bytes: int
@@ -44,7 +45,7 @@ async def probe_mp3_seek_hints(
     timeout: float = PROBE_TIMEOUT,
 ) -> Mp3SeekHints | None:
     """
-    Read the head of a remote MP3 to find out how ffmpeg can seek in it quickly.
+    Read the head of a remote MP3 to find out how ffmpeg can start or seek in it quickly.
 
     Returns NO_SEEK_HINTS when the file offers no shortcut (no MPEG audio where it should
     start, or no range support), and None when the file could not be read (timeout or
@@ -83,8 +84,7 @@ def ffmpeg_http_headers(extra_input_args: Sequence[str]) -> dict[str, str]:
     """
     Return the HTTP headers ffmpeg sends for the given input arguments.
 
-    Without a User-Agent in the arguments, ffmpeg only sends the returned one when it is
-    passed along as `-user_agent`.
+    Falls back to MA's default headers for anything the arguments leave unset.
 
     :param extra_input_args: The ffmpeg input arguments of the stream.
     """
@@ -164,7 +164,7 @@ async def _fetch_range(
     :raises ClientResponseError: When the server answers with an error status.
     """
     range_headers = {**headers, "Range": f"bytes={start}-{start + length - 1}"}
-    async with http_session.get(url, headers=range_headers) as resp:
+    async with http_session.get(encoded_request_url(url), headers=range_headers) as resp:
         if resp.status != 206:
             # a server ignoring the range would send the whole file, drop the connection
             resp.close()
