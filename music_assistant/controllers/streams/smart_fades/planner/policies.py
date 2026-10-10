@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
     TransitionPlan,
     TransitionStyle,
     TransitionTier,
@@ -122,8 +123,9 @@ class VocalTruncationPolicy(Policy):
         if ctx.vocal_out_scoring is None:
             return Verdict.ok()
         # truncation = audible vocal BEYOND the candidate's anchor (cut off by the
-        # trim), not vocal inside the fade - a phrase riding the fade is normal
-        anchor = candidate.plan.fade_out_window
+        # trim), not vocal inside the fade - a phrase riding the fade is normal; an
+        # echo out stops the phrase at its cut
+        anchor = candidate.plan.outgoing_end
         truncated = sum(
             min(right, ctx.audio_end) - max(left, anchor)
             for left, right in ctx.vocal_out_scoring.windows
@@ -206,6 +208,12 @@ class OverlapPreferencePolicy(Policy):
     segue_halving_penalty: float = 4.0
     # a candidate of another style than the context prefers
     style_penalty: float = 15.0
+    # Where the context prefers a segue, a dressed transition stands in for a cut (it only
+    # ever replaces one). The dressed style that suits the tempo gap pays less than the cut,
+    # by about what a few seconds of dropped tail cost; the other one pays the mismatch on
+    # top, which outweighs the kick clash a 4-bar filter out keeps from two kicked decks
+    dressed_style_penalty: float = 10.0
+    dressing_mismatch_penalty: float = 12.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -223,7 +231,13 @@ class OverlapPreferencePolicy(Policy):
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
         if ctx.preferred_style is TransitionStyle.SEGUE:
-            penalty += self.style_penalty
+            style = candidate.plan.style
+            if style not in DRESSED_STYLES:
+                penalty += self.style_penalty
+            else:
+                penalty += self.dressed_style_penalty
+                if style is not ctx.dressed_style:
+                    penalty += self.dressing_mismatch_penalty
         return Verdict.ok(penalty)
 
 

@@ -262,3 +262,74 @@ class TestCandidateSelector:
 
         assert result is not None
         assert result.candidate is cut
+
+class TestDressedSelection:
+    """A dressed transition only ever replaces the cut that would ship otherwise."""
+
+    def _select(
+        self, candidates: list[Candidate], penalties: dict[str, float]
+    ) -> ScoredCandidate | None:
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy(penalties)],
+            logger=logging.getLogger(__name__),
+            lone_segue_wins=False,
+        )
+        return selector.select(candidates, _ctx())
+
+    def test_a_cheaper_dressed_transition_replaces_the_winning_cut(self) -> None:
+        """A shorter, cheaper filter out ships in place of the cut."""
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        dressed = _named("filter", style=TransitionStyle.FILTER_OUT, duration=4.0)
+
+        result = self._select([cut, dressed], {"cut": 15.0, "filter": 2.0})
+
+        assert result is not None
+        assert result.candidate is dressed
+
+    def test_a_dearer_dressed_transition_leaves_the_cut(self) -> None:
+        """A dressed transition scoring worse than the cut does not ship."""
+        cut = _named("cut", style=TransitionStyle.CUT)
+        dressed = _named("echo", style=TransitionStyle.ECHO_OUT)
+
+        result = self._select([cut, dressed], {"cut": 15.0, "echo": 16.0})
+
+        assert result is not None
+        assert result.candidate is cut
+
+    def test_a_dressed_transition_never_replaces_a_blend_or_a_segue(self) -> None:
+        """Against a winning blend or segue the cheapest dressed transition stays out."""
+        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=10.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        dressed = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
+        penalties = {"blend": 10.0, "segue": 5.0, "cut": 15.0, "echo": 0.0}
+
+        over_blend = self._select([blend, cut, dressed], penalties)
+        over_segue = self._select([cut, segue, dressed], penalties)
+
+        assert over_blend is not None
+        assert over_blend.candidate is blend
+        assert over_segue is not None
+        assert over_segue.candidate is segue
+
+    def test_a_dressed_transition_does_not_shorten_what_a_segue_must_match(self) -> None:
+        """A segue as long as the cut competes even when a shorter dressed one scores better."""
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=8.0)
+        dressed = _named("filter", style=TransitionStyle.FILTER_OUT, duration=4.0)
+
+        result = self._select([cut, dressed, segue], {"cut": 15.0, "filter": 0.0, "segue": 4.0})
+
+        assert result is not None
+        assert result.candidate is segue
+
+    def test_dressed_transitions_alone_win_only_the_rescue_pass(self) -> None:
+        """Without a surviving blend or cut, a dressed transition wins the rescue pass only."""
+        dressed = _named("echo", style=TransitionStyle.ECHO_OUT)
+        rescue = CandidateSelector([_FixedPenaltyPolicy()], logging.getLogger(__name__))
+
+        alone = rescue.select([dressed], _ctx())
+
+        assert self._select([dressed], {"echo": 0.0}) is None
+        assert alone is not None
+        assert alone.candidate is dressed

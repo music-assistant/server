@@ -1047,14 +1047,15 @@ class TestQuickFadeMasteredFadeDeadZone:
             fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
-    def test_main_pass_rejects_every_candidate_on_the_trim_guard_alone(
+    def test_main_pass_rejects_every_cut_on_the_trim_guard_alone(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Every main-pass candidate dies on the one guard; the rescue pass ships the fade."""
+        """Every main-pass cut dies on the one guard; the rescue pass ships the fade."""
         self._build_fade(caplog)
+        # only the 4-bar filter out spans the trim; with no cut to replace it does not ship
         assert (
-            "all 2 candidates rejected (audible trim exceeds a short fade's own duration x2)"
-            in caplog.text
+            "no blend or cut survives (segues=0 dressed=1 of 5 candidates); "
+            "none wins on its own" in caplog.text
         )
         assert "source=rescue-anchor (rescue pass)" in caplog.text
 

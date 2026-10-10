@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -26,6 +27,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     HighPassSweepFilter,
     StreamingCrossfadeFilter,
 )
+from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
@@ -146,8 +148,13 @@ async def _render(
     """Build and apply a SmartCrossFade, returning the rendered mix and the fade."""
     fade = SmartCrossFade(logging.getLogger(), out_analysis, in_analysis)
     fade.build(len(fade_out), len(fade_in), PCM)
+    return await _apply(fade, fade_out, fade_in), fade
+
+
+async def _apply(fade: SmartFade, fade_out: bytes, fade_in: bytes) -> np.ndarray:
+    """Apply a built fade through the real mixer and return the rendered mix."""
     chunks = [chunk async for chunk in fade.apply(fade_out, fade_in, PCM)]
-    return np.frombuffer(b"".join(chunks), dtype=np.float32), fade
+    return np.frombuffer(b"".join(chunks), dtype=np.float32)
 
 
 def _cf_slice(mix: np.ndarray, fade: SmartCrossFade, frac0: float, frac1: float) -> np.ndarray:
@@ -290,6 +297,78 @@ async def test_echo_out_repeats_the_last_beat_and_cuts_the_dry_signal() -> None:
         assert tap / source == pytest.approx(decay, rel=0.03)
     # silence once the last tap has played out
     assert np.max(np.abs(_window(mix, cut + len(ECHO_DECAYS) * beat, 8.0))) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_a_filter_out_plan_sweeps_the_outgoing_bass_away() -> None:
+    """A planned filter out removes the outgoing bass over its overlap and nothing else."""
+    out_analysis, in_analysis = _analysis(120.0, 240.0), _analysis(138.0, 240.0)
+    fade_out = (_tone(60.0, 45.0) + _tone(3000.0, 45.0)).tobytes()
+    fade_in = (_tone(90.0, 45.0) + _tone(5000.0, 45.0)).tobytes()
+    swept_mix, swept = await _render(out_analysis, in_analysis, fade_out, fade_in)
+    assert swept.plan is not None
+    assert swept.plan.style is TransitionStyle.FILTER_OUT
+    assert swept.plan.highpass is not None
+    # differential render: the same plan with the sweep taken out
+    plain = SmartCrossFade(logging.getLogger(), out_analysis, in_analysis)
+    plain.build(len(fade_out), len(fade_in), PCM)
+    assert plain.plan is not None
+    plain.filters, plain.timing_info = plain.renderer.render(
+        replace(plain.plan, highpass=None), PCM, len(fade_in)
+    )
+    plain_mix = await _apply(plain, fade_out, fade_in)
+    assert len(swept_mix) == len(plain_mix)
+
+    def _ratio(frac0: float, frac1: float, freq: float) -> float:
+        swept_band = _band_rms(_cf_slice(swept_mix, swept, frac0, frac1), freq - 5, freq + 5)
+        plain_band = _band_rms(_cf_slice(plain_mix, plain, frac0, frac1), freq - 5, freq + 5)
+        return swept_band / plain_band
+
+    # the outgoing bass passes as the sweep starts and is gone where the overlap ends
+    assert _ratio(0.0, 0.1, 60.0) > 0.9
+    assert _ratio(0.7, 0.95, 60.0) < 0.1
+    # the outgoing top end and the whole incoming track pass untouched
+    assert _ratio(0.7, 0.95, 3000.0) > 0.95
+    assert _ratio(0.05, 0.95, 90.0) == pytest.approx(1.0, abs=0.01)
+    assert _ratio(0.05, 0.95, 5000.0) == pytest.approx(1.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_an_echo_out_plan_echoes_the_last_beat_over_the_next_track() -> None:
+    """A planned echo out stops the outgoing track at its cut and echoes the beat before it."""
+    fade = SmartCrossFade(logging.getLogger(), _analysis(120.0, 240.0), _analysis(156.0, 240.0))
+    fade_in = _tone(5000.0, 45.0)
+    fade.build(len(_tone(1.0, 45.0).tobytes()), len(fade_in.tobytes()), PCM)
+    plan = fade.plan
+    assert plan is not None
+    assert plan.style is TransitionStyle.ECHO_OUT
+    assert plan.echo is not None
+    cut, beat = plan.echo.cut_s, plan.echo.beat_s
+    # a Hann-shaped burst on every outgoing beat: 1 kHz on the one before the cut, else 2 kHz
+    mono = np.zeros(int(45.0 * SR), dtype=np.float32)
+    burst = np.hanning(int(0.05 * SR))
+    t = np.arange(len(burst)) / SR
+    for index in range(int(45.0 / beat)):
+        freq = 1000.0 if index == round((cut - beat) / beat) else 2000.0
+        start = int(index * beat * SR)
+        mono[start : start + len(burst)] = 0.3 * burst * np.sin(2 * np.pi * freq * t)
+    fade_out = np.repeat(mono, 2)
+
+    mix = await _apply(fade, fade_out.tobytes(), fade_in.tobytes())
+
+    # the outgoing track plays as recorded up to the cut, the next track not at all
+    np.testing.assert_allclose(_window(mix, 0.0, cut), _window(fade_out, 0.0, cut), atol=1e-6)
+    end = plan.fade_out_window
+    dry_after = _band_rms(_window(mix, cut + ECHO_DECLICK_S, end), 1950, 2050)
+    assert dry_after < 0.01 * _band_rms(_window(fade_out, cut + ECHO_DECLICK_S, end), 1950, 2050)
+    # each tap repeats the last beat at its decay, one outgoing beat apart
+    source = _band_rms(_window(fade_out, cut - beat, cut), 950, 1050)
+    for k, decay in enumerate(ECHO_DECAYS):
+        tap = _band_rms(_window(mix, cut + k * beat, cut + (k + 1) * beat), 950, 1050)
+        assert tap / source == pytest.approx(decay, rel=0.03)
+    # the next track enters at full level on its downbeat at the cut
+    entered = _band_rms(_window(mix, cut + 0.05, end), 4950, 5050)
+    assert entered / _band_rms(_window(fade_in, 0.05, end - cut), 4950, 5050) > 0.97
 
 
 @pytest.mark.asyncio

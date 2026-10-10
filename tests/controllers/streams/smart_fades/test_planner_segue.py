@@ -253,20 +253,19 @@ class TestSegueScenarios:
         else:
             assert durations == sorted(durations)
 
-    def test_kick_against_kick_with_loud_ends_keeps_todays_cut(
+    def test_kick_against_kick_with_loud_ends_gets_no_segue(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Two loud kicked ends 25% apart emit no segue and ship today's cut, as long as today."""
+        """Two loud kicked ends 25% apart emit no segue; the segue leaves today's plan alone."""
         out, inc = _track(120.0), _track(150.0)
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         assert list(SegueGenerator().generate(ctx)) == []
 
         plan = _plan(out, inc)
 
-        assert plan.style is TransitionStyle.CUT
-        assert (
-            plan.crossfade_duration == _plan_without_segue(monkeypatch, out, inc).crossfade_duration
-        )
+        # the short transition there is dressed as an echo out (test_planner_dressed.py)
+        assert plan.style is TransitionStyle.ECHO_OUT
+        assert plan == _plan_without_segue(monkeypatch, out, inc)
 
     def test_a_kicked_quiet_tail_shrinks_below_the_drum_limit(
         self, monkeypatch: pytest.MonkeyPatch

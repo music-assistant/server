@@ -4,7 +4,9 @@ Smart Fades - candidate selection.
 A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
 entry, then picks the lowest-penalty, non-rejected survivor; a segue only when
-it lasts at least as long as the best other survivor. Every policy runs
+it lasts at least as long as the best other survivor, and a dressed transition
+only in place of the cut that would ship otherwise, or when nothing else
+survives. Every policy runs
 on every candidate - no short-circuit on the first rejection - so the debug
 log always shows the complete scoreboard, not just whichever rule fired first.
 """
@@ -17,7 +19,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
+from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
+    TransitionStyle,
+)
 
 from .candidates import Candidate
 from .context import TransitionContext
@@ -49,8 +54,8 @@ class CandidateSelector:
 
         :param policies: The policies every candidate is judged by, in evaluation order.
         :param logger: Logger for the scoreboard and the selection.
-        :param lone_segue_wins: Let a segue win when no other candidate survives; False
-            for a pass that a rescue pass follows, which then weighs it.
+        :param lone_segue_wins: Let a segue or a dressed transition win when no blend or
+            cut survives; False for a pass that a rescue pass follows, which then weighs it.
         """
         self._policies = tuple(policies)
         self._logger = logger
@@ -62,11 +67,13 @@ class CandidateSelector:
         """
         Score every candidate; return the lowest-penalty survivor, or None when none may ship.
 
-        None means every candidate was rejected, or only segues survived a selector
+        None means every candidate was rejected, or no blend or cut survived a selector
         that doesn't let a lone segue win. A segue never replaces a surviving blend,
         and replaces a cut only when it lasts at least as long, so it never shortens
-        the transition that would ship without it.
-        Ties resolve to whichever candidate appears earlier in ``candidates``.
+        the transition that would ship without it. A dressed transition competes only
+        with the cut that wins otherwise, never with a blend or a segue, and wins on
+        its own only where nothing else survives. Ties resolve to whichever candidate
+        appears earlier in ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
         :param ctx: The shared per-transition facts every policy judges against.
@@ -85,16 +92,22 @@ class CandidateSelector:
                 reasons,
             )
             return None
+        dressed = [e for e in survivors if e.candidate.plan.style in DRESSED_STYLES]
+        survivors = [e for e in survivors if e.candidate.plan.style not in DRESSED_STYLES]
         others = [e for e in survivors if e.candidate.plan.style is not TransitionStyle.SEGUE]
         replaced = min(others, key=lambda entry: entry.total_penalty) if others else None
         if replaced is None:
             if not self._lone_segue_wins:
                 self._logger.debug(
-                    "only segues survive (%d of %d candidates); none wins on its own",
+                    "no blend or cut survives (segues=%d dressed=%d of %d candidates); "
+                    "none wins on its own",
                     len(survivors),
+                    len(dressed),
                     len(scored),
                 )
                 return None
+            # nothing but segues and dressed transitions survives
+            survivors = survivors or dressed
         elif any(entry.candidate.plan.style is TransitionStyle.BLEND for entry in others):
             # a beatmatchable pair keeps its blend
             survivors = others
@@ -107,16 +120,21 @@ class CandidateSelector:
                 >= replaced.candidate.plan.crossfade_duration
             ]
         winner = min(survivors, key=lambda entry: entry.total_penalty)
+        if winner.candidate.plan.style is TransitionStyle.CUT and dressed:
+            # a dressed transition only ever replaces the cut that wins otherwise
+            survivors = [winner, *dressed]
+            winner = min(survivors, key=lambda entry: entry.total_penalty)
         if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             ranked = sorted(survivors, key=lambda entry: entry.total_penalty)
             runner_up = ranked[1] if len(ranked) > 1 else None
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "selection: scored=%d survivors=%d winner source=%s tier=%s bars=%d total=%.2f "
-                "runner_up=%s runner_up_total=%s",
+                "selection: scored=%d survivors=%d winner source=%s style=%s tier=%s bars=%d "
+                "total=%.2f runner_up=%s runner_up_total=%s",
                 len(scored),
                 len(survivors),
                 winner.candidate.spec.source,
+                winner.candidate.plan.style,
                 winner.candidate.spec.tier,
                 winner.candidate.spec.bars,
                 winner.total_penalty,

@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    EchoOut,
     TransitionStyle,
     TransitionTier,
 )
@@ -45,6 +46,7 @@ def _ctx(
     natural_entry: float = 0.0,
     outgoing_analysis: AudioAnalysisData | None = None,
     buffer_offset: float = 0.0,
+    bpm_diff_percent: float = 0.0,
 ) -> TransitionContext:
     deck = Deck(
         analysis=AudioAnalysisData(),
@@ -68,7 +70,7 @@ def _ctx(
         coda_zone=None,
         tier=tier,
         cross_meter=False,
-        bpm_diff_percent=0.0,
+        bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=None,
         vocal_in_placement=None,
         vocal_out_scoring=vocal_out_scoring,
@@ -271,6 +273,15 @@ class TestVocalTruncationPolicy:
 
         assert self.policy.evaluate(candidate, ctx).rejected is False
 
+    def test_an_echo_out_truncates_at_its_cut(self) -> None:
+        """A phrase still singing past an echo's cut is cut off, though the echo rides on."""
+        echo = _candidate(duration=2.0, fade_end=20.0, style=TransitionStyle.ECHO_OUT)
+        plan = dataclasses.replace(echo.plan, echo=EchoOut(cut_s=18.0, beat_s=0.5))
+        candidate = dataclasses.replace(echo, plan=plan)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(16.0, 19.0)]))
+
+        assert self.policy.evaluate(candidate, ctx).rejected is True
+
     def test_inaudible_vocal_past_the_rms_boundary_never_counts(self) -> None:
         """Windows beyond audio_end are inaudible and cannot register as truncation."""
         candidate = _candidate(duration=20.0)
@@ -397,6 +408,37 @@ class TestOverlapPreferencePolicy:
         penalties = [self.policy.evaluate(c, ctx).penalty for c in (top_rung, segue, rescue_rung)]
 
         assert penalties == [0.0, 15.0, 20.0]
+
+    @pytest.mark.parametrize(
+        ("gap", "echo", "filter_4", "filter_2", "cut"),
+        [(25.0, 10.0, 22.0, 32.0, 15.0), (12.0, 22.0, 10.0, 20.0, 15.0)],
+    )
+    def test_the_dressed_style_that_suits_the_gap_outranks_the_cut_and_the_other(
+        self, gap: float, echo: float, filter_4: float, filter_2: float, cut: float
+    ) -> None:
+        """
+        Spell out the short styles' costs in a quick fade context.
+
+        The dressed style that suits the tempo gap (an echo out past 20 %, else a filter
+        out) pays 10, a cut the style penalty of 15, and the other dressed style 22. A clean
+        cut never beats the clean dressed transition that suits the gap; it only wins where
+        that one carries more than 5 points (5 s of dropped tail, say) more than the cut. The
+        12 between the dressed styles cover the kick clash a 4-bar filter out keeps from two
+        kicked decks (1.44 weighted bars, 10.4 points).
+        """
+        ctx = _ctx(tier=TransitionTier.QUICK_FADE, bpm_diff_percent=gap)
+        tier = TransitionTier.QUICK_FADE
+        candidates = [
+            _candidate(bars=1, ideal=1, tier=tier, style=TransitionStyle.ECHO_OUT),
+            _candidate(bars=4, ideal=4, tier=tier, style=TransitionStyle.FILTER_OUT),
+            _candidate(bars=2, ideal=4, tier=tier, style=TransitionStyle.FILTER_OUT),
+            _candidate(bars=1, ideal=1, tier=tier, style=TransitionStyle.CUT),
+        ]
+
+        penalties = [self.policy.evaluate(c, ctx).penalty for c in candidates]
+
+        assert penalties == pytest.approx([echo, filter_4, filter_2, cut])
+        assert self.policy.dressing_mismatch_penalty > (1.44 / 2.0) ** 2 * 20.0
 
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""

@@ -21,6 +21,7 @@ from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixe
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
     TransitionStrategy,
+    TransitionStyle,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
@@ -37,6 +38,8 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     WEIGHTED_COLLISION_LIMIT,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
+
+from .conftest import disable_dressed_transitions
 
 LOGGER = logging.getLogger(__name__)
 
@@ -460,7 +463,14 @@ class TestShortFadeAudibleTrimBound:
         naive_gap = ctx.audio_end - naive_candidate.plan.fade_out_window
         assert naive_gap > naive_candidate.plan.crossfade_duration, "fixture needs a real violation"
 
-        protected = SmartCrossFadePlanner(LOGGER).plan(out, inc, buffer_duration)
+        # the shipped echo out drops no more than its own overlap covers
+        dressed = SmartCrossFadePlanner(LOGGER).plan(out, inc, buffer_duration)
+        assert dressed.style is TransitionStyle.ECHO_OUT
+        assert dressed.metrics.audible_outgoing_trim <= dressed.crossfade_duration + 1e-6
+        # and the cut it replaces re-anchors within the tiny forced overlap
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            disable_dressed_transitions(monkeypatch)
+            protected = SmartCrossFadePlanner(LOGGER).plan(out, inc, buffer_duration)
         assert (
             protected.metrics.audible_outgoing_trim
             <= naive_candidate.plan.crossfade_duration + 1e-6

@@ -18,7 +18,9 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     _INSTRUMENTAL_BLEND_BARS,
     CodaAnchorGenerator,
+    EchoOutGenerator,
     EnergyLadderGenerator,
+    FilterOutGenerator,
     ProtectiveAnchorGenerator,
     RescueAnchorGenerator,
     SegueGenerator,
@@ -624,6 +626,59 @@ class TestSegueGenerator:
         assert list(SegueGenerator().generate(ctx)) == []
 
 
+_DOWNBEATS = (35.0, 37.0, 39.0, 41.0, 43.0, 45.0)
+
+
+class TestDressedGenerators:
+    """A pair that can't be beatmatched gets a filter out and an echo out at its energy anchor."""
+
+    @pytest.mark.parametrize("tier", [TransitionTier.FULL_BLEND, TransitionTier.TEMPO_BLEND])
+    def test_a_beatmatchable_pair_gets_none(self, tier: TransitionTier) -> None:
+        """A blend tier keeps its blend: neither dressed style is emitted."""
+        ctx = _base_ctx(tier=tier, protective_downbeats=_DOWNBEATS)
+
+        assert list(FilterOutGenerator().generate(ctx)) == []
+        assert list(EchoOutGenerator().generate(ctx)) == []
+
+    def test_a_filter_out_runs_four_then_two_bars_on_the_nearest_downbeat(self) -> None:
+        """Both rungs end on the downbeat nearest the energy anchor; 4 bars is the top rung."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, default_anchor=40.2, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(FilterOutGenerator().generate(ctx))
+
+        assert [spec.bars for spec in specs] == [4, 2]
+        assert all(spec.anchor_s == 41.0 and spec.entry_s is None for spec in specs)
+        assert all(spec.ideal_bars == 4 for spec in specs)
+        assert all(spec.style is TransitionStyle.FILTER_OUT for spec in specs)
+        assert all(spec.source == "filter-out" for spec in specs)
+
+    def test_a_cross_meter_filter_out_stays_as_short_as_the_cut(self) -> None:
+        """Two meters share no bar grid, so the filter out keeps to the cut's 2 bars."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, cross_meter=True, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(FilterOutGenerator().generate(ctx))
+
+        assert [(spec.bars, spec.ideal_bars) for spec in specs] == [(2, 2)]
+
+    def test_an_echo_out_is_one_spec_on_the_nearest_downbeat(self) -> None:
+        """The echo out ends on the downbeat nearest the energy anchor."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, default_anchor=38.4, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(EchoOutGenerator().generate(ctx))
+
+        assert len(specs) == 1
+        (spec,) = specs
+        assert (spec.bars, spec.ideal_bars, spec.anchor_s) == (1, 1, 39.0)
+        assert spec.style is TransitionStyle.ECHO_OUT
+        assert spec.source == "echo-out"
+
+
 class TestDefaultGenerators:
     """The standard generator set and its preference order."""
 
@@ -632,7 +687,7 @@ class TestDefaultGenerators:
         Generators run best-first.
 
         Order: energy ladder, coda anchor, protective anchor, onset entry,
-        segue, trim closing.
+        segue, trim closing, filter out, echo out.
         """
         names = [g.name for g in default_generators()]
         assert names == [
@@ -642,4 +697,6 @@ class TestDefaultGenerators:
             "vocal-onset-entry",
             "segue",
             "trim-closing-anchor",
+            "filter-out",
+            "echo-out",
         ]

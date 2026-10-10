@@ -6,10 +6,11 @@ build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
 rejection/penalty policies, finalize the winner's EQ - or, when every
 candidate is rejected, retry with late-anchored rescue candidates (the
-ungated audible-end ladder, a modest rescue rung and the segue), then ship a plain
-equal-power fallback crossfade - or, when even that collides too severely,
-the click-free emergency handoff as a last resort. Alternative strategies
-slot in as sibling ``TransitionPlanner`` subclasses.
+ungated audible-end ladder, a modest rescue rung, the segue and the dressed
+transitions), then ship a plain equal-power fallback crossfade - or, when
+even that collides too severely, the click-free emergency handoff as a last
+resort. Alternative strategies slot in as sibling ``TransitionPlanner``
+subclasses.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAss
 from .candidates import (
     _SINGS_DUTY,
     CandidateFactory,
+    EchoOutGenerator,
+    FilterOutGenerator,
     RescueAnchorGenerator,
     SegueGenerator,
     TrimClosingAnchorGenerator,
@@ -119,13 +122,16 @@ class SmartCrossFadePlanner(TransitionPlanner):
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:
-            # every candidate was rejected, or only segues survived: retry with the
-            # ungated audible-end ladder, a modest late-anchored rescue rung and
-            # a segue (also for a beatmatchable pair) before falling back to the handoff
+            # every candidate was rejected, or no blend or cut survived: retry with the
+            # ungated audible-end ladder, a modest late-anchored rescue rung, a segue
+            # (also for a beatmatchable pair) and the dressed transitions before
+            # falling back to the handoff
             rescue_specs = [
                 *TrimClosingAnchorGenerator(min_gap=0.0).generate(ctx),
                 *RescueAnchorGenerator().generate(ctx),
                 *SegueGenerator(allow_blend_context=True).generate(ctx),
+                *FilterOutGenerator().generate(ctx),
+                *EchoOutGenerator().generate(ctx),
             ]
             rescue_candidates = [
                 candidate for spec in rescue_specs if (candidate := factory.build(spec)) is not None
@@ -145,7 +151,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
             source = winner.candidate.spec.source
-            bars = None if plan.style is TransitionStyle.SEGUE else winner.candidate.spec.bars
+            # a segue and an echo out have no phrased bar count
+            bars = (
+                None
+                if plan.style in (TransitionStyle.SEGUE, TransitionStyle.ECHO_OUT)
+                else winner.candidate.spec.bars
+            )
             if rescue_pass:
                 source += " (rescue pass)"
         self._log_plan(ctx, plan, source, bars)
