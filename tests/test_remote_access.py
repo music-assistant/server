@@ -756,6 +756,47 @@ async def test_http_proxy_request_keeps_the_unverified_dial_on_this_host(
     assert captured_kwargs["allow_redirects"] is False
 
 
+async def test_http_proxy_request_drops_hop_by_hop_headers(cert_pems: tuple[str, str]) -> None:
+    """Connection-level headers from the peer never reach the local request, others do."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_request(_method: str, _url: str, **kwargs: object) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+
+    headers = {
+        "host": "evil.com",
+        "Connection": "Upgrade, X-Nominated",
+        "X-Nominated": "also hop-by-hop",
+        "Transfer-Encoding": "chunked",
+        "Authorization": "Bearer abc",
+    }
+    await gateway._handle_http_proxy_request(
+        None, {"id": "1", "method": "GET", "path": "/info", "headers": headers}
+    )
+
+    assert captured_kwargs["headers"] == {"Authorization": "Bearer abc"}
+
+
 async def test_local_websocket_dial_skips_certificate_verification(
     cert_pems: tuple[str, str],
 ) -> None:
@@ -1421,7 +1462,7 @@ async def test_http_proxy_channel_reports_a_failed_fetch_on_its_own_channel(
         response, body = _read_proxy_response(proxy_channel.sent)
         assert response["id"] == "img-3"
         assert response["status"] == 500
-        assert b"boom" in body
+        assert body == b"Internal server error"
         assert api_channel.sent == []
     finally:
         await gateway._close_session("proxy-error-session")
