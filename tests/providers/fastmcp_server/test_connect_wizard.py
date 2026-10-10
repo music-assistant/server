@@ -1249,6 +1249,28 @@ async def test_dispatch_falls_back_to_config_override(
     assert url.startswith("https://override.example.com/mcp/v1/connect")
 
 
+async def test_dispatch_falls_back_to_server_external_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a WS match or override, the server's External URL beats its base URL."""
+    user = _matching_user()
+    _install_fake_ma_auth_middleware(monkeypatch, user)
+
+    mass = MagicMock()
+    mass.webserver.clients = []
+    mass.webserver.external_url = "https://music.example.com"
+    mass.webserver.base_url = "http://192.168.1.10:8095"
+    mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
+        mass,
+        {"mount_path": "/mcp/v1"},
+    )
+
+    assert url is not None
+    assert url.startswith("https://music.example.com/mcp/v1/connect")
+
+
 async def test_dispatch_rejects_unsafe_override_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1308,6 +1330,7 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
 
     mass = MagicMock()
     mass.webserver.clients = []
+    mass.webserver.external_url = None
     mass.webserver.base_url = "http://192.0.2.20:8095"
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
     mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])

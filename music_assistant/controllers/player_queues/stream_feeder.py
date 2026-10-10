@@ -323,9 +323,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 or self._queue_data.get(queue_id) is not queue_data
                 or queue_data.session_id != session_id
                 or queue.flow_mode
-                or current_next is None
-                or current_next.queue_item_id != next_item.queue_item_id
             ):
+                return
+            if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
+                # The decoder received a track removed during handover; refresh even if
+                # the previous marker already names the newly restored next track.
+                queue_data.next_item_id_enqueued = None
+                self.update_next_item_on_player(queue_id, force=True)
                 return
             if queue_data.next_item_id_enqueued != next_item.queue_item_id:
                 queue_data.next_item_id_enqueued = next_item.queue_item_id
@@ -334,6 +338,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.name,
                     queue.display_name,
                 )
+            # a queue edit made during the call compared the queue against the track the player
+            # held before this one, so it can have left this track in place of the real next one
+            self.update_next_item_on_player(queue_id)
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
             # Player state updates can lag behind queue loading, so wait before validating.

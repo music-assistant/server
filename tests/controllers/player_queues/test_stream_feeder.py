@@ -150,13 +150,18 @@ def _handover_controller() -> tuple[
     return controller, mass, players, items
 
 
+def _start_scheduled_handover(mass: MagicMock) -> asyncio.Task[None]:
+    """Start the handover scheduled last in its own task, as call_later would."""
+    enqueue_callback, next_item = mass.call_later.call_args.args[1:3]
+    return asyncio.create_task(enqueue_callback(next_item))
+
+
 def _scheduled_handover(
     controller: PlayerQueuesController, mass: MagicMock, next_item: QueueItem
 ) -> asyncio.Task[None]:
     """Schedule the handover of the next item and start it in its own task, as call_later would."""
     controller._enqueue_next_item("q1", next_item)
-    enqueue_callback = mass.call_later.call_args.args[1]
-    return asyncio.create_task(enqueue_callback(next_item))
+    return _start_scheduled_handover(mass)
 
 
 async def test_enqueue_next_item_waits_for_the_playback_lock() -> None:
@@ -260,6 +265,36 @@ async def test_enqueue_does_not_publish_a_stale_handover(change: str) -> None:
     await mass.call_later.call_args.args[1](next_item)
     assert data.next_item_id_enqueued is None
     assert controller._queue_data["q1"].next_item_id_enqueued is None
+
+
+async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> None:
+    """A track taken back out of the queue while it is handed over does not stay on the player."""
+    controller, mass, _players, items = _handover_controller()
+    controller.signal_update = MagicMock()  # type: ignore[method-assign]
+    queue_data = controller._queue_data["q1"]
+    # the player already holds the track that follows the playing one
+    queue_data.next_item_id_enqueued = items[1].queue_item_id
+    call_started = asyncio.Event()
+    finish_call = asyncio.Event()
+
+    async def _slow_enqueue(**_kwargs: object) -> None:
+        call_started.set()
+        await finish_call.wait()
+
+    mass.players.enqueue_next_media.side_effect = _slow_enqueue
+    # "play next" on the last track gets it handed to the player
+    controller.move_item("q1", items[2].queue_item_id, 0)
+    handover = _start_scheduled_handover(mass)
+    await call_started.wait()
+    # the user takes it back out while the player is still being given it
+    controller.delete_item("q1", items[2].queue_item_id)
+    finish_call.set()
+    await handover
+
+    await _start_scheduled_handover(mass)
+    handed_over = mass.players.enqueue_next_media.await_args.kwargs["media"]
+    assert handed_over.queue_item_id == items[1].queue_item_id
+    assert queue_data.next_item_id_enqueued == items[1].queue_item_id
 
 
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:

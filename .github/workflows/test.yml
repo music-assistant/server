@@ -217,6 +217,8 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
+        # -n logical starts one worker per vCPU: -n auto counts physical cores (2 on the
+        # 4 vCPU runner), while most tests wait on I/O rather than the CPU.
         # --dist loadfile keeps each test file on one xdist worker: snapshot updates
         # never race on an .ambr file and module-scoped fixtures are reused.
         # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
@@ -255,7 +257,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n logical --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7
