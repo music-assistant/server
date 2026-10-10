@@ -212,10 +212,6 @@ class OverlapPreferencePolicy(Policy):
     segue_halving_penalty: float = 4.0
     # a candidate of another style than the context prefers
     style_penalty: float = 15.0
-    # A dressed transition only competes with other dressed transitions: the one whose style
-    # doesn't suit the tempo gap pays this, which outweighs the kick clash a 4-bar filter
-    # out keeps from two kicked decks
-    dressing_mismatch_penalty: float = 12.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -232,11 +228,11 @@ class OverlapPreferencePolicy(Policy):
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
-        style = candidate.plan.style
-        if style in DRESSED_STYLES:
-            if style is not ctx.dressed_style:
-                penalty += self.dressing_mismatch_penalty
-        elif ctx.preferred_style is TransitionStyle.SEGUE:
+        # a dressed transition only competes with others of its style, chosen at selection
+        if (
+            ctx.preferred_style is TransitionStyle.SEGUE
+            and candidate.plan.style not in DRESSED_STYLES
+        ):
             penalty += self.style_penalty
         return Verdict.ok(penalty)
 

@@ -119,7 +119,7 @@ def _main_pass(
 
 
 class TestDressedScenarios:
-    """A cut that stacks two kicks past the drum limit gives way to a dressed transition."""
+    """A cut that stacks two kicks for more than a beat gives way to a dressed transition."""
 
     def test_kick_against_kick_12_percent_apart_filters_out(
         self, monkeypatch: pytest.MonkeyPatch
@@ -169,21 +169,32 @@ class TestDressedScenarios:
         assert plan.fade_out_window == pytest.approx(today.fade_out_window)
         assert plan.crossfade_duration == pytest.approx(today.crossfade_duration)
 
-    def test_kick_against_kick_25_percent_apart_keeps_its_cut(
+    def test_kick_against_kick_25_percent_apart_echoes_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Two kicks under a 1-bar cut stay within the drum limit, so the cut ships as before."""
+        """The 1-bar cut stacks two kicks for 2/3 of a bar; an echo out of one bar replaces it."""
         out, inc = _track(120.0), _track(150.0)
 
-        scored, _winner = _main_pass(monkeypatch, out, inc)
         plan = _plan(out, inc)
 
-        assert any(
-            e.candidate.plan.style is TransitionStyle.ECHO_OUT and not e.rejected for e in scored
-        )
-        assert plan.style is TransitionStyle.CUT
-        assert plan.metrics.rhythm_clash_bars == pytest.approx(2 / 3)
-        assert plan == _plan_undressed(monkeypatch, out, inc)
+        today = _plan_undressed(monkeypatch, out, inc)
+        assert today.style is TransitionStyle.CUT
+        assert today.metrics.rhythm_clash_bars == pytest.approx(2 / 3)
+        assert plan.style is TransitionStyle.ECHO_OUT
+        assert plan.echo is not None
+        assert plan.metrics.rhythm_clash_bars == 0.0
+        assert plan.crossfade_duration == pytest.approx(today.crossfade_duration)
+        assert not plan.tempo_plan
+
+    def test_a_cross_meter_kick_clash_echoes_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two meters at the same tempo share no bar grid, so their clashing cut echoes out."""
+        out, inc = _track(120.0), _track(120.0)
+        inc.beats_per_bar = 3
+
+        plan = _plan(out, inc)
+
+        assert _plan_undressed(monkeypatch, out, inc).style is TransitionStyle.CUT
+        assert plan.style is TransitionStyle.ECHO_OUT
 
     def test_a_clean_cut_stays_a_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without kicks on both decks the cut ships, though a dressed transition scores lower."""

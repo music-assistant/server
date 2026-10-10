@@ -189,8 +189,9 @@ class TransitionContext:
 
     @property
     def dressed_style(self) -> TransitionStyle:
-        """The dressed short style that suits the tempo gap: an echo out past 20 %, else a filter."""
-        if self.bpm_diff_percent > _ECHO_OUT_MIN_GAP_PERCENT:
+        """The dressed style that suits the pair: an echo out across meters or past 20 %."""
+        # an echo out overlaps no second meter: the outgoing dry signal stops at its cut
+        if self.cross_meter or self.bpm_diff_percent > _ECHO_OUT_MIN_GAP_PERCENT:
             return TransitionStyle.ECHO_OUT
         return TransitionStyle.FILTER_OUT
 

@@ -5,8 +5,8 @@ A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
 entry, then picks the lowest-penalty, non-rejected survivor; a segue only when
 it lasts at least as long as the best other survivor, and a dressed transition
-only in place of a winning cut that stacks the decks' kicks past the drum
-limit, or when nothing else survives. Every policy runs
+only in place of a winning cut that stacks the decks' kicks for more than a
+beat, or when nothing else survives. Every policy runs
 on every candidate - no short-circuit on the first rejection - so the debug
 log always shows the complete scoreboard, not just whichever rule fired first.
 """
@@ -26,7 +26,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
 
 from .candidates import Candidate
 from .context import TransitionContext
-from .policies import RHYTHM_CLASH_LIMIT_BARS, Policy, Verdict
+from .policies import Policy, Verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,10 +70,12 @@ class CandidateSelector:
         None means every candidate was rejected, or no blend or cut survived a selector
         that doesn't let a lone segue win. A segue never replaces a surviving blend,
         and replaces a cut only when it lasts at least as long, so it never shortens
-        the transition that would ship without it. The best dressed transition
-        replaces a winning cut that stacks the decks' kicks past the drum limit, never a
-        clean cut, a blend or a segue, and wins on its own only where nothing else
-        survives. Ties resolve to whichever candidate appears earlier in ``candidates``.
+        the transition that would ship without it. A dressed transition replaces a
+        winning cut that stacks the decks' kicks for more than one outgoing beat, never
+        a cut within that, a blend or a segue, and wins on its own only where nothing
+        else survives; the best one of the style that suits the pair wins, else the best
+        of the other style. Ties resolve to whichever candidate appears earlier in
+        ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
         :param ctx: The shared per-transition facts every policy judges against.
@@ -107,7 +109,7 @@ class CandidateSelector:
                 )
                 return None
             # nothing but segues and dressed transitions survives
-            survivors = survivors or dressed
+            survivors = survivors or _suited(dressed, ctx)
         elif any(entry.candidate.plan.style is TransitionStyle.BLEND for entry in others):
             # a beatmatchable pair keeps its blend
             survivors = others
@@ -123,9 +125,9 @@ class CandidateSelector:
         if (
             dressed
             and winner.candidate.plan.style is TransitionStyle.CUT
-            and winner.candidate.metrics.rhythm_clash_bars > RHYTHM_CLASH_LIMIT_BARS
+            and winner.candidate.metrics.rhythm_clash_bars > 1.0 / ctx.outgoing.beats_per_bar
         ):
-            survivors = dressed
+            survivors = _suited(dressed, ctx)
             winner = min(survivors, key=lambda entry: entry.total_penalty)
         if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             ranked = sorted(survivors, key=lambda entry: entry.total_penalty)
@@ -189,3 +191,9 @@ class CandidateSelector:
             verdicts=verdicts,
             rejected=rejected,
         )
+
+
+def _suited(dressed: list[ScoredCandidate], ctx: TransitionContext) -> list[ScoredCandidate]:
+    """Return the dressed survivors of the style that suits the pair, else all of them."""
+    suited = [entry for entry in dressed if entry.candidate.plan.style is ctx.dressed_style]
+    return suited or dressed

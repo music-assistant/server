@@ -412,22 +412,9 @@ class TestOverlapPreferencePolicy:
 
         assert penalties == [0.0, 15.0, 20.0]
 
-    @pytest.mark.parametrize(
-        ("gap", "echo", "filter_4", "filter_2", "cut"),
-        [(25.0, 0.0, 12.0, 22.0, 15.0), (12.0, 12.0, 0.0, 10.0, 15.0)],
-    )
-    def test_the_dressed_style_that_suits_the_gap_outranks_the_other(
-        self, gap: float, echo: float, filter_4: float, filter_2: float, cut: float
-    ) -> None:
-        """
-        Spell out the short styles' costs in a quick fade context.
-
-        The dressed style that suits the tempo gap (an echo out past 20 %, else a filter
-        out) pays nothing, the other one 12, which covers the kick clash a 4-bar filter
-        out keeps from two kicked decks (1.44 weighted bars, 10.4 points). A cut pays the
-        style penalty as before; it never competes with a dressed transition on penalty.
-        """
-        ctx = _ctx(tier=TransitionTier.QUICK_FADE, bpm_diff_percent=gap)
+    def test_a_dressed_transition_pays_only_its_rung(self) -> None:
+        """In a quick fade context a cut pays the style penalty, a dressed transition doesn't."""
+        ctx = _ctx(tier=TransitionTier.QUICK_FADE)
         tier = TransitionTier.QUICK_FADE
         candidates = [
             _candidate(bars=1, ideal=1, tier=tier, style=TransitionStyle.ECHO_OUT),
@@ -438,8 +425,7 @@ class TestOverlapPreferencePolicy:
 
         penalties = [self.policy.evaluate(c, ctx).penalty for c in candidates]
 
-        assert penalties == pytest.approx([echo, filter_4, filter_2, cut])
-        assert self.policy.dressing_mismatch_penalty > (1.44 / 2.0) ** 2 * 20.0
+        assert penalties == pytest.approx([0.0, 0.0, 10.0, 15.0])
 
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""

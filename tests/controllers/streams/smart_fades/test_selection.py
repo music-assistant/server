@@ -268,33 +268,39 @@ class TestCandidateSelector:
         assert result is not None
         assert result.candidate is cut
 
+
 class TestDressedSelection:
-    """The best dressed transition replaces a winning cut that stacks two kicks, nothing else."""
+    """A dressed transition of the style that suits the pair replaces a cut that stacks kicks."""
 
     def _select(
-        self, candidates: list[Candidate], penalties: dict[str, float]
+        self,
+        candidates: list[Candidate],
+        penalties: dict[str, float],
+        ctx: TransitionContext | None = None,
     ) -> ScoredCandidate | None:
         selector = CandidateSelector(
             policies=[_BySourcePenaltyPolicy(penalties)],
             logger=logging.getLogger(__name__),
             lone_segue_wins=False,
         )
-        return selector.select(candidates, _ctx())
+        return selector.select(candidates, ctx or _ctx())
 
-    def test_a_clashing_cut_gives_way_to_the_best_dressed_transition(self) -> None:
-        """A cut past the drum limit is replaced, however its penalty compares."""
-        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0, rhythm_clash=2.67)
-        echo = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
-        filter_out = _named("filter", style=TransitionStyle.FILTER_OUT, duration=8.0)
+    def test_a_cut_stacking_kicks_for_more_than_a_beat_gives_way(self) -> None:
+        """Past one outgoing beat of kick clash the best filter out replaces the cut."""
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0, rhythm_clash=0.26)
+        long_filter = _named("long", style=TransitionStyle.FILTER_OUT, duration=8.0)
+        short_filter = _named("short", style=TransitionStyle.FILTER_OUT, duration=4.0)
 
-        result = self._select([cut, echo, filter_out], {"cut": 5.0, "echo": 22.0, "filter": 20.0})
+        result = self._select(
+            [cut, long_filter, short_filter], {"cut": 5.0, "long": 20.0, "short": 25.0}
+        )
 
         assert result is not None
-        assert result.candidate is filter_out
+        assert result.candidate is long_filter
 
-    def test_a_cut_within_the_drum_limit_stays_a_cut(self) -> None:
-        """A clean or mildly clashing cut ships, though a dressed transition scores lower."""
-        for clash in (0.0, 2.0):
+    def test_a_cut_within_one_beat_of_kick_clash_stays_a_cut(self) -> None:
+        """A clean cut, or one stacking kicks for a beat at most, ships though it scores worse."""
+        for clash in (0.0, 0.25):
             cut = _named("cut", style=TransitionStyle.CUT, rhythm_clash=clash)
             dressed = _named("filter", style=TransitionStyle.FILTER_OUT)
 
@@ -302,6 +308,39 @@ class TestDressedSelection:
 
             assert result is not None
             assert result.candidate is cut
+
+    def test_the_style_that_suits_the_pair_wins_over_a_cheaper_other(self) -> None:
+        """Up to a 20% gap a filter out replaces the cut, though an echo out scores lower."""
+        cut = _named("cut", style=TransitionStyle.CUT, rhythm_clash=2.67)
+        echo = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
+        filter_out = _named("filter", style=TransitionStyle.FILTER_OUT, duration=8.0)
+        penalties = {"cut": 15.0, "echo": 0.0, "filter": 30.0}
+
+        filtered = self._select([cut, echo, filter_out], penalties)
+        echoed = self._select(
+            [cut, echo, filter_out], penalties, dataclasses.replace(_ctx(), bpm_diff_percent=25.0)
+        )
+
+        assert filtered is not None
+        assert filtered.candidate is filter_out
+        assert echoed is not None
+        assert echoed.candidate is echo
+
+    def test_the_other_style_stands_in_when_the_suited_one_is_rejected(self) -> None:
+        """Without a surviving filter out, the best echo out replaces the clashing cut."""
+        cut = _named("cut", style=TransitionStyle.CUT, rhythm_clash=2.67)
+        echo = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
+        filter_out = _named("filter", style=TransitionStyle.FILTER_OUT)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"cut": 15.0, "echo": 9.0, "filter": 0.0}), _Reject()],
+            logger=logging.getLogger(__name__),
+            lone_segue_wins=False,
+        )
+
+        result = selector.select([cut, echo, filter_out], _ctx())
+
+        assert result is not None
+        assert result.candidate is echo
 
     def test_a_clashing_cut_without_a_dressed_survivor_ships(self) -> None:
         """No dressed alternative leaves the clashing cut as it is."""
@@ -317,8 +356,8 @@ class TestDressedSelection:
         blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0, rhythm_clash=3.0)
         segue = _named("segue", style=TransitionStyle.SEGUE, duration=10.0)
         cut = _named("cut", style=TransitionStyle.CUT, duration=8.0, rhythm_clash=2.67)
-        dressed = _named("echo", style=TransitionStyle.ECHO_OUT, duration=2.0)
-        penalties = {"blend": 10.0, "segue": 5.0, "cut": 15.0, "echo": 0.0}
+        dressed = _named("filter", style=TransitionStyle.FILTER_OUT, duration=2.0)
+        penalties = {"blend": 10.0, "segue": 5.0, "cut": 15.0, "filter": 0.0}
 
         over_blend = self._select([blend, cut, dressed], penalties)
         over_segue = self._select([cut, segue, dressed], penalties)
@@ -330,11 +369,24 @@ class TestDressedSelection:
 
     def test_dressed_transitions_alone_win_only_the_rescue_pass(self) -> None:
         """Without a surviving blend or cut, a dressed transition wins the rescue pass only."""
-        dressed = _named("echo", style=TransitionStyle.ECHO_OUT)
-        rescue = CandidateSelector([_FixedPenaltyPolicy()], logging.getLogger(__name__))
+        echo = _named("echo", style=TransitionStyle.ECHO_OUT)
+        filter_out = _named("filter", style=TransitionStyle.FILTER_OUT)
+        rescue = CandidateSelector(
+            [_BySourcePenaltyPolicy({"echo": 0.0, "filter": 5.0})], logging.getLogger(__name__)
+        )
 
-        alone = rescue.select([dressed], _ctx())
+        alone = rescue.select([echo, filter_out], _ctx())
 
-        assert self._select([dressed], {"echo": 0.0}) is None
+        assert self._select([echo], {"echo": 0.0}) is None
         assert alone is not None
-        assert alone.candidate is dressed
+        assert alone.candidate is filter_out
+
+
+class _Reject(Policy):
+    """A stub policy that rejects every filter out."""
+
+    def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+        """Reject a filter out, accept anything else."""
+        if candidate.plan.style is TransitionStyle.FILTER_OUT:
+            return Verdict.reject("filter out rejected")
+        return Verdict.ok()
