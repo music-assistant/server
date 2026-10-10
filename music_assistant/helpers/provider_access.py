@@ -204,14 +204,14 @@ def visible_provider(
         return provider
     if strict or not getattr(provider, "is_streaming_provider", False):
         return None
-    return next(
-        (
-            other
-            for other in mass.get_provider_instances(provider.domain)
-            if other.instance_id not in hidden
-        ),
-        None,
-    )
+    candidates = [
+        other
+        for other in mass.get_provider_instances(provider.domain)
+        if other.instance_id not in hidden
+    ]
+    # the user's own account of the service comes before one merely shared with them
+    candidates.sort(key=lambda other: source_owner(mass, other.instance_id) != user.user_id)
+    return candidates[0] if candidates else None
 
 
 def has_visible_source(

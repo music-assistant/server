@@ -48,6 +48,7 @@ from .helpers import ISRC, create_album, create_track
 THEIRS = "spotify_theirs"
 MINE = "tidal_mine"
 MY_SPOTIFY = "spotify_mine"
+SHARED_SPOTIFY = "spotify_shared"
 OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
 MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
 GUEST = User(user_id="user-guest", username="guest", role=UserRole.GUEST)
@@ -80,6 +81,14 @@ def _add_my_spotify(music: MusicController) -> MagicMock:
         music.mass,
         {MY_SPOTIFY: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE)},
     )
+    return provider
+
+
+def _add_shared_spotify(music: MusicController) -> MagicMock:
+    """Give the home a shared account of the owner's service."""
+    provider = _provider(SHARED_SPOTIFY)
+    music.mass._providers[SHARED_SPOTIFY] = provider
+    set_music_source_access(music.mass, {SHARED_SPOTIFY: None})
     return provider
 
 
@@ -151,11 +160,15 @@ async def test_resolve_visible_provider(music: MusicController) -> None:
     with _as_user(GUEST), pytest.raises(ProviderUnavailableError):
         music.resolve_visible_provider("unknown")
 
+    # a shared account of the service stands in for the hidden one...
+    _add_shared_spotify(music)
+    with _as_user(MEMBER):
+        assert music.resolve_visible_provider(THEIRS).instance_id == SHARED_SPOTIFY
+    # ...the member's own account comes first, although it was loaded after the shared one...
     _add_my_spotify(music)
     with _as_user(MEMBER):
-        # the member's own account of the service stands in for the hidden one...
         assert music.resolve_visible_provider(THEIRS).instance_id == MY_SPOTIFY
-        # ...unless exactly that account is required
+        # ...unless exactly the hidden account is required
         with pytest.raises(InsufficientPermissions):
             music.resolve_visible_provider(THEIRS, strict=True)
     # a visible source that is not loaded is unavailable, not forbidden
