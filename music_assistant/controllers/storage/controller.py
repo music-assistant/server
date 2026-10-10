@@ -609,6 +609,25 @@ class StorageController(CoreController):
             self._request_remount(location)
         return False
 
+    async def get_unavailable_locations(self, path: str) -> list[str]:
+        """
+        Return the paths of the media locations below a folder that can not be used right now.
+
+        A folder reads the files of the locations below it, which look empty while they are gone.
+
+        :param path: An absolute path.
+        """
+        path = os.path.normpath(path)
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
+        # a discovered drive or share that went away is only remembered as a mountpoint
+        candidates = sorted(
+            candidate
+            for candidate in media | self._seen_mountpoints
+            if candidate != path and is_within(candidate, path)
+        )
+        await self._probe_outdated(candidates)
+        return [candidate for candidate in candidates if not await self.is_available(candidate)]
+
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
         Return the names of the subfolders of a folder in a media location, sorted.

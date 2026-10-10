@@ -377,3 +377,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self._session, self.base_url, self.username, self.password, timeout=10
         )
         return True
+
+    async def _unreachable_folders(self) -> list[str]:
+        """Return no folders: a WebDAV server has no storage locations below its root."""
+        return []

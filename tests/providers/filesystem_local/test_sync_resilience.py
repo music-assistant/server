@@ -42,7 +42,9 @@ def _create_provider() -> LocalFileSystemProvider:
     provider.sync_running = False
     provider.logger = MagicMock()
     provider.available = True
+    provider.base_path = "/media"
     provider.mass = MagicMock()
+    provider.mass.storage.get_unavailable_locations = AsyncMock(return_value=[])
     provider.mass.music.database.get_rows_from_query = AsyncMock(
         return_value=[
             {"provider_item_id": FOUND_FILE, "details": "1"},
@@ -99,6 +101,22 @@ async def test_deletions_run_on_clean_scan() -> None:
 
     provider._process_deletions.assert_awaited_once_with({MISSING_FILE})  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("folder", ["/media/Artist/Album", f"/media/{MISSING_FILE}"])
+async def test_deletions_skipped_below_an_unavailable_folder(folder: str) -> None:
+    """Items in or below a folder whose storage is gone are kept."""
+    provider = _create_provider()
+    provider._enumerate_files_for_sync = _enumerate_result(  # type: ignore[method-assign]
+        found_files={FOUND_FILE}
+    )
+    get_unavailable = cast("MagicMock", provider.mass.storage).get_unavailable_locations
+    get_unavailable.return_value = [folder]
+
+    await provider.sync_library(MediaType.TRACK)
+
+    get_unavailable.assert_awaited_once_with("/media")
+    provider._process_deletions.assert_awaited_once_with(set())  # type: ignore[attr-defined]
 
 
 async def test_sync_shares_one_ondemand_listing_scope_across_the_whole_batch() -> None:
