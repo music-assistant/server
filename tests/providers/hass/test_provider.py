@@ -581,6 +581,23 @@ async def test_lost_connection_arms_the_reconnect_under_the_load_task_id() -> No
         assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
 
 
+async def test_unexpected_listener_error_still_arms_the_reconnect() -> None:
+    """A listener crash on an error the client does not wrap still arms the reconnect."""
+    async with _start_provider([]) as (provider, hass):
+        mass = cast("MagicMock", provider.mass)
+        mass.call_later.reset_mock()
+        assert provider._listen_task is not None
+
+        hass.connection_lost.set_exception(AttributeError("unexpected"))
+        async with asyncio.timeout(1):
+            await provider._listen_task
+
+        assert provider.available is False
+        retry = mass.call_later.call_args
+        assert retry.args == (5, mass.load_provider, "hass--test")
+        assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
+
+
 async def test_engines_are_listed_for_every_feature_entity() -> None:
     """Expose every Home Assistant TTS and AI Task entity as an engine."""
     states = [
