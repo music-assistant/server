@@ -6,7 +6,9 @@ import logging
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.media_items import ProviderMapping, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -22,6 +24,22 @@ INSTANCE_A = "neteasecloudmusic--aaaa"
 INSTANCE_B = "neteasecloudmusic--bbbb"
 DOMAIN = "neteasecloudmusic"
 USER_ID = "user-1"
+OTHER_USER_ID = "user-2"
+
+
+def _user(user_id: str = USER_ID) -> User:
+    """Build a plain MA user with the given id."""
+    return User(user_id=user_id, username=user_id, role=UserRole.USER)
+
+
+def _private(owner: str) -> ProviderAccess:
+    """Build a private (owner-only) access record for a music source."""
+    return ProviderAccess(owner=owner, sharing=ProviderSharing.PRIVATE)
+
+
+def _shared(owner: str) -> ProviderAccess:
+    """Build an everyone-visible access record for a music source."""
+    return ProviderAccess(owner=owner, sharing=ProviderSharing.EVERYONE)
 
 
 def _track() -> Track:
@@ -111,6 +129,40 @@ async def test_library_track_resolves_to_a_mapped_instance(
 
     assert prov in providers.values()
     assert track_id in {"a-42", "b-42"}
+
+
+async def test_prefers_the_instance_the_playing_user_owns(
+    handler: NeteaseScrobbleHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """The playing user's own NetEase instance is preferred over a shared one."""
+    set_music_source_access(
+        mass, {INSTANCE_A: _shared(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
+    )
+    mass.webserver.auth.get_user.return_value = _user()
+
+    prov, track_id = await handler._get_ncm_provider_and_track_id(
+        MediaType.TRACK, "library", "1", USER_ID
+    )
+
+    assert prov is providers[INSTANCE_B]
+    assert track_id == "b-42"
+
+
+async def test_never_reports_to_another_members_private_instance(
+    handler: NeteaseScrobbleHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """An instance the playing user may not use is dropped instead of credited."""
+    set_music_source_access(
+        mass, {INSTANCE_A: _private(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
+    )
+    mass.webserver.auth.get_user.return_value = _user()
+
+    prov, track_id = await handler._get_ncm_provider_and_track_id(
+        MediaType.TRACK, "library", "1", USER_ID
+    )
+
+    assert prov is providers[INSTANCE_B]
+    assert track_id == "b-42"
 
 
 async def test_without_user_any_household_instance_is_used(
