@@ -6,7 +6,13 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderStatus,
+    ProviderType,
+)
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 
@@ -235,6 +241,9 @@ async def _resolve_item(
         ctrl, item_mapping, streaming_providers, artist_name
     )
     if result is None:
+        if await _music_providers_loading(mass):
+            # a provider that has not finished loading yet may still have it
+            raise SearchIncomplete(item_mapping.name)
         LOGGER.debug("Could not resolve %s: %s", item_mapping.media_type.value, item_mapping.name)
         return None
 
@@ -355,4 +364,16 @@ async def parse_album(
 
     return cast(
         "Album | None", await _resolve_item(item_mapping, mass, provider_instance, artist_name)
+    )
+
+
+async def _music_providers_loading(mass: MusicAssistant) -> bool:
+    """
+    Return True while an enabled music provider has not finished loading.
+
+    :param mass: MusicAssistant instance.
+    """
+    return any(
+        conf.status == ProviderStatus.LOADING
+        for conf in await mass.config.get_provider_configs(provider_type=ProviderType.MUSIC)
     )

@@ -85,8 +85,6 @@ class LastFMRecommendationManager:
 
         # Resolved items keyed by MBID (preferred) or name to avoid re-resolving.
         self._resolved_cache: dict[str, Artist | Album | Track] = {}
-        # Keys of items no provider had, see _get_or_resolve.
-        self._misses: set[str] = set()
 
     @property
     def logger(self) -> logging.Logger:
@@ -96,7 +94,6 @@ class LastFMRecommendationManager:
     async def clear_cache(self) -> None:
         """Clear in-memory and persistent recommendation caches."""
         self._resolved_cache.clear()
-        self._misses.clear()
 
         await self.mass.cache.clear(
             category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -343,8 +340,6 @@ class LastFMRecommendationManager:
         cached = self._resolved_cache.get(cache_key)
         if isinstance(cached, base_class):
             return cached
-        if cache_key in self._misses:
-            return None
         cached_item = await self.mass.cache.get(
             key=cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -360,14 +355,13 @@ class LastFMRecommendationManager:
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
             provider=self.provider.instance_id,
         ):
-            self._misses.add(cache_key)
+            # misses are only kept in the persistent cache, so they expire and get retried
             return None
         try:
             item = await resolve()
         except SearchIncomplete:
             return None
         if item is None:
-            self._misses.add(cache_key)
             await self.mass.cache.set(
                 miss_key,
                 True,

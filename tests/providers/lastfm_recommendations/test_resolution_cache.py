@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import ProviderFeature, ProviderStatus
 from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import ItemMapping, Track
 
@@ -69,6 +70,22 @@ async def test_miss_is_remembered(manager: LastFMRecommendationManager, cache: _
 
 
 @pytest.mark.asyncio
+async def test_expired_miss_is_searched_again(
+    manager: LastFMRecommendationManager, cache: _FakeCache
+) -> None:
+    """Once the remembered miss expires, the item is searched for again."""
+    resolve = AsyncMock(side_effect=[None, _track()])
+    with patch(
+        "music_assistant.providers.lastfm_recommendations.recommendations.parse_track", resolve
+    ):
+        assert await manager.get_or_resolve_track(LASTFM_TRACK) is None
+        del cache.data["miss_track_Snow Patrol_Chasing Cars"]
+        resolved = await manager.get_or_resolve_track(LASTFM_TRACK)
+    assert resolved is not None
+    assert resolve.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_persisted_miss_survives_restart(
     manager: LastFMRecommendationManager, cache: _FakeCache
 ) -> None:
@@ -115,3 +132,33 @@ async def test_empty_provider_searches_are_a_miss() -> None:
     ctrl = Mock()
     ctrl.search = AsyncMock(return_value=[])
     assert await parsers._search_providers_concurrent(ctrl, mapping, [Mock(name="p")], None) is None
+
+
+def _mass(provider_status: ProviderStatus) -> Mock:
+    """Return a mass stand-in with one streaming provider that finds nothing."""
+    streaming = Mock(
+        instance_id="apple_music--1",
+        is_streaming_provider=True,
+        supported_features={ProviderFeature.LIBRARY_TRACKS},
+    )
+    mass = Mock()
+    mass.music.providers = [streaming]
+    mass.music.tracks.get_library_item_by_external_ids = AsyncMock(return_value=None)
+    mass.music.tracks.search = AsyncMock(return_value=[])
+    mass.config.get_provider_configs = AsyncMock(
+        return_value=[Mock(status=ProviderStatus.LOADED), Mock(status=provider_status)]
+    )
+    return mass
+
+
+@pytest.mark.asyncio
+async def test_no_match_while_a_provider_loads_is_incomplete() -> None:
+    """A provider that has not loaded yet may have the item, so it is not a miss yet."""
+    with pytest.raises(parsers.SearchIncomplete):
+        await parsers.parse_track(LASTFM_TRACK, _mass(ProviderStatus.LOADING), INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_no_match_with_all_providers_settled_is_a_miss() -> None:
+    """A provider that failed to load does not hold back a miss."""
+    assert await parsers.parse_track(LASTFM_TRACK, _mass(ProviderStatus.ERROR), INSTANCE_ID) is None
