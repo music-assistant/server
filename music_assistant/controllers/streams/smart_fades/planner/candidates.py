@@ -46,12 +46,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     merge_windows,
 )
 
-from .context import (
-    SEGUE_MAX_SECONDS,
-    TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
-    TIME_STRETCH_MIN_BPM_PERCENTAGE,
-    choose_tier,
-)
+from .context import SEGUE_MAX_SECONDS, TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD, choose_tier
 
 if TYPE_CHECKING:
     import logging
@@ -683,11 +678,7 @@ class CandidateFactory:
         """Choose the gradual tempo ramp that beatmatches the outgoing track, if any."""
         if tier is TransitionTier.QUICK_FADE:
             return TempoPlan()
-        if not (
-            TIME_STRETCH_MIN_BPM_PERCENTAGE
-            < self._ctx.bpm_diff_percent
-            <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
-        ):
+        if not 0.1 < self._ctx.bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             return TempoPlan()
         return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
 

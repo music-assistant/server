@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from .candidates import Candidate, CandidateSpec
     from .context import TransitionContext
+    from .selection import ScoredCandidate
 
 
 class TransitionPlanner(ABC):
@@ -104,7 +105,10 @@ class SmartCrossFadePlanner(TransitionPlanner):
         )
         factory = CandidateFactory(ctx, self.logger)
         specs = [spec for generator in default_generators() for spec in generator.generate(ctx)]
-        candidates = _build_candidates(factory, specs)
+        built = [
+            (spec, candidate) for spec in specs if (candidate := factory.build(spec)) is not None
+        ]
+        candidates = [candidate for _, candidate in built]
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
@@ -129,7 +133,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 *RescueAnchorGenerator().generate(ctx),
                 *SegueGenerator(allow_blend_context=True).generate(ctx),
             ]
-            rescue_candidates = _build_candidates(factory, rescue_specs)
+            built = [
+                (spec, candidate)
+                for spec in rescue_specs
+                if (candidate := factory.build(spec)) is not None
+            ]
+            rescue_candidates = [candidate for _, candidate in built]
             rescue_selector = CandidateSelector(default_policies(), self.logger)
             winner = rescue_selector.select(rescue_candidates, ctx) if rescue_candidates else None
         if winner is None:
@@ -143,6 +152,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 source = "emergency-handoff"
             bars = None
         else:
+            winner = self._drop_unneeded_stretch(winner, built, factory, ctx)
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
             source = winner.candidate.spec.source
             bars = None if plan.style is TransitionStyle.SEGUE else winner.candidate.spec.bars
@@ -190,26 +200,36 @@ class SmartCrossFadePlanner(TransitionPlanner):
             f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
         )
 
+    def _drop_unneeded_stretch(
+        self,
+        winner: ScoredCandidate,
+        built: Iterable[tuple[CandidateSpec, Candidate]],
+        factory: CandidateFactory,
+        ctx: TransitionContext,
+    ) -> ScoredCandidate:
+        """
+        Return the winner, unstretched when a deck has no kick for its tempo ramp to match.
 
-def _build_candidates(factory: CandidateFactory, specs: Iterable[CandidateSpec]) -> list[Candidate]:
-    """
-    Build every feasible spec, each ramped blend followed by its unstretched variant.
+        The unstretched build ships only when its own overlap still misses a kick on a deck
+        and every policy accepts it; otherwise the ramped winner ships.
 
-    :param factory: The transition's candidate factory.
-    :param specs: The specs to build, in generator order.
-    """
-    candidates: list[Candidate] = []
-    for spec in specs:
-        candidate = factory.build(spec)
-        if candidate is None:
-            continue
-        candidates.append(candidate)
-        if candidate.plan.tempo_plan:
-            # the policies weigh whether the blend needs its stretch
-            unstretched = factory.build(spec, stretch=False)
-            if unstretched is not None:
-                candidates.append(unstretched)
-    return candidates
+        :param winner: The selected candidate.
+        :param built: Every spec of the winner's pass, with the candidate it built.
+        :param factory: The transition's candidate factory.
+        :param ctx: The transition's context.
+        """
+        plan = winner.candidate.plan
+        if plan.style is not TransitionStyle.BLEND or not plan.tempo_plan:
+            return winner
+        if _both_decks_kick(ctx, plan):
+            return winner
+        spec = next(spec for spec, candidate in built if candidate is winner.candidate)
+        unstretched = factory.build(spec, stretch=False)
+        # the unstretched overlap can be longer and reach both kicks, which need the ramp
+        if unstretched is None or _both_decks_kick(ctx, unstretched.plan):
+            return winner
+        selector = CandidateSelector(default_policies(), self.logger)
+        return selector.select([unstretched], ctx) or winner
 
 
 def _segue_reason(ctx: TransitionContext, plan: TransitionPlan) -> str:
@@ -245,3 +265,35 @@ def _sides(out: bool | None, inc: bool | None) -> str:
 def _overlaps(runs: tuple[tuple[float, float], ...], start: float, end: float) -> bool:
     """Whether any run overlaps the window."""
     return any(left < end and right > start for left, right in runs)
+
+
+def _both_decks_kick(ctx: TransitionContext, plan: TransitionPlan) -> bool:
+    """
+    Whether both decks kick in a blend's overlap; a deck without band data counts as kicking.
+
+    :param ctx: The transition's context.
+    :param plan: A timed blend, with or without a tempo ramp.
+    """
+    # a ramped overlap plays at the ramp's final ratio, so it spans this much outgoing input
+    ratio = ctx.incoming.bpm / ctx.outgoing.bpm if plan.tempo_plan else 1.0
+    overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
+    trim = plan.fadein_trim_start or 0.0
+    # a window that only grazes a kick bar, by less than a beat, holds no beat to match
+    out_kicks = ctx.kick_out is None or (
+        _kick_seconds(ctx.kick_out, overlap_start, plan.fade_out_window) >= 60.0 / ctx.outgoing.bpm
+    )
+    in_kicks = ctx.kick_in is None or (
+        _kick_seconds(ctx.kick_in, trim, trim + plan.crossfade_duration) >= 60.0 / ctx.incoming.bpm
+    )
+    return out_kicks and in_kicks
+
+
+def _kick_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
+    """
+    Seconds of a window the kick runs cover.
+
+    :param runs: Disjoint kick runs, in the window's time base.
+    :param start_s: Window start.
+    :param end_s: Window end.
+    """
+    return sum(max(0.0, min(right, end_s) - max(left, start_s)) for left, right in runs)
