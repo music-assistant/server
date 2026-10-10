@@ -43,10 +43,12 @@ from .selection import CandidateSelector
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Iterable
 
     from music_assistant.controllers.streams.smart_fades.models import TransitionPlan
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
+    from .candidates import Candidate, CandidateSpec
     from .context import TransitionContext
 
 
@@ -102,7 +104,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         )
         factory = CandidateFactory(ctx, self.logger)
         specs = [spec for generator in default_generators() for spec in generator.generate(ctx)]
-        candidates = [candidate for spec in specs if (candidate := factory.build(spec)) is not None]
+        candidates = _build_candidates(factory, specs)
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
@@ -127,9 +129,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 *RescueAnchorGenerator().generate(ctx),
                 *SegueGenerator(allow_blend_context=True).generate(ctx),
             ]
-            rescue_candidates = [
-                candidate for spec in rescue_specs if (candidate := factory.build(spec)) is not None
-            ]
+            rescue_candidates = _build_candidates(factory, rescue_specs)
             rescue_selector = CandidateSelector(default_policies(), self.logger)
             winner = rescue_selector.select(rescue_candidates, ctx) if rescue_candidates else None
         if winner is None:
@@ -189,6 +189,27 @@ class SmartCrossFadePlanner(TransitionPlanner):
             (ctx.incoming.bpm / ctx.outgoing.bpm - 1.0) * 100,
             f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
         )
+
+
+def _build_candidates(factory: CandidateFactory, specs: Iterable[CandidateSpec]) -> list[Candidate]:
+    """
+    Build every feasible spec, each ramped blend followed by its unstretched variant.
+
+    :param factory: The transition's candidate factory.
+    :param specs: The specs to build, in generator order.
+    """
+    candidates: list[Candidate] = []
+    for spec in specs:
+        candidate = factory.build(spec)
+        if candidate is None:
+            continue
+        candidates.append(candidate)
+        if candidate.plan.tempo_plan:
+            # the policies weigh whether the blend needs its stretch
+            unstretched = factory.build(spec, stretch=False)
+            if unstretched is not None:
+                candidates.append(unstretched)
+    return candidates
 
 
 def _segue_reason(ctx: TransitionContext, plan: TransitionPlan) -> str:

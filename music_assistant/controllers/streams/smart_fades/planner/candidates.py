@@ -46,7 +46,12 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     merge_windows,
 )
 
-from .context import SEGUE_MAX_SECONDS, TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD, choose_tier
+from .context import (
+    SEGUE_MAX_SECONDS,
+    TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
+    TIME_STRETCH_MIN_BPM_PERCENTAGE,
+    choose_tier,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -450,7 +455,7 @@ class CandidateFactory:
         self._ctx = ctx
         self._logger = logger
 
-    def build(self, spec: CandidateSpec) -> Candidate | None:
+    def build(self, spec: CandidateSpec, *, stretch: bool = True) -> Candidate | None:
         """
         Build one complete timed candidate for a spec, or ``None`` when it is infeasible.
 
@@ -461,30 +466,12 @@ class CandidateFactory:
         alignment; a 1-bar spec never fails this way, matching the plan floor.
         The returned candidate's spec reflects what was actually built: a
         re-anchored tail can downgrade the tier and cap the bar count.
+
+        :param spec: The candidate's spec.
+        :param stretch: Allow the gradual tempo ramp; False builds a blend's unstretched variant.
         """
         if spec.style is TransitionStyle.SEGUE:
             return self._build_segue(spec)
-        candidate = self._build_timed(spec, stretch=True)
-        if candidate is None or not candidate.plan.tempo_plan or self._both_kick(candidate.plan):
-            return candidate
-        # a beatless side has no beat to match, so the pair blends unstretched, unless the
-        # longer unstretched overlap reaches both kicks: those need the ramp to line up
-        unstretched = self._build_timed(spec, stretch=False)
-        if unstretched is not None and self._both_kick(unstretched.plan):
-            return candidate
-        return unstretched
-
-    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
-        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
-        return self._score(spec, plan)
-
-    def _build_timed(self, spec: CandidateSpec, *, stretch: bool) -> Candidate | None:
-        """
-        Build a blend or quick fade for a spec, or ``None`` when it is infeasible.
-
-        :param spec: The candidate's spec.
-        :param stretch: Allow the gradual tempo ramp.
-        """
         tail = self._anchored_tail(spec.anchor_s)
         # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
         # requested bar count still reflects the old tier, so cap it at the new
@@ -583,6 +570,10 @@ class CandidateFactory:
             metrics=self._score(built_spec, plan),
             ideal_bars=spec.ideal_bars or spec.bars,
         )
+
+    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
+        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
+        return self._score(spec, plan)
 
     @property
     def _bpm_ratio(self) -> float:
@@ -692,33 +683,13 @@ class CandidateFactory:
         """Choose the gradual tempo ramp that beatmatches the outgoing track, if any."""
         if tier is TransitionTier.QUICK_FADE:
             return TempoPlan()
-        if not 0.1 < self._ctx.bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+        if not (
+            TIME_STRETCH_MIN_BPM_PERCENTAGE
+            < self._ctx.bpm_diff_percent
+            <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
+        ):
             return TempoPlan()
         return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
-
-    def _both_kick(self, plan: TransitionPlan) -> bool:
-        """
-        Whether both decks kick in a plan's overlap; a deck without band data counts as kicking.
-
-        :param plan: A timed plan, with or without a tempo ramp.
-        """
-        ctx = self._ctx
-        # only the overlap counts: stretching a beatless stretch window (a breakdown) costs
-        # less than two unmatched kicks on top of each other in the overlap
-        # a ramped overlap plays at the ramp's final ratio, so it spans this much outgoing input
-        ratio = self._bpm_ratio if plan.tempo_plan else 1.0
-        overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
-        trim = plan.fadein_trim_start or 0.0
-        # a window that only grazes a kick bar, by less than a beat, holds no beat to match
-        out_kicks = ctx.kick_out is None or (
-            _kick_seconds(ctx.kick_out, overlap_start, plan.fade_out_window)
-            >= 60.0 / ctx.outgoing.bpm
-        )
-        in_kicks = ctx.kick_in is None or (
-            _kick_seconds(ctx.kick_in, trim, trim + plan.crossfade_duration)
-            >= 60.0 / ctx.incoming.bpm
-        )
-        return out_kicks and in_kicks
 
     def _compute_tempo_steps(
         self, tail: _AnchoredTail, crossfade_duration: float
@@ -1254,17 +1225,6 @@ def _segue_steps(ideal: float, floor: float, step: float) -> list[float]:
         overlap -= step
     steps.append(floor)
     return steps
-
-
-def _kick_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
-    """
-    Seconds of a window the kick runs cover.
-
-    :param runs: Disjoint kick runs, in the window's time base.
-    :param start_s: Window start.
-    :param end_s: Window end.
-    """
-    return sum(max(0.0, min(right, end_s) - max(left, start_s)) for left, right in runs)
 
 
 def _quiet_over(analysis: AudioAnalysisData, start_s: float, end_s: float) -> bool:

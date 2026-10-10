@@ -165,146 +165,27 @@ class TestRhythmClashMetric:
         assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
 
 
-class TestTempoRampKickGate:
-    """The tempo ramp runs only when both decks kick in the overlap."""
+class TestUnstretchedBuild:
+    """A spec built without its stretch keeps its shape and drops the ramp's compensation."""
 
-    @staticmethod
-    def _ramped_blend() -> tuple[TransitionContext, Candidate]:
-        """Build an 8-bar blend 1.7 % apart without band data, which ramps as it always did."""
+    def test_an_unstretched_build_drops_the_ramp(self) -> None:
+        """The same 8-bar spec builds ramped by default and unstretched on request."""
         ctx = _ctx(_analysis(120.0), _analysis(122.0))
-        candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 8))
-        assert candidate is not None
-        assert candidate.plan.tempo_plan
-        return ctx, candidate
+        factory = CandidateFactory(ctx, LOGGER)
 
-    @pytest.mark.parametrize(
-        ("kicks_out", "kicks_in"),
-        [(None, None), (((0.0, 45.0),), None), (None, ((0.0, 45.0),))],
-        ids=["no band data", "outgoing only", "incoming only"],
-    )
-    def test_missing_band_data_keeps_the_ramp(
-        self,
-        kicks_out: tuple[tuple[float, float], ...] | None,
-        kicks_in: tuple[tuple[float, float], ...] | None,
-    ) -> None:
-        """
-        A deck without band data never blocks the ramp.
+        ramped = factory.build(_spec(ctx, 8))
+        unstretched = factory.build(_spec(ctx, 8), stretch=False)
 
-        :param kicks_out: Outgoing kick runs, None without a band profile.
-        :param kicks_in: Incoming kick runs, None without a band profile.
-        """
-        ctx, ramped = self._ramped_blend()
-        partial = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
-
-        candidate = CandidateFactory(partial, LOGGER).build(_spec(ctx, 8))
-
-        assert candidate == ramped
-
-    def test_a_blend_with_both_decks_kicked_keeps_its_ramp(self) -> None:
-        """Kicks on both decks throughout leave the ramped plan as it was."""
-        ctx, ramped = self._ramped_blend()
-        kicked = dataclasses.replace(ctx, kick_out=((0.0, 45.0),), kick_in=((0.0, 45.0),))
-
-        candidate = CandidateFactory(kicked, LOGGER).build(_spec(ctx, 8))
-
-        assert candidate == ramped
-
-    def test_a_breakdown_before_a_kicked_overlap_keeps_its_ramp(self) -> None:
-        """A kickless stretch window still ramps when both decks kick in the overlap."""
-        ctx, ramped = self._ramped_blend()
-        plan = ramped.plan
-        overlap_start = plan.fade_out_window - plan.crossfade_duration * 122.0 / 120.0
-        assert plan.tempo_plan.steps[0][0] < overlap_start
-        breakdown = dataclasses.replace(
-            ctx, kick_out=((overlap_start, 45.0),), kick_in=((0.0, 45.0),)
-        )
-
-        candidate = CandidateFactory(breakdown, LOGGER).build(_spec(ctx, 8))
-
-        assert candidate == ramped
-
-    @pytest.mark.parametrize(
-        "kickless",
-        ["outgoing overlap", "incoming overlap", "incoming graze", "incoming, no outgoing data"],
-    )
-    def test_a_kickless_overlap_blends_unstretched(self, kickless: str) -> None:
-        """
-        A deck without a kick in either overlap drops the ramp; a graze under a beat counts.
-
-        :param kickless: Where the kick is missing.
-        """
-        ctx, _ = self._ramped_blend()
-        everywhere = ((0.0, 45.0),)
-        # the ramped overlap spans outgoing 31-45 s and incoming 0-13.8 s, the
-        # unstretched one outgoing 29-45 s and incoming 0-16 s
-        kicks_out, kicks_in = {
-            "outgoing overlap": (((0.0, 20.0),), everywhere),
-            "incoming overlap": (everywhere, ((30.0, 45.0),)),
-            "incoming graze": (everywhere, ((15.8, 45.0),)),
-            "incoming, no outgoing data": (None, ((30.0, 45.0),)),
-        }[kickless]
-        gated = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
-
-        candidate = CandidateFactory(gated, LOGGER).build(_spec(ctx, 8))
-
-        assert candidate is not None
-        assert candidate.plan.style is TransitionStyle.BLEND
-        assert not candidate.plan.tempo_plan
-        # rebuilt unstretched: 8 outgoing bars at 120 BPM, without the 122/120 compensation
-        assert candidate.plan.crossfade_duration == pytest.approx(16.0)
-        assert candidate.plan.fadein_trim_start == 0.0
-
-    def test_a_rebuild_reaching_the_incoming_kick_keeps_the_ramp(self) -> None:
-        """
-        The ramped plan ships when only its shorter overlap misses the incoming kick.
-
-        Unstretched, the overlap would reach the kick at 14.5 s and play two unmatched beats.
-        """
-        ctx, ramped = self._ramped_blend()
-        assert ramped.plan.crossfade_duration < 14.5
-        late_kick = dataclasses.replace(ctx, kick_out=((0.0, 45.0),), kick_in=((14.5, 45.0),))
-
-        candidate = CandidateFactory(late_kick, LOGGER).build(_spec(ctx, 8))
-
-        assert candidate == ramped
-
-    def test_a_trim_onto_a_beatless_intro_drops_the_ramp(self) -> None:
-        """A rolling-intro trim that moves the overlap off a kicked head onto a breakdown."""
-        t = np.arange(1800) * (240.0 / 1800)
-        breakdown = (t >= 8.0) & (t < 30.0)
-        # the breakdown keeps its voice bands quiet, so the trim may cut into it
-        quiet = np.where(breakdown, 0.05, 0.3)
-        inc = _analysis_with_bands(np.where(breakdown, 0.02, 0.5), quiet, quiet, 0.3, bpm=122.0)
-        ctx = _ctx(_analysis_with_bands(0.5, 0.3, 0.3, 0.3), inc)
-        assert ctx.kick_in is not None
-        assert ctx.kick_in[0][0] == 0.0
-
-        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
-
-        assert candidate.spec.bars == 8
-        assert not candidate.plan.tempo_plan
-        assert candidate.plan.crossfade_duration == pytest.approx(16.0)
-        # the groove entry at ~29.5 s lands on the overlap end, the overlap on the breakdown
-        assert candidate.plan.fadein_trim_start == pytest.approx(13.77, abs=0.01)
-
-    @pytest.mark.parametrize(("intro_kick", "ramps"), [(0.5, True), (0.02, False)])
-    def test_a_beatless_intro_from_band_data_blends_unstretched(
-        self, intro_kick: float, ramps: bool
-    ) -> None:
-        """
-        An incoming head without a kick for its first 40 s blends unstretched.
-
-        :param intro_kick: Low-band level of the incoming head.
-        :param ramps: Whether the blend ramps its tempo.
-        """
-        t = np.arange(1800) * (240.0 / 1800)
-        inc = _analysis_with_bands(np.where(t < 40.0, intro_kick, 0.5), 0.3, 0.3, 0.3, bpm=122.0)
-        ctx = _ctx(_analysis_with_bands(0.5, 0.3, 0.3, 0.3), inc)
-
-        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
-
-        assert candidate.plan.style is TransitionStyle.BLEND
-        assert bool(candidate.plan.tempo_plan) is ramps
+        assert ramped is not None
+        assert unstretched is not None
+        assert ramped.plan.tempo_plan
+        assert not unstretched.plan.tempo_plan
+        assert unstretched.spec == ramped.spec
+        assert unstretched.plan.fade_out_window == ramped.plan.fade_out_window
+        # 14 s of outgoing input renders in 13.8 s at 122/120; unstretched the overlap
+        # snaps a downbeat earlier, to 8 bars at 120 BPM
+        assert ramped.plan.crossfade_duration == pytest.approx(14.0 * 120.0 / 122.0)
+        assert unstretched.plan.crossfade_duration == pytest.approx(16.0)
 
 
 def _rms(*segments: tuple[float, float, float]) -> list[float]:

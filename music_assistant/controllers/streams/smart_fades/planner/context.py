@@ -70,6 +70,8 @@ if TYPE_CHECKING:
 # Only apply time stretching if BPM difference is < this %
 # (research: the tier-1 dance-cluster population triples at ±8 vs ±5)
 TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD: float = 8.0
+# A smaller BPM difference drifts too little over an overlap to need a stretch
+TIME_STRETCH_MIN_BPM_PERCENTAGE: float = 0.1
 
 # A track qualifies for kick-following anchors when its median active-bar
 # low-band power fraction reaches this share of its total power

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from music_assistant.controllers.streams.smart_fades.models import (
@@ -26,7 +27,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
 )
 
 from .candidates import RUNG_LADDER, Candidate, VocalOnsetEntryGenerator
-from .context import TransitionContext
+from .context import TIME_STRETCH_MIN_BPM_PERCENTAGE, TransitionContext
 
 # Ambition ordering of the transition tiers, most ambitious first
 _TIER_ORDER: tuple[TransitionTier, ...] = (
@@ -248,6 +249,27 @@ class AnchorAlignmentPolicy(Policy):
         return Verdict.ok(penalty)
 
 
+class BeatmatchPolicy(Policy):
+    """Prefer an unstretched blend when a deck has no kick to match, and reject unmatched kicks."""
+
+    # under one rung step (10), so a ramped blend still beats the next shorter rung of its ladder
+    unneeded_stretch_penalty: float = 5.0
+
+    def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+        """Judge one candidate against the shared per-transition context."""
+        plan = candidate.plan
+        if plan.style is not TransitionStyle.BLEND:
+            return Verdict.ok()
+        # only the overlap counts: stretching a beatless stretch window (a breakdown) costs
+        # less than two unmatched kicks on top of each other in the overlap
+        both_kick = _both_decks_kick(plan, ctx)
+        if plan.tempo_plan:
+            return Verdict.ok() if both_kick else Verdict.ok(self.unneeded_stretch_penalty)
+        if both_kick and ctx.bpm_diff_percent > TIME_STRETCH_MIN_BPM_PERCENTAGE:
+            return Verdict.reject("unmatched kicks in the overlap")
+        return Verdict.ok()
+
+
 def default_policies() -> tuple[Policy, ...]:
     """Return the standard policy set applied to every candidate, in evaluation order."""
     return (
@@ -258,4 +280,37 @@ def default_policies() -> tuple[Policy, ...]:
         DeadAirPolicy(),
         OverlapPreferencePolicy(),
         AnchorAlignmentPolicy(),
+        BeatmatchPolicy(),
     )
+
+
+def _both_decks_kick(plan: TransitionPlan, ctx: TransitionContext) -> bool:
+    """
+    Whether both decks kick in a blend's overlap; a deck without band data counts as kicking.
+
+    :param plan: A timed blend, with or without a tempo ramp.
+    :param ctx: The transition context.
+    """
+    # a ramped overlap plays at the ramp's final ratio, so it spans this much outgoing input
+    ratio = ctx.incoming.bpm / ctx.outgoing.bpm if plan.tempo_plan else 1.0
+    overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
+    trim = plan.fadein_trim_start or 0.0
+    # a window that only grazes a kick bar, by less than a beat, holds no beat to match
+    out_kicks = ctx.kick_out is None or (
+        _kick_seconds(ctx.kick_out, overlap_start, plan.fade_out_window) >= 60.0 / ctx.outgoing.bpm
+    )
+    in_kicks = ctx.kick_in is None or (
+        _kick_seconds(ctx.kick_in, trim, trim + plan.crossfade_duration) >= 60.0 / ctx.incoming.bpm
+    )
+    return out_kicks and in_kicks
+
+
+def _kick_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
+    """
+    Seconds of a window the kick runs cover.
+
+    :param runs: Disjoint kick runs, in the window's time base.
+    :param start_s: Window start.
+    :param end_s: Window end.
+    """
+    return sum(max(0.0, min(right, end_s) - max(left, start_s)) for left, right in runs)

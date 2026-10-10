@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    TempoPlan,
     TransitionStyle,
     TransitionTier,
 )
@@ -19,6 +20,7 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
 from music_assistant.controllers.streams.smart_fades.planner.policies import (
     AnchorAlignmentPolicy,
     AudibleTrimPolicy,
+    BeatmatchPolicy,
     DeadAirPolicy,
     OverlapPreferencePolicy,
     RhythmClashPolicy,
@@ -463,8 +465,8 @@ class TestAnchorAlignmentPolicy:
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(6.0)
 
 
-def test_default_policies_returns_the_seven_standard_policies() -> None:
-    """The standard policy tuple contains one instance of each of the seven policies."""
+def test_default_policies_returns_the_eight_standard_policies() -> None:
+    """The standard policy tuple contains one instance of each of the eight policies."""
     policies = default_policies()
 
     assert [type(p) for p in policies] == [
@@ -475,7 +477,123 @@ def test_default_policies_returns_the_seven_standard_policies() -> None:
         DeadAirPolicy,
         OverlapPreferencePolicy,
         AnchorAlignmentPolicy,
+        BeatmatchPolicy,
     ]
+
+
+class TestBeatmatchPolicy:
+    """A stretch with no kick to match costs a little; two unmatched kicks are rejected."""
+
+    policy = BeatmatchPolicy()
+    everywhere = ((0.0, 45.0),)
+    ramp = TempoPlan(steps=[(0.0, 1.0), (5.0, 1.0)])
+
+    def _blend(self, *, ramped: bool, style: TransitionStyle = TransitionStyle.BLEND) -> Candidate:
+        """Build a 20 s overlap ending at 20 s, the incoming track entering at its head."""
+        candidate = _candidate(duration=20.0, style=style)
+        if not ramped:
+            return candidate
+        return dataclasses.replace(
+            candidate, plan=dataclasses.replace(candidate.plan, tempo_plan=self.ramp)
+        )
+
+    def _ctx(
+        self,
+        kick_out: tuple[tuple[float, float], ...] | None,
+        kick_in: tuple[tuple[float, float], ...] | None,
+        bpm_diff: float = 2.0,
+    ) -> TransitionContext:
+        return dataclasses.replace(
+            _ctx(), kick_out=kick_out, kick_in=kick_in, bpm_diff_percent=bpm_diff
+        )
+
+    @pytest.mark.parametrize(
+        ("kick_out", "kick_in"),
+        [(everywhere, everywhere), (None, None), (((15.0, 20.0),), ((0.0, 2.0),))],
+        ids=["kicks throughout", "no band data", "kicks in part of the overlap"],
+    )
+    def test_a_needed_stretch_is_free(
+        self,
+        kick_out: tuple[tuple[float, float], ...] | None,
+        kick_in: tuple[tuple[float, float], ...] | None,
+    ) -> None:
+        """
+        A ramped blend whose overlap has a kick on both decks pays nothing.
+
+        :param kick_out: Outgoing kick runs, None without band data.
+        :param kick_in: Incoming kick runs, None without band data.
+        """
+        verdict = self.policy.evaluate(self._blend(ramped=True), self._ctx(kick_out, kick_in))
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
+
+    @pytest.mark.parametrize(
+        ("kick_out", "kick_in"),
+        [
+            ((), everywhere),
+            (everywhere, ((25.0, 45.0),)),
+            (everywhere, ((19.8, 45.0),)),
+            (None, ((25.0, 45.0),)),
+        ],
+        ids=["outgoing kickless", "incoming kickless", "incoming graze", "no outgoing data"],
+    )
+    def test_an_unneeded_stretch_costs_half_a_rung(
+        self,
+        kick_out: tuple[tuple[float, float], ...] | None,
+        kick_in: tuple[tuple[float, float], ...] | None,
+    ) -> None:
+        """
+        A ramped blend with a deck kicking less than a beat in the overlap pays 5.
+
+        :param kick_out: Outgoing kick runs, None without band data.
+        :param kick_in: Incoming kick runs, None without band data.
+        """
+        verdict = self.policy.evaluate(self._blend(ramped=True), self._ctx(kick_out, kick_in))
+
+        assert verdict.rejected is False
+        assert verdict.penalty == pytest.approx(5.0)
+
+    def test_two_unmatched_kicks_are_rejected(self) -> None:
+        """An unstretched blend with both decks kicking in the overlap is rejected."""
+        ctx = self._ctx(self.everywhere, self.everywhere)
+
+        assert self.policy.evaluate(self._blend(ramped=False), ctx).rejected is True
+
+    @pytest.mark.parametrize(
+        ("kick_in", "bpm_diff"),
+        [(((25.0, 45.0),), 2.0), (everywhere, 0.1)],
+        ids=["incoming kickless", "same tempo"],
+    )
+    def test_an_unstretched_blend_without_a_flam_passes(
+        self, kick_in: tuple[tuple[float, float], ...], bpm_diff: float
+    ) -> None:
+        """
+        An unstretched blend passes with a kickless deck, or with no tempo gap to stretch.
+
+        :param kick_in: Incoming kick runs.
+        :param bpm_diff: Tempo gap between the decks, in percent.
+        """
+        ctx = self._ctx(self.everywhere, kick_in, bpm_diff)
+
+        verdict = self.policy.evaluate(self._blend(ramped=False), ctx)
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
+
+    @pytest.mark.parametrize("style", [TransitionStyle.CUT, TransitionStyle.SEGUE])
+    def test_other_styles_are_not_judged(self, style: TransitionStyle) -> None:
+        """
+        A cut or a segue is never beatmatched, so it is never judged on its kicks.
+
+        :param style: The candidate's transition style.
+        """
+        candidate = self._blend(ramped=False, style=style)
+
+        verdict = self.policy.evaluate(candidate, self._ctx(self.everywhere, self.everywhere))
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
 
 
 class TestDeadAirPolicy:
