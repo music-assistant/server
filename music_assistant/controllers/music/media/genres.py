@@ -1234,6 +1234,24 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str | None = None,
     ) -> list[ItemCls]:
         """Return the library items of one media type that are mapped to a genre."""
+        extra_join_parts: list[str] = []
+        if sort_field == SortField.ARTIST_NAME:
+            if controller.media_type == MediaType.TRACK:
+                extra_join_parts.extend(
+                    (
+                        "JOIN track_artists ON track_artists.track_id = tracks.item_id",
+                        "JOIN artists ON artists.item_id = track_artists.artist_id",
+                    )
+                )
+            elif controller.media_type == MediaType.ALBUM:
+                extra_join_parts.extend(
+                    (
+                        "JOIN album_artists ON album_artists.album_id = albums.item_id",
+                        "JOIN artists ON artists.item_id = album_artists.artist_id",
+                    )
+                )
+            else:
+                sort_field = SortField.NAME
         sort_field, sort_direction = controller.resolve_sort(
             sort_field, sort_direction, order_by, default=False
         )
@@ -1245,6 +1263,7 @@ class GenreController(MediaControllerBase[Genre]):
         return await controller.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"genre_id": genre_id},
+            extra_join_parts=extra_join_parts,
             limit=limit,
             offset=offset,
             sort_field=sort_field,

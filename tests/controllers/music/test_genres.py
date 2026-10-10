@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -1397,6 +1397,33 @@ class TestQueryMethods:
         assert isinstance(tracks, list)
         assert isinstance(albums, list)
         assert isinstance(artists, list)
+
+    async def test_mapped_media_artist_name_sort_adds_media_type_joins(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Artist-name sorting works for genre-mapped tracks and the other mapped lists."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MappedArtistSort"))
+        tracks = [
+            await _add_test_track(mass, "Zebra Track"),
+            await _add_test_track(mass, "Apple Track"),
+        ]
+        for track in tracks:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "MappedArtistSort"
+            )
+
+        mapped_tracks, mapped_albums, mapped_artists = await genre_ctrl.mapped_media(
+            genre,
+            sort_field=SortField.ARTIST_NAME,
+            sort_direction=SortDirection.ASC,
+        )
+
+        assert [track.artists[0].name for track in mapped_tracks] == [
+            "Artist for Apple Track",
+            "Artist for Zebra Track",
+        ]
+        assert mapped_albums == []
+        assert mapped_artists == []
 
     async def test_mapped_media_empty(self, genre_ctrl: GenreController) -> None:
         """No mappings returns ([], [], [])."""

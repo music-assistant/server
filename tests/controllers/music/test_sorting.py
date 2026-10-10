@@ -441,6 +441,26 @@ async def test_library_items_typed_artist_name_sort_on_albums(
 
 
 @pytest.mark.asyncio
+async def test_combined_artist_title_search_builds_valid_joins(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """Combined artist-title searches remain valid when their filter adds the artist JOIN."""
+    tracks = await artist_sorted_mass.music.tracks.library_items(
+        search="Apple Artist - Sort Track 1",
+        sort_field=SortField.NAME,
+        summary=False,
+    )
+    albums = await artist_sorted_mass.music.albums.library_items(
+        search="Apple Artist - Sort Album 1",
+        sort_field=SortField.NAME,
+        summary=False,
+    )
+
+    assert [track.name for track in tracks] == ["Sort Track 1"]
+    assert [album.name for album in albums] == ["Sort Album 1"]
+
+
+@pytest.mark.asyncio
 async def test_library_items_random_sort_supports_pagination(
     artist_sorted_mass: MusicAssistant,
 ) -> None:
