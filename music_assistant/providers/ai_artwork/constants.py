@@ -24,6 +24,7 @@ CONF_PREVIEW_CUSTOM_PROMPT: Final = "preview_custom_prompt"
 CONF_PREVIEW_TITLE_OVERLAY: Final = "preview_title_overlay"
 CONF_ACTION_PREVIEW: Final = "preview"
 CONF_PREVIEW_IMAGE: Final = "preview_image"
+CONF_PREVIEW_DESCRIPTION: Final = "preview_description"
 
 PLAYLISTS_SMART: Final = "smart"
 PLAYLISTS_ALL: Final = "all"
@@ -36,8 +37,6 @@ IMAGE_EXTENSION: Final = ".jpg"
 CANVAS_SIZE: Final = 1024
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
-PREVIEW_TILE_SIZE: Final = 384
-PREVIEW_COLUMNS: Final = 3
 
 # playlist_metadata's collage is regenerated on every refresh, so it never counts as artwork
 # worth keeping over a generated cover
@@ -78,7 +77,6 @@ class Style(StrEnum):
     SPOTIFY = "spotify"
     APPLE_MUSIC = "apple_music"
     RISOGRAPH = "risograph"
-    TYPE_CUTOUT = "type_cutout"
     GOUACHE = "gouache"
     CUSTOM = "custom"
 
@@ -101,8 +99,6 @@ class StylePreset:
     # the area to keep clear when the title is overlaid afterwards
     title_area: str
     layout: TitleLayout
-    # the art when the title is overlaid afterwards, for a style whose art is built from the title
-    art_without_title: str | None = None
 
 
 BASE_PROMPT: Final = (
@@ -187,27 +183,6 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
         ),
         title_area="top band",
         layout=TitleLayout.TOP_LEFT_LARGE,
-    ),
-    Style.TYPE_CUTOUT: StylePreset(
-        art=(
-            "Style: a Music Assistant playlist cover. A typography-led cover on a flat, solid "
-            "deep navy background with a thin sky blue #03A9F4 accent line below the title. Bold, "
-            "graphic, editorial, cohesive with a series of playlist covers."
-        ),
-        typography=(
-            'Typography: the playlist title "{title}" set enormous in a heavy, tightly spaced '
-            "sans-serif that fills most of the square, and the letters themselves are filled with "
-            "a vivid photograph of a scene that captures the playlist, as if cut out of the "
-            "photo. The title is the only text."
-        ),
-        title_area="center",
-        layout=TitleLayout.CENTER,
-        art_without_title=(
-            "Style: a Music Assistant playlist cover. A bold, graphic editorial cover: a vivid "
-            "photograph of a scene that captures the playlist, framed by a wide flat deep navy "
-            "border band with a thin sky blue #03A9F4 accent line, cohesive with a series of "
-            "playlist covers."
-        ),
     ),
     Style.GOUACHE: StylePreset(
         art=(

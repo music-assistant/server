@@ -42,6 +42,7 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
     CONF_PREVIEW_CUSTOM_PROMPT,
+    CONF_PREVIEW_DESCRIPTION,
     CONF_PREVIEW_IMAGE,
     CONF_PREVIEW_PLAYLIST,
     CONF_PREVIEW_STYLE,
@@ -175,7 +176,6 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider
         ("music_assistant", "glowing neon light lines"),
         ("apple_music", "mesh gradient"),
         ("risograph", "two-color risograph print"),
-        ("type_cutout", "letters themselves are filled with a vivid photograph"),
         ("gouache", "painterly editorial illustration in gouache"),
     ],
 )
@@ -188,18 +188,6 @@ async def test_each_style_has_its_own_prompt(
     await provider.get_playlist_metadata(_smart_playlist())
 
     assert expected in _sent_prompt(provider)
-
-
-async def test_title_overlay_swaps_art_built_from_the_title(provider: AIArtworkProvider) -> None:
-    """A style whose art is made of the title asks for its own art when the title is overlaid."""
-    _set_config(provider, **{CONF_STYLE: "type_cutout", CONF_TITLE_OVERLAY: True})
-
-    await provider.get_playlist_metadata(_smart_playlist())
-
-    prompt = _sent_prompt(provider)
-    assert "framed by a wide flat deep navy border band" in prompt
-    assert "letters themselves" not in prompt
-    assert "No text, letters, numbers" in prompt
 
 
 async def test_title_overlay_asks_for_artwork_without_text(provider: AIArtworkProvider) -> None:
@@ -572,8 +560,10 @@ async def test_regenerate_makes_new_covers_and_descriptions(
     _mass(provider).create_task.assert_called_once()
 
 
-async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvider) -> None:
-    """The preview action returns the entries with the cover inline, and keeps no file."""
+async def test_preview_shows_covers_and_description_without_storing(
+    provider: AIArtworkProvider,
+) -> None:
+    """The preview shows a labelled cover per style and the description, and keeps neither."""
     playlist = _smart_playlist(name="Late Night Drive")
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=playlist)
     _mass(provider).music.playlists.iter_library_items = MagicMock(
@@ -586,16 +576,18 @@ async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvi
 
     assert entries is not None
     keys = [entry.key for entry in entries]
-    assert keys.index(CONF_PREVIEW_IMAGE) == keys.index(CONF_ACTION_PREVIEW) + 1
-    preview = next(entry for entry in entries if entry.key == CONF_PREVIEW_IMAGE)
-    assert isinstance(preview.value, str)
-    assert preview.value.startswith("data:image/jpeg;base64,")
-    with _decode_preview(preview.value) as image:
-        # one tile at full preview size, with a gap around it and its label above it
-        assert image.size == (512 + 2 * 21, 512 + 64 + 2 * 21)
+    image_key = f"{CONF_PREVIEW_IMAGE}_gouache"
+    assert keys[keys.index(CONF_ACTION_PREVIEW) + 1 :][:2] == [image_key, CONF_PREVIEW_DESCRIPTION]
+    preview = next(entry for entry in entries if entry.key == image_key)
+    with _decode_preview(str(preview.value)) as image:
+        # the cover at preview size, with its style named in a strip above it
+        assert image.size == (512, 512 + 64)
+    description = next(entry for entry in entries if entry.key == CONF_PREVIEW_DESCRIPTION)
+    assert description.translation_params == [DESCRIPTION]
     assert 'called "Late Night Drive"' in _sent_prompt(provider)
     assert not any(Path(provider._images_dir).iterdir())
     assert not playlist.metadata.images
+    assert not playlist.metadata.description
 
 
 async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) -> None:
@@ -625,8 +617,8 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
     assert render_cover.call_args.args[1] is not None
 
 
-async def test_preview_shows_every_preset_side_by_side(provider: AIArtworkProvider) -> None:
-    """Without styles picked, every preset is previewed once, in one grid."""
+async def test_preview_shows_every_preset_by_default(provider: AIArtworkProvider) -> None:
+    """Without styles picked, every preset is previewed once, each as its own image."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
 
@@ -635,15 +627,13 @@ async def test_preview_shows_every_preset_side_by_side(provider: AIArtworkProvid
 
     presets = [style for style in Style if style != Style.CUSTOM]
     assert _engine_calls(provider) == len(presets)
-    preview = next(entry for entry in entries or () if entry.key == CONF_PREVIEW_IMAGE)
-    with _decode_preview(str(preview.value)) as image:
-        # three columns of tiles, two rows
-        assert image.width > 3 * 384
-        assert 2 * 384 < image.height < 3 * 384
+    assert [entry.key for entry in entries or () if entry.key.startswith(CONF_PREVIEW_IMAGE)] == [
+        f"{CONF_PREVIEW_IMAGE}_{style.value}" for style in presets
+    ]
 
 
 async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkProvider) -> None:
-    """One style failing leaves it out of the grid instead of failing the whole preview."""
+    """One style failing leaves it out instead of failing the whole preview."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
         provider,
@@ -663,10 +653,25 @@ async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkPro
 
     # "neon" is no style of its own, so only Spotify and Gouache were asked for
     assert engine.ai_generate_image.await_count == 2
-    preview = next(entry for entry in entries or () if entry.key == CONF_PREVIEW_IMAGE)
-    with _decode_preview(str(preview.value)) as image:
-        # only the Spotify tile is left, so it is shown at full preview size
-        assert image.size == (512 + 2 * 21, 512 + 64 + 2 * 21)
+    assert [entry.key for entry in entries or () if entry.key.startswith(CONF_PREVIEW_IMAGE)] == [
+        f"{CONF_PREVIEW_IMAGE}_spotify"
+    ]
+
+
+async def test_preview_without_a_description(provider: AIArtworkProvider) -> None:
+    """A text engine that fails leaves the description out and still shows the covers."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
+    provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("text engine down")
+    )
+
+    with _no_engine_pickers():
+        entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    keys = [entry.key for entry in entries or ()]
+    assert f"{CONF_PREVIEW_IMAGE}_spotify" in keys
+    assert CONF_PREVIEW_DESCRIPTION not in keys
 
 
 async def test_preview_fails_when_no_style_worked(provider: AIArtworkProvider) -> None:
@@ -700,7 +705,7 @@ async def test_settings_page_has_no_preview_until_asked(provider: AIArtworkProvi
 
     keys = [entry.key for entry in entries]
     assert CONF_ACTION_PREVIEW in keys
-    assert CONF_PREVIEW_IMAGE not in keys
+    assert not any(key.startswith(CONF_PREVIEW_IMAGE) for key in keys)
     picker = next(entry for entry in entries if entry.key == CONF_PREVIEW_PLAYLIST)
     assert picker.immediate_apply
     assert [(option.value, option.title) for option in picker.options] == [

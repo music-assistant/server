@@ -12,7 +12,6 @@
         "spotify": "Spotify",
         "apple_music": "Apple Music",
         "risograph": "Risograph",
-        "type_cutout": "Type cutout",
         "gouache": "Gouache",
         "custom": "Custom"
       },
@@ -21,7 +20,6 @@
         "spotify": "One striking full-bleed image with a vivid duotone or saturated color wash and a large, bold title.",
         "apple_music": "A soft, blurred, vivid mesh gradient with a small white title in the bottom-left corner.",
         "risograph": "A two-color screen print illustration on off-white paper, with halftone dots and grain and a chunky printed title.",
-        "type_cutout": "The title set huge on deep navy, with a photo of the playlist's scene showing through the letters.",
         "gouache": "A warm, painted magazine-style illustration of the playlist's scene, with a clean title at the top.",
         "custom": "Your own prompt."
       }
@@ -46,7 +44,6 @@
         "spotify": "Spotify",
         "apple_music": "Apple Music",
         "risograph": "Risograph",
-        "type_cutout": "Type cutout",
         "gouache": "Gouache",
         "custom": "Custom"
       }
@@ -61,11 +58,14 @@
     },
     "preview": {
       "label": "Preview cover",
-      "description": "Generate a cover for the chosen playlist in each style to preview, shown side by side. They are only shown here and do not change your settings or the playlist's cover.",
+      "description": "Generate a cover for the chosen playlist in each style to preview, and the description the text engine would write for it. They are only shown here and do not change your settings or the playlist.",
       "action_label": "Generate preview"
     },
     "preview_image": {
       "label": "Preview"
+    },
+    "preview_description": {
+      "label": "Description: {0}"
     },
     "playlists": {
       "label": "Playlists",
