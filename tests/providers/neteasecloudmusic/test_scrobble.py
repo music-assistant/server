@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.neteasecloudmusic import NeteaseCloudMusicProvider
 from tests.common import use_real_create_task
@@ -73,7 +73,7 @@ async def test_scrobble_without_album_raises(cached: NeteaseCloudMusicProvider) 
     """No album means nothing to check in against, so it raises for a later retry."""
     _stub_client(cached, {"songs": [{"id": 42}]})
 
-    with pytest.raises(ResourceTemporarilyUnavailable):
+    with pytest.raises(InvalidDataError):
         await cached.scrobble("42", 10)
 
 

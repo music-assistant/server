@@ -442,9 +442,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """
         album_id = await self._get_track_album_id(track_id)
         if not album_id:
-            raise InvalidDataError(
-                f"NetEase track {track_id} has no album to check in against"
-            )
+            raise InvalidDataError(f"NetEase track {track_id} has no album to check in against")
         await self._client.get(
             "/scrobble",
             # the login cookie must also travel as a query param: some NCM api backends only
