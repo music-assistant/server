@@ -1086,3 +1086,17 @@ def _nearest_protective_anchor(
     if candidates:
         return candidates[0] if prefer_earliest else candidates[-1]
     return min(target, ctx.audio_end)
+
+
+def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
+    """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+    if ctx.fade_onset is None:
+        return "qsin"
+    crossfade_start = plan.fade_out_window - plan.crossfade_duration
+    if crossfade_start < ctx.fade_onset:
+        return "qsin"
+    bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+    if plan.fade_out_window < ctx.audio_end - bar_out:
+        return "qsin"
+    # the record already fades itself here; don't double it with a second curve
+    return "nofade"
