@@ -1025,10 +1025,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
-            # the player keeps playing (and will report once more on) the item it has; the rest
-            # of the old load is never heard from again
+            # a player still playing (or paused on) an item will report once more on it, so that
+            # one stays served; the rest of the old load is never heard from again, and an idle
+            # player has nothing left that could be
+            prev_state = queue_data.prev_state
             playing_item_id = (
-                queue_data.prev_state["current_item_id"] if queue_data.prev_state else None
+                prev_state["current_item_id"]
+                if prev_state is not None
+                and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                else None
             )
             queue_data.served_item_ids.intersection_update(
                 {playing_item_id} if playing_item_id else ()

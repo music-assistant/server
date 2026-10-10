@@ -93,18 +93,30 @@ def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> No
     assert call_kwargs["seek_position"] == seek_position
 
 
-async def _pcm_chunks() -> AsyncGenerator[bytes]:
-    """Yield two PCM chunks so the gauge can be observed mid-stream."""
-    yield b"chunk-1"
-    yield b"chunk-2"
+async def _pcm_chunks(chunks: tuple[bytes, ...]) -> AsyncGenerator[bytes]:
+    """Yield the given PCM chunks one at a time."""
+    for chunk in chunks:
+        yield chunk
 
 
-def _pcm_stream_controller() -> StreamsController:
-    """Build a controller whose single item stream yields real PCM chunks."""
+def _pcm_stream_controller(
+    chunks: tuple[bytes, ...] = (b"chunk-1", b"chunk-2"),
+) -> StreamsController:
+    """Build a controller whose single item stream yields the given PCM chunks."""
     controller, _ = _controller(_queue_item(0))
     audio = cast("Any", controller.audio)
-    audio.get_queue_item_stream.side_effect = lambda **_kwargs: _pcm_chunks()
+    audio.get_queue_item_stream.side_effect = lambda **_kwargs: _pcm_chunks(chunks)
     return controller
+
+
+def _media() -> PlayerMedia:
+    """Build the player media that resolves to the audiobook queue item."""
+    return PlayerMedia(
+        uri="library://audiobook/1",
+        media_type=MediaType.AUDIOBOOK,
+        source_id=QUEUE_ID,
+        queue_item_id=QUEUE_ITEM_ID,
+    )
 
 
 @pytest.mark.asyncio
@@ -151,3 +163,42 @@ async def test_abandoned_direct_pcm_stream_releases_the_gauge() -> None:
 
     await stream.aclose()
     assert controller.output_stream_active() is False
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_marks_the_item_served_on_its_first_chunk() -> None:
+    """The item counts as served once its first chunk reached the consumer, and only once."""
+    controller = _pcm_stream_controller()
+    mark_item_served = cast("MagicMock", controller.mass.player_queues.mark_item_served)
+
+    stream = controller.get_stream(_media(), PCM_FORMAT)
+    mark_item_served.assert_not_called()
+
+    assert await anext(stream) == b"chunk-1"
+    mark_item_served.assert_called_once_with(QUEUE_ID, QUEUE_ITEM_ID)
+
+    assert await anext(stream) == b"chunk-2"
+    await stream.aclose()
+    mark_item_served.assert_called_once_with(QUEUE_ID, QUEUE_ITEM_ID)
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_without_audio_marks_nothing_served() -> None:
+    """A source that produces no audio leaves the item unserved."""
+    controller = _pcm_stream_controller(chunks=())
+
+    stream = controller.get_stream(_media(), PCM_FORMAT)
+
+    assert [chunk async for chunk in stream] == []
+    cast("MagicMock", controller.mass.player_queues.mark_item_served).assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_direct_pcm_stream_marks_nothing_served() -> None:
+    """A stream the player never pulled from leaves the item unserved."""
+    controller = _pcm_stream_controller()
+
+    stream = controller.get_stream(_media(), PCM_FORMAT)
+    await stream.aclose()
+
+    cast("MagicMock", controller.mass.player_queues.mark_item_served).assert_not_called()

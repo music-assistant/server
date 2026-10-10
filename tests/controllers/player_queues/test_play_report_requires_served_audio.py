@@ -179,3 +179,27 @@ async def test_served_last_item_played_to_its_end_ends_the_queue() -> None:
     ):
         await settle
     cast("Mock", ctrl.mark_ended).assert_called_once_with(QUEUE_ID)
+
+
+async def test_replaying_a_finished_queue_does_not_credit_a_load_that_never_served() -> None:
+    """Replaying a finished queue whose new load never delivers audio earns the track no play."""
+    ctrl = _controller([_track("a")])
+    ctrl.track_loaded_in_buffer(QUEUE_ID, "a")
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 196)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 196)
+    assert _reported(ctrl) == [("a", True)]
+    settle = _settle_task(ctrl)
+    assert settle is not None
+    settle.close()
+
+    # the queue is replayed, but the new stream never produces audio; the player still names
+    # the track, at positions carried over from before, and then gives up again
+    await ctrl.play_index(QUEUE_ID, 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 60)
+    _player_reports(ctrl, PlaybackState.PLAYING, "a", 196)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 196)
+
+    assert _reported(ctrl) == [("a", True)]
+    assert ctrl._queue_data[QUEUE_ID].served_item_ids == set()
