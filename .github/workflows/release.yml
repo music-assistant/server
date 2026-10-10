@@ -346,6 +346,7 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
+      base_image_version: ${{ needs.resolve.outputs.base_image_version }}
 
   build_artifacts:
     name: Build or recover release assets

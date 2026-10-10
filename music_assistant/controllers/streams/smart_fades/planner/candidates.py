@@ -72,6 +72,8 @@ _MAX_UNHEARD_INTRO_S: float = 2.0
 _TEMPO_BLEND_BARS: int = 8
 # QUICK_FADE bars by BPM incompatibility: (max diff %, bars); beyond -> 1 bar
 _QUICK_FADE_LADDER: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
+# QUICK_FADE bars ceiling when the two decks' meters differ
+_CROSS_METER_MAX_BARS: int = 2
 # phrase-aligned rung set every ladder walks, largest first
 RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 
@@ -132,10 +134,13 @@ def earns_instrumental_blend(ctx: TransitionContext) -> bool:
 def bars_ladder(ctx: TransitionContext, tier: TransitionTier) -> list[int]:
     """Candidate bar counts to try for a tier, largest first (shorter rungs fit smaller buffers)."""
     if tier is TransitionTier.QUICK_FADE:
-        # a mismatched meter has no shared bar grid to blend across; cap short
-        # regardless of how close the tempos happen to be
-        ladder = ((0.0, 2),) if ctx.cross_meter else _QUICK_FADE_LADDER
-        ideal = next((bars for limit, bars in ladder if ctx.bpm_diff_percent <= limit), 1)
+        ideal = next(
+            (bars for limit, bars in _QUICK_FADE_LADDER if ctx.bpm_diff_percent <= limit), 1
+        )
+        if ctx.cross_meter:
+            # a mismatched meter has no shared bar grid to blend across; cap short
+            # regardless of how close the tempos happen to be
+            ideal = min(ideal, _CROSS_METER_MAX_BARS)
     elif tier is TransitionTier.TEMPO_BLEND:
         ideal = _TEMPO_BLEND_BARS
     elif earns_instrumental_blend(ctx):

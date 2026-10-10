@@ -181,6 +181,10 @@ STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20
 
+# Seconds of already-played audio a seekable buffer keeps within its window, so a skip
+# back is served without refetching.
+PLAYED_AUDIO_RETENTION: Final[int] = 60
+
 # Streams webserver default port
 DEFAULT_PORT: Final[int] = 8097
 

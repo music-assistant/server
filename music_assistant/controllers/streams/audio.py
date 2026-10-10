@@ -115,6 +115,12 @@ from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stre
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.stream_sources import (
+    DEFAULT_POLICY,
+    SourceCandidate,
+    rank_provider_mappings,
+    rank_stream_sources,
+)
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -160,7 +166,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
-from music_assistant.helpers.provider_access import playback_sources
+from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -1728,6 +1734,7 @@ class StreamsAudio:
         first_chunk_received = False
         bytes_received = 0
         finished = False
+        start_reported = False
         next_buffer_triggered = False
         stream_started_at = asyncio.get_event_loop().time()
         try:
@@ -1742,6 +1749,11 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
+                    # the same streamdetails serve every stream of this playback (a seek,
+                    # a reconnect, a crossfade intro and its body); only the first one,
+                    # the one that finds no streamed seconds yet, starts the playback
+                    if streamdetails.seconds_streamed is None:
+                        start_reported = self._notify_provider_stream_started(streamdetails)
                 # trigger pre-buffering of the next item well before end
                 # to ensure the raw PCM is ready when the next item needs to be streamed.
                 # tracks and sound effects are finite files that fill and close immediately;
@@ -1805,7 +1817,9 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
+            self._notify_provider_streamed(
+                streamdetails, finished, seconds_streamed, start_reported
+            )
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -3232,20 +3246,49 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:
+        """
+        Report the start of an item's playback to the provider that owns it.
+
+        Returns whether the provider was told, so its end report is owed.
+        """
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
+            return False
+        # the base hook is a no-op: a provider that does not implement it never hears of
+        # the start, so it is not owed the matching end report either
+        if type(music_prov).on_stream_started is MusicProvider.on_stream_started:
+            return False
+        with request_priority(RequestPriority.LOW):
+            self.mass.create_task(music_prov.on_stream_started(streamdetails))
+        return True
+
     def _notify_provider_streamed(
-        self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
+        self,
+        streamdetails: StreamDetails,
+        finished: bool,
+        seconds_streamed: float,
+        start_reported: bool,
     ) -> None:
         """Report a (mostly) streamed item back to the provider that owns it."""
-        if not finished and seconds_streamed < 90:
+        # a stream that reported the start of playback always reports its end too
+        if not finished and not start_reported and seconds_streamed < 90:
             return
-        provider = self.mass.get_provider(streamdetails.provider)
-        # plugin providers serve playable items too, but on_streamed is MusicProvider-only
-        if provider is None or provider.type != ProviderType.MUSIC:
+        if (music_prov := self._get_reporting_provider(streamdetails)) is None:
             return
-        music_prov = cast("MusicProvider", provider)
         # a listening report is background work, whoever streamed
         with request_priority(RequestPriority.LOW):
             self.mass.create_task(music_prov.on_streamed(streamdetails))
+
+    def _get_reporting_provider(self, streamdetails: StreamDetails) -> MusicProvider | None:
+        """Return the music provider that receives the playback reports for an item."""
+        # only the account that served the stream reports its playback, never another
+        # instance of the same service
+        provider = exact_provider(self.mass, streamdetails.provider)
+        # plugin providers serve playable items too, but the playback callbacks are
+        # MusicProvider-only
+        if provider is None or provider.type != ProviderType.MUSIC:
+            return None
+        return cast("MusicProvider", provider)
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
@@ -3744,38 +3787,60 @@ class StreamsAudio:
         allowed: list[str] | None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
-        Return mapping candidates in steering, quality, and instance-fallback order.
+        Return the mapping candidates that may serve a stream, in the order to try them.
+
+        Every mapping is expanded to the instances that can resolve it; the stream source
+        ranking then orders the candidates.
 
         :param provider_mappings: Mappings attached to the media item.
-        :param preferred_providers: Provider instances tried before widening to the rest.
+        :param preferred_providers: Provider instances the playback user owns, tried first.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Ordered provider mapping candidates.
         """
-        ordered_mappings = sorted(
-            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
-        )
-        preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
-        fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
-        seen_candidates: set[tuple[str, str]] = set()
-        for mapping in ordered_mappings:
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], SourceCandidate] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
             for provider in self._get_mapping_providers(mapping, allowed):
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if (
-                    candidate_id in seen_candidates
-                    or provider.instance_id in excluded_provider_instances
-                ):
+                if provider.instance_id in excluded_provider_instances:
                     continue
-                seen_candidates.add(candidate_id)
-                candidate = (mapping, provider)
-                if provider.instance_id in preferred_providers:
-                    preferred_candidates.append(candidate)
-                else:
-                    fallback_candidates.append(candidate)
-        return [*preferred_candidates, *fallback_candidates]
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = SourceCandidate(
+                    mapping=mapping,
+                    provider=provider,
+                    is_streaming=isinstance(provider, MusicProvider)
+                    and provider.is_streaming_provider,
+                )
+        ranked = rank_stream_sources(
+            candidates.values(), pinned=None, preferred=preferred_providers, policy=DEFAULT_POLICY
+        )
+        if ranked and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "Stream source order: %s",
+                ", ".join(
+                    f"{candidate.provider.instance_id}/{candidate.mapping.item_id} "
+                    f"({candidate.reason})"
+                    for candidate in ranked
+                ),
+            )
+        return [(candidate.mapping, candidate.provider) for candidate in ranked]
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """
