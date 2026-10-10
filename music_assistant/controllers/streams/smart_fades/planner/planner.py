@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 
     from .candidates import Candidate, CandidateSpec
     from .context import TransitionContext
-    from .selection import ScoredCandidate
 
 
 class TransitionPlanner(ABC):
@@ -152,10 +151,10 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 source = "emergency-handoff"
             bars = None
         else:
-            winner = self._drop_unneeded_stretch(winner, built, factory, ctx)
-            plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
-            source = winner.candidate.spec.source
-            bars = None if plan.style is TransitionStyle.SEGUE else winner.candidate.spec.bars
+            shipped = _drop_unneeded_stretch(winner.candidate, built, factory, ctx)
+            plan = PlanAssembler(ctx, self.logger).finalize(shipped)
+            source = shipped.spec.source
+            bars = None if plan.style is TransitionStyle.SEGUE else shipped.spec.bars
             if rescue_pass:
                 source += " (rescue pass)"
         self._log_plan(ctx, plan, source, bars)
@@ -186,7 +185,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
             trigger = ctx.quick_fade_trigger or QuickFadeTrigger.BEAT_GRID
         self.logger.debug(
             "planned transition: style=%s tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
-            "bpm=%.1f->%.1f (%+.1f%%)%s",
+            "bpm=%.1f->%.1f (%+.1f%%)%s%s",
             plan.style,
             plan.tier.value,
             f" trigger={trigger}" if trigger is not None else "",
@@ -197,39 +196,43 @@ class SmartCrossFadePlanner(TransitionPlanner):
             ctx.outgoing.bpm,
             ctx.incoming.bpm,
             (ctx.incoming.bpm / ctx.outgoing.bpm - 1.0) * 100,
+            f" stretch={'on' if plan.tempo_plan else 'off'}"
+            if plan.style is TransitionStyle.BLEND
+            else "",
             f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
         )
 
-    def _drop_unneeded_stretch(
-        self,
-        winner: ScoredCandidate,
-        built: Iterable[tuple[CandidateSpec, Candidate]],
-        factory: CandidateFactory,
-        ctx: TransitionContext,
-    ) -> ScoredCandidate:
-        """
-        Return the winner, unstretched when a deck has no kick for its tempo ramp to match.
 
-        The unstretched build ships only when its own overlap still misses a kick on a deck
-        and every policy accepts it; otherwise the ramped winner ships.
+def _drop_unneeded_stretch(
+    winner: Candidate,
+    built: Iterable[tuple[CandidateSpec, Candidate]],
+    factory: CandidateFactory,
+    ctx: TransitionContext,
+) -> Candidate:
+    """
+    Return the winner, unstretched when a deck has no kick for its tempo ramp to match.
 
-        :param winner: The selected candidate.
-        :param built: Every spec of the winner's pass, with the candidate it built.
-        :param factory: The transition's candidate factory.
-        :param ctx: The transition's context.
-        """
-        plan = winner.candidate.plan
-        if plan.style is not TransitionStyle.BLEND or not plan.tempo_plan:
-            return winner
-        if _both_decks_kick(ctx, plan):
-            return winner
-        spec = next(spec for spec, candidate in built if candidate is winner.candidate)
-        unstretched = factory.build(spec, stretch=False)
-        # the unstretched overlap can be longer and reach both kicks, which need the ramp
-        if unstretched is None or _both_decks_kick(ctx, unstretched.plan):
-            return winner
-        selector = CandidateSelector(default_policies(), self.logger)
-        return selector.select([unstretched], ctx) or winner
+    The unstretched build ships only when its own overlap still misses a kick on a deck
+    and every policy accepts it; otherwise the ramped winner ships.
+
+    :param winner: The selected candidate.
+    :param built: Every spec of the winner's pass, with the candidate it built.
+    :param factory: The transition's candidate factory.
+    :param ctx: The transition's context.
+    """
+    plan = winner.plan
+    if plan.style is not TransitionStyle.BLEND or not plan.tempo_plan:
+        return winner
+    if _both_decks_kick(ctx, plan):
+        return winner
+    spec = next(spec for spec, candidate in built if candidate is winner)
+    unstretched = factory.build(spec, stretch=False)
+    # the unstretched overlap can be longer and reach both kicks, which need the ramp
+    if unstretched is None or _both_decks_kick(ctx, unstretched.plan):
+        return winner
+    if any(policy.evaluate(unstretched, ctx).rejected for policy in default_policies()):
+        return winner
+    return unstretched
 
 
 def _segue_reason(ctx: TransitionContext, plan: TransitionPlan) -> str:
@@ -275,7 +278,7 @@ def _both_decks_kick(ctx: TransitionContext, plan: TransitionPlan) -> bool:
     :param plan: A timed blend, with or without a tempo ramp.
     """
     # a ramped overlap plays at the ramp's final ratio, so it spans this much outgoing input
-    ratio = ctx.incoming.bpm / ctx.outgoing.bpm if plan.tempo_plan else 1.0
+    ratio = plan.tempo_plan.steps[-1][1] if plan.tempo_plan else 1.0
     overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
     trim = plan.fadein_trim_start or 0.0
     # a window that only grazes a kick bar, by less than a beat, holds no beat to match
