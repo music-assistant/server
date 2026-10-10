@@ -1052,10 +1052,12 @@ class TestQuickFadeMasteredFadeDeadZone:
     ) -> None:
         """Every main-pass cut dies on the one guard; the rescue pass ships the fade."""
         self._build_fade(caplog)
-        # dressed transitions survive, but they never win the main pass on their own
+        # both cuts and two dressed transitions die on the trim guard; the surviving
+        # dressed transitions never win the main pass on their own
         assert (
-            "no blend or cut survives (segues=0 dressed=6 of 10 candidates); "
-            "none wins on its own" in caplog.text
+            "no blend or cut survives (segues=0 dressed=6 of 10 candidates; rejected: "
+            "audible trim exceeds a short fade's own duration x4); none wins on its own"
+            in caplog.text
         )
         assert "source=rescue-anchor (rescue pass)" in caplog.text
 

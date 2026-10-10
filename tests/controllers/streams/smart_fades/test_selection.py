@@ -225,7 +225,7 @@ class TestCandidateSelector:
         policies = [_FixedPenaltyPolicy()]
         logger = logging.getLogger(__name__)
 
-        strict = CandidateSelector(policies, logger, lone_segue_wins=False)
+        strict = CandidateSelector(policies, logger, lone_replacement_wins=False)
         waiting = strict.select([segue], _ctx())
         alone = CandidateSelector(policies, logger).select([segue], _ctx())
 
@@ -233,8 +233,8 @@ class TestCandidateSelector:
         assert alone is not None
         assert alone.candidate is segue
 
-    @pytest.mark.parametrize("lone_segue_wins", [False, True])
-    def test_a_segue_never_replaces_a_blend(self, lone_segue_wins: bool) -> None:
+    @pytest.mark.parametrize("lone_replacement_wins", [False, True])
+    def test_a_segue_never_replaces_a_blend(self, lone_replacement_wins: bool) -> None:
         """A longer, cheaper segue leaves a surviving blend in place, but replaces a cut."""
         segue = _named("segue", style=TransitionStyle.SEGUE, duration=15.0)
         blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
@@ -242,7 +242,7 @@ class TestCandidateSelector:
         selector = CandidateSelector(
             policies=[_BySourcePenaltyPolicy({"segue": 0.0, "blend": 15.0, "cut": 15.0})],
             logger=logging.getLogger(__name__),
-            lone_segue_wins=lone_segue_wins,
+            lone_replacement_wins=lone_replacement_wins,
         )
 
         over_blend = selector.select([blend, segue], _ctx())
@@ -281,7 +281,7 @@ class TestDressedSelection:
         selector = CandidateSelector(
             policies=[_BySourcePenaltyPolicy(penalties)],
             logger=logging.getLogger(__name__),
-            lone_segue_wins=False,
+            lone_replacement_wins=False,
         )
         return selector.select(candidates, ctx or _ctx())
 
@@ -297,6 +297,7 @@ class TestDressedSelection:
 
         assert result is not None
         assert result.candidate is long_filter
+        assert result.replaced_cut is cut
 
     def test_a_cut_within_one_beat_of_kick_clash_stays_a_cut(self) -> None:
         """A clean cut, or one stacking kicks for a beat at most, ships though it scores worse."""
@@ -334,7 +335,7 @@ class TestDressedSelection:
         selector = CandidateSelector(
             policies=[_BySourcePenaltyPolicy({"cut": 15.0, "echo": 9.0, "filter": 0.0}), _Reject()],
             logger=logging.getLogger(__name__),
-            lone_segue_wins=False,
+            lone_replacement_wins=False,
         )
 
         result = selector.select([cut, echo, filter_out], _ctx())

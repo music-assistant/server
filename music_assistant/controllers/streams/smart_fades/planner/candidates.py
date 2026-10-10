@@ -128,7 +128,8 @@ class CandidateSpec:
     source: str = ""
     # the tier ladder's top rung; 0 = same as bars
     ideal_bars: int = 0
-    # SEGUE from the segue generator, else None until the factory sets the style it built
+    # the style of a segue or dressed generator, else None until the factory sets the
+    # style it built
     style: TransitionStyle | None = None
     # a segue's overlap and the longest overlap of its shrink steps, in seconds
     overlap_s: float | None = None

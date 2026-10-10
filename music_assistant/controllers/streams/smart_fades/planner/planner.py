@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
     QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionStyle,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.smart_fades.models import TransitionPlan
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
+    from .candidates import Candidate
     from .context import TransitionContext
 
 
@@ -116,9 +118,10 @@ class SmartCrossFadePlanner(TransitionPlanner):
             )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
-        # a segue never replaces a blend and here never wins on its own: when every
-        # other candidate is rejected, the rescue pass weighs it
-        selector = CandidateSelector(default_policies(), self.logger, lone_segue_wins=False)
+        # a segue never replaces a blend, and here neither a segue nor a dressed
+        # transition wins on its own: when no blend or cut survives, the rescue pass
+        # weighs them
+        selector = CandidateSelector(default_policies(), self.logger, lone_replacement_wins=False)
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:
@@ -148,6 +151,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
                 source = "emergency-handoff"
             bars = None
+            replaced_cut = None
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
             source = winner.candidate.spec.source
@@ -159,7 +163,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
             )
             if rescue_pass:
                 source += " (rescue pass)"
-        self._log_plan(ctx, plan, source, bars)
+            replaced_cut = winner.replaced_cut
+        self._log_plan(ctx, plan, source, bars, replaced_cut)
         # the caller reads the outgoing grid off the planner after a successful
         # plan and expects it masked to the plan's own anchor
         self.outgoing = replace(
@@ -170,7 +175,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
         return plan
 
     def _log_plan(
-        self, ctx: TransitionContext, plan: TransitionPlan, source: str, bars: int | None
+        self,
+        ctx: TransitionContext,
+        plan: TransitionPlan,
+        source: str,
+        bars: int | None,
+        replaced_cut: Candidate | None,
     ) -> None:
         """
         Log the one DEBUG line that sums up the shipped plan.
@@ -179,12 +189,22 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param plan: The plan that ships.
         :param source: The winning candidate's generator, or the fallback/handoff that shipped.
         :param bars: The winning candidate's bar count; None for an unphrased plan.
+        :param replaced_cut: The clashing cut a dressed plan replaced, if any.
         """
         trigger = None
         if plan.tier is TransitionTier.QUICK_FADE:
             # meter and tempo do not depend on the anchor, so a blend context whose
             # shipped candidate re-anchored into a quick fade lost its beat grid
             trigger = ctx.quick_fade_trigger or QuickFadeTrigger.BEAT_GRID
+        reason = None
+        if plan.style is TransitionStyle.SEGUE:
+            reason = _segue_reason(ctx, plan)
+        elif plan.style in DRESSED_STYLES:
+            reason = (
+                f"cut kick clash {replaced_cut.metrics.rhythm_clash_bars:.2f} bars"
+                if replaced_cut is not None
+                else "no blend or cut survived"
+            )
         self.logger.debug(
             "planned transition: style=%s tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
             "bpm=%.1f->%.1f (%+.1f%%)%s",
@@ -198,7 +218,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
             ctx.outgoing.bpm,
             ctx.incoming.bpm,
             (ctx.incoming.bpm / ctx.outgoing.bpm - 1.0) * 100,
-            f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
+            f' reason="{reason}"' if reason is not None else "",
         )
 
 

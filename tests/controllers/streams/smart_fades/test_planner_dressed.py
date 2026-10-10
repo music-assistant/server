@@ -262,16 +262,25 @@ class TestDressedLeavesTheOtherStyles:
         assert plan == _plan_undressed(monkeypatch, out, inc)
 
 
-def test_the_plan_line_names_the_dressed_style(caplog: pytest.LogCaptureFixture) -> None:
-    """A shipped filter out logs its style and its bars."""
+def test_the_plan_line_names_the_dressed_style_and_the_cut_it_replaced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A filter out logs its bars, an echo out none; both name the kick clash of their cut."""
     with caplog.at_level(logging.DEBUG, logger=LOGGER.name):
         _plan(_track(120.0), _track(134.0))
+        _plan(_track(120.0), _track(150.0))
 
-    line = next(
+    lines = [
         r.getMessage() for r in caplog.records if r.getMessage().startswith("planned transition: ")
+    ]
+    assert lines[0].startswith(
+        "planned transition: style=filter_out tier=quick_fade trigger=tempo "
     )
-    assert line.startswith("planned transition: style=filter_out tier=quick_fade trigger=tempo ")
-    assert " source=filter-out bars=4 overlap=8.00s " in line
+    assert " source=filter-out bars=4 overlap=8.00s " in lines[0]
+    assert lines[0].endswith(' reason="cut kick clash 2.67 bars"')
+    assert lines[1].startswith("planned transition: style=echo_out tier=quick_fade trigger=tempo ")
+    assert " source=echo-out overlap=2.00s " in lines[1]
+    assert lines[1].endswith(' reason="cut kick clash 0.67 bars"')
 
 
 def test_dressed_styles_are_filter_out_and_echo_out() -> None:
