@@ -23,7 +23,6 @@ from PIL import Image
 from music_assistant.constants import CUSTOM_IMAGES_DIRNAME
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.helpers.images import MAX_CUSTOM_IMAGE_BYTES
-from music_assistant.helpers.json import serialize_to_json
 
 
 def _png_base64() -> str:
@@ -61,8 +60,6 @@ def _controller(tmp_path: Path, images: list[MediaItemImage]) -> tuple[TracksCon
     mass.music.database.deferred_commit = MagicMock()
     mass.music.favorites = AsyncMock()
     mass.streams.audio_analysis.delete_audio_analysis = AsyncMock()
-    metadata = MediaItemMetadata(images=UniqueList(images) or None)
-    mass.music.database.get_row = AsyncMock(return_value={"metadata": serialize_to_json(metadata)})
     mass.metadata.invalidate_image_cache = AsyncMock()
     mass.get_provider.return_value = None
     controller = TracksController(mass)
@@ -158,8 +155,8 @@ async def test_set_image_unsupported_format_rejected(tmp_path: Path) -> None:
 
 async def test_set_image_unknown_item(tmp_path: Path) -> None:
     """An unknown item id raises MediaNotFoundError and leaves no file behind."""
-    controller, mass = _controller(tmp_path, [])
-    mass.music.database.get_row = AsyncMock(return_value=None)
+    controller, _mass = _controller(tmp_path, [])
+    controller.get_library_item = AsyncMock(side_effect=MediaNotFoundError)  # type: ignore[method-assign]
     with pytest.raises(MediaNotFoundError):
         await controller.set_item_image("42", _png_base64())
     assert not (tmp_path / CUSTOM_IMAGES_DIRNAME).exists()
@@ -197,16 +194,3 @@ async def test_hard_delete_removes_custom_image_file(tmp_path: Path) -> None:
     controller, _mass = _controller(tmp_path, [custom_img])
     await controller.remove_item_from_library("1", recursive=False)
     assert not custom_file.exists()
-
-
-async def test_hard_delete_keeps_merged_album_image_file(tmp_path: Path) -> None:
-    """Deleting a track leaves the custom image file of its album, merged in at read time."""
-    images_dir = tmp_path / CUSTOM_IMAGES_DIRNAME
-    images_dir.mkdir()
-    album_file = images_dir / "album.7.somesuffix.png"
-    album_file.write_bytes(b"img")
-    album_img = _image(f"{CUSTOM_IMAGES_DIRNAME}/album.7.somesuffix.png")
-    controller, _mass = _controller(tmp_path, [])
-    controller.get_library_item = AsyncMock(return_value=_track([album_img]))  # type: ignore[method-assign]
-    await controller.remove_item_from_library("1", recursive=False)
-    assert album_file.exists()

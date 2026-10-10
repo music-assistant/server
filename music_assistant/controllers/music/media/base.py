@@ -442,9 +442,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
         await self._delete_removed_mapping_analysis(db_id, library_item.provider_mappings, set())
-        # raw metadata: the parsed item also carries images merged in at read time
-        # (e.g. a track's album thumb) whose files belong to another item
-        stored_images: Iterable[MediaItemImage] = (await self._get_raw_metadata(db_id)).images or []
+        stored_images: Iterable[MediaItemImage] = library_item.metadata.images or []
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -537,7 +535,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             raise
 
         async with self._custom_image_lock:
-            metadata = await self._get_raw_metadata(db_id)
+            metadata = (await self.get_library_item(db_id)).metadata
             old_images = [img for img in metadata.images or [] if img.type == image_type]
             rel_path = await self._write_custom_image_file(raw, ext, db_id)
             new_image = MediaItemImage(
@@ -579,15 +577,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         db_id = int(item_id)
         async with self._custom_image_lock:
-            metadata = await self._get_raw_metadata(db_id)
+            library_item = await self.get_library_item(db_id)
+            metadata = library_item.metadata
             custom_images = [
                 img
                 for img in metadata.images or []
                 if img.type == image_type and self._is_custom_image(img)
             ]
             if not custom_images:
-                return await self.get_library_item(db_id)
-            library_item = await self.get_library_item(db_id)
+                return library_item
             default_images: list[MediaItemImage] = list(
                 self._get_default_images(library_item, image_type) or []
             )
@@ -2912,21 +2910,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def _custom_images_dir(self) -> str:
         """Return the directory holding user-uploaded custom images."""
         return os.path.join(self.mass.storage_path, CUSTOM_IMAGES_DIRNAME)
-
-    async def _get_raw_metadata(self, db_id: int) -> MediaItemMetadata:
-        """
-        Return the item's metadata parsed straight from the db record.
-
-        Reading the raw column (instead of via get_library_item) avoids persisting
-        images that are only injected at read time, such as the album thumb that
-        gets merged into a track's images.
-        """
-        db_row = await self.mass.music.database.get_row(self.db_table, {"item_id": db_id})
-        if not db_row:
-            raise MediaNotFoundError(f"{self.media_type.value} with id {db_id} not found")
-        if raw_metadata := db_row["metadata"]:
-            return MediaItemMetadata.from_dict(json_loads(raw_metadata))
-        return MediaItemMetadata()
 
     async def _write_custom_image_file(self, raw: bytes, ext: str, db_id: int) -> str:
         """
