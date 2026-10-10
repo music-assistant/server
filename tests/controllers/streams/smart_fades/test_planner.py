@@ -575,8 +575,15 @@ class TestPlanSummaryLog:
 
         assert line == (
             "planned transition: style=blend tier=full_blend strategy=energy_aligned "
-            "source=energy-ladder bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%)"
+            "source=energy-ladder bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%) stretch=off"
         )
+
+    def test_a_ramped_blend_logs_its_stretch(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A blend that ships its tempo ramp logs it."""
+        line = _summary_line(caplog, _analysis(120.0), _analysis(122.0))
+
+        assert line.startswith("planned transition: style=blend ")
+        assert line.endswith(" bpm=120.0->122.0 (+1.7%) stretch=on")
 
     def test_quick_fade_names_its_trigger_and_signed_tempo_gap(
         self, caplog: pytest.LogCaptureFixture

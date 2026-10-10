@@ -86,6 +86,7 @@ def _analysis_with_bands(
     duration: float = 240.0,
     key: str | None = "A",
     mode: str | None = "minor",
+    bpm: float = 120.0,
 ) -> AudioAnalysisData:
     """
     Build an analysis row with v2 ``band_rms`` envelopes for band-profile tests.
@@ -101,11 +102,12 @@ def _analysis_with_bands(
     :param duration: Track duration in seconds.
     :param key: Detected key pitch class (Camelot key gating).
     :param mode: Detected mode, "major" or "minor".
+    :param bpm: Tempo of the 4/4 beat grid.
     """
-    beats = np.arange(0.0, duration, 0.5, dtype=np.float32)
+    beats = np.arange(0.0, duration, 60.0 / bpm, dtype=np.float32)
     return AudioAnalysisData(
         duration=duration,
-        bpm=120.0,
+        bpm=bpm,
         beats=beats.tolist(),
         downbeats=beats[::4].tolist(),
         rms_energy=np.full(1800, 0.5, dtype=np.float32).tolist(),
