@@ -193,12 +193,6 @@ def test_sort_options_command_serves_every_library_listing(mass: MusicAssistant)
         assert [option.field for option in options] == list(MEDIA_TYPE_SORT_FIELDS[media_type])
 
 
-def test_sort_options_command_rejects_listing_without_options(mass: MusicAssistant) -> None:
-    """A listing that does not sort on the server is rejected."""
-    with pytest.raises(InvalidDataError):
-        mass.music.sort_options(ListingType.ALBUM_TRACKS)
-
-
 def test_library_sort_options_hold_the_listing_specific_fields() -> None:
     """Albums, tracks and audiobooks add their own fields; the random options carry no direction."""
     fields = {
@@ -212,7 +206,8 @@ def test_library_sort_options_hold_the_listing_specific_fields() -> None:
     assert SortField.DURATION in fields[ListingType.LIBRARY_AUDIOBOOKS]
     own_fields = {SortField.YEAR, SortField.ARTIST_NAME, SortField.DURATION}
     assert own_fields.isdisjoint(fields[ListingType.LIBRARY_ARTISTS])
-    for options in LISTING_SORT_OPTIONS.values():
+    for listing in LIBRARY_LISTINGS.values():
+        options = LISTING_SORT_OPTIONS[listing]
         random_options = options[-2:]
         assert [o.field for o in random_options] == [SortField.RANDOM, SortField.RANDOM_PLAY_COUNT]
         assert all(not o.supports_direction and o.default_direction is None for o in random_options)

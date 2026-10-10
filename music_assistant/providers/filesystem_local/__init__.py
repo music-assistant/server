@@ -2509,7 +2509,10 @@ class LocalFileSystemProvider(MusicProvider):
                 )
         # check if any albums need to be cleaned up
         for album_id in album_ids:
-            if not await self.mass.music.albums.tracks(album_id, "library"):
+            # the album's live tracks, not its cached listing
+            async with self.mass.cache.handle_refresh(True):
+                album_tracks = await self.mass.music.albums.tracks(album_id, "library", limit=1)
+            if not album_tracks:
                 await self.mass.music.albums.remove_item_from_library(album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:

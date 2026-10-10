@@ -369,6 +369,7 @@ async def test_refresh_item_preserves_in_library_state() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -412,6 +413,7 @@ async def test_refresh_item_preserves_in_library_false() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -455,6 +457,7 @@ async def test_refresh_item_respects_provider_set_in_library() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -486,6 +489,7 @@ async def test_refresh_item_non_library_item_skips_update() -> None:
 
     mass = Mock()
     mass.get_provider.return_value = Mock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass

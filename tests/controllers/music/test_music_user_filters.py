@@ -316,6 +316,7 @@ def _controller_with_sources(
             side_effect=lambda domain, **_kwargs: [prov for prov in loaded if prov.domain == domain]
         ),
     )
+    controller.mass.cache.delete = AsyncMock()
     set_music_source_access(controller.mass, access)
     return controller
 

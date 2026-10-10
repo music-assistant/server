@@ -199,6 +199,21 @@ async def test_without_disliked_drops_the_users_dislikes(music_mass_module: Musi
     assert [x.item_id for x in untouched] == [disliked.item_id, liked.item_id]
 
 
+async def test_with_user_favorites_covers_every_media_type(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """One call stamps the user's state on items of different media types."""
+    mass = music_mass_module
+    track = await _add_track(mass, "Liked Track")
+    album = await mass.music.albums.add_item_to_library(create_album(PROV_A, uuid4().hex))
+    await mass.music.favorites.set(MediaType.TRACK, int(track.item_id), True, [USER_A])
+    await mass.music.favorites.set(MediaType.ALBUM, int(album.item_id), False, [USER_A])
+
+    user_a = User(user_id=USER_A, username=USER_A, role=UserRole.USER)
+    items = await with_user_favorites(mass, user_a, [track, album])
+    assert [item.favorite for item in items] == [True, False]
+
+
 async def test_with_user_favorites_applies_the_asking_users_state(
     music_mass_module: MusicAssistant,
 ) -> None:

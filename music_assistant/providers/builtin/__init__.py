@@ -1599,7 +1599,7 @@ class BuiltinProvider(MusicProvider):
             extra_query_params={"excluded_album_type": "single"},
         ):
             tracks = await self.mass.music.albums.tracks(
-                random_album.item_id, random_album.provider
+                random_album.item_id, random_album.provider, limit=None
             )
             for idx, track in enumerate(tracks, 1):
                 track.position = idx

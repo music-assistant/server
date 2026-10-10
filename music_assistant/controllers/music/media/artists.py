@@ -834,7 +834,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_error: Exception | None = None
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
             try:
-                album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
+                album_tracks = await self.mass.music.albums.tracks(
+                    album.item_id, album.provider, limit=None
+                )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing album must not drop the artist's other tracks on this provider
                 provider_error = err

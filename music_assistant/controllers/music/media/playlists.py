@@ -38,6 +38,7 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.controllers.music.listing_cache import invalidate_listings
 from music_assistant.controllers.tasks.context import (
     get_current_task,
     report_current_task_failure,
@@ -1633,7 +1634,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             media_type = MediaType(media_type_str)
             if media_type == MediaType.ALBUM:
                 album_tracks = await self.mass.music.albums.tracks(
-                    item_id, provider_instance_id_or_domain
+                    item_id, provider_instance_id_or_domain, limit=None
                 )
                 for track in album_tracks:
                     if track.uri is not None:
@@ -1832,6 +1833,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {"item_id": int(playlist.item_id)},
             {"metadata": serialize_to_json(playlist.metadata)},
         )
+        await invalidate_listings(self.mass, playlist)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
 
     @staticmethod

@@ -234,6 +234,7 @@ async def test_album_source_uses_exact_album_tracks() -> None:
     mass.music.albums.tracks.assert_awaited_once_with(
         item_id=source.item_id,
         provider_instance_id_or_domain=source.provider,
+        limit=None,
     )
 
 
