@@ -272,7 +272,7 @@ class StreamsController(CoreController):
         # stale ones: some players (Sonos) sit out their old stream before they
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
-        self._open_item_streams: dict[str, list[tuple[str, web.BaseRequest]]] = {}
+        self._open_item_streams: dict[str, list[tuple[str, web.Request]]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -825,13 +825,22 @@ class StreamsController(CoreController):
         # registered before any await below: a session rotation mid-setup must be
         # able to abort this response too, or a stale request keeps its connection
         # open (gating some players' cutover) until the player times it out
-        stream_entry = (session_id, cast("web.BaseRequest", request))
+        stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
             if pq_data.session_id != session_id:
                 # rotated between the validation above and the registration: the
                 # sweep may already have run, so nothing else catches this one
                 raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
+            if (
+                request.method == "GET"
+                and (served_item_id := pq_data.last_served_item_id) is not None
+                and served_item_id not in self._requested_item_ids(queue_id, session_id)
+            ):
+                # the player gave up on the track it was fetching and asks for another one:
+                # the dropped track's source may still be filling and hold the provider
+                # stream slot this request needs
+                await self.mass.player_queues.release_failed_item_source(queue_id, served_item_id)
             if (
                 is_audio_source
                 and queue_item.media_item is not None
@@ -1155,11 +1164,26 @@ class StreamsController(CoreController):
                 )
             return resp
         finally:
+            # read while this request is still registered: only what the player asked for
+            # after it tells whether the player moved on from this track
+            newer_item_ids = self._requested_item_ids(queue_id, session_id, after=stream_entry)
             if entries := self._open_item_streams.get(queue_id):
                 with suppress(ValueError):
                     entries.remove(stream_entry)
                 if not entries:
                     del self._open_item_streams[queue_id]
+            if (
+                request.method == "GET"
+                and pq_data.session_id == session_id
+                and newer_item_ids
+                and queue_item_id not in self._requested_item_ids(queue_id, session_id)
+            ):
+                # the player gave up on this track and already asks for another one, which
+                # waits for the stream slot this track's source may still hold
+                self.mass.create_task(
+                    self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
+                    task_name=f"release_dropped_item_source_{queue_id}",
+                )
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an
@@ -1447,7 +1471,7 @@ class StreamsController(CoreController):
         # same registry as the single-item route: a forced-flow player (overlay)
         # seeks through the same session rotation and its stale response must be
         # abortable the same way
-        stream_entry = (session_id, cast("web.BaseRequest", request))
+        stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
             if queue_data.session_id != session_id:
@@ -2416,6 +2440,28 @@ class StreamsController(CoreController):
             queue_item.name,
         )
         raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
+
+    def _requested_item_ids(
+        self,
+        queue_id: str,
+        session_id: str,
+        after: tuple[str, web.Request] | None = None,
+    ) -> set[str]:
+        """
+        Return the ids of the queue items that players have open stream requests for.
+
+        :param queue_id: The queue whose open stream requests to look at.
+        :param session_id: The playback session the requests must belong to.
+        :param after: Only count the requests that came in after this registered one.
+        """
+        entries = self._open_item_streams.get(queue_id) or []
+        if after is not None:
+            entries = entries[entries.index(after) + 1 :] if after in entries else []
+        return {
+            request.match_info["queue_item_id"]
+            for entry_session_id, request in entries
+            if entry_session_id == session_id and request.method == "GET"
+        }
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

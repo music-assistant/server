@@ -111,6 +111,11 @@ Supporting modules in `helpers/`:
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory
 ```
 
+A player that moves on to another track by itself, after a skip on the speaker or a track it gave up
+on, leaves the old track's buffer filling. On a provider with a stream limit that buffer holds the
+slot the new track needs, so the single-item route cancels it once the player asks for another track
+and no open request still streams the old one.
+
 ### Error Handling
 
 - Producer errors are captured and surfaced when consumers try to read
