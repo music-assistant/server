@@ -10,6 +10,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
@@ -349,6 +350,25 @@ class TestFallbackCrossfadeOnUnreliableMasks:
 
         assert plan is not None
         assert plan.fadeout_curve == "nofade"
+
+
+class TestFallbackPlansShipAsCut:
+    """The fallback crossfade and the emergency handoff are unsynced volume fades."""
+
+    def test_both_last_resorts_carry_the_cut_style_on_a_blend_tier(self) -> None:
+        """Even on a beatmatchable tier, neither last resort reads as a blend."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.FULL_BLEND
+        factory = CandidateFactory(ctx, LOGGER)
+
+        fallback = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+        handoff = EmergencyHandoffFactory(ctx, factory, LOGGER).build()
+
+        assert fallback is not None
+        assert fallback.style is TransitionStyle.CUT
+        assert handoff.style is TransitionStyle.CUT
 
 
 class TestEmergencyHandoff:

@@ -7,7 +7,10 @@ import logging
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionStyle,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
@@ -101,6 +104,28 @@ class TestFactoryGoldenTiming:
         assert candidate.plan.fade_out_window == 20.0
         assert candidate.plan.crossfade_duration == pytest.approx(14.0, abs=1e-5)
         assert candidate.plan.fadein_trim_start == 0.0
+
+
+class TestBuiltStyle:
+    """The factory stamps the style it built on both the spec and the plan."""
+
+    def test_a_blend_tier_builds_a_blend(self) -> None:
+        """A beatmatched tier builds the BLEND style."""
+        ctx = _ctx(_analysis(120.0), _analysis(122.0))
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.tier is TransitionTier.FULL_BLEND
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert candidate.spec.style is TransitionStyle.BLEND
+
+    def test_a_quick_fade_tier_builds_a_cut(self) -> None:
+        """An unsynced quick fade builds the CUT style."""
+        ctx = _ctx(_analysis(120.0), _analysis(150.0))
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.tier is TransitionTier.QUICK_FADE
+        assert candidate.plan.style is TransitionStyle.CUT
+        assert candidate.spec.style is TransitionStyle.CUT
 
 
 class TestUnheardIntroClamp:

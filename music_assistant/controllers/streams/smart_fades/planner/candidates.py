@@ -34,6 +34,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TempoPlan,
     TransitionPlan,
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
@@ -108,6 +109,8 @@ class CandidateSpec:
     source: str = ""
     # the tier ladder's top rung; 0 = same as bars
     ideal_bars: int = 0
+    # None until the factory sets the style it built
+    style: TransitionStyle | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,15 +503,17 @@ class CandidateFactory:
             fadein_trim_start = None
             spec = replace(spec, entry_s=None)
 
+        style = TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
         plan = TransitionPlan(
             tier=tier,
             fade_out_window=tail.effective_end,
             crossfade_duration=crossfade_duration,
+            style=style,
             tempo_plan=tempo_plan,
             fadeout_trim=tail.fadeout_trim,
             fadein_trim_start=fadein_trim_start,
         )
-        built_spec = replace(spec, tier=tier, bars=bars)
+        built_spec = replace(spec, tier=tier, bars=bars, style=style)
         return Candidate(
             spec=built_spec,
             plan=plan,

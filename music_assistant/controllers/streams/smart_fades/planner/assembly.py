@@ -31,6 +31,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TempoPlan,
     TransitionPlan,
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -600,6 +601,7 @@ class FallbackCrossfadeFactory:
         plan = replace(
             candidate.plan,
             crossfade_duration=duration,
+            style=TransitionStyle.CUT,
             fadein_trim_start=None,
             tempo_plan=TempoPlan(),
             eq_plan=EqPlan.neutral(swap_at=duration / 2.0),
@@ -724,6 +726,7 @@ class EmergencyHandoffFactory:
         return replace(
             protected,
             crossfade_duration=duration,
+            style=TransitionStyle.CUT,
             fadein_trim_start=None,
             tempo_plan=TempoPlan(),
             eq_plan=EqPlan.neutral(swap_at=duration / 2.0),

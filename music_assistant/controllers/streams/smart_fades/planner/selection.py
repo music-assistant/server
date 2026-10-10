@@ -102,10 +102,11 @@ class CandidateSelector:
             plan, metrics = candidate.plan, candidate.metrics
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "candidate source=%s tier=%s bars=%d duration=%.2f anchor=%.2f fadein_trim=%s "
+                "candidate source=%s style=%s tier=%s bars=%d duration=%.2f anchor=%.2f fadein_trim=%s "
                 "total=%.2f rejected=%s trim=%.2f collision=%.2f weighted_collision=%.2f "
                 "on_downbeat=%s %s",
                 candidate.spec.source,
+                plan.style,
                 candidate.spec.tier,
                 candidate.spec.bars,
                 plan.crossfade_duration,

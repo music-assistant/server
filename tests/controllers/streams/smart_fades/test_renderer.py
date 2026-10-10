@@ -164,6 +164,17 @@ class TestTransitionRenderer:
         assert isinstance(crossfade, StreamingCrossfadeFilter)
         assert "curve=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
 
+    def test_fadein_curve_flows_into_the_crossfade_filter(self) -> None:
+        """The plan's fadein_curve becomes the incoming stream's fade curve."""
+        plan = _plan(fadein_curve="nofade")
+        filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, StreamingCrossfadeFilter)
+        fadeout_chain, fadein_chain, _ = crossfade.apply("[fadein]", "[fadeout]")
+        assert "curve=qsin" in fadeout_chain
+        assert "afade=t=in:start_sample=0:" in fadein_chain
+        assert "curve=nofade" in fadein_chain
+
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""
         plan = _plan(tempo_plan=TempoPlan(steps=[(30.0, 1.0), (35.0, 1.02)]))
