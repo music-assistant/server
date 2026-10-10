@@ -26,7 +26,6 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
-from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -526,6 +525,20 @@ class AIRadioRenderMixin:
         ):
             self._post_skipped(next_item.name, "the player does not stream in flow mode")
             return None
+        if next_item.streamdetails is None:
+            # which copy of the track streams is only known once its stream details are
+            # resolved: the queue resolves them now rather than when the clip nears its
+            # end, and moves on to the item after a track it cannot play
+            try:
+                next_item = await self.mass.player_queues.load_next_queue_item(
+                    queue_item.queue_id, queue_item.queue_item_id
+                )
+            except MusicAssistantError as err:
+                self._post_skipped(next_item.name, f"the next track could not be loaded ({err})")
+                return None
+            if not isinstance(next_item.media_item, Track):
+                self._post_skipped(queue_item.name, "no next track in the queue")
+                return None
         onset, reason = await self._resolve_vocal_onset(next_item)
         if onset is None:
             self._post_skipped(next_item.name, reason)
@@ -576,21 +589,12 @@ class AIRadioRenderMixin:
 
     async def _analysis_vocal_onset(self, queue_item: QueueItem) -> float | None:
         """Return the track's vocal onset from its stored audio analysis, or None."""
-        audio_analysis = self.mass.streams.audio_analysis
         # the analysis is keyed by the provider-native id of the copy that streams
-        if (streamdetails := queue_item.streamdetails) is not None:
-            return await audio_analysis.get_vocal_onset(
-                streamdetails.item_id, streamdetails.provider
-            )
-        media_item = cast("Track", queue_item.media_item)
-        # tried in the order playback would pick them: another master can have another intro
-        for mapping in rank_provider_mappings(media_item.provider_mappings):
-            if not mapping.available:
-                continue
-            onset = await audio_analysis.get_vocal_onset(mapping.item_id, mapping.provider_instance)
-            if onset is not None:
-                return onset
-        return None
+        if (streamdetails := queue_item.streamdetails) is None:
+            return None
+        return await self.mass.streams.audio_analysis.get_vocal_onset(
+            streamdetails.item_id, streamdetails.provider
+        )
 
     def _post_skipped(self, item_name: str, reason: str) -> None:
         """Log why an opted-in break does not carry over the next track."""
