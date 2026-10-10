@@ -367,6 +367,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 )
                 if not exists:
                     stale.append(img)
+            fresh = playlist
             if stale:
                 stale_paths = {img.path for img in stale}
                 fresh = await self.mass.music.playlists.get_library_item(playlist.item_id)
@@ -379,8 +380,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                     )
 
             # Collect paths still in use after cleanup (use fresh object if we updated it)
-            source = fresh.metadata.images if stale else playlist.metadata.images
-            for img in source or []:
+            for img in fresh.metadata.images or []:
                 if self._is_our_image(img):
                     # Normalise to basename: path may be absolute or relative depending on
                     # which version of the plugin wrote the record.

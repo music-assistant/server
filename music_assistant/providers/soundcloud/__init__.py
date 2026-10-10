@@ -328,12 +328,14 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(prov_artist_id)
+        msg = f"Soundcloud artist {prov_artist_id} is not available"
+        if not artist_obj:
+            raise MediaNotFoundError(msg)
         try:
-            if artist_obj:
-                artist = await self._parse_artist(artist_obj)
+            return await self._parse_artist(artist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Skipping artist %s: %s", prov_artist_id, describe_sync_error(error))
-        return artist
+            raise MediaNotFoundError(msg) from error
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
@@ -351,12 +353,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full playlist details by id."""
         playlist_obj = await self._get_playlist_object(prov_playlist_id)
         try:
-            playlist = await self._parse_playlist(playlist_obj)
+            return await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug(
                 "Skipping playlist %s: %s", prov_playlist_id, describe_sync_error(error)
             )
-        return playlist
+            msg = f"Soundcloud playlist {prov_playlist_id} is not available"
+            raise MediaNotFoundError(msg) from error
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
         """Get playlist object from Soundcloud API based on playlist ID type."""

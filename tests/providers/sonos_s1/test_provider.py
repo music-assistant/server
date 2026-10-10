@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import CoreState
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.sonos_s1.constants import DISCOVERY_INTERVAL
 from music_assistant.providers.sonos_s1.provider import SonosPlayerProvider
@@ -100,6 +101,29 @@ async def test_repeated_discovery_arms_a_single_reschedule(harness: DiscoveryHar
         await provider.discover_players()
 
     assert len(harness.armed_reschedules) == 1
+
+
+async def test_unusable_manual_ip_is_logged(harness: DiscoveryHarness) -> None:
+    """A manual IP address the speaker cannot be created for is logged and skipped."""
+    provider = harness.make_provider()
+    config = MagicMock()
+    config.get_value.side_effect = lambda key, *_args, **_kwargs: (
+        ["not-an-ip"] if key == CONF_ENTRY_MANUAL_DISCOVERY_IPS.key else False
+    )
+    provider.config = config
+    logger = MagicMock()
+    provider.logger = logger
+
+    with (
+        patch("music_assistant.providers.sonos_s1.provider.SoCo", side_effect=ValueError),
+        patch("music_assistant.providers.sonos_s1.provider.discover", return_value=set()),
+    ):
+        await provider.discover_players()
+
+    assert logger.warning.call_args.args[:2] == (
+        "Failed to add SonosPlayer %s: %s",
+        "not-an-ip",
+    )
 
 
 async def test_unload_disarms_the_reschedule(harness: DiscoveryHarness) -> None:

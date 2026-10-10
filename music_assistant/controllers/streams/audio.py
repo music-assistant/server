@@ -2793,8 +2793,10 @@ class StreamsAudio:
                             # leave the queue's position mapping on the wrong track
                             # for the whole (source-paced) duration of the blend. The
                             # pre-counted tail makes way for that live credit.
+                            fadeout_timing = crossfade_smart_fade.timing_info
                             fadeout_share_seconds = (
-                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
+                                fadeout_timing.pre_crossfade_duration
+                                + fadeout_timing.crossfade_duration
                             )
                             fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
                             fadeout_share = (fadeout_share // frame_size) * frame_size
@@ -2808,8 +2810,8 @@ class StreamsAudio:
                                 fade_out_part=last_fadeout_part,
                                 pcm_format=pcm_format,
                             )
+                            crossfade_bytes_written = 0
                             try:
-                                crossfade_bytes_written = 0
                                 # closed before item_stream on an aborted flow: its
                                 # teardown stops the feeder that still holds a read
                                 # on item_stream, which must not be closed mid-read
