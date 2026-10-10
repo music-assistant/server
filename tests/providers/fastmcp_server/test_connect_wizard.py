@@ -1330,6 +1330,7 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
 
     mass = MagicMock()
     mass.webserver.clients = []
+    mass.webserver.external_url = None
     mass.webserver.base_url = "http://192.0.2.20:8095"
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
     mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
