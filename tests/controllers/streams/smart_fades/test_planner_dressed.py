@@ -200,7 +200,7 @@ class TestDressedScenarios:
         assert plan.style is TransitionStyle.ECHO_OUT
 
     def test_a_clean_cut_stays_a_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without kicks on both decks the cut ships, though a dressed transition scores lower."""
+        """Without kicks on both decks the cut ships, though a filter out survives."""
         # a sung head keeps the kickless intro from riding a long segue
         out, inc = _track(120.0), _track(134.0, vocals=_vocals((0.0, 30.0)))
         inc.band_rms_low = _envelope(0.5, (0.0, 20.0, 0.01))
@@ -209,12 +209,10 @@ class TestDressedScenarios:
 
         assert winner is not None
         assert winner.candidate.plan.style is TransitionStyle.CUT
-        dressed = [
-            e.total_penalty
-            for e in scored
-            if e.candidate.plan.style is TransitionStyle.FILTER_OUT and not e.rejected
-        ]
-        assert min(dressed) < winner.total_penalty
+        assert winner.candidate.metrics.rhythm_clash_bars == 0.0
+        assert any(
+            e.candidate.plan.style is TransitionStyle.FILTER_OUT and not e.rejected for e in scored
+        )
         assert _plan(out, inc) == _plan_undressed(monkeypatch, out, inc)
 
     def test_a_clashing_cut_without_a_dressed_alternative_ships_as_before(
