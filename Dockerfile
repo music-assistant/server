@@ -143,6 +143,12 @@ LABEL \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
+# Identifies the official release image, see music_assistant/helpers/build_info.py
+ARG MASS_REVISION
+ARG MASS_WHEEL_SHA256
+RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
+    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
+
 VOLUME [ "/data" ]
 EXPOSE 8095
 

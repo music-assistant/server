@@ -89,6 +89,11 @@ def app_var(name: str) -> str:
     return ""
 
 
+def has_bundled_app_vars() -> bool:
+    """Return whether the bundled credentials of an official release build are present."""
+    return _bundled() is not None
+
+
 @lru_cache(maxsize=1)
 def _bundled() -> Mapping[str, str] | None:
     raw = _bundled_text()

@@ -79,6 +79,7 @@ from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
+from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
@@ -255,6 +256,7 @@ class MusicAssistant:
         self._provider_ready_events: dict[str, asyncio.Event] = {}
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.build_info: dict[str, str] | None = None
         self.logger = LOGGER
         self.dev_mode = (
             os.environ.get("PYTHONDEVMODE") == "1"
@@ -263,7 +265,7 @@ class MusicAssistant:
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # noqa: PLR0915
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
@@ -274,6 +276,7 @@ class MusicAssistant:
         install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
+        self.build_info = await get_official_build_info()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
@@ -292,6 +295,12 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
+        if self.unsupported_install:
+            LOGGER.warning(
+                "This server does not run from the official Music Assistant container or "
+                "Home Assistant app, which is not supported. "
+                "Issues reported from this installation may be closed."
+            )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         await self._load_core_controllers()
@@ -436,6 +445,11 @@ class MusicAssistant:
         return self._state in (CoreState.STOPPING, CoreState.STOPPED)
 
     @property
+    def unsupported_install(self) -> bool:
+        """Return whether the server does not run from an official release build."""
+        return self.build_info is None
+
+    @property
     def server_id(self) -> str:
         """Return unique ID of this server."""
         if not self.config.initialized:
@@ -477,6 +491,7 @@ class MusicAssistant:
             internal_url=self.webserver.base_url,
             external_url=self.webserver.external_url,
             has_remote_access=self.webserver.remote_access.is_enabled,
+            unsupported_install=self.unsupported_install,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,

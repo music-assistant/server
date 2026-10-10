@@ -924,6 +924,8 @@ jobs:
           provenance: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
+            MASS_REVISION=${{ needs.resolve.outputs.source_sha }}
+            MASS_WHEEL_SHA256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
             BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
           labels: |
             org.opencontainers.image.version=${{ inputs.version }}
