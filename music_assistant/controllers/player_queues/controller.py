@@ -1430,6 +1430,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
             if not allow_same_item and queue_item.queue_item_id == current_item_id:
+                if idx != 0:
+                    self.update_items(queue_id, self._queue_data[queue_id].items)
                 raise QueueEmpty("Next item repeats the currently playing item.")
             try:
                 # a repeat plays the item over from the start, not from where it was left off

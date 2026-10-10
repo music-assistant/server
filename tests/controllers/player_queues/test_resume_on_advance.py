@@ -315,6 +315,7 @@ async def test_flow_preload_failed_candidate_does_not_reload_playing_item(
     details = MagicMock(seek_position=59)
     items[0].streamdetails = details
     get_stream_details.side_effect = MediaNotFoundError("Candidate cannot be loaded")
+    controller.update_items = MagicMock(wraps=controller.update_items)  # type: ignore[method-assign]
     tasks: list[asyncio.Task[None]] = []
     cast("MagicMock", controller.mass).create_task.side_effect = lambda coro, **_kwargs: (
         tasks.append(asyncio.create_task(coro))
@@ -327,6 +328,7 @@ async def test_flow_preload_failed_candidate_does_not_reload_playing_item(
     get_stream_details.assert_awaited_once()
     assert get_stream_details.call_args.kwargs["queue_item"] is items[-1]
     assert not items[-1].available
+    controller.update_items.assert_called_once_with(QUEUE_ID, items)
     controller._enqueue_next_item.assert_not_called()
     assert items[0].streamdetails is details
     assert details.seek_position == 59
