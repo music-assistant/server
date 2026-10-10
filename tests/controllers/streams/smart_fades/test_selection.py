@@ -6,8 +6,13 @@ import dataclasses
 import logging
 
 import numpy as np
+import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    Deck,
+    TransitionStyle,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
 from music_assistant.controllers.streams.smart_fades.planner.context import TransitionContext
 from music_assistant.controllers.streams.smart_fades.planner.policies import Policy, Verdict
@@ -74,9 +79,9 @@ def _ctx() -> TransitionContext:
     )
 
 
-def _named(source: str) -> Candidate:
-    """Build a test candidate distinguishable only by its ``spec.source``."""
-    candidate = build_test_candidate()
+def _named(source: str, style: TransitionStyle | None = None, duration: float = 20.0) -> Candidate:
+    """Build a test candidate distinguishable by its ``spec.source``."""
+    candidate = build_test_candidate(style=style, duration=duration)
     return dataclasses.replace(candidate, spec=dataclasses.replace(candidate.spec, source=source))
 
 
@@ -166,3 +171,94 @@ class TestCandidateSelector:
         assert isinstance(result, ScoredCandidate)
         assert len(result.verdicts) == len(policies)
         assert result.total_penalty == 3.0
+
+    def test_a_segue_shorter_than_the_best_other_survivor_never_wins(self) -> None:
+        """A cheaper segue that would shorten the transition drops out of the ranking."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=6.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"segue": 0.0, "cut": 15.0})],
+            logger=logging.getLogger(__name__),
+        )
+
+        result = selector.select([segue, cut], _ctx())
+
+        assert result is not None
+        assert result.candidate is cut
+
+    def test_a_segue_at_least_as_long_as_the_best_other_survivor_competes(self) -> None:
+        """A segue as long as the cut it replaces wins on its lower penalty."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=8.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"segue": 0.0, "cut": 15.0})],
+            logger=logging.getLogger(__name__),
+        )
+
+        result = selector.select([cut, segue], _ctx())
+
+        assert result is not None
+        assert result.candidate is segue
+
+    def test_segues_alone_compete_on_penalty(self) -> None:
+        """Without any other survivor, the cheapest segue wins whatever its length."""
+        long_segue = _named("long", style=TransitionStyle.SEGUE, duration=12.0)
+        short_segue = _named("short", style=TransitionStyle.SEGUE, duration=4.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"long": 3.0, "short": 1.0})],
+            logger=logging.getLogger(__name__),
+        )
+
+        result = selector.select([long_segue, short_segue], _ctx())
+
+        assert result is not None
+        assert result.candidate is short_segue
+
+    def test_a_lone_segue_waits_when_it_may_not_win_alone(self) -> None:
+        """A selector told so ships no segue without another survivor to replace."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=8.0)
+        policies = [_FixedPenaltyPolicy()]
+        logger = logging.getLogger(__name__)
+
+        strict = CandidateSelector(policies, logger, lone_segue_wins=False)
+        waiting = strict.select([segue], _ctx())
+        alone = CandidateSelector(policies, logger).select([segue], _ctx())
+
+        assert waiting is None
+        assert alone is not None
+        assert alone.candidate is segue
+
+    @pytest.mark.parametrize("lone_segue_wins", [False, True])
+    def test_a_segue_never_replaces_a_blend(self, lone_segue_wins: bool) -> None:
+        """A longer, cheaper segue leaves a surviving blend in place, but replaces a cut."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=15.0)
+        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"segue": 0.0, "blend": 15.0, "cut": 15.0})],
+            logger=logging.getLogger(__name__),
+            lone_segue_wins=lone_segue_wins,
+        )
+
+        over_blend = selector.select([blend, segue], _ctx())
+        over_cut = selector.select([cut, segue], _ctx())
+
+        assert over_blend is not None
+        assert over_blend.candidate is blend
+        assert over_cut is not None
+        assert over_cut.candidate is segue
+
+    def test_a_segue_leaves_a_blend_in_place_also_behind_a_cheaper_cut(self) -> None:
+        """Any surviving blend keeps the segue out, even when a cut scores below it."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=15.0)
+        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"segue": 0.0, "cut": 5.0, "blend": 15.0})],
+            logger=logging.getLogger(__name__),
+        )
+
+        result = selector.select([blend, cut, segue], _ctx())
+
+        assert result is not None
+        assert result.candidate is cut

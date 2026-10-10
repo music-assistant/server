@@ -1,7 +1,8 @@
 /******************************************************************************/
 // Input Interaction Plugin v0.0.20
 // (c) 2025 Benjamin Zachey
-// Source: https://msx.benzac.de/interaction/input.js
+// Source: https://msx.benzac.de/interaction/js/input.js
+// Local patch: cancel/supersession generations and bounded submit loading.
 // License: MIT (Media Station X SDK)
 // Bundled copy — served locally to avoid external CDN dependency.
 /******************************************************************************/
@@ -529,6 +530,8 @@ function InputHandler() {
     var submittedUrl = null;
     var submittedInput = null;
     var submitting = false;
+    var submitGeneration = 0;
+    var submitTimer = null;
     var extending = false;
 
     //--------------------------------------------------------------------------
@@ -989,15 +992,18 @@ function InputHandler() {
         return TVXTools.isFullStr(input) && input.length >= submitLength;
     };
     var startSubmit = function(url, input) {
+        ++submitGeneration;
         TVXInteractionPlugin.startLoading();
         submittedUrl = url;
         submittedInput = input;
         submitting = true;
     };
-    var processSubmit = function(url, input) {
-        return submitting && url == submittedUrl && input == submittedInput;
+    var processSubmit = function(url, input, generation) {
+        return submitting && generation === submitGeneration && url == submittedUrl && input == submittedInput;
     };
     var completeSubmit = function() {
+        ++submitGeneration;
+        if (submitTimer !== null) { clearTimeout(submitTimer); submitTimer = null; }
         TVXInteractionPlugin.stopLoading();
         submittedUrl = null;
         submittedInput = null;
@@ -1085,9 +1091,17 @@ function InputHandler() {
             TVXInteractionPlugin.executeAction("invalidate:content");
             autoSubmit.stop();
             startSubmit(url, input);
+            var generation = submitGeneration;
+            submitTimer = setTimeout(function() {
+                if (processSubmit(url, input, generation)) {
+                    completeSubmit();
+                    TVXInteractionPlugin.error("Search timed out. Please try again.");
+                    reloadInputContent();
+                }
+            }, 30000);
             dataService.loadData("temp:data", createInputUrl(url, input, lang, 0, limit), {
                 success: function(entry) {
-                    if (processSubmit(url, input)) {
+                    if (processSubmit(url, input, generation)) {
                         if (!handleInputResultData(url, input, entry.data, limit)) {
                             TVXInteractionPlugin.warn("Input result data is invalid.");
                             reloadInputContent();
@@ -1095,13 +1109,13 @@ function InputHandler() {
                     }
                 },
                 error: function(entry) {
-                    if (processSubmit(url, input)) {
+                    if (processSubmit(url, input, generation)) {
                         TVXInteractionPlugin.error("Input result data could not be loaded. " + completeError(entry.error));
                         reloadInputContent();
                     }
                 },
                 completed: function() {
-                    if (processSubmit(url, input)) {
+                    if (processSubmit(url, input, generation)) {
                         completeSubmit();
                     }
                 }
@@ -1146,6 +1160,7 @@ function InputHandler() {
                 autoSubmit.stop();
             }
         } else {
+            completeSubmit();
             clearCache();
             autoSubmit.stop();
         }

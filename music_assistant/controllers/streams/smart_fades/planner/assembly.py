@@ -31,6 +31,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TempoPlan,
     TransitionPlan,
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -41,7 +42,12 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     WEIGHTED_COLLISION_LIMIT,
 )
 
-from .candidates import CandidateSpec, _nearest_protective_anchor, _outgoing_vocal_end
+from .candidates import (
+    CandidateSpec,
+    _choose_fadeout_curve,
+    _nearest_protective_anchor,
+    _outgoing_vocal_end,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -139,22 +145,22 @@ class PlanAssembler:
         never needs it); this is where the bass/mid/high handover for the
         selected winner is computed and folded in.
         """
+        plan = candidate.plan
+        # a segue's factory already picked both curves
+        if plan.style is not TransitionStyle.SEGUE:
+            plan = replace(plan, fadeout_curve=_choose_fadeout_curve(self._ctx, plan))
         # the winner's metrics ride along: consumers read them off the plan
-        return replace(
-            candidate.plan,
-            eq_plan=self._choose_eq(candidate.plan, candidate.spec.strategy),
-            fadeout_curve=_choose_fadeout_curve(self._ctx, candidate.plan),
-            metrics=candidate.metrics,
-        )
+        return replace(plan, eq_plan=self._choose_eq(plan), metrics=candidate.metrics)
 
-    def _choose_eq(self, plan: TransitionPlan, strategy: TransitionStrategy) -> EqPlan:
+    def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
-        # an unsynced quick fade has no beatmatched handover to stage: shelving
-        # the decks would only bury the incoming track's entry; the long lazy
-        # overlay (also QUICK_FADE tier) keeps its handover EQ
-        if (
-            plan.tier is TransitionTier.QUICK_FADE
-            and strategy is not TransitionStrategy.LAZY_OVERLAY
+        # an unsynced cut has no beatmatched handover to stage: shelving the decks
+        # would only bury the incoming track's entry; nor does a segue with a quiet
+        # edge, which plays as recorded. A segue that fades both sides equal-power
+        # keeps its handover EQ
+        if plan.style is TransitionStyle.CUT or (
+            plan.style is TransitionStyle.SEGUE
+            and "nofade" in (plan.fadeout_curve, plan.fadein_curve)
         ):
             return EqPlan.neutral(swap_at=0.6 * plan.crossfade_duration)
         ctx = self._ctx
@@ -600,6 +606,7 @@ class FallbackCrossfadeFactory:
         plan = replace(
             candidate.plan,
             crossfade_duration=duration,
+            style=TransitionStyle.CUT,
             fadein_trim_start=None,
             tempo_plan=TempoPlan(),
             eq_plan=EqPlan.neutral(swap_at=duration / 2.0),
@@ -724,6 +731,7 @@ class EmergencyHandoffFactory:
         return replace(
             protected,
             crossfade_duration=duration,
+            style=TransitionStyle.CUT,
             fadein_trim_start=None,
             tempo_plan=TempoPlan(),
             eq_plan=EqPlan.neutral(swap_at=duration / 2.0),
@@ -786,20 +794,6 @@ def _extend_protective_anchor(
     rebuilt = factory.build(spec)
     assert rebuilt is not None  # the 1-bar rung always yields a candidate
     return spec, rebuilt
-
-
-def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
-    """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
-    if ctx.fade_onset is None:
-        return "qsin"
-    crossfade_start = plan.fade_out_window - plan.crossfade_duration
-    if crossfade_start < ctx.fade_onset:
-        return "qsin"
-    bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
-    if plan.fade_out_window < ctx.audio_end - bar_out:
-        return "qsin"
-    # the record already fades itself here; don't double it with a second curve
-    return "nofade"
 
 
 def _band_gain(

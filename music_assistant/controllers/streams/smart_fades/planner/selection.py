@@ -3,7 +3,8 @@ Smart Fades - candidate selection.
 
 A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
-entry, then picks the lowest-penalty, non-rejected survivor. Every policy runs
+entry, then picks the lowest-penalty, non-rejected survivor; a segue only when
+it lasts at least as long as the best other survivor. Every policy runs
 on every candidate - no short-circuit on the first rejection - so the debug
 log always shows the complete scoreboard, not just whichever rule fired first.
 """
@@ -16,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
 
 from .candidates import Candidate
 from .context import TransitionContext
@@ -35,17 +37,35 @@ class ScoredCandidate:
 class CandidateSelector:
     """Scores every candidate against a fixed policy set and picks the best survivor."""
 
-    def __init__(self, policies: Sequence[Policy], logger: logging.Logger) -> None:
-        """Initialize the selector with the policy set to score every candidate against."""
+    def __init__(
+        self,
+        policies: Sequence[Policy],
+        logger: logging.Logger,
+        *,
+        lone_segue_wins: bool = True,
+    ) -> None:
+        """
+        Initialize the selector with the policy set to score every candidate against.
+
+        :param policies: The policies every candidate is judged by, in evaluation order.
+        :param logger: Logger for the scoreboard and the selection.
+        :param lone_segue_wins: Let a segue win when no other candidate survives; False
+            for a pass that a rescue pass follows, which then weighs it.
+        """
         self._policies = tuple(policies)
         self._logger = logger
+        self._lone_segue_wins = lone_segue_wins
 
     def select(
         self, candidates: Sequence[Candidate], ctx: TransitionContext
     ) -> ScoredCandidate | None:
         """
-        Score every candidate; return the lowest-penalty survivor, or None when all are rejected.
+        Score every candidate; return the lowest-penalty survivor, or None when none may ship.
 
+        None means every candidate was rejected, or only segues survived a selector
+        that doesn't let a lone segue win. A segue never replaces a surviving blend,
+        and replaces a cut only when it lasts at least as long, so it never shortens
+        the transition that would ship without it.
         Ties resolve to whichever candidate appears earlier in ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
@@ -65,6 +85,27 @@ class CandidateSelector:
                 reasons,
             )
             return None
+        others = [e for e in survivors if e.candidate.plan.style is not TransitionStyle.SEGUE]
+        replaced = min(others, key=lambda entry: entry.total_penalty) if others else None
+        if replaced is None:
+            if not self._lone_segue_wins:
+                self._logger.debug(
+                    "only segues survive (%d of %d candidates); none wins on its own",
+                    len(survivors),
+                    len(scored),
+                )
+                return None
+        elif any(entry.candidate.plan.style is TransitionStyle.BLEND for entry in others):
+            # a beatmatchable pair keeps its blend
+            survivors = others
+        else:
+            survivors = [
+                entry
+                for entry in survivors
+                if entry.candidate.plan.style is not TransitionStyle.SEGUE
+                or entry.candidate.plan.crossfade_duration
+                >= replaced.candidate.plan.crossfade_duration
+            ]
         winner = min(survivors, key=lambda entry: entry.total_penalty)
         if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             ranked = sorted(survivors, key=lambda entry: entry.total_penalty)
@@ -102,10 +143,11 @@ class CandidateSelector:
             plan, metrics = candidate.plan, candidate.metrics
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "candidate source=%s tier=%s bars=%d duration=%.2f anchor=%.2f fadein_trim=%s "
-                "total=%.2f rejected=%s trim=%.2f collision=%.2f weighted_collision=%.2f "
-                "on_downbeat=%s %s",
+                "candidate source=%s style=%s tier=%s bars=%d duration=%.2f anchor=%.2f "
+                "fadein_trim=%s total=%.2f rejected=%s trim=%.2f collision=%.2f "
+                "weighted_collision=%.2f rhythm_clash=%.2f on_downbeat=%s %s",
                 candidate.spec.source,
+                plan.style,
                 candidate.spec.tier,
                 candidate.spec.bars,
                 plan.crossfade_duration,
@@ -116,6 +158,7 @@ class CandidateSelector:
                 metrics.audible_outgoing_trim,
                 metrics.collision_seconds,
                 metrics.weighted_collision_seconds,
+                metrics.rhythm_clash_bars,
                 metrics.anchor_on_downbeat,
                 " ".join(breakdown_entries),
             )

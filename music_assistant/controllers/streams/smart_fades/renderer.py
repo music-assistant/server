@@ -117,6 +117,7 @@ class TransitionRenderer:
                 crossfade_samples=crossfade_samples,
                 pre_crossfade_samples=pre_crossfade_samples,
                 fadeout_curve=plan.fadeout_curve,
+                fadein_curve=plan.fadein_curve,
             )
         )
         return filters

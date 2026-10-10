@@ -9,6 +9,7 @@ import numpy as np
 from music_assistant.controllers.streams.smart_fades.models import (
     PlanMetrics,
     TransitionPlan,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
@@ -31,13 +32,18 @@ def build_test_candidate(  # noqa: PLR0913
     tier: TransitionTier = TransitionTier.FULL_BLEND,
     fadein_trim: float | None = None,
     fade_end: float | None = None,
+    style: TransitionStyle | None = None,
+    rhythm_clash: float = 0.0,
 ) -> Candidate:
     """Build a minimal ``Candidate`` with only the fields a policy under test reads."""
-    spec = CandidateSpec(tier=tier, bars=bars, anchor_s=None, entry_s=None)
+    if style is None:
+        style = TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
+    spec = CandidateSpec(tier=tier, bars=bars, anchor_s=None, entry_s=None, style=style)
     plan = TransitionPlan(
         tier=tier,
         fade_out_window=fade_end if fade_end is not None else duration,
         crossfade_duration=duration,
+        style=style,
         fadein_trim_start=fadein_trim,
     )
     metrics = PlanMetrics(
@@ -46,6 +52,7 @@ def build_test_candidate(  # noqa: PLR0913
         anchor_on_downbeat=on_downbeat,
         collision_seconds=collision,
         weighted_collision_seconds=weighted,
+        rhythm_clash_bars=rhythm_clash,
     )
     return Candidate(spec=spec, plan=plan, metrics=metrics, ideal_bars=ideal)
 

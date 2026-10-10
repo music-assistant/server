@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import secrets
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,7 +19,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -38,6 +40,9 @@ DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 PRUNE_THRESHOLD: Final = 128
 # Salt for the password hash of a login with an unknown username
 UNKNOWN_USER_ID: Final = "unknown-user"
+# Seconds a Home Assistant sign-in may take, and how many may be pending at once
+OAUTH_STATE_TTL: Final = 600
+MAX_OAUTH_STATES: Final = 100
 
 
 def normalize_username(username: str) -> str:
@@ -618,8 +623,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # Store OAuth state -> (return_url, redirect_uri) mapping to support concurrent sessions
-        self._oauth_sessions: dict[str, tuple[str | None, str]] = {}
+        # OAuth state -> (return_url, redirect_uri, expires, code_verifier) per pending sign-in
+        self._oauth_sessions: dict[str, tuple[str | None, str, float, str]] = {}
 
     @property
     def allow_self_registration(self) -> bool:
@@ -650,8 +655,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         Get Home Assistant OAuth authorization URL using hass_client.
 
+        Returns None when Home Assistant is not reachable.
+
         :param redirect_uri: The callback URL.
         :param return_url: Optional URL to redirect to after successful login.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         # Get the correct HA URL (external URL if running as add-on)
         ha_url = await self._get_external_ha_url()
@@ -677,10 +685,25 @@ class HomeAssistantOAuthProvider(LoginProvider):
             )
             ha_url = inferred_ha_url
 
+        now = time.monotonic()
+        # anyone can start a sign-in without logging in, so abandoned ones expire and new
+        # ones are refused while the limit is reached, keeping the pending ones valid; no await
+        # between this check and the insert below, so concurrent starts cannot exceed the limit
+        for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
+            del self._oauth_sessions[expired]
+        if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
+            raise RateLimited("Too many Home Assistant sign-ins are pending")
+
         state = secrets.token_urlsafe(32)
-        # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
+        code_verifier = secrets.token_urlsafe(64)
+        # Keep each sign-in's details keyed by state to support concurrent OAuth sessions
         # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = (return_url, redirect_uri)
+        self._oauth_sessions[state] = (
+            return_url,
+            redirect_uri,
+            now + OAUTH_STATE_TTL,
+            code_verifier,
+        )
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -693,6 +716,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 redirect_uri,
                 client_id=client_id,
                 state=state,
+                code_challenge=_pkce_challenge(code_verifier),
             ),
         )
 
@@ -703,12 +727,12 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
         """
-        # Verify state and retrieve return_url from session
-        if state not in self._oauth_sessions:
-            return AuthResult(success=False, error="Invalid or expired state parameter")
-
         # Retrieve and remove the return_url and redirect_uri for this session (cleanup)
-        return_url, redirect_uri = self._oauth_sessions.pop(state)
+        session = self._oauth_sessions.pop(state, None)
+        # Verify state and retrieve return_url from session
+        if session is None or session[2] <= time.monotonic():
+            return AuthResult(success=False, error="Invalid or expired state parameter")
+        return_url, redirect_uri, _, code_verifier = session
 
         # Get the correct HA URL (external URL if running as add-on)
         # This must be the same URL used in get_authorization_url
@@ -722,7 +746,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
             # Use hass_client's get_token utility - no client_secret needed!
             try:
-                token_details = await get_token(ha_url, code, client_id=client_id)
+                token_details = await get_token(
+                    ha_url, code, client_id=client_id, code_verifier=code_verifier
+                )
             except Exception as token_error:
                 self.logger.error(
                     "Failed to get token from HA: %s (client_id: %s, ha_url: %s)",
@@ -880,3 +906,13 @@ class HomeAssistantOAuthProvider(LoginProvider):
             avatar_url,
             allow_create=self.allow_self_registration,
         )
+
+
+def _pkce_challenge(code_verifier: str) -> str:
+    """
+    Return the PKCE S256 code challenge for a code verifier.
+
+    :param code_verifier: The code verifier the token request will carry.
+    """
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()

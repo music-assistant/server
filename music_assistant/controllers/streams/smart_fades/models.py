@@ -52,6 +52,28 @@ class TransitionTier(Enum):
     QUICK_FADE = "quick_fade"
 
 
+class TransitionStyle(StrEnum):
+    """How a transition is timed and rendered."""
+
+    # beatmatched DJ blend on a FULL_BLEND or TEMPO_BLEND tier
+    BLEND = "blend"
+    # loudness segue: the next track starts where the outgoing one has gone quiet
+    SEGUE = "segue"
+    # unsynced short volume fade
+    CUT = "cut"
+
+
+class QuickFadeTrigger(StrEnum):
+    """What ruled out a blend and made the tier a quick fade."""
+
+    # the two decks' meters differ, so they share no bar grid
+    METER = "meter"
+    # the tempo gap is beyond the time-stretch range
+    TEMPO = "tempo"
+    # the anchored outgoing tail has too few or too irregular downbeats
+    BEAT_GRID = "beat_grid"
+
+
 @dataclass(slots=True)
 class Deck:
     """
@@ -245,8 +267,6 @@ class TransitionStrategy(StrEnum):
     # even the fallback crossfade collided too severely; shipped the click-free
     # equal-power handoff as the last resort
     SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
-    # grid unusable but both decks ambient: long unphrased equal-power overlay
-    LAZY_OVERLAY = "lazy_overlay"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +291,8 @@ class PlanMetrics:
     collision_seconds: float = 0.0
     # gain-weighted overlap (the acrossfade curve's simultaneous-power integral)
     weighted_collision_seconds: float = 0.0
+    # gain-weighted kick overlap in outgoing bars; 0.0 for a beatmatched blend
+    rhythm_clash_bars: float = 0.0
 
 
 @dataclass(slots=True)
@@ -286,10 +308,12 @@ class TransitionPlan:
     # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
+    style: TransitionStyle = TransitionStyle.CUT
     eq_plan: EqPlan = field(default_factory=EqPlan.neutral)
     tempo_plan: TempoPlan = field(default_factory=TempoPlan)
     fadeout_trim: FadeOutTrim | None = None
     # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None
     fadeout_curve: str = "qsin"
+    fadein_curve: str = "qsin"
     metrics: PlanMetrics = field(default_factory=PlanMetrics)
