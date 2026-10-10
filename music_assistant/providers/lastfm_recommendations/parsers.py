@@ -121,11 +121,11 @@ async def _search_provider(
     :param item_mapping: ItemMapping to search for.
     :param provider: Provider instance to search.
     """
-    if not provider.available:
-        # the controller answers an unavailable provider with no results, which would read
-        # as the provider not having the item
-        return _SEARCH_FAILED
     async with _SEARCH_SEMAPHORE:
+        # the controller answers an unavailable provider with no results, which would read
+        # as the provider not having the item; it can unload while waiting here or searching
+        if not provider.available:
+            return _SEARCH_FAILED
         try:
             LOGGER.debug(
                 "Searching %s on %s for: %s",
@@ -137,6 +137,8 @@ async def _search_provider(
             search_results = await ctrl.search(
                 item_mapping.name, provider.instance_id, limit=PROVIDER_SEARCH_LIMIT
             )
+            if not provider.available:
+                return _SEARCH_FAILED
             return list(search_results)
         except MusicAssistantError as err:
             LOGGER.debug("Provider %s search failed: %s", provider.name, type(err).__name__)

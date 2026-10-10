@@ -203,3 +203,19 @@ async def test_unavailable_provider_makes_resolution_incomplete() -> None:
             ctrl, mapping, [Mock(name="p", available=False)], None
         )
     ctrl.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_unloading_during_the_search_makes_resolution_incomplete() -> None:
+    """A provider that went unavailable while searched may have answered for that reason."""
+    mapping = ItemMapping(media_type=Track.media_type, item_id="temp", provider="x", name="a")
+    provider = Mock(name="p", available=True)
+
+    async def _search_while_unloading(*_args: Any, **_kwargs: Any) -> list[Track]:
+        provider.available = False
+        return []
+
+    ctrl = Mock()
+    ctrl.search = AsyncMock(side_effect=_search_while_unloading)
+    with pytest.raises(parsers.SearchIncomplete):
+        await parsers._search_providers_concurrent(ctrl, mapping, [provider], None)
