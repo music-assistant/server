@@ -39,7 +39,7 @@ def test_is_apple_id_accepts_catalog_and_prefixed_ids() -> None:
 
 def test_is_apple_id_rejects_names_standing_in_as_ids() -> None:
     """Album and artist names used as stand-in ids are never sent to the API."""
-    for value in ("Rebelution", "High Hopes / Low Expectations - EP", "", "a.", "x y"):
+    for value in ("Rebelution", "High Hopes / Low Expectations - EP", "", "a.", "x y", "x.123"):
         assert not is_apple_id(value)
     assert not is_apple_id(None)
 

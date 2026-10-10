@@ -32,8 +32,9 @@ def is_apple_id(item_id: Any) -> bool:
     """
     if not isinstance(item_id, str):
         return False
-    # catalog ids are numeric, all other ids carry a type prefix (i./l./p./pl./ra./...)
-    return bool(re.fullmatch(r"\d+|[a-z]{1,2}\.[A-Za-z0-9_-]+", item_id))
+    # catalog ids are numeric; library songs, albums, playlists and artists, catalog playlists
+    # and stations carry their own type prefix
+    return bool(re.fullmatch(r"\d+|(?:i|l|p|r|pl|ra)\.[A-Za-z0-9_-]+", item_id))
 
 
 def translate_media_type_to_apple_type(media_type: MediaType) -> str:
