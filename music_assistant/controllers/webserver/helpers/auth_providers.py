@@ -659,15 +659,6 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param redirect_uri: The callback URL.
         :param return_url: Optional URL to redirect to after successful login.
         """
-        now = time.monotonic()
-        # anyone can start a sign-in without logging in, so abandoned ones expire and new
-        # ones are refused while the limit is reached, keeping the pending ones valid
-        for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
-            del self._oauth_sessions[expired]
-        if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
-            self.logger.warning("Refusing Home Assistant sign-in: too many sign-ins are pending")
-            return None
-
         # Get the correct HA URL (external URL if running as add-on)
         ha_url = await self._get_external_ha_url()
         if not ha_url:
@@ -691,6 +682,16 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 inferred_ha_url,
             )
             ha_url = inferred_ha_url
+
+        now = time.monotonic()
+        # anyone can start a sign-in without logging in, so abandoned ones expire and new
+        # ones are refused while the limit is reached, keeping the pending ones valid; no await
+        # between this check and the insert below, so concurrent starts cannot exceed the limit
+        for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
+            del self._oauth_sessions[expired]
+        if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
+            self.logger.warning("Refusing Home Assistant sign-in: too many sign-ins are pending")
+            return None
 
         state = secrets.token_urlsafe(32)
         # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions

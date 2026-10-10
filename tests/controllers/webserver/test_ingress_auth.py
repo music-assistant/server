@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator
 from contextlib import contextmanager
@@ -746,6 +747,30 @@ async def test_pending_ha_logins_are_capped(mass_minimal: MusicAssistant) -> Non
         result = await provider.handle_oauth_callback("ha_code", states[0])
     assert result == AuthResult(success=False, error="No access token received from HA")
     get_token.assert_awaited_once()
+
+
+async def test_concurrent_ha_logins_stay_within_the_limit(mass_minimal: MusicAssistant) -> None:
+    """HA logins that start together while Home Assistant is slow to answer stay within the limit."""
+    provider = _oauth_provider(mass_minimal)
+    ha_answers = asyncio.Event()
+
+    async def slow_ha_url() -> str:
+        await ha_answers.wait()
+        return "http://ha.local:8123"
+
+    with patch.object(provider, "_get_external_ha_url", slow_ha_url):
+        starts = [
+            asyncio.create_task(
+                provider.get_authorization_url("http://ma.local:8095/auth/callback")
+            )
+            for _ in range(MAX_OAUTH_STATES + 10)
+        ]
+        await asyncio.sleep(0)
+        ha_answers.set()
+        results = await asyncio.gather(*starts)
+
+    assert len(provider._oauth_sessions) == MAX_OAUTH_STATES
+    assert results.count(None) == 10
 
 
 async def _start_ha_login(provider: HomeAssistantOAuthProvider) -> str:
