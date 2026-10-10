@@ -1190,10 +1190,16 @@ def _attach_post(
     *,
     analysis_onset: float | None = None,
     lyrics: tuple[str | None, str | None] = (None, None),
+    flow_mode: bool = True,
+    flow_mode_required: bool = False,
 ) -> tuple[AsyncMock, AsyncMock]:
-    """Wire the next queue item, its stored analysis and its lyrics lookup."""
+    """Wire the next queue item, the queue's flow mode, its stored analysis and its lyrics."""
     mass = cast("Any", renderer).mass
     mass.player_queues.get_next_item = lambda _queue_id, _item_id: next_item
+    mass.player_queues.get = lambda queue_id: SimpleNamespace(
+        queue_id=queue_id, flow_mode=flow_mode
+    )
+    mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
     get_vocal_onset = AsyncMock(return_value=analysis_onset)
     mass.streams.audio_analysis = SimpleNamespace(get_vocal_onset=get_vocal_onset)
     get_track_lyrics = AsyncMock(return_value=lyrics)
@@ -1264,6 +1270,61 @@ async def test_a_repeated_resolve_does_not_look_the_lyrics_up_again() -> None:
 
     assert first.tail_overlap == second.tail_overlap
     get_track_lyrics.assert_awaited_once()
+
+
+async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Outside flow mode nothing would mix the overlap, so the onset is never looked up."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, get_track_lyrics = _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False
+    )
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        first = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+        second = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert first.tail_overlap is None
+    assert second.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    get_track_lyrics.assert_not_awaited()
+    skips = [r for r in caplog.records if "does not stream in flow mode" in r.getMessage()]
+    assert len(skips) == 1
+
+
+async def test_a_missing_next_track_is_logged_once_until_the_queue_changes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Repeated resolves of a clip with nothing after it report the skip only once."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(renderer, None)
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    skips = [r for r in caplog.records if "no next track in the queue" in r.getMessage()]
+    assert len(skips) == 1
+
+
+async def test_a_show_that_holds_the_queue_in_flow_mode_posts_before_it_streams() -> None:
+    """A queue not yet streaming in flow mode posts when a show requires flow mode for it."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False, flow_mode_required=True
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    cast("Any", renderer).mass.streams.flow_mode_required.assert_called_once_with("player_a")
 
 
 @pytest.mark.parametrize(

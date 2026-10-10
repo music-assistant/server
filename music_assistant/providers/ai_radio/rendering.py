@@ -25,6 +25,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
+from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -56,7 +57,6 @@ from .constants import (
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
-    POST_TAIL_GAP,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
@@ -112,8 +112,8 @@ class AIRadioRenderMixin:
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
     _engine_loudness: dict[tuple[str, str, str], float]
-    # clip id -> (next queue item id, the post planned against it)
-    _post_plans: dict[str, tuple[str, TailOverlap | None]]
+    # clip id -> (next queue item id or None, the post planned against it)
+    _post_plans: dict[str, tuple[str | None, TailOverlap | None]]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -500,27 +500,36 @@ class AIRadioRenderMixin:
         next_item = self.mass.player_queues.get_next_item(
             queue_item.queue_id, queue_item.queue_item_id
         )
-        if next_item is None or not isinstance(next_item.media_item, Track):
-            self._post_skipped(queue_item.name, "no next track in the queue")
-            return None
-        # every path that resolves the clip asks again, and the lyrics lookup is not cheap
+        next_item_id = next_item.queue_item_id if next_item is not None else None
+        # every path that resolves the clip asks again, the lyrics lookup is not cheap and
+        # a skip should log once until the next item changes
         planned = self._post_plans.get(clip_id)
-        if planned is not None and planned[0] == next_item.queue_item_id:
+        if planned is not None and planned[0] == next_item_id:
             return planned[1]
-        tail_overlap = await self._plan_post_over(next_item, clip_duration)
-        self._post_plans[clip_id] = (next_item.queue_item_id, tail_overlap)
+        tail_overlap = await self._plan_post_over(queue_item, next_item, clip_duration)
+        self._post_plans[clip_id] = (next_item_id, tail_overlap)
         return tail_overlap
 
     async def _plan_post_over(
-        self, next_item: QueueItem, clip_duration: int | None
+        self, queue_item: QueueItem, next_item: QueueItem | None, clip_duration: int | None
     ) -> TailOverlap | None:
-        """Return how far the clip may carry over the given track's intro, or None."""
+        """Return how far the clip may carry over the given next item's intro, or None."""
+        if next_item is None or not isinstance(next_item.media_item, Track):
+            self._post_skipped(queue_item.name, "no next track in the queue")
+            return None
+        # the overlap is only mixed at a flow stream's boundary; a show requires flow mode
+        # before its first play start, so its first clip already passes here
+        queue = self.mass.player_queues.get(queue_item.queue_id)
+        if queue is None or not (
+            queue.flow_mode or self.mass.streams.flow_mode_required(queue.queue_id)
+        ):
+            self._post_skipped(next_item.name, "the player does not stream in flow mode")
+            return None
         onset, reason = await self._resolve_vocal_onset(next_item)
         if onset is None:
             self._post_skipped(next_item.name, reason)
             return None
-        # POST_TAIL_GAP matches the ramp the server brings the music back up with
-        window = onset - POST_TAIL_GAP
+        window = onset - VOICE_OVER_RAMP
         if window < POST_MIN_SECONDS:
             self._post_skipped(
                 next_item.name, f"vocal enters at {onset:.1f}s, too little instrumental intro"
