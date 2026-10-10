@@ -921,8 +921,10 @@ class AlbumsController(MediaControllerBase[Album]):
             db_track.disc_number = source.disc_number
             db_track.track_number = source.track_number
         result: list[Track] = list(db_items)
+        # a reference to the album, which carries no user's favorite state
+        album_mapping = ItemMapping.from_item(library_album)
         for provider_track in select_album_tracks(db_items, listings):
-            provider_track.album = library_album
+            provider_track.album = album_mapping
             result.append(provider_track)
         if lookup_error is not None and not any(track.available for track in result):
             # nothing could be played at all, so surface the reason instead of an empty list

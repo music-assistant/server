@@ -1630,8 +1630,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # genres are library-only items with no provider mappings, nothing to refresh
         if media_type == MediaType.GENRE:
             return media_item
-        # the item's listings (album tracks, ...) are assembled anew after the refresh
-        await invalidate_listings(self.mass, media_item)
 
         library_id = media_item.item_id if media_item.provider == "library" else None
 
@@ -1693,6 +1691,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if library_id is None:
+            # the item's listings (album tracks, ...) are assembled anew from here on
+            await invalidate_listings(self.mass, media_item)
             return media_item
         # restore in_library state from before the refresh
         for prov_mapping in media_item.provider_mappings:
@@ -1722,6 +1722,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        # the item's listings (album tracks, ...) are assembled anew from here on, after
+        # every change the refresh made
+        await invalidate_listings(self.mass, library_item)
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)

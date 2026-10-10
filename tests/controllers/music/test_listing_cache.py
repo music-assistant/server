@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -260,6 +260,30 @@ async def test_an_assembly_overtaken_by_an_invalidation_is_not_kept(mass: MusicA
     release.set()
 
     assert [track.item_id for track in await in_flight] == ["before"]
+    await _album_tracks(mass, uri, assemble)
+    assert assemble.await_count == 2
+
+
+async def test_an_invalidation_during_the_write_wins(mass: MusicAssistant) -> None:
+    """A listing written while its container is invalidated is not left behind."""
+    album = create_album("spotify_1", "edited_while_written")
+    uri = cast("str", album.uri)
+    writing, release = asyncio.Event(), asyncio.Event()
+    cache_set = mass.cache.set
+
+    async def _slow_set(*args: Any, **kwargs: Any) -> None:
+        writing.set()
+        await release.wait()
+        await cache_set(*args, **kwargs)
+
+    assemble = AsyncMock(return_value=Listing([create_track("spotify_1", "before")]))
+    with patch.object(mass.cache, "set", _slow_set):
+        in_flight = asyncio.create_task(_album_tracks(mass, uri, assemble))
+        await writing.wait()
+        await invalidate_listings(mass, album)
+        release.set()
+        await in_flight
+
     await _album_tracks(mass, uri, assemble)
     assert assemble.await_count == 2
 

@@ -173,6 +173,9 @@ async def _fill(
             provider=uri,
             category=CACHE_CATEGORY_LISTINGS,
         )
+        if _generations.get(uri, 0) != generation:
+            # an invalidation ran while the entry was being written
+            await mass.cache.delete(key, category=CACHE_CATEGORY_LISTINGS, provider=uri)
     return assembled
 
 

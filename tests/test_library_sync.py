@@ -360,6 +360,7 @@ async def test_refresh_item_preserves_in_library_state() -> None:
     # use TRACK media_type for the returned library_item to skip album-tracks branch
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)
@@ -404,6 +405,7 @@ async def test_refresh_item_preserves_in_library_false() -> None:
 
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)
@@ -448,6 +450,7 @@ async def test_refresh_item_respects_provider_set_in_library() -> None:
 
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)

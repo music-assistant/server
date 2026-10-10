@@ -444,6 +444,9 @@ async def test_album_tracks_show_the_album_image_through_the_album(mass: MusicAs
     assert tracks[0].image is not None
     assert tracks[0].image.path == ALBUM_IMAGE
     assert tracks[0].metadata.images == [track_image]
+    # a reference to the album, so the listing carries no user's state of the album
+    assert isinstance(tracks[0].album, ItemMapping)
+    assert tracks[0].album.item_id == album.item_id
 
 
 async def test_album_tracks_follow_the_listing_contract(mass: MusicAssistant) -> None:
