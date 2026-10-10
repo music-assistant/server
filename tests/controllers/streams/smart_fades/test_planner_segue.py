@@ -225,6 +225,8 @@ class TestSegueScenarios:
         plan = _plan(out, inc)
 
         assert plan.style is TransitionStyle.SEGUE
+        # 12s + 3s of quiet material, capped at the 15s segue maximum
+        assert plan.crossfade_duration == pytest.approx(15.0)
         assert plan.crossfade_duration <= segue.quiet_tail + segue.quiet_head
         assert (plan.fadeout_curve, plan.fadein_curve) == ("nofade", "nofade")
 
@@ -245,7 +247,11 @@ class TestSegueScenarios:
             assert plan.style is TransitionStyle.SEGUE
             durations.append(plan.crossfade_duration)
 
-        assert durations == sorted(durations)
+        if kickless_tail:
+            # two instrumental decks with a kickless side ride the long segue at any tail
+            assert durations == pytest.approx([15.0] * 7)
+        else:
+            assert durations == sorted(durations)
 
     def test_kick_against_kick_with_loud_ends_keeps_todays_cut(
         self, monkeypatch: pytest.MonkeyPatch

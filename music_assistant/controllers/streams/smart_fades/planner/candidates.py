@@ -92,7 +92,8 @@ _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 _TRIM_CLOSING_MIN_GAP_S: float = 8.0
 
 # Segue overlaps shrink in steps of 2 outgoing bars on a snapped grid, else of
-# 2 seconds, never below the quick fade they replace nor this many seconds
+# 2 seconds, never below the quick fade they replace nor this many seconds, in at
+# most this many steps (a long segue adds its quiet material as one more)
 _SEGUE_STEP_BARS: int = 2
 _SEGUE_STEP_SECONDS: float = 2.0
 _SEGUE_MIN_SECONDS: float = 2.0
@@ -393,8 +394,8 @@ class SegueGenerator(CandidateGenerator):
         """Emit the segue's shrink steps down to the quick fade it replaces, or nothing."""
         if ctx.segue is None:
             return
-        # both decks read near-continuous vocal, so the vocal guard abstains; a long
-        # segue there overlaps both voices, so the pair keeps today's transition
+        # both decks read near-continuous vocal, so the vocal guard abstains; a segue
+        # there overlaps both voices, so the pair keeps today's transition
         if not ctx.vocal_collision_reliable:
             return
         if ctx.preferred_style is TransitionStyle.BLEND and not self._allow_blend_context:
@@ -931,6 +932,7 @@ class CandidateFactory:
         """Build an unsynced segue: B starts the overlap before A's anchor, from its own head."""
         assert spec.overlap_s is not None  # every segue spec carries its overlap
         ctx = self._ctx
+        assert ctx.segue is not None  # a segue spec comes from the segue facts
         tail = self._anchored_tail(spec.anchor_s)
         plan = TransitionPlan(
             tier=spec.tier,
@@ -939,11 +941,11 @@ class CandidateFactory:
             style=TransitionStyle.SEGUE,
             fadeout_trim=tail.fadeout_trim,
         )
-        assert ctx.segue is not None  # a segue spec comes from the segue facts
         # within the quiet material a side already quiet at its own edge plays as
         # recorded: fading it again only buries it, while a side still loud there fades
         # equal-power. A longer overlap reaches loud parts on both sides, so both fade
-        # equal-power and two loud parts are never summed at full gain
+        # equal-power (unless the record's own mastered fade covers the outgoing side)
+        # and two loud parts are never summed at full gain
         within_material = (
             plan.crossfade_duration <= ctx.segue.quiet_tail + ctx.segue.quiet_head + 1e-6
         )
@@ -1193,12 +1195,8 @@ def _beatless_long_qualifies(ctx: TransitionContext) -> bool:
     if not (ctx.out_kickless or ctx.in_kickless):
         return False
     # a deck without vocal data counts as singing
-    out_duty, in_duty = _window_duties(ctx, SEGUE_MAX_SECONDS)
-    return (
-        out_duty is not None
-        and in_duty is not None
-        and out_duty <= _SINGS_DUTY
-        and in_duty <= _SINGS_DUTY
+    return all(
+        duty is not None and duty <= _SINGS_DUTY for duty in _window_duties(ctx, SEGUE_MAX_SECONDS)
     )
 
 
