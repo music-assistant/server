@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, patch
 
@@ -24,11 +25,10 @@ USER_A = User(user_id="user-a", username="user-a", role=UserRole.USER)
 USER_B = User(user_id="user-b", username="user-b", role=UserRole.USER)
 
 
-@pytest.fixture(scope="module", name="mass")
-async def mass_fixture(music_mass_module: MusicAssistant) -> MusicAssistant:
-    """Return the module-scoped database-only fixture, with its cache store set up."""
-    await music_mass_module.cache.setup(await music_mass_module.config.get_core_config("cache"))
-    return music_mass_module
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass_with_cache: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a cache store."""
+    return music_mass_with_cache
 
 
 async def _album_tracks(
@@ -140,6 +140,76 @@ async def test_a_refresh_of_the_item_drops_the_listings_under_every_id(
     for uri in uris:
         await _album_tracks(mass, uri, assemble)
     assert assemble.await_count == 4
+
+
+async def test_concurrent_misses_assemble_once(mass: MusicAssistant) -> None:
+    """Two requests missing the cache at once share one assembly, each getting its own items."""
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "requested_twice")
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        return Listing([create_track("spotify_1", "t1")])
+
+    assemble = AsyncMock(side_effect=_assemble)
+    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    await assembling.wait()
+    release.set()
+    first_items, second_items = await asyncio.gather(first, second)
+
+    assemble.assert_awaited_once()
+    assert [track.item_id for track in first_items] == [track.item_id for track in second_items]
+    assert first_items == second_items
+    assert first_items[0] is not second_items[0]
+
+
+async def test_a_waiting_request_assembles_itself_when_the_first_one_is_cancelled(
+    mass: MusicAssistant,
+) -> None:
+    """A request waiting on another's assembly takes over when that request goes away."""
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "abandoned")
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        return Listing([create_track("spotify_1", "t1")])
+
+    assemble = AsyncMock(side_effect=_assemble)
+    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    await assembling.wait()
+    first.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert [track.item_id for track in await second] == ["t1"]
+    assert assemble.await_count == 2
+
+
+async def test_an_assembly_overtaken_by_an_invalidation_is_not_kept(mass: MusicAssistant) -> None:
+    """A listing assembled across an edit of its container is served, but the next call asks again."""
+    album = create_album("spotify_1", "edited_meanwhile")
+    uri = cast("str", album.uri)
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        return Listing([create_track("spotify_1", "before")])
+
+    assemble = AsyncMock(side_effect=_assemble)
+    in_flight = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    await assembling.wait()
+    await invalidate_listings(mass, album)
+    release.set()
+
+    assert [track.item_id for track in await in_flight] == ["before"]
+    await _album_tracks(mass, uri, assemble)
+    assert assemble.await_count == 2
 
 
 async def test_favorite_state_follows_the_calling_user(mass: MusicAssistant) -> None:

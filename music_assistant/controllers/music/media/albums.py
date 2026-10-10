@@ -457,11 +457,15 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
+            # keyed and fetched by the one instance the selector resolves to
+            provider = self.mass.get_provider(provider_instance_id_or_domain)
+            if provider is None:
+                return []
             tracks = await cached_listing(
                 self.mass,
                 ListingType.ALBUM_TRACKS,
-                create_uri(MediaType.ALBUM, provider_instance_id_or_domain, item_id),
-                lambda: self._list_provider_album(item_id, provider_instance_id_or_domain),
+                create_uri(MediaType.ALBUM, provider.instance_id, item_id),
+                lambda: self._list_provider_album(item_id, provider.instance_id),
                 item_type=Track,
             )
         else:
@@ -836,14 +840,10 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
-    async def _list_provider_album(
-        self, item_id: str, provider_instance_id_or_domain: str
-    ) -> Listing[Track]:
+    async def _list_provider_album(self, item_id: str, provider_instance_id: str) -> Listing[Track]:
         """Return the tracks of an album that is not in the library, as the provider lists them."""
-        album_tracks = await self._get_provider_album_tracks(
-            item_id, provider_instance_id_or_domain
-        )
-        await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id_or_domain)
+        album_tracks = await self._get_provider_album_tracks(item_id, provider_instance_id)
+        await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id)
         return Listing(album_tracks)
 
     async def _assemble_album_tracks(
