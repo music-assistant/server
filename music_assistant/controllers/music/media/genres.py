@@ -420,6 +420,9 @@ class GenreController(MediaControllerBase[Genre]):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> list[Track]:
         """
         Return the tracks mapped to a genre.
@@ -427,10 +430,21 @@ class GenreController(MediaControllerBase[Genre]):
         :param item_id: The genre's library item ID.
         :param limit: Maximum number of tracks to return (0 = unlimited).
         :param offset: Offset for pagination.
-        :param order_by: Deprecated legacy sort key (e.g. "random").
+        :param order_by: Deprecated legacy sort key.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
+        controller = self.mass.music.tracks
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, order_by, default=False
+        )
         return await self._mapped_items(
-            self.mass.music.tracks, int(item_id), limit, offset, order_by=order_by
+            controller,
+            int(item_id),
+            limit,
+            offset,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
         )
 
     async def albums(
@@ -439,6 +453,9 @@ class GenreController(MediaControllerBase[Genre]):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> list[Album]:
         """
         Return the albums mapped to a genre.
@@ -446,10 +463,21 @@ class GenreController(MediaControllerBase[Genre]):
         :param item_id: The genre's library item ID.
         :param limit: Maximum number of albums to return (0 = unlimited).
         :param offset: Offset for pagination.
-        :param order_by: Deprecated legacy sort key (e.g. "random").
+        :param order_by: Deprecated legacy sort key.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
+        controller = self.mass.music.albums
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, order_by, default=False
+        )
         return await self._mapped_items(
-            self.mass.music.albums, int(item_id), limit, offset, order_by=order_by
+            controller,
+            int(item_id),
+            limit,
+            offset,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
         )
 
     async def mapped_media(
@@ -1231,9 +1259,13 @@ class GenreController(MediaControllerBase[Genre]):
         *,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-        order_by: str | None = None,
     ) -> list[ItemCls]:
         """Return the library items of one media type that are mapped to a genre."""
+        if controller.media_type == MediaType.ARTIST and sort_field == SortField.ARTIST_NAME:
+            sort_field = SortField.NAME
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, default=False
+        )
         extra_join_parts: list[str] = []
         if sort_field == SortField.ARTIST_NAME:
             if controller.media_type == MediaType.TRACK:
@@ -1250,11 +1282,6 @@ class GenreController(MediaControllerBase[Genre]):
                         "JOIN artists ON artists.item_id = album_artists.artist_id",
                     )
                 )
-            else:
-                sort_field = SortField.NAME
-        sort_field, sort_direction = controller.resolve_sort(
-            sort_field, sort_direction, order_by, default=False
-        )
         query = (
             f"EXISTS(SELECT 1 FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
             f"WHERE gm.media_id = {controller.db_table}.item_id "
