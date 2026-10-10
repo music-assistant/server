@@ -14,6 +14,7 @@ written by a text engine and kept in the cache the same way.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import os
@@ -52,6 +53,7 @@ from .constants import (
     CANVAS_SIZE,
     CONCEPT_FROM_ENGINE,
     CONCEPT_PROMPT,
+    CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
     CONF_CUSTOM_PROMPT,
     CONF_DESCRIPTIONS,
@@ -60,6 +62,8 @@ from .constants import (
     CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
+    CONF_PREVIEW_IMAGE,
+    CONF_PREVIEW_PLAYLIST,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -83,6 +87,7 @@ from .constants import (
     ORPHAN_GRACE_SECONDS,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
+    PREVIEW_SIZE,
     PROMPT_TIMEOUT_SECONDS,
     REPLACEABLE_IMAGE_DOMAINS,
     SEED_SEPARATOR,
@@ -156,97 +161,19 @@ class AIArtworkProvider(MetadataProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries to configure this provider instance."""
-        return (
-            *await create_image_engine_config_entries(
-                self.mass, CONF_IMAGE_ENGINE, category="generic"
-            ),
-            ConfigEntry(
-                key=CONF_STYLE,
-                type=ConfigEntryType.STRING,
-                required=True,
-                default_value=Style.MUSIC_ASSISTANT.value,
-                options=[ConfigValueOption(value=style.value) for style in Style],
-            ),
-            ConfigEntry(
-                key=CONF_CUSTOM_PROMPT,
-                type=ConfigEntryType.STRING,
-                required=False,
-                default_value=DEFAULT_CUSTOM_PROMPT,
-                depends_on=CONF_STYLE,
-                depends_on_value=Style.CUSTOM.value,
-            ),
-            ConfigEntry(
-                key=CONF_TITLE_OVERLAY,
-                type=ConfigEntryType.BOOLEAN,
-                required=False,
-                default_value=False,
-            ),
-            ConfigEntry(
-                key=CONF_PLAYLISTS,
-                type=ConfigEntryType.STRING,
-                required=True,
-                default_value=PLAYLISTS_SMART,
-                options=[
-                    ConfigValueOption(value=PLAYLISTS_SMART),
-                    ConfigValueOption(value=PLAYLISTS_ALL),
-                ],
-            ),
-            ConfigEntry(
-                key=CONF_EXTRA_PLAYLISTS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                required=False,
-                default_value=[],
-                options=await self._extra_playlist_options(),
-                depends_on=CONF_PLAYLISTS,
-                depends_on_value=PLAYLISTS_SMART,
-            ),
-            ConfigEntry(
-                key=CONF_KEEP_EXISTING_ARTWORK,
-                type=ConfigEntryType.BOOLEAN,
-                required=False,
-                default_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_DESCRIPTIONS,
-                type=ConfigEntryType.BOOLEAN,
-                required=False,
-                default_value=True,
-            ),
-            # writes the descriptions and, when asked, the visual concept of the covers
-            *await create_ai_engine_config_entries(self.mass, CONF_TEXT_ENGINE, category="generic"),
-            ConfigEntry(
-                key=CONF_USE_PROMPT_ENGINE,
-                type=ConfigEntryType.BOOLEAN,
-                required=False,
-                default_value=False,
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_MAX_PER_HOUR,
-                type=ConfigEntryType.INTEGER,
-                required=False,
-                default_value=DEFAULT_MAX_PER_HOUR,
-                range=(1, 100),
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_REGENERATE,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_REGENERATE,
-                required=False,
-                advanced=True,
-            ),
-        )
+        return await self._config_entries()
 
-    async def handle_config_action(self, action: str) -> None:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
-        Regenerate all covers and descriptions.
+        Regenerate all covers and descriptions, or preview the cover of one playlist.
 
         The current covers and descriptions stay in place until their replacement is ready.
+        A preview is only shown on the settings page and never replaces a cover.
 
         :param action: The action id of the pressed button.
         """
+        if action == CONF_ACTION_PREVIEW:
+            return await self._config_entries(preview=await self._preview())
         if action != CONF_ACTION_REGENERATE:
             raise ActionUnavailable(f"Unknown action: {action}")
         self._generation = int(time.time())
@@ -263,6 +190,20 @@ class AIArtworkProvider(MetadataProvider):
             task_id=f"{self.instance_id}_regenerate",
             abort_existing=True,
         )
+        return None
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """
+        Handle a config update, reloading unless only the playlist to preview changed.
+
+        :param config: The updated provider config.
+        :param changed_keys: The keys of the config that changed.
+        """
+        if changed_keys == {f"values/{CONF_PREVIEW_PLAYLIST}"}:
+            # saved on its own as soon as it is picked, and only read by the preview button
+            self.config = config
+            return
+        await super().update_config(config, changed_keys)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -331,6 +272,121 @@ class AIArtworkProvider(MetadataProvider):
             return
         await self._apply_cover(playlist)
         await self._apply_description(playlist)
+
+    async def _config_entries(self, preview: str | None = None) -> tuple[ConfigEntry, ...]:
+        """
+        Return the options config entries, with a preview cover below the preview button.
+
+        :param preview: The preview cover to show, as a data url.
+        """
+        return (
+            *await create_image_engine_config_entries(
+                self.mass, CONF_IMAGE_ENGINE, category="generic"
+            ),
+            ConfigEntry(
+                key=CONF_STYLE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=Style.MUSIC_ASSISTANT.value,
+                options=[ConfigValueOption(value=style.value) for style in Style],
+            ),
+            ConfigEntry(
+                key=CONF_CUSTOM_PROMPT,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=DEFAULT_CUSTOM_PROMPT,
+                depends_on=CONF_STYLE,
+                depends_on_value=Style.CUSTOM.value,
+            ),
+            ConfigEntry(
+                key=CONF_TITLE_OVERLAY,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_PREVIEW_PLAYLIST,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=None,
+                options=await self._preview_playlist_options(),
+                immediate_apply=True,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_PREVIEW,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_PREVIEW,
+                required=False,
+            ),
+            *(
+                (
+                    ConfigEntry(
+                        key=CONF_PREVIEW_IMAGE,
+                        type=ConfigEntryType.IMAGE,
+                        required=False,
+                        value=preview,
+                    ),
+                )
+                if preview
+                else ()
+            ),
+            ConfigEntry(
+                key=CONF_PLAYLISTS,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=PLAYLISTS_SMART,
+                options=[
+                    ConfigValueOption(value=PLAYLISTS_SMART),
+                    ConfigValueOption(value=PLAYLISTS_ALL),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_EXTRA_PLAYLISTS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                required=False,
+                default_value=[],
+                options=await self._extra_playlist_options(),
+                depends_on=CONF_PLAYLISTS,
+                depends_on_value=PLAYLISTS_SMART,
+            ),
+            ConfigEntry(
+                key=CONF_KEEP_EXISTING_ARTWORK,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_DESCRIPTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            # writes the descriptions and, when asked, the visual concept of the covers
+            *await create_ai_engine_config_entries(self.mass, CONF_TEXT_ENGINE, category="generic"),
+            ConfigEntry(
+                key=CONF_USE_PROMPT_ENGINE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_MAX_PER_HOUR,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=DEFAULT_MAX_PER_HOUR,
+                range=(1, 100),
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_REGENERATE,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_REGENERATE,
+                required=False,
+                advanced=True,
+            ),
+        )
 
     async def _apply_cover(self, playlist: Playlist) -> None:
         """Put the playlist's generated cover in front of its images."""
@@ -410,13 +466,7 @@ class AIArtworkProvider(MetadataProvider):
                 return False
             self._generated_at.append(time.time())
             try:
-                prompt = await self._build_prompt(playlist)
-                self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
-                async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
-                    image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
-                cover = await asyncio.to_thread(
-                    _render_cover, image, self._overlay_layout(), playlist.name
-                )
+                cover = await self._render(playlist, engine)
                 await asyncio.to_thread(
                     Path(self._images_dir, file_name).write_bytes,
                     cover,
@@ -433,6 +483,27 @@ class AIArtworkProvider(MetadataProvider):
                 return False
             self.logger.info("Generated a cover for '%s'", playlist.name)
             return True
+
+    async def _render(self, playlist: Playlist, engine: ImageEngine) -> bytes:
+        """Return a newly generated cover for the playlist, in the configured style."""
+        prompt = await self._build_prompt(playlist)
+        self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
+        async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
+            image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
+        return await asyncio.to_thread(_render_cover, image, self._overlay_layout(), playlist.name)
+
+    async def _preview(self) -> str:
+        """Return a cover for the playlist picked to preview, as a data url, without storing it."""
+        playlist_id = self.config.get_value(CONF_PREVIEW_PLAYLIST)
+        if not playlist_id:
+            raise ActionUnavailable("Pick a playlist to preview first")
+        image_engine = await select_image_engine(self, CONF_IMAGE_ENGINE)
+        if image_engine is None:
+            raise ActionUnavailable("Pick an image engine first")
+        playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
+        self.logger.info("Generating a preview cover for '%s'", playlist.name)
+        cover = await self._render(playlist, image_engine)
+        return await asyncio.to_thread(_preview_data_url, cover)
 
     async def _generate_description(self, playlist: Playlist, engine: AIEngine) -> str | None:
         """Write and store the playlist's description, returning None when that failed."""
@@ -695,6 +766,17 @@ class AIArtworkProvider(MetadataProvider):
         options.extend(ConfigValueOption(item_id) for item_id in sorted(selected - known))
         return options
 
+    async def _preview_playlist_options(self) -> list[ConfigValueOption]:
+        """Return the library playlists that can be previewed, keeping the current selection."""
+        selected = self.config.get_value(CONF_PREVIEW_PLAYLIST)
+        options: list[ConfigValueOption] = []
+        with contextlib.suppress(Exception):
+            async for playlist in self.mass.music.playlists.iter_library_items():
+                options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
+        if selected and str(selected) not in {option.value for option in options}:
+            options.append(ConfigValueOption(str(selected)))
+        return options
+
     def _is_replaceable(self, img: MediaItemImage) -> bool:
         """Return whether an image is generated artwork a new cover may go in front of."""
         if img.provider == self.instance_id:
@@ -832,6 +914,15 @@ def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes
     buffer = BytesIO()
     canvas.save(buffer, "JPEG", optimize=True, quality=90)
     return buffer.getvalue()
+
+
+def _preview_data_url(cover: bytes) -> str:
+    """Return the cover scaled down to a preview, as a JPEG data url."""
+    with Image.open(BytesIO(cover)) as image:
+        preview = image.resize((PREVIEW_SIZE, PREVIEW_SIZE))
+    buffer = BytesIO()
+    preview.save(buffer, "JPEG", optimize=True, quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
 
 
 def _draw_title(canvas: Image.Image, layout: TitleLayout, title: str) -> Image.Image:

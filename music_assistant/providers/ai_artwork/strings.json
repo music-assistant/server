@@ -28,6 +28,18 @@
       "label": "Let Music Assistant add the playlist name",
       "description": "Off: the image engine designs the playlist name into the artwork. This looks the most natural, but some engines misspell it. On: the image engine makes artwork without any text and Music Assistant prints the playlist name on top, so it is always spelled correctly."
     },
+    "preview_playlist": {
+      "label": "Preview with playlist",
+      "description": "The playlist to make a preview cover for. Save any changes to the style first: the preview uses the saved settings."
+    },
+    "preview": {
+      "label": "Preview cover",
+      "description": "Generate a cover for the chosen playlist to see what the style looks like. It is only shown here and does not replace the playlist's cover.",
+      "action_label": "Generate preview"
+    },
+    "preview_image": {
+      "label": "Preview"
+    },
     "playlists": {
       "label": "Playlists",
       "description": "Which playlists get a generated cover.",

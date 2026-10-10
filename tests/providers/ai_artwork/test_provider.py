@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType
+from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.media_items import (
     Artist,
     MediaItemImage,
@@ -29,6 +32,7 @@ from PIL import Image
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.ai_artwork import AIArtworkProvider, _format_template
 from music_assistant.providers.ai_artwork.constants import (
+    CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
     CONF_CUSTOM_PROMPT,
     CONF_DESCRIPTIONS,
@@ -37,6 +41,8 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
+    CONF_PREVIEW_IMAGE,
+    CONF_PREVIEW_PLAYLIST,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -547,6 +553,72 @@ async def test_regenerate_makes_new_covers_and_descriptions(
     _mass(provider).create_task.assert_called_once()
 
 
+async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvider) -> None:
+    """The preview action returns the entries with the cover inline, and keeps no file."""
+    playlist = _smart_playlist(name="Late Night Drive")
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=playlist)
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([playlist])
+    )
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
+
+    with _no_engine_pickers():
+        entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert entries is not None
+    keys = [entry.key for entry in entries]
+    assert keys.index(CONF_PREVIEW_IMAGE) == keys.index(CONF_ACTION_PREVIEW) + 1
+    preview = next(entry for entry in entries if entry.key == CONF_PREVIEW_IMAGE)
+    assert isinstance(preview.value, str)
+    assert preview.value.startswith("data:image/jpeg;base64,")
+    with Image.open(BytesIO(base64.b64decode(preview.value.split(",", 1)[1]))) as image:
+        assert image.size == (512, 512)
+    assert 'called "Late Night Drive"' in _sent_prompt(provider)
+    assert not any(Path(provider._images_dir).iterdir())
+    assert not playlist.metadata.images
+
+
+async def test_preview_needs_a_playlist(provider: AIArtworkProvider) -> None:
+    """Pressing preview without a playlist picked asks for one and generates nothing."""
+    with pytest.raises(ActionUnavailable, match="Pick a playlist"):
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _engine_calls(provider) == 0
+
+
+async def test_settings_page_has_no_preview_until_asked(provider: AIArtworkProvider) -> None:
+    """The regular config entries offer the preview button but no preview image."""
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([_smart_playlist(name="Late Night Drive")])
+    )
+
+    with _no_engine_pickers():
+        entries = await provider.get_config_entries()
+
+    keys = [entry.key for entry in entries]
+    assert CONF_ACTION_PREVIEW in keys
+    assert CONF_PREVIEW_IMAGE not in keys
+    picker = next(entry for entry in entries if entry.key == CONF_PREVIEW_PLAYLIST)
+    assert picker.immediate_apply
+    assert [(option.value, option.title) for option in picker.options] == [
+        ("234", "Late Night Drive")
+    ]
+
+
+async def test_picking_a_preview_playlist_does_not_reload(provider: AIArtworkProvider) -> None:
+    """Only the preview playlist changing keeps the provider loaded; anything else reloads."""
+    config = MagicMock()
+    with patch(
+        "music_assistant.models.provider.Provider.update_config", AsyncMock()
+    ) as base_update:
+        await provider.update_config(config, {f"values/{CONF_PREVIEW_PLAYLIST}"})
+        assert provider.config is config
+        base_update.assert_not_awaited()
+
+        await provider.update_config(config, {f"values/{CONF_STYLE}"})
+        base_update.assert_awaited_once()
+
+
 async def test_scheduled_refresh_puts_back_replaced_descriptions(
     provider: AIArtworkProvider,
 ) -> None:
@@ -730,6 +802,22 @@ def _png() -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (1200, 900), (200, 40, 120)).save(buffer, "PNG")
     return buffer.getvalue()
+
+
+@contextmanager
+def _no_engine_pickers() -> Iterator[None]:
+    """Leave the engine pickers out of the config entries, they have tests of their own."""
+    with (
+        patch(
+            "music_assistant.providers.ai_artwork.create_image_engine_config_entries",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "music_assistant.providers.ai_artwork.create_ai_engine_config_entries",
+            AsyncMock(return_value=()),
+        ),
+    ):
+        yield
 
 
 def _mass(provider: AIArtworkProvider) -> MagicMock:

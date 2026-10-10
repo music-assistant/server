@@ -18,6 +18,9 @@ CONF_EXTRA_PLAYLISTS: Final = "extra_playlists"
 CONF_KEEP_EXISTING_ARTWORK: Final = "keep_existing_artwork"
 CONF_MAX_PER_HOUR: Final = "max_generations_per_hour"
 CONF_ACTION_REGENERATE: Final = "regenerate"
+CONF_PREVIEW_PLAYLIST: Final = "preview_playlist"
+CONF_ACTION_PREVIEW: Final = "preview"
+CONF_PREVIEW_IMAGE: Final = "preview_image"
 
 PLAYLISTS_SMART: Final = "smart"
 PLAYLISTS_ALL: Final = "all"
@@ -28,6 +31,8 @@ DEFAULT_MAX_PER_HOUR: Final = 30
 IMAGES_DIR: Final = "ai_artwork"
 IMAGE_EXTENSION: Final = ".jpg"
 CANVAS_SIZE: Final = 1024
+# previews are sent to the settings page inline, so they are kept small
+PREVIEW_SIZE: Final = 512
 
 # playlist_metadata's collage is regenerated on every refresh, so it never counts as artwork
 # worth keeping over a generated cover
