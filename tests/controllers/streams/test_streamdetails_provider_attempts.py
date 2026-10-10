@@ -22,8 +22,13 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ContentType, MediaType, ProviderSharing, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    ProviderMapping,
+    SoundEffect,
+)
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -70,6 +75,18 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
         duration=None,
         media_item=media_item,
     )
+
+
+def _pinned_to(queue_item: QueueItem, instance: str) -> QueueItem:
+    """Pin the queue item to its copy on the given instance, as a container's listing would."""
+    queue_item.origin = QueueItemOrigin(
+        container=ItemMapping(
+            media_type=MediaType.PLAYLIST, item_id="pl1", provider=instance, name="Playlist"
+        ),
+        provider_instance=instance,
+        item_id=ITEM_ID,
+    )
+    return queue_item
 
 
 def _streamdetails(item_id: str, media_type: MediaType, provider: str) -> StreamDetails:
@@ -274,6 +291,50 @@ async def test_excluded_instance_is_skipped_including_its_cached_details() -> No
 
     assert streamdetails.provider == available_instance
     excluded.get_stream_details.assert_not_awaited()
+
+
+async def test_the_pinned_copy_is_tried_before_a_better_one() -> None:
+    """The copy a container listed plays first, ahead of a better and an own-account copy."""
+    pinned_instance = "tidal--lofi"
+    other_instance = "qobuz--hifi"
+    pinned = _music_provider(pinned_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({pinned_instance: pinned, other_instance: other}, owned=[other_instance])
+    queue_item = _pinned_to(
+        _queue_item(
+            _mapping(pinned_instance),
+            _mapping(other_instance, content_type=ContentType.FLAC),
+        ),
+        pinned_instance,
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails.provider == pinned_instance
+    other.get_stream_details.assert_not_awaited()
+
+
+async def test_an_excluded_pinned_instance_is_passed_over() -> None:
+    """The pin does not revive an excluded instance; the next copy in line plays instead."""
+    pinned_instance = "tidal--lofi"
+    other_instance = "qobuz--hifi"
+    pinned = _music_provider(pinned_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({pinned_instance: pinned, other_instance: other})
+    queue_item = _pinned_to(
+        _queue_item(
+            _mapping(pinned_instance),
+            _mapping(other_instance, content_type=ContentType.FLAC),
+        ),
+        pinned_instance,
+    )
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=queue_item, excluded_provider_instances={pinned_instance}
+    )
+
+    assert streamdetails.provider == other_instance
+    pinned.get_stream_details.assert_not_awaited()
 
 
 async def test_mapping_falls_back_to_compatible_streaming_provider_instance() -> None:

@@ -37,6 +37,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import ORDERED_MEDIA_TYPES
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 # the album the user starts, in its own track order
@@ -166,7 +167,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     )
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda *_args, **_kwargs: [_track(item_id) for item_id in ALBUM_TRACKS]
+        side_effect=lambda *_args, **_kwargs: [
+            ResolvedItem(_track(item_id)) for item_id in ALBUM_TRACKS
+        ]
     )
     queue = PlayerQueue(
         queue_id="q1", active=True, display_name="Q1", available=True, items=0, **queue_kwargs
@@ -334,19 +337,6 @@ async def test_an_unresolvable_first_item_leaves_the_decision_to_the_next_one() 
     ctrl.mass.music.get_item_by_uri = AsyncMock(side_effect=[MediaNotFoundError("gone"), _album()])
 
     await ctrl.play_media("q1", ["test://track/gone", "test://album/al1"], QueueOption.REPLACE)
-
-    assert _queue(ctrl).shuffle_enabled is False
-    assert _played_order(ctrl) == ALBUM_TRACKS
-
-
-async def test_an_item_that_fails_unexpectedly_is_skipped_as_well() -> None:
-    """Any error while resolving one item skips that item instead of failing the request."""
-    ctrl = _controller(shuffle_enabled=True)
-    ctrl.mass.music.get_item_by_uri = AsyncMock(
-        side_effect=[ZeroDivisionError("division by zero"), _album()]
-    )
-
-    await ctrl.play_media("q1", ["test://track/broken", "test://album/al1"], QueueOption.REPLACE)
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS

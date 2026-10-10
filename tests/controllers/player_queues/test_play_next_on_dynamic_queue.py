@@ -25,6 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 NOW = 1_000_000
@@ -110,7 +111,7 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     # a bare track resolves to just itself
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda item, *_args, **_kwargs: [item]
+        side_effect=lambda item, *_args, **_kwargs: [ResolvedItem(item)]
     )
     return ctrl
 
@@ -212,7 +213,7 @@ async def test_play_next_on_linear_queue_inserts_after_current() -> None:
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     wish = _track("wish", artist="Wish")
     ctrl._media_resolver = Mock()
-    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[wish])
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[ResolvedItem(wish)])
 
     await ctrl._handle_play_media("q1", wish, QueueOption.NEXT)
 
@@ -340,7 +341,7 @@ async def test_play_next_mixed_container_transition_no_duplicates() -> None:
     album = _album("alb")
     album_tracks = [_track(f"a{i}", artist=f"AlbArtist{i}") for i in range(5)]
     ctrl._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
-        return_value=list(album_tracks)
+        return_value=[ResolvedItem(track) for track in album_tracks]
     )
     ctrl.get_dynamic_source_tracks = AsyncMock(  # type: ignore[method-assign]
         return_value=[_track(f"d{i}", artist=f"Artist{i}") for i in range(10)]

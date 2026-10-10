@@ -80,6 +80,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
@@ -378,6 +379,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             fade_in=fade_in,
             prefer_album_loudness=playing_album_tracks,
         )
+        if (origin := queue_item.origin) is not None:
+            self.logger.debug(
+                "%s was played from %s (pinned to %s/%s) and streams from %s/%s",
+                queue_item.uri,
+                origin.container.uri if origin.container else None,
+                origin.provider_instance,
+                origin.item_id,
+                queue_item.streamdetails.provider,
+                queue_item.streamdetails.item_id,
+            )
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
         if (
@@ -415,6 +426,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # a track repeating on its own is its own playback, whatever seeded the queue around it
         if queue_data.queue.repeat_mode == RepeatMode.ONE:
             return False
+        origin = queue_item.origin
+        # played from an album, or from the folder that holds one
+        if origin and origin.container and origin.container.media_type == MediaType.ALBUM:
+            return True
         album = getattr(queue_item.media_item, "album", None)
         if album is None:
             return False
@@ -804,9 +819,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # A play-next track is exempt from this (see plays_next_track below).
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
 
-        media_items: list[MediaItemType] = []
+        media_items: list[ResolvedItem] = []
         # the subset of media_items the user explicitly picked to play next
-        play_next_items: list[MediaItemType] = []
+        play_next_items: list[ResolvedItem] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
         # reported to the caller when none of the requested items made it through
@@ -966,11 +981,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
-            # a mapping stored with zero channels makes the quality sort divide by zero
-            except (MusicAssistantError, ZeroDivisionError) as err:
+            except MusicAssistantError as err:
                 self.logger.warning("Skipping %s: %s", item, err)
-                if isinstance(err, MusicAssistantError):
-                    last_item_error = err
+                last_item_error = err
 
         if not shuffle_settled and option is not None:
             # nothing resolved, so no media type ever decided - but the sources are replaced
@@ -1015,9 +1028,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
-            build_queue_item(queue_id, cast("PlayableMediaItemType", x))
-            for x in media_items
-            if x and x.available
+            build_queue_item(
+                queue_id, cast("PlayableMediaItemType", resolved.item), origin=resolved.origin
+            )
+            for resolved in media_items
+            if resolved.item.available
         ]
 
         if not queue_items:

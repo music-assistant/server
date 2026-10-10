@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
@@ -175,7 +175,7 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     ctrl.store_sources = Mock()  # type: ignore[method-assign]
     ctrl._enqueue_with_option = AsyncMock()  # type: ignore[method-assign]
     ctrl._media_resolver = Mock()
-    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[track])
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[ResolvedItem(track)])
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
@@ -249,7 +249,7 @@ def _play_media_controller(
     ctrl._apply_shuffle = AsyncMock()  # type: ignore[method-assign]
     ctrl._enqueue_with_option = AsyncMock()  # type: ignore[method-assign]
     ctrl._media_resolver = Mock()
-    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[media_item])
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[ResolvedItem(media_item)])
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}

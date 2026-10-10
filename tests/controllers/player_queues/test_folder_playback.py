@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import (
+    Album,
+    Artist,
     BrowseFolder,
     ItemMapping,
     Podcast,
@@ -14,6 +16,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Radio,
     Track,
+    UniqueList,
 )
 
 from music_assistant.mass import MusicAssistant
@@ -72,10 +75,11 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     with patch.object(
         mass.music, "browse", AsyncMock(return_value=[subfolder, station, episode, radio, track])
     ):
-        items = await mass.player_queues._media_resolver._resolve_media_items(
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(
             folder, userid=user.user_id
         )
 
+    items = [x.item for x in resolved]
     assert [x.media_type for x in items] == [
         MediaType.PODCAST_EPISODE,
         MediaType.RADIO,
@@ -109,12 +113,12 @@ async def test_folder_start_from_beginning_ignores_saved_progress(mass: MusicAss
     folder = BrowseFolder(item_id="up_next", provider=PROVIDER, name="Up Next")
 
     with patch.object(mass.music, "browse", AsyncMock(return_value=[episode])):
-        items = await mass.player_queues._media_resolver._resolve_media_items(
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(
             folder, userid=user.user_id, start_from_beginning=True
         )
 
-    assert isinstance(items[0], PodcastEpisode)
-    assert items[0].resume_position_ms == 0
+    assert isinstance(resolved[0].item, PodcastEpisode)
+    assert resolved[0].item.resume_position_ms == 0
 
 
 async def test_folder_skips_dynamic_station_behind_item_mapping(mass: MusicAssistant) -> None:
@@ -138,6 +142,81 @@ async def test_folder_skips_dynamic_station_behind_item_mapping(mass: MusicAssis
         patch.object(mass.music, "browse", AsyncMock(return_value=[mapping, track])),
         patch.object(mass.music, "get_item_by_uri", AsyncMock(return_value=station)),
     ):
-        items = await mass.player_queues._media_resolver._resolve_media_items(folder)
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(folder)
 
-    assert [x.media_type for x in items] == [MediaType.TRACK]
+    assert [x.item.media_type for x in resolved] == [MediaType.TRACK]
+
+
+async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: MusicAssistant) -> None:
+    """
+    A folder a library album was scanned from records that album as where its files play from.
+
+    The same goes for a disc subfolder of it, while any other subfolder is a plain folder.
+    """
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="miles",
+            provider=PROVIDER,
+            name="Miles Davis",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="miles", provider_domain=PROVIDER, provider_instance=PROVIDER
+                )
+            },
+        )
+    )
+    album_path = "Music/Kind of Blue"
+    album = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id=album_path,
+            provider=PROVIDER,
+            name="Kind of Blue",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_path, provider_domain=PROVIDER, provider_instance=PROVIDER
+                )
+            },
+        )
+    )
+    track = Track(
+        item_id=f"{album_path}/Disc 1/01.flac",
+        provider=PROVIDER,
+        name="So What",
+        provider_mappings={
+            ProviderMapping(
+                item_id=f"{album_path}/Disc 1/01.flac",
+                provider_domain=PROVIDER,
+                provider_instance=PROVIDER,
+            )
+        },
+    )
+    album_folder = BrowseFolder(
+        item_id=album_path, provider=PROVIDER, name="Kind of Blue", is_playable=True
+    )
+    disc_folder = BrowseFolder(
+        item_id=f"{album_path}/Disc 1", provider=PROVIDER, name="Disc 1", is_playable=True
+    )
+    bonus_folder = BrowseFolder(
+        item_id=f"{album_path}/Bonus", provider=PROVIDER, name="Bonus", is_playable=True
+    )
+    resolver = mass.player_queues._media_resolver
+
+    with patch.object(mass.music, "browse", AsyncMock(return_value=[track])):
+        album_play = await resolver._resolve_media_items(album_folder)
+        disc_play = await resolver._resolve_media_items(disc_folder)
+        bonus_play = await resolver._resolve_media_items(bonus_folder)
+
+    for resolved in (album_play, disc_play):
+        origin = resolved[0].origin
+        assert origin is not None
+        assert origin.container is not None
+        assert origin.container.media_type == MediaType.ALBUM
+        assert (origin.container.provider, origin.container.item_id) == ("library", album.item_id)
+        # the album is only where the play is recorded, the folder's own files still play
+        assert (origin.provider_instance, origin.item_id) == (PROVIDER, track.item_id)
+    bonus_origin = bonus_play[0].origin
+    assert bonus_origin is not None
+    assert bonus_origin.container is not None
+    assert bonus_origin.container.media_type == MediaType.FOLDER
+    assert bonus_origin.container.item_id == f"{album_path}/Bonus"

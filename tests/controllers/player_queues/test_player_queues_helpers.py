@@ -19,7 +19,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
@@ -478,6 +478,20 @@ class TestBuildQueueItem:
         assert isinstance(item.media_item, Radio)
         assert item.media_item.metadata.description
         assert item.media_item.metadata.images
+
+    def test_records_the_origin(self) -> None:
+        """The origin handed in is kept on the item and survives the persisted cache."""
+        origin = QueueItemOrigin(
+            container=ItemMapping(
+                media_type=MediaType.ALBUM, item_id="a1", provider="test", name="Album"
+            ),
+            provider_instance="test",
+            item_id="t1",
+        )
+        item = build_queue_item("q1", _heavy_track(), origin=origin)
+        assert item.origin == origin
+        assert QueueItem.from_cache(item.to_cache()).origin == origin
+        assert build_queue_item("q1", _heavy_track()).origin is None
 
     def test_cache_roundtrip_preserves_slim_shape(self) -> None:
         """A slim track queue item round-trips through the persisted cache unchanged."""
