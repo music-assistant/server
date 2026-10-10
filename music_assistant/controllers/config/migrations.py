@@ -653,11 +653,6 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_unrenamed_player_names(data):
         changed = True
 
-    # Remove provider-native MSX grouping and migrate its former shared delivery mode.
-    # TODO: remove after 2.12 release
-    if _migrate_msx_bridge_settings(data):
-        changed = True
-
     return changed
 
 
@@ -1881,26 +1876,4 @@ def _migrate_player_icons(data: dict[str, Any]) -> bool:
             changed = True
         # any other unknown value is left in place: clients render the fallback icon
         # for unknown ids and the value may become a valid id in a future icon set
-    return changed
-
-
-def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
-    """Migrate MSX settings before loading providers, including disabled instances."""
-    providers = data.get(CONF_PROVIDERS)
-    if not isinstance(providers, dict):
-        return False
-    changed = False
-    for config in providers.values():
-        if not isinstance(config, dict) or config.get("domain") != "msx_bridge":
-            continue
-        values = config.get("values")
-        if not isinstance(values, dict):
-            continue
-        for key in ("enable_player_grouping", "enable_sendspin_bridge"):
-            if key in values:
-                del values[key]
-                changed = True
-        if values.get("group_stream_mode") == "shared":
-            values["group_stream_mode"] = "independent"
-            changed = True
     return changed

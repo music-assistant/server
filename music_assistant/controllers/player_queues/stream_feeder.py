@@ -264,7 +264,6 @@ class StreamFeederMixin(_PlayerQueuesBase):
             player = self.mass.players.get_player(queue_id)
             if (
                 player is None
-                or not player.supports_enqueue
                 or player.state.playback_state != PlaybackState.PLAYING
                 or player.state.active_source not in (queue.queue_id, None)
                 or queue_data.session_id != session_id
@@ -291,46 +290,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
             if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
                 return
 
-            media = await self.player_media_from_queue_item(next_item)
-            # Media resolution yields: a protocol/session/item may have changed meanwhile.
-            current_player = self.mass.players.get_player(queue_id)
-            current_item = queue.current_item
-            current_next = (
-                self.get_next_item(queue_id, current_item.queue_item_id) if current_item else None
+            await self.mass.players.enqueue_next_media(
+                player_id=queue_id,
+                media=await self.player_media_from_queue_item(next_item),
             )
-            if (
-                current_player is not player
-                or not player.supports_enqueue
-                or player.state.playback_state != PlaybackState.PLAYING
-                or player.state.active_source not in (queue.queue_id, None)
-                or self._queue_data.get(queue_id) is not queue_data
-                or queue_data.session_id != session_id
-                or queue.flow_mode
-                or current_next is None
-                or current_next.queue_item_id != next_item.queue_item_id
-            ):
-                return
-            await self.mass.players.enqueue_next_media(player_id=queue_id, media=media)
-            current_item = queue.current_item
-            current_next = (
-                self.get_next_item(queue_id, current_item.queue_item_id) if current_item else None
-            )
-            if (
-                self.mass.players.get_player(queue_id) is not player
-                or not player.supports_enqueue
-                or player.state.playback_state != PlaybackState.PLAYING
-                or player.state.active_source not in (queue.queue_id, None)
-                or self._queue_data.get(queue_id) is not queue_data
-                or queue_data.session_id != session_id
-                or queue.flow_mode
-            ):
-                return
-            if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
-                # The decoder received a track removed during handover; refresh even if
-                # the previous marker already names the newly restored next track.
-                queue_data.next_item_id_enqueued = None
-                self.update_next_item_on_player(queue_id, force=True)
-                return
             if queue_data.next_item_id_enqueued != next_item.queue_item_id:
                 queue_data.next_item_id_enqueued = next_item.queue_item_id
                 self.logger.debug(

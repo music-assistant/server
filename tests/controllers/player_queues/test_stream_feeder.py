@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, RepeatMode
+from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -21,7 +21,7 @@ from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
-from tests.common import MockPlayer, MockProvider, bare_player_controller
+from tests.common import bare_player_controller
 
 if TYPE_CHECKING:
     from music_assistant.controllers.players import PlayerController
@@ -47,16 +47,16 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         await release_wait.wait()
         yield
 
+    player_state = SimpleNamespace(
+        playback_state=PlaybackState.IDLE,
+        active_source="q1",
+    )
+    player = SimpleNamespace(state=player_state)
+
     mass = MagicMock()
-    player = MockPlayer(MockProvider("test", mass=mass), "q1", "Enqueue capable")
-    player._attr_supported_features.add(PlayerFeature.ENQUEUE)
-    player._cache.clear()
-    player_state = player.state
-    player_state.active_source = "q1"
     mass.players = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=wait_for_player_update)
     mass.players.get_player = MagicMock(return_value=player)
-    mass.players.get_player_lock = bare_player_controller().get_player_lock
     mass.players.enqueue_next_media = AsyncMock()
     controller.mass = mass
 
@@ -123,8 +123,7 @@ def _handover_controller() -> tuple[
     controller.logger = MagicMock()
     players = bare_player_controller()
     player = SimpleNamespace(
-        supports_enqueue=True,
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1"),
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
     )
     mass = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
@@ -206,65 +205,6 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
 
     mass.players.enqueue_next_media.assert_not_awaited()
     assert "busy" in cast("MagicMock", controller.logger).debug.call_args.args[0]
-
-
-@pytest.mark.parametrize(
-    "change",
-    ["session", "capability", "next_item", "queue_replaced", "stopped", "source", "flow_mode"],
-)
-async def test_enqueue_does_not_publish_a_stale_handover(change: str) -> None:
-    """A replaced session during enqueue never claims a next item for the new queue."""
-    controller = PlayerQueuesController.__new__(PlayerQueuesController)
-    controller.logger = MagicMock()
-    current, next_item = _make_queue_item("q1", "current"), _make_queue_item("q1", "next")
-    queue = PlayerQueue(
-        queue_id="q1",
-        active=True,
-        display_name="Q1",
-        available=True,
-        items=2,
-        current_index=0,
-        current_item=current,
-    )
-    data = PlayerQueueData(queue=queue, items=[current, next_item], session_id="old")
-    controller._queue_data = {"q1": data}
-    player = SimpleNamespace(
-        supports_enqueue=True,
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1"),
-    )
-    mass = MagicMock()
-    controller.mass = mass
-    mass.players.get_player.return_value = player
-    mass.players.get_player_lock = bare_player_controller().get_player_lock
-
-    @asynccontextmanager
-    async def ready(*_args: object, **_kwargs: object) -> AsyncIterator[None]:
-        yield
-
-    mass.players.wait_for_player_update.side_effect = ready
-    controller.player_media_from_queue_item = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
-
-    async def enqueue(**_kwargs: object) -> None:
-        if change == "session":
-            data.session_id = "new"
-        elif change == "capability":
-            player.supports_enqueue = False
-        elif change == "next_item":
-            data.items = [current, _make_queue_item("q1", "different")]
-        elif change == "stopped":
-            player.state.playback_state = PlaybackState.IDLE
-        elif change == "source":
-            player.state.active_source = "other-source"
-        elif change == "flow_mode":
-            queue.flow_mode = True
-        else:
-            controller._queue_data["q1"] = PlayerQueueData(queue=queue, items=[current, next_item])
-
-    mass.players.enqueue_next_media = AsyncMock(side_effect=enqueue)
-    controller._enqueue_next_item("q1", next_item)
-    await mass.call_later.call_args.args[1](next_item)
-    assert data.next_item_id_enqueued is None
-    assert controller._queue_data["q1"].next_item_id_enqueued is None
 
 
 async def test_enqueue_next_item_follows_an_edit_made_during_the_handover() -> None:
