@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, ProviderMapping, Track
 
@@ -74,6 +74,33 @@ async def test_provider_artist_tracks_skip_failing_album(
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
     assert [track.name for track in tracks] == ["Fine track"]
     assert "Unable to fetch tracks for album Broken from provider streaming_inst" in caplog.text
+
+
+async def test_provider_artist_tracks_stop_when_provider_backs_off(
+    mass: MusicAssistant,
+) -> None:
+    """A provider that gave up on retrying is not asked for the remaining albums."""
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
+    requested: list[str] = []
+
+    async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
+        requested.append(item_id)
+        if item_id == "Limited":
+            raise RetriesExhausted("Not retrying, asked to wait 120 seconds")
+        return [_track(f"{item_id} track")]
+
+    with (
+        patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
+        patch.object(
+            mass.music.artists,
+            "get_provider_artist_albums",
+            return_value=[_album("Fine"), _album("Limited"), _album("Later")],
+        ),
+        patch.object(mass.music.albums, "tracks", side_effect=_album_tracks),
+    ):
+        tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+    assert requested == ["Fine", "Limited"]
+    assert [track.name for track in tracks] == ["Fine track"]
 
 
 async def test_provider_artist_tracks_raise_when_every_album_fails(mass: MusicAssistant) -> None:

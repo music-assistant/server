@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -836,6 +837,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                     provider_instance_id_or_domain,
                     err,
                 )
+                if isinstance(err, RetriesExhausted):
+                    # the provider is backing off (e.g. rate limited), so every remaining
+                    # album would wait out the same backoff and fail as well
+                    break
                 continue
             for track in album_tracks:
                 unique_id = f"{track.name}.{track.version}"
