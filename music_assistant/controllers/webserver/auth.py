@@ -57,6 +57,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     normalize_username,
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTH_CODE_RE,
     PENDING_LOGIN_TTL,
     PKCE_CHALLENGE_RE,
     AuthTransport,
@@ -1108,8 +1109,8 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :param code_challenge: PKCE code challenge (base64url SHA-256) of the client's code
-            verifier, which auth/exchange checks.
+        :param code_challenge: PKCE code challenge (unpadded base64url SHA-256) of the
+            client's code verifier, which auth/exchange checks; only with redirect_target "app".
         :param code_challenge_method: Method of code_challenge, only "S256" is supported.
         :param redirect_target: Where the browser returns to: "server" (default), or "app"
             for the remote app, which is only allowed over Remote Access, requires a
@@ -1133,6 +1134,11 @@ class AuthenticationManager:
             return {"authorization_url": None, "error": "Invalid code_challenge"}
         if redirect_target not in ("server", "app"):
             return {"authorization_url": None, "error": "Invalid redirect_target"}
+        if code_challenge and redirect_target != "app":
+            return {
+                "authorization_url": None,
+                "error": "code_challenge is only supported with redirect_target app",
+            }
 
         client = self._get_calling_client()
         transport = client.auth_transport if client else AuthTransport.DIRECT
@@ -2806,6 +2812,8 @@ class AuthenticationManager:
             raise AuthenticationFailed(
                 "This sign-in is invalid or has expired", translation_key="sign_in_expired"
             )
+        if not AUTH_CODE_RE.fullmatch(code):
+            raise AuthenticationFailed("Invalid authorization code")
         if pending.redirect_target != "app" or not pending.client_code_challenge:
             raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
         if not verify_pkce(code_verifier, pending.client_code_challenge):

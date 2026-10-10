@@ -1649,23 +1649,6 @@ async def test_get_auth_url_returns_to_the_app_over_remote_access(
     assert pending.client_code_challenge == challenge
 
 
-async def test_get_auth_url_with_a_challenge_for_the_server_keeps_the_legacy_callback(
-    auth_manager: AuthenticationManager, oauth_provider: MagicMock
-) -> None:
-    """A remote sign-in that returns to the server keeps the External URL callback."""
-    with (
-        _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
-        _calling_client(auth_manager, "/ws?webrtc_session_id=live", {}, "127.0.0.1"),
-        _webserver_urls("https://ma.example.com"),
-    ):
-        await auth_manager.get_auth_url(
-            "oauth", code_challenge=pkce_challenge("v"), code_challenge_method="S256"
-        )
-
-    pending = _started_login(oauth_provider)
-    assert pending.redirect_uri == "https://ma.example.com/auth/callback?provider_id=oauth"
-
-
 @pytest.mark.parametrize(
     ("session_id", "args", "supports_remote_app", "error"),
     [
@@ -1687,6 +1670,12 @@ async def test_get_auth_url_with_a_challenge_for_the_server_keeps_the_legacy_cal
             True,
             "Invalid code_challenge",
         ),
+        (
+            "live",
+            {"code_challenge": CLIENT_CHALLENGE, "code_challenge_method": "S256"},
+            True,
+            "only supported with redirect_target app",
+        ),
     ],
     ids=[
         "app_without_challenge",
@@ -1697,6 +1686,7 @@ async def test_get_auth_url_with_a_challenge_for_the_server_keeps_the_legacy_cal
         "plain_challenge",
         "challenge_without_method",
         "malformed_challenge",
+        "challenge_for_the_server",
     ],
 )
 async def test_get_auth_url_refuses_an_invalid_sign_in_request(
@@ -1758,26 +1748,29 @@ async def test_exchange_signs_in_the_user_of_an_app_sign_in(
 
 
 @pytest.mark.parametrize(
-    ("redirect_target", "verifier", "expired", "translation_key"),
+    ("redirect_target", "code", "verifier", "expired", "translation_key"),
     [
-        ("app", "wrong-verifier", False, "authentication_failed"),
-        ("server", CLIENT_VERIFIER, False, "authentication_failed"),
-        ("app", CLIENT_VERIFIER, True, "sign_in_expired"),
+        ("app", "idp_code", "wrong-verifier", False, "authentication_failed"),
+        ("server", "idp_code", CLIENT_VERIFIER, False, "authentication_failed"),
+        ("app", "idp_code", CLIENT_VERIFIER, True, "sign_in_expired"),
+        ("app", "idp_code&code_verifier=x", CLIENT_VERIFIER, False, "authentication_failed"),
     ],
-    ids=["wrong_verifier", "server_target", "expired"],
+    ids=["wrong_verifier", "server_target", "expired", "malformed_code"],
 )
 async def test_exchange_refuses_an_invalid_sign_in(
     auth_manager: AuthenticationManager,
     oauth_provider: MagicMock,
     redirect_target: str,
+    code: str,
     verifier: str,
     expired: bool,
     translation_key: str,
 ) -> None:
     """
-    An exchange with a wrong verifier, for another target or after expiry signs nobody in.
+    An exchange with a wrong verifier or code, for another target or after expiry fails.
 
     :param redirect_target: Where the sign-in was started to return to.
+    :param code: The authorization code the exchange presents.
     :param verifier: The code verifier the exchange presents.
     :param expired: Whether the sign-in expired before the exchange.
     :param translation_key: The expected translation key of the error.
@@ -1794,7 +1787,7 @@ async def test_exchange_refuses_an_invalid_sign_in(
     if expired:
         pending.expires_at = 0
 
-    result = await auth_manager.exchange_authorization_code(pending.state, "idp_code", verifier)
+    result = await auth_manager.exchange_authorization_code(pending.state, code, verifier)
 
     assert result["success"] is False
     assert result["translation_key"] == translation_key

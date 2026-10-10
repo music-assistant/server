@@ -21,6 +21,8 @@ MAX_PENDING_LOGINS: Final = 100
 NATIVE_APP_SCHEME: Final = "musicassistant://"
 # base64url (unpadded) SHA-256 digest, the only code challenge form accepted
 PKCE_CHALLENGE_RE: Final = re.compile(r"[A-Za-z0-9_-]{43}")
+# an authorization code as identity providers issue them (URL safe characters only)
+AUTH_CODE_RE: Final = re.compile(r"[A-Za-z0-9._~-]{1,512}")
 
 type RedirectTarget = Literal["server", "app"]
 
@@ -43,7 +45,7 @@ class PendingLogin:
     redirect_uri: str  # exactly what was sent to the identity provider
     redirect_target: RedirectTarget
     expires_at: float  # monotonic
-    idp_code_verifier: str | None = None
+    idp_code_verifier: str
     return_url: str | None = None
     client_code_challenge: str | None = None  # S256 only
 
@@ -60,11 +62,11 @@ class PendingLoginStore:
         provider_id: str,
         transport: AuthTransport,
         redirect_uri: str,
+        idp_code_verifier: str,
         *,
         redirect_target: RedirectTarget = "server",
         return_url: str | None = None,
         client_code_challenge: str | None = None,
-        idp_code_verifier: str | None = None,
     ) -> PendingLogin:
         """
         Start a sign-in and return it, with a new state.
@@ -72,10 +74,10 @@ class PendingLoginStore:
         :param provider_id: The id of the login provider the sign-in is for.
         :param transport: How the client that starts the sign-in reaches the server.
         :param redirect_uri: The callback URL sent to the identity provider.
+        :param idp_code_verifier: The PKCE code verifier for the identity provider.
         :param redirect_target: Whether the browser returns to the server or the remote app.
         :param return_url: The validated URL the client returns to after signing in.
         :param client_code_challenge: The client's PKCE S256 code challenge, if any.
-        :param idp_code_verifier: The PKCE code verifier for the identity provider, if any.
         :raises RateLimited: If too many sign-ins are pending.
         """
         now = time.monotonic()

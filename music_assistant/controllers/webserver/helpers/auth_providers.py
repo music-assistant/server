@@ -647,7 +647,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
     async def authenticate(self, credentials: dict[str, Any]) -> AuthResult:
         """
-        Not used for OAuth providers - use handle_oauth_callback instead.
+        Not used for OAuth providers - use complete_authorization instead.
 
         :param credentials: Not used.
         """
@@ -672,7 +672,6 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ha_url = await self._get_server_target_ha_url()
         if not ha_url:
             return None
-        assert pending.idp_code_verifier is not None
         # Use base_url of callback as client_id (same as HA provider does)
         return cast(
             "str",
@@ -698,7 +697,6 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         if not (code := params.get("code")):
             raise AuthenticationFailed("No authorization code received")
-        # The token request goes from this server, so use the URL the server reaches HA on
         ha_url = await self._get_external_ha_url()
         if not ha_url:
             raise AuthenticationFailed("Home Assistant URL not configured")

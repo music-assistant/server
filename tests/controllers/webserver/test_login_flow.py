@@ -57,7 +57,11 @@ def test_state_prefix_follows_the_return_url(return_url: str | None, prefix: str
     :param prefix: The expected state prefix.
     """
     pending = PendingLoginStore().start(
-        "homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", return_url=return_url
+        "homeassistant",
+        AuthTransport.DIRECT,
+        "http://ma.local/cb",
+        "verifier",
+        return_url=return_url,
     )
 
     assert pending.state.startswith(prefix)
@@ -67,7 +71,7 @@ def test_state_prefix_follows_the_return_url(return_url: str | None, prefix: str
 def test_a_pending_sign_in_is_used_once() -> None:
     """Popping a pending sign-in returns it once."""
     store = PendingLoginStore()
-    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb")
+    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
 
     assert store.pop(pending.state) is pending
     assert store.pop(pending.state) is None
@@ -77,7 +81,7 @@ def test_a_pending_sign_in_is_used_once() -> None:
 def test_an_expired_sign_in_is_not_returned() -> None:
     """A pending sign-in popped after its lifetime is refused and removed."""
     store = PendingLoginStore()
-    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb")
+    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
 
     with _monotonic_after(PENDING_LOGIN_TTL):
         assert store.pop(pending.state) is None
@@ -88,12 +92,14 @@ def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     """A start at the limit is refused, and accepted again once the pending ones expired."""
     store = PendingLoginStore()
     for _ in range(MAX_PENDING_LOGINS):
-        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb")
+        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
 
     with pytest.raises(RateLimited):
-        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb")
+        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
     with _monotonic_after(PENDING_LOGIN_TTL):
-        pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb")
+        pending = store.start(
+            "homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier"
+        )
 
     assert list(store._pending) == [pending.state]
 

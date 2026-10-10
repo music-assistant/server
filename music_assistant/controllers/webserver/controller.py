@@ -270,7 +270,7 @@ class WebserverController(CoreController):
 
         :param transport: How the client that starts the sign-in reaches the server.
         :param redirect_target: Where the client asked the browser to return to; "app" is
-            only honoured over Remote Access, for a client that sent a code challenge.
+            only honoured over Remote Access.
         :param return_url: The URL the client returns to after signing in, if any.
         :param request_host: The host (and any port) the client used to reach the server.
         """
