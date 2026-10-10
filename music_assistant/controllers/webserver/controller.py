@@ -1188,8 +1188,8 @@ class WebserverController(CoreController):
                 )
 
             return web.json_response({"authorization_url": auth_url})
-        except RateLimited as err:
-            return web.Response(status=429, text=str(err))
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
