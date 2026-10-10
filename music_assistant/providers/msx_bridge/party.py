@@ -70,7 +70,6 @@ class PartyAdapter:
         self.qr_cover_cache: OrderedDict[tuple[str, str], bytes] = OrderedDict()
         self._qr_cover_cache_bytes = 0
         self.qr_cover_inflight: dict[tuple[str, str], asyncio.Task[bytes]] = {}
-        self._cover_render_slots = asyncio.Semaphore(MAX_CONCURRENT_COVER_RENDERS)
 
     def cached_party(self) -> PartyInfo | None:
         """Return the last cached party state without refreshing (sync contexts)."""
@@ -202,24 +201,22 @@ class PartyAdapter:
         self, cache_key: tuple[str, str], image_url: str, join_url: str
     ) -> bytes:
         """Fetch the cover, composite the QR onto it, and cache the PNG."""
-        async with self._cover_render_slots:
-            async with self.provider.mass.http_session.get(
-                image_url,
-                timeout=aiohttp.ClientTimeout(total=10),
-                allow_redirects=False,
-            ) as resp:
-                if resp.status != 200:
-                    raise ValueError(f"cover fetch returned HTTP {resp.status}")
-                raw_len = resp.headers.get("Content-Length")
-                if isinstance(raw_len, (str, bytes, int)):
-                    try:
-                        declared = int(raw_len)
-                    except TypeError, ValueError:
-                        declared = 0
-                    if declared > COVER_FETCH_MAX_BYTES:
-                        raise ValueError("cover exceeds size limit")
-                cover_bytes = await _read_capped(resp, COVER_FETCH_MAX_BYTES)
-            rendered = await asyncio.to_thread(render_qr_cover, join_url, cover_bytes)
+        async with self.provider.mass.http_session.get(
+            image_url,
+            timeout=aiohttp.ClientTimeout(total=10),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status != 200:
+                raise ValueError(f"cover fetch returned HTTP {resp.status}")
+            if (raw_len := resp.headers.get("Content-Length")) is not None:
+                try:
+                    declared = int(raw_len)
+                except ValueError:
+                    declared = 0
+                if declared > COVER_FETCH_MAX_BYTES:
+                    raise ValueError("cover exceeds size limit")
+            cover_bytes = await _read_capped(resp, COVER_FETCH_MAX_BYTES)
+        rendered = await asyncio.to_thread(render_qr_cover, join_url, cover_bytes)
         self._cache_qr_cover(cache_key, rendered)
         return rendered
 
@@ -256,31 +253,6 @@ def render_qr(join_url: str, kind: str) -> bytes:
 def render_qr_cover(join_url: str, cover_bytes: bytes) -> bytes:
     """Render the QR and composite it onto the cover (blocking; run in a worker thread)."""
     return stamp_qr_on_cover(cover_bytes, render_qr(join_url, "png"))
-
-
-async def _read_capped(resp: aiohttp.ClientResponse, max_bytes: int) -> bytes:
-    """Read a response body, aborting if it exceeds max_bytes."""
-    buf = bytearray()
-    async for chunk in resp.content.iter_chunked(65536):
-        buf.extend(chunk)
-        if len(buf) > max_bytes:
-            raise ValueError("cover exceeds size limit")
-    return bytes(buf)
-
-
-def _open_rgb_image(data: bytes) -> PillowImage:
-    """Open an image and reject it when the pixel count exceeds COVER_MAX_PIXELS."""
-    import warnings  # noqa: PLC0415
-
-    from PIL import Image  # noqa: PLC0415
-
-    with Image.open(io.BytesIO(data)) as image:
-        width, height = image.size
-        if width <= 0 or height <= 0 or width * height > COVER_MAX_PIXELS:
-            raise ValueError("image exceeds size limit")
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            return image.convert("RGB")
 
 
 def stamp_qr_on_cover(cover_bytes: bytes, qr_bytes: bytes) -> bytes:
@@ -326,3 +298,28 @@ def is_allowed_cover_source(image_url: str, allowed_bases: list[str]) -> bool:
         except ValueError:
             continue
     return False
+
+
+async def _read_capped(resp: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    """Read a response body, aborting if it exceeds max_bytes."""
+    buf = bytearray()
+    async for chunk in resp.content.iter_chunked(65536):
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise ValueError("cover exceeds size limit")
+    return bytes(buf)
+
+
+def _open_rgb_image(data: bytes) -> PillowImage:
+    """Open an image and reject it when the pixel count exceeds COVER_MAX_PIXELS."""
+    import warnings  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    with Image.open(io.BytesIO(data)) as image:
+        width, height = image.size
+        if width <= 0 or height <= 0 or width * height > COVER_MAX_PIXELS:
+            raise ValueError("image exceeds size limit")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            return image.convert("RGB")

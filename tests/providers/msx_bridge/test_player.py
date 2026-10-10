@@ -33,7 +33,7 @@ def test_init_defaults(player: MSXPlayer) -> None:
     """MSXPlayer should have correct default attributes."""
     assert player._attr_name == "Test TV"
     assert player._attr_type == PlayerType.PLAYER
-    assert isinstance(player._prepare_lock, asyncio.Lock)
+    assert isinstance(player.prepare_lock, asyncio.Lock)
     assert PlayerFeature.PAUSE in player._attr_supported_features
     assert PlayerFeature.SET_MEMBERS not in player._attr_supported_features
     assert PlayerFeature.VOLUME_SET in player._attr_supported_features
@@ -113,12 +113,11 @@ def test_ws_disconnect_marks_playing_player_unavailable(player: MSXPlayer) -> No
 
 
 async def test_play_media(player: MSXPlayer) -> None:
-    """play_media should store stream URL, set state to PLAYING, and reset elapsed."""
+    """play_media should store the media, set state to PLAYING, and reset elapsed."""
     media = _player_media("http://ma-server/stream/12345")
 
     await player.play_media(media)
 
-    assert player.current_stream_url == "http://ma-server/stream/12345"
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._attr_elapsed_time == 0
     assert player._attr_elapsed_time_last_updated is not None
@@ -273,11 +272,10 @@ async def test_pause_notifies_pause_on_msx(player: MSXPlayer) -> None:
 
 
 async def test_stop_clears_all(player: MSXPlayer) -> None:
-    """stop() should reset state, media, elapsed, and stream URL."""
+    """stop() should reset state, media, and elapsed."""
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_current_media = _player_media("library://track/1")
     cast("Any", player)._attr_elapsed_time = 42.0
-    cast("Any", player).current_stream_url = "http://something"
 
     await player.stop()
 
@@ -286,7 +284,6 @@ async def test_stop_clears_all(player: MSXPlayer) -> None:
     assert state["_attr_current_media"] is None
     assert state["_attr_elapsed_time"] is None
     assert state["_attr_elapsed_time_last_updated"] is None
-    assert state["current_stream_url"] is None
     _update_state_mock(player).assert_called()
 
 
@@ -382,9 +379,6 @@ async def test_play_media_queue_sends_playlist(player: MSXPlayer, mass_mock: Moc
     mock_playlist.assert_called_once_with("msx_test", 2, queue_id="msx_test")
     mock_play.assert_not_called()
     assert player._playing_from_queue is True
-    assert player._playlist_offset == 2
-    assert player._playlist_size == 5
-    mass_mock.player_queues.items.assert_called_once_with("msx_test", limit=5)
 
 
 async def test_play_media_reloads_playlist_when_playing_from_queue(
@@ -393,8 +387,6 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
     """Same-queue play reloads a rotated playlist so MSX index 0 is the current item."""
     player._playing_from_queue = True
     player._queue_source_id = "msx_test"
-    player._playlist_offset = 2
-    player._playlist_size = 5
 
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
@@ -425,7 +417,6 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
     mock_goto.assert_not_called()
     mock_playlist.assert_called_once_with("msx_test", 3, queue_id="msx_test")
     mock_play.assert_not_called()
-    mass_mock.player_queues.items.assert_called_once_with("msx_test", limit=5)
 
 
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:

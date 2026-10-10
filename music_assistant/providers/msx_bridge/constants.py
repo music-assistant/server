@@ -9,14 +9,11 @@ CONF_OUTPUT_FORMAT = "output_format"
 CONF_PLAYER_IDLE_TIMEOUT = "player_idle_timeout"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
 CONF_GROUP_STREAM_MODE = "group_stream_mode"
-CONF_INCLUDE_CONTENT_LENGTH = "include_content_length"
-LEGACY_CONF_ENABLE_GROUPING = "enable_player_grouping"
 
 DEFAULT_HTTP_PORT = 8099
 DEFAULT_OUTPUT_FORMAT = "mp3"
 DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
-DEFAULT_INCLUDE_CONTENT_LENGTH = False
 
 # Stream delivery modes
 GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Local compatibility proxy

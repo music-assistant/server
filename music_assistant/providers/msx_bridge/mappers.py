@@ -238,26 +238,6 @@ def map_playlist_to_msx(
     )
 
 
-def _build_audio_action(
-    prefix: str,
-    player_id: str,
-    track_uri: str,
-    token: str,
-    device_param: str = "",
-    from_playlist: bool = False,
-    queue_item_id: str | None = None,
-) -> str:
-    """Build audio action URL for MSX playback."""
-    # Standard HTTP streaming mode
-    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}&token={token}"
-    if from_playlist:
-        audio_url += "&from_playlist=1"
-    if queue_item_id is not None:
-        audio_url += f"&queue_item_id={quote(queue_item_id, safe='')}"
-    audio_url = append_device_param(audio_url, device_param)
-    return f"audio:{audio_url}"
-
-
 def map_track_to_msx(
     track: PlayableMediaItemType | ItemMapping,
     prefix: str,
@@ -269,7 +249,7 @@ def map_track_to_msx(
     context_start: int = 0,
 ) -> MsxItem:
     """Map a MA Track to an MSX Item."""
-    duration = track.duration if isinstance(track, Track) else 0
+    duration = 0 if isinstance(track, ItemMapping) else track.duration or 0
     duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
     artist = track.artist_str if isinstance(track, Track) else ""
     image_url = get_image_url(track, provider)
@@ -405,3 +385,23 @@ def map_tracks_to_msx_playlist(
         items=msx_items,
         action="player:play",
     )
+
+
+def _build_audio_action(
+    prefix: str,
+    player_id: str,
+    track_uri: str,
+    token: str,
+    device_param: str = "",
+    from_playlist: bool = False,
+    queue_item_id: str | None = None,
+) -> str:
+    """Build audio action URL for MSX playback."""
+    # Standard HTTP streaming mode
+    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}&token={token}"
+    if from_playlist:
+        audio_url += "&from_playlist=1"
+    if queue_item_id is not None:
+        audio_url += f"&queue_item_id={quote(queue_item_id, safe='')}"
+    audio_url = append_device_param(audio_url, device_param)
+    return f"audio:{audio_url}"

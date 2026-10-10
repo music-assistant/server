@@ -28,9 +28,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Album, Track
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
-
-from .audio_stream import AudioPipeline, resolve_served_duration
+from .audio_stream import AudioPipeline
 from .constants import (
     CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_SHOW_STOP_NOTIFICATION,
@@ -146,8 +144,6 @@ class MSXHTTPServer:
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self.audio = AudioPipeline(provider)
         self.party = PartyAdapter(provider)
-        self._active_stream_tasks = self.audio.active_stream_tasks
-        self._active_stream_transports = self.audio.active_stream_transports
         self._client_prefixes: dict[str, str] = {}
         self._setup_routes()
 
@@ -178,7 +174,7 @@ class MSXHTTPServer:
                     await ws.close()
         self._ws_clients.clear()
         self._client_prefixes.clear()
-        for player_id in list(self._active_stream_tasks):
+        for player_id in list(self.audio.active_stream_tasks):
             self.cancel_streams_for_player(player_id)
         await self.party.stop()
         if self._runner:
@@ -1291,28 +1287,18 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             return web.Response(status=503, text="Unable to prepare audio")
 
         player.bind_native_completion(request.query.get("playback_id", ""), prepared)
-        return await self._serve_audio_stream(
-            request,
-            player,
-            prepared,
-            duration=resolve_served_duration(self.provider.mass, prepared),
-        )
+        return await self._serve_audio_stream(request, player, prepared)
 
     # --- Audio Streaming Infrastructure ---
-
-    def _resolve_served_duration(self, media: PlayerMedia) -> int:
-        """Return the length in seconds of the audio served for the given media."""
-        return resolve_served_duration(self.provider.mass, media)
 
     async def _serve_audio_stream(
         self,
         request: web.Request,
         player: MSXPlayer,
         media: PlayerMedia,
-        duration: int = 0,
     ) -> web.StreamResponse:
         """Serve this player's current media on this request."""
-        return await self.audio.serve(request, player, media, duration)
+        return await self.audio.serve(request, player, media)
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """Health check endpoint."""
@@ -1504,12 +1490,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if not media:
             return web.Response(status=404, text="No active stream")
 
-        return await self._serve_audio_stream(
-            request,
-            player,
-            media,
-            duration=self._resolve_served_duration(media),
-        )
+        return await self._serve_audio_stream(request, player, media)
 
     # --- Library API Routes ---
 
@@ -1766,14 +1747,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             track_uri = None
         self.provider.on_player_activity(player_id)
         try:
-            async with ImpersonatedUser(self.provider.mass, None):
-                with player.suppress_ws_notify():
-                    await self.provider.mass.player_queues.play_media(
-                        player_id, uri, option=QueueOption.REPLACE
-                    )
-                    await self._start_play_context(
-                        player_id, player, track_uri=track_uri, start=start
-                    )
+            with player.suppress_ws_notify():
+                await self.provider.mass.player_queues.play_media(
+                    player_id, uri, option=QueueOption.REPLACE
+                )
+                await self._start_play_context(player_id, player, track_uri=track_uri, start=start)
         except MusicAssistantError, OSError, TimeoutError:
             logger.exception("Unable to start playback for MSX player %s", player_id)
             return _msx_execute_error(503, "Unable to start playback")
@@ -1803,8 +1781,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        async with ImpersonatedUser(self.provider.mass, None):
-            await self.provider.mass.player_queues.play_media(player_id, track_uri)
+        await self.provider.mass.player_queues.play_media(player_id, track_uri)
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
@@ -1868,7 +1845,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         player = self._get_msx_player(player_id)
         if player is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
-        async with player._prepare_lock:
+        async with player.prepare_lock:
             media = player.current_media
             queue = self.provider.mass.player_queues.get_active_queue(player_id)
             if (

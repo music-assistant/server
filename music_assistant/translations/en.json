@@ -1691,8 +1691,6 @@
   "provider.msx_bridge.config_entries.group_stream_mode.options.redirect": "MA Streamserver (recommended)",
   "provider.msx_bridge.config_entries.http_port.description": "Port for the MSX HTTP server.",
   "provider.msx_bridge.config_entries.http_port.label": "HTTP Server Port",
-  "provider.msx_bridge.config_entries.include_content_length.description": "Deprecated compatibility setting. Independent streams omit estimated Content-Length; redirected responses use the per-player HTTP profile.",
-  "provider.msx_bridge.config_entries.include_content_length.label": "Legacy Content-Length setting",
   "provider.msx_bridge.config_entries.output_format.description": "Audio format for streaming to MSX (mp3, aac, or flac).",
   "provider.msx_bridge.config_entries.output_format.label": "Audio Output Format",
   "provider.msx_bridge.config_entries.player_idle_timeout.description": "Unregister MSX players after this many minutes without activity.",

@@ -23,10 +23,6 @@
         "redirect": "MA Streamserver (recommended)",
         "independent": "Independent local proxy (compatibility)"
       }
-    },
-    "include_content_length": {
-      "label": "Legacy Content-Length setting",
-      "description": "Deprecated compatibility setting. Independent streams omit estimated Content-Length; redirected responses use the per-player HTTP profile."
     }
   },
   "manifest": {

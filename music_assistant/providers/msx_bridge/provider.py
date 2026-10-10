@@ -20,13 +20,11 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
-    CONF_INCLUDE_CONTENT_LENGTH,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
-    DEFAULT_INCLUDE_CONTENT_LENGTH,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
     DEFAULT_SHOW_STOP_NOTIFICATION,
@@ -51,7 +49,6 @@ class MSXBridgeProvider(PlayerProvider):
 
     http_server: MSXHTTPServer | None = None
     group_stream_mode: str = DEFAULT_GROUP_STREAM_MODE
-    include_content_length: bool = DEFAULT_INCLUDE_CONTENT_LENGTH
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
     _stream_token_secret: bytes
@@ -109,14 +106,6 @@ class MSXBridgeProvider(PlayerProvider):
                     ),
                 ],
             ),
-            ConfigEntry(
-                key=CONF_INCLUDE_CONTENT_LENGTH,
-                type=ConfigEntryType.BOOLEAN,
-                hidden=True,
-                required=False,
-                default_value=DEFAULT_INCLUDE_CONTENT_LENGTH,
-                advanced=True,
-            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -124,9 +113,6 @@ class MSXBridgeProvider(PlayerProvider):
         raw_port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
         port = max(1, min(65535, int(raw_port)))
         self.group_stream_mode = self._load_stream_mode()
-        self.include_content_length = bool(
-            self.config.get_value(CONF_INCLUDE_CONTENT_LENGTH, DEFAULT_INCLUDE_CONTENT_LENGTH)
-        )
         self.http_server = MSXHTTPServer(self, port)
         await self.http_server.start()
         self.logger.info(
@@ -402,7 +388,7 @@ class MSXBridgeProvider(PlayerProvider):
         return f"{prefix_label} ({suffix})"
 
     def _load_stream_mode(self) -> str:
-        """Load stream mode; retain a read-only fallback for older MA installations."""
+        """Return the configured stream mode; a stored 'shared' mode plays as independent."""
         raw_mode = self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE)
         if raw_mode == LEGACY_GROUP_STREAM_MODE_SHARED:
             return GROUP_STREAM_MODE_INDEPENDENT

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import MusicAssistantError, PlayerUnavailableError
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import (
@@ -28,19 +28,16 @@ if TYPE_CHECKING:
 class MSXPlayer(Player):
     """Represents a Smart TV running MSX as a Music Assistant player."""
 
-    current_stream_url: str | None = None
     output_format: str = "mp3"
     _skip_ws_depth: int = 0
     _accepted_position: bool = False
     _playing_from_queue: bool = False
     _queue_source_id: str | None = None
-    _playlist_offset: int = 0
-    _playlist_size: int = 0
     _media_ready: asyncio.Event
+    prepare_lock: asyncio.Lock
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: float | None = None
     _last_ws_position: float | None = None
-    _ws_ever_connected: bool = False
     _track_started_at: float = 0.0
     _native_completion_token: str | None = None
     playback_generation: str | None = None
@@ -75,7 +72,7 @@ class MSXPlayer(Player):
         self._attr_volume_level = 100
         self.output_format = output_format
         self._media_ready = asyncio.Event()
-        self._prepare_lock = asyncio.Lock()
+        self.prepare_lock = asyncio.Lock()
         self._skip_ws_depth = 0
         self._accepted_position = False
 
@@ -94,11 +91,6 @@ class MSXPlayer(Player):
         """Return poll interval in seconds."""
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
-    @property
-    def playing_from_queue(self) -> bool:
-        """Return whether MSX is currently rendering an MA queue as a native playlist."""
-        return self._playing_from_queue
-
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return per-player config entries — codec is configurable per TV."""
         return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3, CONF_ENTRY_HTTP_PROFILE_DEFAULT_1]
@@ -111,7 +103,6 @@ class MSXPlayer(Player):
 
     def on_ws_connected(self) -> None:
         """Mark player as available when a WebSocket client connects."""
-        self._ws_ever_connected = True
         self.mark_available()
 
     def on_ws_disconnected(self) -> None:
@@ -127,7 +118,6 @@ class MSXPlayer(Player):
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self._native_completion_token = None
         self.playback_generation = uuid4().hex
-        self.current_stream_url = media.uri
         self._attr_current_media = media
         self._media_ready.set()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -177,11 +167,8 @@ class MSXPlayer(Player):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self._last_ws_position = None
-        self.current_stream_url = None
         self._playing_from_queue = False
         self._queue_source_id = None
-        self._playlist_offset = 0
-        self._playlist_size = 0
         self.update_state()
         provider = cast("MSXBridgeProvider", self.provider)
         provider.notify_play_stopped(self.player_id)
@@ -385,16 +372,12 @@ class MSXPlayer(Player):
         """Handle same-queue playback: goto index or re-send if queue changed."""
         queue = self.mass.player_queues.get(source_id)
         ma_index = queue.current_index if queue and queue.current_index is not None else 0
-        self._playlist_size = self._queue_length(source_id, fallback=self._playlist_size)
-        self._playlist_offset = ma_index
         provider.notify_play_playlist(self.player_id, ma_index, queue_id=source_id)
 
     def _notify_new_queue(self, provider: MSXBridgeProvider, source_id: str) -> None:
         """Send full MSX native playlist for a new queue."""
         queue = self.mass.player_queues.get(source_id)
         start_index = queue.current_index if queue and queue.current_index is not None else 0
-        self._playlist_size = self._queue_length(source_id, fallback=0)
-        self._playlist_offset = start_index
         self._queue_source_id = source_id
         provider.notify_play_playlist(self.player_id, start_index, queue_id=source_id)
         self._playing_from_queue = True
@@ -406,20 +389,9 @@ class MSXPlayer(Player):
         if (media := self._attr_current_media) is None:
             return None
         duration = media.stream_duration or media.duration
-        if not isinstance(duration, (int, float)) or duration <= 0:
+        if duration is None or duration <= 0:
             return None
         return float(duration)
-
-    def _queue_length(self, source_id: str, fallback: int) -> int:
-        """Return the queue length, or fallback when the controller cannot be read."""
-        try:
-            queue = self.mass.player_queues.get(source_id)
-            if queue is None:
-                return fallback
-            return len(self.mass.player_queues.items(source_id, limit=queue.items))
-        except MusicAssistantError:
-            self.logger.debug("Failed to get queue size for %s", source_id, exc_info=True)
-            return fallback
 
     async def _resume_from_pause(self) -> None:
         """Resume playback on the native MSX player."""

@@ -66,6 +66,7 @@ def _http_session_mock(body: bytes, status: int = 200) -> Mock:
 
     resp = AsyncMock()
     resp.status = status
+    resp.headers = {}
     resp.content.iter_chunked = Mock(side_effect=_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
@@ -86,6 +87,7 @@ def _failing_http_session_mock(release: asyncio.Event) -> Mock:
 
     resp = AsyncMock()
     resp.status = 200
+    resp.headers = {}
     resp.content.iter_chunked = Mock(side_effect=_gated_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
@@ -104,6 +106,7 @@ def _slow_http_session_mock(body: bytes, release: asyncio.Event) -> Mock:
 
     resp = AsyncMock()
     resp.status = 200
+    resp.headers = {}
     resp.content.iter_chunked = Mock(side_effect=_gated_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)

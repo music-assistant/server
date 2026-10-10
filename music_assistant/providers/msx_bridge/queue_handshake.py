@@ -107,7 +107,7 @@ async def prepare_msx_audio(
     if not player.config.enabled:
         raise PlayerUnavailableError("Player is disabled")
     provider.on_player_activity(player.player_id)
-    async with player._prepare_lock:
+    async with player.prepare_lock:
         if not player.config.enabled:
             raise PlayerUnavailableError("Player is disabled")
         if expected_generation is not None and expected_generation != player.playback_generation:

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 from aiohttp import web
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.helpers.dsp import ComplexFilter
-    from music_assistant.mass import MusicAssistant
 
     from .player import MSXPlayer
     from .provider import MSXBridgeProvider
@@ -50,8 +49,7 @@ class AudioPipeline:
                 task.cancel()
         for transport in transports:
             with contextlib.suppress(OSError, RuntimeError):
-                if transport and hasattr(transport, "abort"):
-                    transport.abort()
+                transport.abort()
         if tasks or transports:
             logger.debug(
                 "Cancelled %d task(s), aborted %d transport(s) for player %s",
@@ -65,7 +63,6 @@ class AudioPipeline:
         request: web.Request,
         player: MSXPlayer,
         media: PlayerMedia,
-        duration: int = 0,
     ) -> web.StreamResponse:
         """Serve this player's current media on this request."""
         player_id = player.player_id
@@ -95,17 +92,12 @@ class AudioPipeline:
             player.config.get_value("output_codec", player.output_format),
         )
 
-        pcm_format, out_format, headers = build_audio_params(
-            effective_format,
-            duration,
-            include_content_length=self.provider.include_content_length,
-        )
+        pcm_format, out_format, headers = build_audio_params(effective_format)
 
         logger.debug(
-            "[StreamMode:independent] Serving audio %s: format=%s, duration=%s",
+            "[StreamMode:independent] Serving audio %s: format=%s",
             player_id,
             effective_format,
-            duration,
         )
         return await self.serve_independent(request, player, media, pcm_format, out_format, headers)
 
@@ -140,7 +132,6 @@ class AudioPipeline:
                 request,
                 response,
                 player,
-                headers,
                 audio_source,
                 pcm_format,
                 out_format,
@@ -148,7 +139,7 @@ class AudioPipeline:
                 self._get_pacing_profile(media),
             )
         )
-        transport = getattr(request, "transport", None)
+        transport = request.transport
         try:
             await self.run_stream_task(player_id, stream_task, transport)
         except MusicAssistantError, OSError:
@@ -171,7 +162,6 @@ class AudioPipeline:
         request: web.Request,
         response: web.StreamResponse,
         player: MSXPlayer,
-        headers: dict[str, str],
         audio_source: Any,
         pcm_format: AudioFormat,
         out_format: AudioFormat,
@@ -236,17 +226,7 @@ class AudioPipeline:
                     producer_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await producer_task
-            content_length = headers.get("Content-Length")
-            if content_length:
-                logger.debug(
-                    "Stream %s: wrote %d bytes, Content-Length=%s, diff=%d",
-                    player_id,
-                    total_bytes,
-                    content_length,
-                    total_bytes - int(content_length),
-                )
-            else:
-                logger.debug("Stream %s finished: wrote %d bytes", player_id, total_bytes)
+            logger.debug("Stream %s finished: wrote %d bytes", player_id, total_bytes)
 
     async def run_stream_task(
         self,
@@ -301,14 +281,6 @@ class AudioPipeline:
         return PacingProfile.DEFAULT
 
 
-def _signal_eof(queue: asyncio.Queue[bytes | None], *, replace: bool = False) -> None:
-    """Signal EOF, optionally replacing stale buffered data during reconnect."""
-    if replace and queue.full():
-        queue.get_nowait()
-    with contextlib.suppress(asyncio.QueueFull):
-        queue.put_nowait(None)
-
-
 def rewrite_stream_host(request: web.Request, url: str) -> str:
     """Point a stream URL at the host the client already uses to reach us."""
     client_host = request.url.host
@@ -319,6 +291,37 @@ def rewrite_stream_host(request: web.Request, url: str) -> str:
         client_host = f"[{client_host}]"
     netloc = f"{client_host}:{parts.port}" if parts.port else client_host
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def build_audio_params(output_format_str: str) -> tuple[AudioFormat, AudioFormat, dict[str, str]]:
+    """Build PCM input format, encoded output format, and HTTP headers."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+    )
+    content_type_map: dict[str, tuple[ContentType, str]] = {
+        "mp3": (ContentType.MP3, "audio/mpeg"),
+        "aac": (ContentType.AAC, "audio/aac"),
+        "flac": (ContentType.FLAC, "audio/flac"),
+    }
+    codec, mime_type = content_type_map.get(output_format_str, (ContentType.MP3, "audio/mpeg"))
+    out_format = AudioFormat(
+        content_type=codec,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+    )
+    headers: dict[str, str] = {
+        "Content-Type": mime_type,
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Accept-Ranges": "none",
+    }
+    # Streaming encoders add headers/padding and AAC may use variable bitrate,
+    # so the encoded length is unknown: never advertise a Content-Length.
+    return pcm_format, out_format, headers
 
 
 async def _collect_prebuffer(
@@ -351,50 +354,7 @@ async def _collect_prebuffer(
     return pre_buffer, ended
 
 
-def build_audio_params(
-    output_format_str: str,
-    duration: int,  # noqa: ARG001 - retained public helper contract
-    *,
-    include_content_length: bool = False,  # noqa: ARG001 - legacy config compatibility
-) -> tuple[AudioFormat, AudioFormat, dict[str, str]]:
-    """Build PCM input format, encoded output format, and HTTP headers."""
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE,
-        sample_rate=44100,
-        bit_depth=16,
-        channels=2,
-    )
-    content_type_map: dict[str, tuple[ContentType, str]] = {
-        "mp3": (ContentType.MP3, "audio/mpeg"),
-        "aac": (ContentType.AAC, "audio/aac"),
-        "flac": (ContentType.FLAC, "audio/flac"),
-    }
-    codec, mime_type = content_type_map.get(output_format_str, (ContentType.MP3, "audio/mpeg"))
-    out_format = AudioFormat(
-        content_type=codec,
-        sample_rate=44100,
-        bit_depth=16,
-        channels=2,
-    )
-    headers: dict[str, str] = {
-        "Content-Type": mime_type,
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "Accept-Ranges": "none",
-    }
-    # Streaming encoders add headers/padding and AAC may use variable bitrate.
-    # Keep the legacy argument for config compatibility, never advertise an estimate.
-    return pcm_format, out_format, headers
-
-
-def resolve_served_duration(mass: MusicAssistant, media: PlayerMedia) -> int:
-    """Return the length in seconds of the audio served for the given media."""
-    duration = media.stream_duration or media.duration or 0
-    if not duration and media.source_id and media.queue_item_id:
-        queue_item = mass.player_queues.get_item(media.source_id, media.queue_item_id)
-        if queue_item:
-            if isinstance(queue_item.media_item, Track):
-                duration = queue_item.media_item.duration or duration
-            if not duration and queue_item.duration:
-                duration = queue_item.duration
-    return int(duration)
+def _signal_eof(queue: asyncio.Queue[bytes | None]) -> None:
+    """Signal EOF to the consumer unless the queue is full."""
+    with contextlib.suppress(asyncio.QueueFull):
+        queue.put_nowait(None)

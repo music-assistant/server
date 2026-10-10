@@ -10,10 +10,8 @@ from music_assistant.providers.msx_bridge import setup
 from music_assistant.providers.msx_bridge.constants import (
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
-    CONF_INCLUDE_CONTENT_LENGTH,
     CONF_OUTPUT_FORMAT,
     DEFAULT_HTTP_PORT,
-    DEFAULT_INCLUDE_CONTENT_LENGTH,
     DEFAULT_OUTPUT_FORMAT,
     GROUP_STREAM_MODE_INDEPENDENT,
     GROUP_STREAM_MODE_REDIRECT,
@@ -72,11 +70,6 @@ async def test_stream_delivery_advanced_options(provider: MSXBridgeProvider) -> 
     values = [o.value for o in entry.options]
     assert values == [GROUP_STREAM_MODE_REDIRECT, GROUP_STREAM_MODE_INDEPENDENT]
     assert entry.advanced is True
-
-    content_length = next(e for e in entries if e.key == CONF_INCLUDE_CONTENT_LENGTH)
-    assert content_length.type == ConfigEntryType.BOOLEAN
-    assert content_length.default_value is DEFAULT_INCLUDE_CONTENT_LENGTH
-    assert content_length.advanced is True
 
 
 async def test_setup_does_not_advertise_native_grouping(
