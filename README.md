@@ -34,7 +34,7 @@ The only officially supported ways to run the Music Assistant server are:
 
 Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (7.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
 
-Packaging the server yourself (e.g. for a Linux distribution) is possible, but unsupported. The release wheel and container image include `music_assistant/helpers/app_secrets.json`, the bundled credentials for the services Music Assistant integrates with. This file is **not** covered by the Apache-2.0 license, see [NOTICE](NOTICE) for its terms. The source code, including the source distribution, does not include it; builds from source can supply their own credentials, see `music_assistant/helpers/app_vars.py`.
+Third-party packages (e.g. Linux distributions) are not supported, and issues reported from them may be closed. The bundled credentials for the services Music Assistant integrates with are only licensed for our official builds (see [NOTICE](NOTICE)), so such builds must supply their own, see `music_assistant/helpers/app_vars.py`.
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
 [repository-url]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon

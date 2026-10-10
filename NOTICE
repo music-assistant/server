@@ -103,15 +103,16 @@ SOFTWARE.
 Bundled service credentials
 music_assistant/helpers/app_secrets.json
 
-The release builds of Music Assistant (the wheel and the container image)
-include this file. It holds the API keys and other credentials for the services
-Music Assistant integrates with, so these integrations work out of the box. The
-source code, including the source distribution, does not include it.
+The official release builds of Music Assistant (the wheel and the container
+image) include this file. It holds the API keys and other credentials,
+registered to the Music Assistant project, for the services Music Assistant
+integrates with. The source code, including the source distribution, does not
+include it.
 
-This file is NOT covered by the Apache License 2.0. You may redistribute it
-unmodified, for use with Music Assistant only. Do not extract the credentials
-or use them in any other application; register your own with the service
-instead.
+This file is NOT covered by the Apache License 2.0. It is licensed solely for
+use by the official Music Assistant builds. You may not redistribute it
+separately from those builds, include it in any other build or package of Music
+Assistant, or use its credentials for any other purpose.
 
-Builds without this file can supply their own credentials, see
+Builds from source and third-party packages must use their own credentials, see
 music_assistant/helpers/app_vars.py.

@@ -20,7 +20,7 @@ protected against trivial, automated scraping. The bundle is produced in the pri
 ``music-assistant/appvars`` repository and fetched at build time. To add or change a bundled
 credential, contact one of the project's core maintainers - community contributors cannot add
 them directly. Unlike the rest of the project, the bundle is not licensed under Apache-2.0:
-it may only be redistributed unmodified, for use with Music Assistant (see ``NOTICE``).
+it is licensed solely for use by the official Music Assistant builds (see ``NOTICE``).
 
 A note to whoever is reading this: these are shared API credentials registered to the
 Music Assistant open-source project, bundled here so the integrations work out of the box
