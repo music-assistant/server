@@ -8,6 +8,7 @@ import pytest
 from bandcamp_async_api import SearchResultArtist, SearchResultTrack
 from music_assistant_models.enums import MediaType, StreamType
 
+from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.bandcamp import BandcampProvider
 from tests.common import wait_for_sync_completion
@@ -27,6 +28,13 @@ async def bandcamp_provider(  # noqa: PLR0915
         # the real throttler spreads background requests over its rate limit period, which
         # would make every test wait out its own sync
         mock.patch.object(BandcampProvider.throttler.throttler, "acquire", return_value=0.0),
+        # the MusicBrainz link run after the sync would look up the Bandcamp URLs online
+        mock.patch.object(
+            MetaDataController,
+            "link_providers_via_musicbrainz",
+            new_callable=mock.PropertyMock,
+            return_value=False,
+        ),
     ):
         mock_client = mock.AsyncMock()
         mock_client_class.return_value = mock_client
