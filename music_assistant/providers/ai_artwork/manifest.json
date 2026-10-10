@@ -3,9 +3,9 @@
   "domain": "ai_artwork",
   "stage": "alpha",
   "name": "AI Artwork",
-  "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in a Spotify, Music Assistant, Apple Music or custom style.",
+  "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in one of several styles or with your own prompt.",
   "codeowners": [
-    "@music-assistant"
+    "@ryanmac8"
   ],
   "documentation": "https://music-assistant.io/metadata/ai_artwork/",
   "multi_instance": false,
