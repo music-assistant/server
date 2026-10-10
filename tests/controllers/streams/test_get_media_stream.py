@@ -960,10 +960,10 @@ _FASTSEEK_ARGS = ["-fflags", "+fastseek"]
 @pytest.mark.parametrize(
     ("hints", "expected_args"),
     [
-        (Mp3SeekHints(True, 31911863), [*_SKIP_ARGS, *_FASTSEEK_ARGS]),
-        (Mp3SeekHints(True, 0), _FASTSEEK_ARGS),
-        (NO_SEEK_HINTS, []),
-        (None, []),
+        (Mp3SeekHints(True, 31911863), [*_SKIP_ARGS, *_FASTSEEK_ARGS, "-ss", "5400"]),
+        (Mp3SeekHints(True, 0), [*_FASTSEEK_ARGS, "-ss", "5400"]),
+        (NO_SEEK_HINTS, ["-ss", "5400"]),
+        (None, ["-ss", "5400"]),
     ],
     ids=["tag", "no-tag", "not-mp3", "probe-failed"],
 )
@@ -981,23 +981,18 @@ async def test_get_media_stream_speeds_up_remote_mp3_seek(
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=5400))
 
     assert patch_ffmpeg.last_instance is not None
-    assert patch_ffmpeg.last_instance.extra_input_args == [
-        *_PROVIDER_INPUT_ARGS,
-        *expected_args,
-        "-ss",
-        "5400",
-    ]
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, *expected_args]
     assert mp3_probe.calls == [
         ("http://test.invalid/episode-1.mp3", {"User-Agent": _PROVIDER_INPUT_ARGS[1]})
     ]
 
 
 @pytest.mark.asyncio
-async def test_get_media_stream_sends_probed_user_agent_to_ffmpeg(
+async def test_get_media_stream_probes_with_default_headers(
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
 ) -> None:
-    """Without a provider User-Agent, ffmpeg gets the one the probe used, not its own default."""
+    """Without a provider User-Agent the probe uses MA's headers and ffmpeg keeps its own."""
     mp3_probe.result = Mp3SeekHints(True, 31911863)
     streamdetails = _seekable_streamdetails()
     streamdetails.extra_input_args = []
@@ -1005,14 +1000,56 @@ async def test_get_media_stream_sends_probed_user_agent_to_ffmpeg(
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=5400))
 
-    user_agent = HTTP_HEADERS["User-Agent"]
-    assert mp3_probe.calls == [("http://test.invalid/episode-1.mp3", {"User-Agent": user_agent})]
+    assert mp3_probe.calls == [("http://test.invalid/episode-1.mp3", HTTP_HEADERS)]
+    assert patch_ffmpeg.last_instance is not None
+    assert "-user_agent" not in (patch_ffmpeg.last_instance.extra_input_args or [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hints", "expected_args"),
+    [
+        (Mp3SeekHints(True, 31911863), _SKIP_ARGS),
+        (Mp3SeekHints(True, 0), []),
+    ],
+    ids=["tag", "no-tag"],
+)
+async def test_get_media_stream_skips_id3_tag_on_remote_mp3_start(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+    hints: Mp3SeekHints,
+    expected_args: list[str],
+) -> None:
+    """A remote MP3 that starts from the beginning skips its ID3 tag, without fastseek."""
+    mp3_probe.result = hints
+    streamdetails = _seekable_streamdetails()
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert len(mp3_probe.calls) == 1
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, *expected_args]
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_merges_fastseek_into_provider_fflags(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """Fastseek joins the provider's own -fflags, since ffmpeg only honours the last one."""
+    mp3_probe.result = Mp3SeekHints(True, 0)
+    streamdetails = _seekable_streamdetails()
+    streamdetails.extra_input_args = [*_PROVIDER_INPUT_ARGS, "-fflags", "nobuffer"]
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=5400))
+
     assert patch_ffmpeg.last_instance is not None
     assert patch_ffmpeg.last_instance.extra_input_args == [
-        "-user_agent",
-        user_agent,
-        *_SKIP_ARGS,
-        *_FASTSEEK_ARGS,
+        *_PROVIDER_INPUT_ARGS,
+        "-fflags",
+        "nobuffer+fastseek",
         "-ss",
         "5400",
     ]
@@ -1090,7 +1127,7 @@ async def test_get_media_stream_probes_other_remote_mp3_types(
 @pytest.mark.parametrize(
     "variant",
     [
-        "no-seek",
+        "no-duration",
         "flac",
         "unknown-probed-as-aac",
         "local-file",
@@ -1102,20 +1139,20 @@ async def test_get_media_stream_probes_other_remote_mp3_types(
         "provider-input-format",
     ],
 )
-async def test_get_media_stream_leaves_other_seeks_alone(
+async def test_get_media_stream_leaves_other_streams_alone(
     monkeypatch: pytest.MonkeyPatch,
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
     variant: str,
 ) -> None:
-    """Only a seek in a plain remote MP3 is probed; everything else keeps its args."""
+    """Only a plain remote MP3 with a known duration is probed; everything else keeps its args."""
     mp3_probe.result = Mp3SeekHints(True, 100)
     audio = _make_audio_controller()
     streamdetails = _seekable_streamdetails()
     seek_position = 600
     match variant:
-        case "no-seek":
-            seek_position = 0
+        case "no-duration":
+            streamdetails.duration = None
         case "flac":
             streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
         case "unknown-probed-as-aac":

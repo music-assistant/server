@@ -139,6 +139,7 @@ from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
+    add_input_fflag,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
 )
@@ -4097,12 +4098,13 @@ class StreamsAudio:
         ):
             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
-        # handle seek support
-        if seek_position and streamdetails.duration and streamdetails.allow_seek:
-            extra_input_args += await self._get_remote_mp3_seek_args(
-                streamdetails, audio_source, extra_input_args
+        # skip a remote MP3's ID3 tag on every launch and handle seek support
+        if streamdetails.duration and streamdetails.allow_seek:
+            await self._add_remote_mp3_input_args(
+                streamdetails, audio_source, extra_input_args, seeking=bool(seek_position)
             )
-            extra_input_args += ["-ss", str(int(seek_position))]
+            if seek_position:
+                extra_input_args += ["-ss", str(int(seek_position))]
 
         bytes_sent = 0
         finished = False
@@ -5209,20 +5211,24 @@ class StreamsAudio:
             return None
         return streamdetails.path
 
-    async def _get_remote_mp3_seek_args(
+    async def _add_remote_mp3_input_args(
         self,
         streamdetails: StreamDetails,
         audio_source: str | AsyncGenerator[bytes],
         extra_input_args: list[str],
-    ) -> list[str]:
+        *,
+        seeking: bool,
+    ) -> None:
         """
-        Return the ffmpeg input args that speed up a seek in a remote MP3.
+        Add the ffmpeg input args that speed up starting or seeking a remote MP3.
 
-        Returns an empty list for anything that is not a plain remote MP3.
+        Skips a leading ID3 tag and, on a seek, lets ffmpeg jump by byte offset.
+        Leaves the args alone for anything that is not a plain remote MP3.
 
-        :param streamdetails: Details of the stream being seeked.
+        :param streamdetails: Details of the stream being launched.
         :param audio_source: The resolved ffmpeg input.
-        :param extra_input_args: The ffmpeg input args collected so far.
+        :param extra_input_args: The ffmpeg input args collected so far, extended in place.
+        :param seeking: Whether this launch seeks into the stream.
         """
         if (
             streamdetails.stream_type != StreamType.HTTP
@@ -5232,7 +5238,7 @@ class StreamsAudio:
             or "-f" in extra_input_args
             or "-post_data" in extra_input_args
         ):
-            return []
+            return
         audio_format = arriving_audio_format(streamdetails)
         mp3_types = (ContentType.MP3, ContentType.MPEG)
         is_mp3 = audio_format.content_type in mp3_types or (
@@ -5241,7 +5247,7 @@ class StreamsAudio:
             and audio_format.codec_type in (*mp3_types, ContentType.UNKNOWN)
         )
         if not is_mp3:
-            return []
+            return
         headers = ffmpeg_http_headers(extra_input_args)
         cache_key = (audio_source, frozenset(headers.items()))
         cached = self._mp3_seek_hints.get(cache_key)
@@ -5259,21 +5265,12 @@ class StreamsAudio:
             self._mp3_seek_hints.move_to_end(cache_key)
             while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
                 self._mp3_seek_hints.popitem(last=False)
-        if not hints.fastseek:
-            return []
-        self.logger.debug(
-            "Seeking %s with fastseek, skipping %s bytes of ID3 tag",
-            streamdetails.uri,
-            hints.skip_bytes,
-        )
-        args: list[str] = []
-        # ffmpeg's own default differs, and the skip must describe the response ffmpeg gets
-        if "-user_agent" not in extra_input_args:
-            args += ["-user_agent", headers["User-Agent"]]
         if hints.skip_bytes:
-            args += ["-skip_initial_bytes", str(hints.skip_bytes)]
-        # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
-        # CBR, while VBR lands seconds off with a TOC and can be minutes off without one
-        if "-fflags" not in extra_input_args:
-            args += ["-fflags", "+fastseek"]
-        return args
+            self.logger.debug(
+                "Skipping %s bytes of ID3 tag in %s", hints.skip_bytes, streamdetails.uri
+            )
+            extra_input_args += ["-skip_initial_bytes", str(hints.skip_bytes)]
+        if seeking and hints.fastseek:
+            # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
+            # CBR, while VBR lands seconds off with a TOC and can be minutes off without one
+            add_input_fflag(extra_input_args, "+fastseek")
