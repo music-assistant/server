@@ -21,7 +21,11 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TransitionStrategy,
     TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner, assembly
+from music_assistant.controllers.streams.smart_fades.planner import (
+    SmartCrossFadePlanner,
+    assembly,
+    candidates,
+)
 from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
@@ -587,6 +591,22 @@ class TestPlanSummaryLog:
 
         assert line.startswith("planned transition: tier=quick_fade trigger=meter ")
 
+    def test_re_anchored_quick_fade_names_the_beat_grid(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blend context whose shipped candidate re-anchored into a quick fade logs the grid."""
+        out = _analysis(120.0, key="A", mode="minor")
+        inc = _analysis(120.0, key="C", mode="major")
+        assert build_transition_context(out, inc, 45.0, LOGGER).tier is TransitionTier.FULL_BLEND
+        # every candidate's re-anchored tail reads as unblendable
+        monkeypatch.setattr(
+            candidates, "choose_tier", lambda *_args: (False, TransitionTier.QUICK_FADE)
+        )
+
+        line = _summary_line(caplog, out, inc)
+
+        assert line.startswith("planned transition: tier=quick_fade trigger=beat_grid ")
+
     def test_rescue_pass_winner_is_marked(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -595,9 +615,9 @@ class TestPlanSummaryLog:
         calls = itertools.count()
 
         def reject_main_pass(
-            selector: CandidateSelector, candidates: Sequence[Candidate], ctx: TransitionContext
+            selector: CandidateSelector, built: Sequence[Candidate], ctx: TransitionContext
         ) -> ScoredCandidate | None:
-            return None if next(calls) == 0 else select(selector, candidates, ctx)
+            return None if next(calls) == 0 else select(selector, built, ctx)
 
         monkeypatch.setattr(CandidateSelector, "select", reject_main_pass)
 

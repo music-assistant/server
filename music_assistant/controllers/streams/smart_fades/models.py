@@ -57,10 +57,10 @@ class QuickFadeTrigger(StrEnum):
 
     # the two decks' meters differ, so they share no bar grid
     METER = "meter"
-    # the anchored outgoing tail has too few or too irregular downbeats
-    BEAT_GRID = "beat_grid"
     # the tempo gap is beyond the time-stretch range
     TEMPO = "tempo"
+    # the anchored outgoing tail has too few or too irregular downbeats
+    BEAT_GRID = "beat_grid"
 
 
 @dataclass(slots=True)

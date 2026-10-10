@@ -612,11 +612,11 @@ def _choose_tier_with_trigger(
     if cross_meter:
         # no shared bar grid to beatmatch or blend across
         return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.METER
+    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+        return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.TEMPO
     anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= tier_anchor]
     if not _tail_is_blendable(anchored_downbeats):
         return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.BEAT_GRID
-    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
-        return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.TEMPO
     out_a, in_a = outgoing.analysis, incoming.analysis
     # the 16-bar tier is earned by a verifiable energy anchor: without RMS data
     # the blend could land on a mastered fade-out unnoticed

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
+    QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionTier,
 )
@@ -159,7 +160,11 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param source: The winning candidate's generator, or the fallback/handoff that shipped.
         :param bars: The winning candidate's bar count; None for the unphrased fallback/handoff.
         """
-        trigger = ctx.quick_fade_trigger if plan.tier is TransitionTier.QUICK_FADE else None
+        trigger = None
+        if plan.tier is TransitionTier.QUICK_FADE:
+            # meter and tempo do not depend on the anchor, so a blend context whose
+            # shipped candidate re-anchored into a quick fade lost its beat grid
+            trigger = ctx.quick_fade_trigger or QuickFadeTrigger.BEAT_GRID
         self.logger.debug(
             "planned transition: tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
             "bpm=%.1f->%.1f (%+.1f%%)",

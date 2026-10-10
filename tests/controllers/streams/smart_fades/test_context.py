@@ -180,8 +180,8 @@ def test_context_tier_full_blend_for_compatible_pair() -> None:
         pytest.param(
             _with_irregular_downbeats(_analysis(120.0)),
             _analysis(150.0),
-            QuickFadeTrigger.BEAT_GRID,
-            id="grid-before-tempo",
+            QuickFadeTrigger.TEMPO,
+            id="tempo-before-grid",
         ),
         pytest.param(_analysis(120.0), _analysis(150.0), QuickFadeTrigger.TEMPO, id="tempo"),
     ],
