@@ -640,16 +640,20 @@ class TestDressedGenerators:
         assert list(FilterOutGenerator().generate(ctx)) == []
         assert list(EchoOutGenerator().generate(ctx)) == []
 
-    def test_a_filter_out_runs_four_then_two_bars_on_the_nearest_downbeat(self) -> None:
-        """Both rungs end on the downbeat nearest the energy anchor; 4 bars is the top rung."""
+    def test_a_filter_out_runs_four_then_two_bars_where_a_cut_ends(self) -> None:
+        """Each rung ends on the downbeat nearest the energy anchor and nearest the audible end."""
         ctx = _base_ctx(
             tier=TransitionTier.QUICK_FADE, default_anchor=40.2, protective_downbeats=_DOWNBEATS
         )
 
         specs = list(FilterOutGenerator().generate(ctx))
 
-        assert [spec.bars for spec in specs] == [4, 2]
-        assert all(spec.anchor_s == 41.0 and spec.entry_s is None for spec in specs)
+        # the cut's own anchor also tries the explicit entry options (here only 0.0)
+        shape = [(41.0, None), (45.0, None), (45.0, 0.0)]
+        assert [(s.bars, s.anchor_s, s.entry_s) for s in specs] == [
+            *((4, anchor, entry) for anchor, entry in shape),
+            *((2, anchor, entry) for anchor, entry in shape),
+        ]
         assert all(spec.ideal_bars == 4 for spec in specs)
         assert all(spec.style is TransitionStyle.FILTER_OUT for spec in specs)
         assert all(spec.source == "filter-out" for spec in specs)
@@ -662,21 +666,38 @@ class TestDressedGenerators:
 
         specs = list(FilterOutGenerator().generate(ctx))
 
-        assert [(spec.bars, spec.ideal_bars) for spec in specs] == [(2, 2)]
+        assert {(spec.bars, spec.ideal_bars) for spec in specs} == {(2, 2)}
 
-    def test_an_echo_out_is_one_spec_on_the_nearest_downbeat(self) -> None:
-        """The echo out ends on the downbeat nearest the energy anchor."""
+    def test_an_echo_out_ends_where_a_cut_ends(self) -> None:
+        """The echo ends on the downbeat nearest the energy anchor and nearest the audible end."""
         ctx = _base_ctx(
             tier=TransitionTier.QUICK_FADE, default_anchor=38.4, protective_downbeats=_DOWNBEATS
         )
 
         specs = list(EchoOutGenerator().generate(ctx))
 
-        assert len(specs) == 1
-        (spec,) = specs
-        assert (spec.bars, spec.ideal_bars, spec.anchor_s) == (1, 1, 39.0)
-        assert spec.style is TransitionStyle.ECHO_OUT
-        assert spec.source == "echo-out"
+        assert [(s.bars, s.ideal_bars, s.anchor_s, s.entry_s) for s in specs] == [
+            (1, 1, 39.0, None),
+            (1, 1, 45.0, None),
+        ]
+        assert all(spec.style is TransitionStyle.ECHO_OUT for spec in specs)
+        assert all(spec.source == "echo-out" for spec in specs)
+
+    def test_both_also_end_past_the_last_outgoing_vocal(self) -> None:
+        """A filter out ends on the first downbeat after the vocal, an echo cuts after it."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE,
+            default_anchor=38.4,
+            protective_downbeats=_DOWNBEATS,
+            vocal_out_placement=VocalMask(windows=[(10.0, 35.5)]),
+        )
+
+        filter_anchors = {spec.anchor_s for spec in FilterOutGenerator().generate(ctx)}
+        echo_anchors = [spec.anchor_s for spec in EchoOutGenerator().generate(ctx)]
+
+        assert filter_anchors == {39.0, 37.0, 45.0}
+        # the 2s echo has to end 2s past the vocal for its cut to clear it
+        assert echo_anchors == [39.0, 45.0]
 
 
 class TestDefaultGenerators:

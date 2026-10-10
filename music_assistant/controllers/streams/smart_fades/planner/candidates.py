@@ -442,51 +442,60 @@ class SegueGenerator(CandidateGenerator):
 
 
 class FilterOutGenerator(CandidateGenerator):
-    """Emits filter outs ending on the outgoing downbeat nearest the energy anchor."""
+    """Emits filter outs ending where a cut of the pair would end."""
 
     name = "filter-out"
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
-        """Emit a 4- and a 2-bar filter out for a pair that can't be beatmatched."""
+        """Emit 4- and 2-bar filter outs for a pair that can't be beatmatched."""
         if ctx.tier is not TransitionTier.QUICK_FADE:
             return
-        anchor = _dressed_anchor(ctx)
         # two meters share no bar grid, so a filter out stays as short as their cut
         ladder = [
             bars
             for bars in _FILTER_OUT_BARS
             if not ctx.cross_meter or bars <= _CROSS_METER_MAX_BARS
         ]
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        energy_anchor = _dressed_anchor(ctx)
         for bars in ladder:
-            yield CandidateSpec(
-                tier=ctx.tier,
-                bars=bars,
-                anchor_s=anchor,
-                entry_s=None,
-                source=self.name,
-                ideal_bars=ladder[0],
-                style=TransitionStyle.FILTER_OUT,
-            )
+            for anchor in _dressed_anchors(ctx, bars * bar_out):
+                # like the cuts: the energy anchor keeps the factory's entry, the
+                # protective anchors also try the explicit entry options
+                entries = [None] if anchor == energy_anchor else [None, *_entry_options(ctx, bars)]
+                for entry in entries:
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ladder[0],
+                        style=TransitionStyle.FILTER_OUT,
+                    )
 
 
 class EchoOutGenerator(CandidateGenerator):
-    """Emits an echo out whose echo ends on the outgoing downbeat nearest the energy anchor."""
+    """Emits echo outs whose echo ends where a cut of the pair would end."""
 
     name = "echo-out"
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
-        """Emit one echo out for a pair that can't be beatmatched."""
+        """Emit the echo outs for a pair that can't be beatmatched."""
         if ctx.tier is not TransitionTier.QUICK_FADE:
             return
-        yield CandidateSpec(
-            tier=ctx.tier,
-            bars=1,
-            anchor_s=_dressed_anchor(ctx),
-            entry_s=None,
-            source=self.name,
-            ideal_bars=1,
-            style=TransitionStyle.ECHO_OUT,
-        )
+        echo_length = _echo_length(ctx)
+        # the dry signal stops an echo before the anchor, so that is what clears the vocals
+        for anchor in _dressed_anchors(ctx, echo_length, vocal_margin=echo_length):
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=1,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=1,
+                style=TransitionStyle.ECHO_OUT,
+            )
 
 
 def default_generators() -> tuple[CandidateGenerator, ...]:
@@ -1052,7 +1061,7 @@ class CandidateFactory:
         assert spec.anchor_s is not None  # a dressed spec carries its anchor
         ctx = self._ctx
         beat = 60.0 / ctx.outgoing.bpm
-        echo_length = len(ECHO_DECAYS) * beat
+        echo_length = _echo_length(ctx)
         downbeats = np.asarray(ctx.protective_downbeats, dtype=np.float64)
         fitting = downbeats[downbeats + echo_length <= ctx.buffer_duration]
         if not len(fitting):
@@ -1237,6 +1246,29 @@ def _dressed_anchor(ctx: TransitionContext) -> float:
     if not ctx.protective_downbeats:
         return ctx.default_anchor
     return min(ctx.protective_downbeats, key=lambda downbeat: abs(downbeat - ctx.default_anchor))
+
+
+def _dressed_anchors(
+    ctx: TransitionContext, length: float, *, vocal_margin: float = 0.0
+) -> list[float]:
+    """
+    Return where a dressed transition may end: the energy anchor and a cut's own anchors.
+
+    :param ctx: The transition context.
+    :param length: The transition's overlap; the anchor nearest the audible end
+        leaves no more than this of the audible tail out.
+    :param vocal_margin: Seconds the anchor past the last outgoing vocal keeps after it.
+    """
+    anchors = [_dressed_anchor(ctx)]
+    if ctx.vocal_out_placement is not None and ctx.vocal_out_placement.windows:
+        anchors.append(_nearest_protective_anchor(ctx, _outgoing_vocal_end(ctx) + vocal_margin))
+    anchors.append(_nearest_protective_anchor(ctx, ctx.audio_end - length, prefer_earliest=False))
+    return list(dict.fromkeys(anchors))
+
+
+def _echo_length(ctx: TransitionContext) -> float:
+    """Return how long an echo out's taps ring at the outgoing tempo, in seconds."""
+    return len(ECHO_DECAYS) * 60.0 / ctx.outgoing.bpm
 
 
 def _clipped(windows: Iterable[tuple[float, float]], end: float) -> list[tuple[float, float]]:

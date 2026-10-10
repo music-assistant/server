@@ -154,6 +154,21 @@ class TestDressedScenarios:
         assert today.style is TransitionStyle.CUT
         assert today.crossfade_duration == pytest.approx(8.0)
 
+    def test_a_filter_out_ends_where_the_clashing_cut_does(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vocal past the energy anchor moves the cut to the audible end; the filter follows."""
+        out, inc = _track(120.0, vocals=_vocals((150.0, 239.5))), _track(134.0)
+
+        plan = _plan(out, inc)
+
+        today = _plan_undressed(monkeypatch, out, inc)
+        assert today.style is TransitionStyle.CUT
+        assert today.metrics.rhythm_clash_bars > 2.0
+        assert plan.style is TransitionStyle.FILTER_OUT
+        assert plan.fade_out_window == pytest.approx(today.fade_out_window)
+        assert plan.crossfade_duration == pytest.approx(today.crossfade_duration)
+
     def test_kick_against_kick_25_percent_apart_keeps_its_cut(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

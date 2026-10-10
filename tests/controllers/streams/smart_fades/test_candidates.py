@@ -369,9 +369,9 @@ class TestBuildEchoOut:
     def test_no_downbeat_leaves_no_echo(self) -> None:
         """Without an outgoing downbeat the echo has nowhere to cut."""
         ctx = dataclasses.replace(_ctx(_analysis(120.0), _analysis(156.0)), protective_downbeats=())
-        (spec,) = EchoOutGenerator().generate(ctx)
+        factory = CandidateFactory(ctx, LOGGER)
 
-        assert CandidateFactory(ctx, LOGGER).build(spec) is None
+        assert all(factory.build(spec) is None for spec in EchoOutGenerator().generate(ctx))
 
 
 class TestUnheardIntroClamp:
