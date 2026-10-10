@@ -14,10 +14,12 @@ import logging
 import os
 from functools import partial
 from itertools import batched
+from string import ascii_letters, digits
 from sys import intern
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
+from aiohttp import web
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
@@ -42,6 +44,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import async_aiohttp_proxy_stream
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
@@ -101,6 +104,9 @@ DEVICE_REGISTRY_CACHE_TTL = 60
 AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
+# a tts_proxy token is a url-safe token plus an extension, never a path
+TTS_TOKEN_CHARS = frozenset(ascii_letters + digits + "-_")
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -178,6 +184,7 @@ class HomeAssistantProvider(PluginProvider):
     _control_reconcile_lock: asyncio.Lock
     _control_entity_search: ControlEntitySearch
     _unregister_search_command: Callable[[], None] | None = None
+    _unregister_tts_route: Callable[[], None] | None = None
 
     @property
     def url(self) -> str | None:
@@ -264,6 +271,9 @@ class HomeAssistantProvider(PluginProvider):
             SEARCH_CONTROL_ENTITIES_COMMAND,
             self.search_control_entities,
             required_scope=Scope.CONFIG_PROVIDERS_READ,
+        )
+        self._unregister_tts_route = self.mass.streams.register_dynamic_route(
+            f"/{self.instance_id}_tts", self._handle_tts_request
         )
         try:
             await self.hass.connect()
@@ -689,14 +699,16 @@ class HomeAssistantProvider(PluginProvider):
         ) as response:
             await self._raise_for_tts_error(response, entity_id, language)
             data = await response.json()
-        url = str(data["url"])
+        # HA's url uses its own base url (often self-signed https or external), so the
+        # clip is served through our stream server and fetched over the API connection
+        token = str(data["path"]).rsplit("/", 1)[-1]
         return StreamDetails(
             provider=self.instance_id,
-            item_id=url,
+            item_id=token,
             audio_format=AudioFormat(content_type=ContentType.MP3),
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
-            path=url,
+            path=f"{self.mass.streams.base_url}/{self.instance_id}_tts?id={token}",
         )
 
     async def _hass_listener(self) -> None:
@@ -956,6 +968,23 @@ class HomeAssistantProvider(PluginProvider):
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
 
+    async def _handle_tts_request(self, request: web.Request) -> web.StreamResponse | web.Response:
+        """Stream a TTS clip from Home Assistant's tts_proxy by its token."""
+        if not (token := request.query.get("id")):
+            return web.Response(status=400, text="Missing id")
+        stem, _, extension = token.partition(".")
+        if not (
+            stem and set(stem) <= TTS_TOKEN_CHARS and extension.isascii() and extension.isalnum()
+        ):
+            return web.Response(status=400, text="Invalid id")
+        ha_url, headers, http_session = self._get_ha_http()
+        async with http_session.get(f"{ha_url}/api/tts_proxy/{token}", headers=headers) as response:
+            if not response.ok:
+                return web.Response(status=response.status)
+            return await async_aiohttp_proxy_stream(
+                self.mass, request, response.content, response.content_type
+            )
+
     async def _raise_for_tts_error(
         self, response: ClientResponse, entity_id: str, language: str | None
     ) -> None:
@@ -994,6 +1023,9 @@ class HomeAssistantProvider(PluginProvider):
         """Stop listening for Home Assistant events and disconnect the client."""
         if unregister := self._unregister_search_command:
             self._unregister_search_command = None
+            unregister()
+        if unregister := self._unregister_tts_route:
+            self._unregister_tts_route = None
             unregister()
         self._control_entity_search.close()
         if unsubscribe := self._unsubscribe_controls:

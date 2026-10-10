@@ -12,6 +12,8 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
@@ -123,6 +125,9 @@ def _mass() -> MagicMock:
     mass.cache = _Cache()
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
+    mass.closing = False
+    mass.streams.base_url = "http://ma.local:8097"
+    mass.streams.register_dynamic_route.return_value = MagicMock()
     use_real_create_task(mass)
     mass.players.register_or_update_player_control = AsyncMock()
     # get_setup_value reads the (empty, here) live setup_data blob from the store, then
@@ -664,7 +669,10 @@ def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     response = AsyncMock()
     response.ok = True
     response.raise_for_status = MagicMock()
-    response.json.return_value = {"url": "http://homeassistant.local/tts.mp3"}
+    response.json.return_value = {
+        "url": "http://homeassistant.local/api/tts_proxy/abc.mp3",
+        "path": "/api/tts_proxy/abc.mp3",
+    }
     post = cast("MagicMock", provider.mass.http_session.post)
     post.return_value.__aenter__.return_value = response
     return post
@@ -697,7 +705,7 @@ async def test_tts_uses_the_first_engine_by_default() -> None:
         stream = await provider.get_tts_message("Hello")
 
         assert ProviderFeature.TTS in provider.supported_features
-        assert stream.path == "http://homeassistant.local/tts.mp3"
+        assert stream.path == "http://ma.local:8097/hass--test_tts?id=abc.mp3"
         post.assert_called_once()
         request = post.call_args
         assert request.args == ("http://homeassistant.local:8123/api/tts_get_url",)
@@ -828,6 +836,110 @@ async def test_tts_bare_500_without_language_raises_generic_error() -> None:
         assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
         assert "tts_get_url" in str(excinfo.value)
         assert "500" in str(excinfo.value)
+
+
+def _mock_tts_proxy_response(
+    http_session: Any, chunks: list[bytes], status: int = 200
+) -> MagicMock:
+    """Let the Home Assistant tts_proxy endpoint serve the given chunks and return the get mock."""
+    response = MagicMock()
+    response.ok = status < 400
+    response.status = status
+    response.content_type = "audio/mpeg"
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    get = cast("MagicMock", http_session.get)
+    get.return_value.__aenter__.return_value = response
+    return get
+
+
+async def _request_tts(
+    provider: HomeAssistantProvider, query: str
+) -> tuple[web.StreamResponse, list[bytes]]:
+    """Request a clip from the TTS route and return the response and the written chunks."""
+    written: list[bytes] = []
+
+    async def _write(_self: web.StreamResponse, data: bytes) -> None:
+        written.append(data)
+
+    with (
+        patch.object(web.StreamResponse, "prepare", AsyncMock()),
+        patch.object(web.StreamResponse, "write", _write),
+    ):
+        response = await provider._handle_tts_request(
+            make_mocked_request("GET", f"/hass--test_tts{query}")
+        )
+    return response, written
+
+
+async def test_tts_route_is_registered_until_unload() -> None:
+    """The TTS route is registered on the stream server at startup and removed on unload."""
+    async with _start_provider([]) as (provider, _):
+        streams = cast("MagicMock", provider.mass.streams)
+        streams.register_dynamic_route.assert_called_once_with(
+            "/hass--test_tts", provider._handle_tts_request
+        )
+        unregister = streams.register_dynamic_route.return_value
+        unregister.assert_not_called()
+
+    unregister.assert_called_once_with()
+
+
+async def test_tts_route_rejects_missing_id() -> None:
+    """A request without an id is rejected."""
+    async with _start_provider([]) as (provider, _):
+        response, _ = await _request_tts(provider, "")
+
+        assert response.status == 400
+        cast("MagicMock", provider.mass.http_session.get).assert_not_called()
+
+
+@pytest.mark.parametrize("token", ["../abc.mp3", "a/b.mp3", "..", "abc..mp3", "abc"])
+async def test_tts_route_rejects_an_id_that_is_no_file_name(token: str) -> None:
+    """An id that is not a single file name never reaches Home Assistant."""
+    async with _start_provider([]) as (provider, _):
+        response, _ = await _request_tts(provider, f"?id={token}")
+
+        assert response.status == 400
+        cast("MagicMock", provider.mass.http_session.get).assert_not_called()
+
+
+async def test_tts_route_streams_the_clip_from_home_assistant() -> None:
+    """The clip is fetched from tts_proxy over the API connection and streamed back."""
+    async with _start_provider([]) as (provider, _):
+        get = _mock_tts_proxy_response(provider.mass.http_session, [b"ab", b"cd"])
+
+        response, written = await _request_tts(provider, "?id=abc.mp3")
+
+        get.assert_called_once_with(
+            "http://homeassistant.local:8123/api/tts_proxy/abc.mp3",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert response.status == 200
+        assert response.content_type == "audio/mpeg"
+        assert written == [b"ab", b"cd"]
+
+
+async def test_tts_route_honours_disabled_ssl_verification() -> None:
+    """The clip is fetched without certificate checks when the connection disables them."""
+    async with _start_provider([], **{CONF_VERIFY_SSL: False}) as (provider, _):
+        get = _mock_tts_proxy_response(provider.mass.http_session_no_ssl, [b"ab"])
+
+        _, written = await _request_tts(provider, "?id=abc.mp3")
+
+        get.assert_called_once()
+        cast("MagicMock", provider.mass.http_session.get).assert_not_called()
+        assert written == [b"ab"]
+
+
+async def test_tts_route_passes_an_upstream_error_through() -> None:
+    """A failing tts_proxy request is answered with Home Assistant's status."""
+    async with _start_provider([]) as (provider, _):
+        _mock_tts_proxy_response(provider.mass.http_session, [], status=404)
+
+        response, written = await _request_tts(provider, "?id=abc.mp3")
+
+        assert response.status == 404
+        assert written == []
 
 
 async def test_registry_update_refreshes_the_engines() -> None:
