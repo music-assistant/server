@@ -106,6 +106,20 @@ class SupervisorMounter(ShareMounter):
                 return self.get_path(mount["name"])
         return None
 
+    async def get_mount_paths(self) -> list[str]:
+        """
+        Return the paths of the media mounts of the Supervisor, working or not.
+
+        The mounts added in Home Assistant are included.
+
+        :raises SetupFailedError: When the Supervisor does not list its mounts.
+        """
+        return [
+            self.get_path(mount["name"])
+            for mount in await self._get_mounts()
+            if mount.get("usage") == MEDIA_USAGE
+        ]
+
     async def assign_name(self, spec: NetworkShareSpec, taken: Collection[str]) -> NetworkShareSpec:
         """
         Return a new share with a name that no mount of the Supervisor has, and its path.
