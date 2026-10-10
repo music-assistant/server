@@ -376,6 +376,24 @@ async def test_search_asks_only_a_provider_the_user_may_see(music: MusicControll
     theirs.search.assert_awaited_once()
 
 
+async def test_search_does_not_ask_a_hidden_account_for_an_unavailable_one(
+    music: MusicController,
+) -> None:
+    """The global search skips a service whose only visible account is down."""
+    theirs = _mock(music, THEIRS)
+    theirs.supported_features = {ProviderFeature.SEARCH}
+    theirs.supported_media_types = {MediaType.TRACK}
+    theirs.search = AsyncMock(return_value=SearchResults())
+    _add_my_spotify(music).available = False
+
+    with _as_user(MEMBER):
+        await music.search("query", media_types=[MediaType.TRACK])
+    theirs.search.assert_not_awaited()
+    with _as_user(OWNER):
+        await music.search("query", media_types=[MediaType.TRACK])
+    theirs.search.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     "listing",
     [

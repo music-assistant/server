@@ -636,7 +636,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             provider_searches: list[Coroutine[Any, Any, SearchResults | None]] = []
             for provider_instance in search_providers:
-                if not (prov := self.mass.get_provider(provider_instance)):
+                if not (prov := self.get_visible_provider(provider_instance)):
                     continue
                 # skip media types for which the library already holds a (near)
                 # exact match that is mapped to this provider: searching the
