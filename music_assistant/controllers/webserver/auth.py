@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 import jwt as pyjwt
 from music_assistant_models.auth import (
@@ -29,6 +30,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    APP_MA_HOST,
     CONF_PLAYERS,
     DB_TABLE_PLAYLOG,
     HOMEASSISTANT_SYSTEM_USER,
@@ -1091,9 +1093,14 @@ class AuthenticationManager:
         :param return_url: URL to redirect to after OAuth completes.
         :return: Dictionary with authorization_url, or None plus an error when the provider
             does not support OAuth or return_url is invalid.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, base_url=self.webserver.base_url)
+            is_valid, _ = is_allowed_redirect_url(
+                return_url,
+                base_url=self.webserver.base_url,
+                external_url=self.webserver.external_url,
+            )
             if not is_valid:
                 return {"authorization_url": None, "error": "Invalid return_url"}
 
@@ -1121,26 +1128,23 @@ class AuthenticationManager:
         if not provider or not provider.requires_redirect:
             return None
 
-        # Build callback redirect_uri
-        redirect_uri = f"{self.webserver.base_url}/auth/callback?provider_id={provider_id}"
+        callback_base_url = self._get_oauth_callback_base_url(return_url)
+        redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
         return await provider.get_authorization_url(redirect_uri, return_url)
 
-    async def handle_oauth_callback(
-        self, provider_id: str, code: str, state: str, redirect_uri: str
-    ) -> AuthResult:
+    async def handle_oauth_callback(self, provider_id: str, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback.
 
         :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
         provider = self.login_providers.get(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
-        return await provider.handle_oauth_callback(code, state, redirect_uri)
+        return await provider.handle_oauth_callback(code, state)
 
     @api_command("auth/token/create")
     async def create_long_lived_token(self, name: str, user_id: str | None = None) -> str:
@@ -2625,6 +2629,30 @@ class AuthenticationManager:
         for callback in list(self._access_revoked_callbacks):
             self.mass.loop.call_soon(callback, user)
 
+    def _get_oauth_callback_base_url(self, return_url: str | None) -> str:
+        """
+        Return the server URL an OAuth sign-in returns the browser to.
+
+        A sign-in started from the External URL or over Remote Access returns to the
+        External URL, any other sign-in to the base URL.
+
+        :param return_url: The URL the browser returns to after signing in.
+        """
+        external_url = self.webserver.external_url
+        if not external_url:
+            return self.webserver.base_url
+        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
+            return external_url
+        # A native app returns to its own URL scheme, so look at how its connection came in
+        client_id = get_current_client_id()
+        client = next((c for c in self.webserver.clients if c.client_id == client_id), None)
+        if client and (
+            client.webrtc_session_id
+            or client.request_host.lower() == urlparse(external_url).netloc.lower()
+        ):
+            return external_url
+        return self.webserver.base_url
+
 
 def _join_code_rate_limit_key() -> tuple[str, bool]:
     """
@@ -2638,6 +2666,16 @@ def _join_code_rate_limit_key() -> tuple[str, bool]:
     if peer_address := get_current_peer_address():
         return f"peer:{peer_address}", False
     return JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY, False
+
+
+def _url_origin(url: str) -> str:
+    """
+    Return the origin (scheme and host, including any port) of a URL.
+
+    :param url: The URL to get the origin of.
+    """
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
 
 
 def _mask_join_code(code: str) -> str:

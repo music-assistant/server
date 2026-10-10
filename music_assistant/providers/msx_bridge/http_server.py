@@ -14,7 +14,13 @@ from urllib.parse import quote
 
 import aiohttp
 from aiohttp import WSMsgType, web
-from music_assistant_models.enums import PlaybackState, QueueOption, RepeatMode
+from music_assistant_models.enums import (
+    PlaybackState,
+    QueueOption,
+    RepeatMode,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -788,7 +794,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         try:
             tracks = await asyncio.wait_for(
                 self.provider.mass.music.tracks.library_items(
-                    limit=50, order_by="last_played", summary=False
+                    limit=50,
+                    sort_field=SortField.LAST_PLAYED,
+                    sort_direction=SortDirection.ASC,
+                    summary=False,
                 ),
                 timeout=10.0,
             )
@@ -1175,7 +1184,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         prefix = self._get_prefix(request)
         start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=50, order_by="last_played", summary=False
+            limit=50,
+            sort_field=SortField.LAST_PLAYED,
+            sort_direction=SortDirection.ASC,
+            summary=False,
         )
         playlist = map_tracks_to_msx_playlist(
             playlist_tracks_from_media_items(tracks),
@@ -1666,7 +1678,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         """Return recently played items."""
         limit = _int_param(request.query, "limit", 20)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=limit, order_by="last_played", summary=False
+            limit=limit,
+            sort_field=SortField.LAST_PLAYED,
+            sort_direction=SortDirection.ASC,
+            summary=False,
         )
         return web.json_response(
             {

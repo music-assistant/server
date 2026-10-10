@@ -52,6 +52,17 @@ class TransitionTier(Enum):
     QUICK_FADE = "quick_fade"
 
 
+class QuickFadeTrigger(StrEnum):
+    """What ruled out a blend and made the tier a quick fade."""
+
+    # the two decks' meters differ, so they share no bar grid
+    METER = "meter"
+    # the tempo gap is beyond the time-stretch range
+    TEMPO = "tempo"
+    # the anchored outgoing tail has too few or too irregular downbeats
+    BEAT_GRID = "beat_grid"
+
+
 @dataclass(slots=True)
 class Deck:
     """
