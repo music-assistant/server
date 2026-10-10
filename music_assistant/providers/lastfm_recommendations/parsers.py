@@ -14,7 +14,7 @@ from music_assistant_models.enums import (
     ProviderStatus,
     ProviderType,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 
 from music_assistant.constants import MASS_LOGGER_NAME
@@ -240,14 +240,15 @@ async def _resolve_item(
         LOGGER.debug("No streaming providers available for resolution")
         raise SearchIncomplete(item_mapping.name)
 
-    result = await _resolve_via_musicbrainz(
+    result, fetch_failed = await _resolve_via_musicbrainz(
         ctrl, item_mapping, mass, streaming_providers, artist_name
     )
     if result is None:
         result = await _search_providers(ctrl, item_mapping, streaming_providers, artist_name)
     if result is None:
-        if providers_loading:
-            # a provider that had not finished loading may still have it
+        if providers_loading or fetch_failed:
+            # a provider that had not finished loading, or one that could not hand over
+            # the item MusicBrainz links it to, may still have it
             raise SearchIncomplete(item_mapping.name)
         LOGGER.debug("Could not resolve %s: %s", item_mapping.media_type.value, item_mapping.name)
         return None
@@ -390,7 +391,7 @@ async def _resolve_via_musicbrainz(
     mass: MusicAssistant,
     providers: list[Any],
     artist_name: str | None,
-) -> Artist | Album | Track | None:
+) -> tuple[Artist | Album | Track | None, bool]:
     """
     Resolve an item through the streaming service links MusicBrainz holds for its MBID.
 
@@ -399,13 +400,14 @@ async def _resolve_via_musicbrainz(
     :param mass: MusicAssistant instance.
     :param providers: Streaming providers to resolve on, in order of preference.
     :param artist_name: Artist name to verify the linked item against, if known.
-    :returns: The verified item, or None when MusicBrainz could not settle it, which says
-        nothing about whether a provider has it.
+    :returns: The verified item (None when MusicBrainz could not settle it, which says
+        nothing about whether a provider has it), and whether the linked provider could
+        not hand the item over, so a miss elsewhere is inconclusive.
     """
     mbid = item_mapping.mbid
     musicbrainz = cast("MusicbrainzProvider | None", mass.get_provider("musicbrainz"))
     if not mbid or musicbrainz is None:
-        return None
+        return None, False
     entity: MusicBrainzArtist | MusicBrainzRelease | MusicBrainzRecording
     try:
         if item_mapping.media_type == MediaType.ARTIST:
@@ -416,7 +418,7 @@ async def _resolve_via_musicbrainz(
             entity = await musicbrainz.get_recording_details(mbid)
     except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
         LOGGER.debug("MusicBrainz lookup of %s failed: %s", item_mapping.name, type(err).__name__)
-        return None
+        return None, False
 
     mappings = await provider_mappings_from_urls(
         mass, relation_urls(entity.relations), item_mapping.media_type, exclude_domains=set()
@@ -425,7 +427,7 @@ async def _resolve_via_musicbrainz(
     # only the first linked provider is asked; a miss there is left to the name search
     provider = next((p for p in providers if p.domain in linked), None)
     if provider is None:
-        return None
+        return None, False
     try:
         async with _SEARCH_SEMAPHORE:
             result = await ctrl.get_provider_item(
@@ -434,6 +436,14 @@ async def _resolve_via_musicbrainz(
                 allow_fallback=False,
                 strict_provider_instance=True,
             )
+    except MediaNotFoundError:
+        LOGGER.debug(
+            "%s no longer has the %s MusicBrainz links to: %s",
+            provider.name,
+            item_mapping.media_type.value,
+            item_mapping.name,
+        )
+        return None, False
     except MusicAssistantError as err:
         LOGGER.debug(
             "Linked %s on %s could not be fetched: %s",
@@ -441,7 +451,7 @@ async def _resolve_via_musicbrainz(
             provider.name,
             type(err).__name__,
         )
-        return None
+        return None, True
     if not _is_matching_result(item_mapping, result, artist_name):
         LOGGER.debug(
             "Rejecting %s from %s: name mismatch (linked by MusicBrainz for: %s)",
@@ -449,11 +459,11 @@ async def _resolve_via_musicbrainz(
             result.provider,
             item_mapping.name,
         )
-        return None
+        return None, False
     LOGGER.debug(
         "Match on %s via MusicBrainz: %s (looked up: %s)",
         result.provider,
         result.name,
         item_mapping.name,
     )
-    return result
+    return result, False

@@ -364,7 +364,10 @@ async def test_each_media_type_is_looked_up_as_its_musicbrainz_entity(
     mass = Mock()
     mass.get_provider = Mock(return_value=musicbrainz)
     with _linked([]):
-        assert await parsers._resolve_via_musicbrainz(Mock(), mapping, mass, [], None) is None
+        assert await parsers._resolve_via_musicbrainz(Mock(), mapping, mass, [], None) == (
+            None,
+            False,
+        )
     getattr(musicbrainz, lookup).assert_awaited_once_with(MBID)
 
 
@@ -397,8 +400,30 @@ async def test_linked_item_the_provider_no_longer_has_is_searched() -> None:
     mass = _mass_with_musicbrainz(_musicbrainz())
     mass.music.tracks.get_provider_item = AsyncMock(side_effect=MediaNotFoundError("gone"))
     with _linked([APPLE_MUSIC_MAPPING]):
+        assert await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID) is None
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_linked_item_the_provider_could_not_hand_over_makes_a_miss_incomplete() -> None:
+    """A rate limited fetch of the linked item still runs the search, whose miss is not final."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(side_effect=RetriesExhausted("rate limited"))
+    with _linked([APPLE_MUSIC_MAPPING]), pytest.raises(parsers.SearchIncomplete):
         await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
     mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_hit_after_a_failed_linked_fetch_is_returned() -> None:
+    """A name search match still counts when the linked item could not be fetched."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(side_effect=RetriesExhausted("rate limited"))
+    mass.music.tracks.search = AsyncMock(return_value=[_track()])
+    with _linked([APPLE_MUSIC_MAPPING]):
+        resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert resolved is not None
+    assert resolved.name == "Chasing Cars"
 
 
 @pytest.mark.asyncio
