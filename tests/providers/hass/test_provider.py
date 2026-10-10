@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from math import ceil
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from hass_client.exceptions import BaseHassClientError
@@ -704,13 +704,31 @@ async def test_ai_generate_image_downloads_the_returned_image() -> None:
             domain="ai_task",
             service="generate_image",
             service_data={
-                "task_name": "music_assistant",
+                "task_name": ANY,
                 "instructions": "A sunset",
                 "entity_id": "ai_task.images",
             },
             return_response=True,
         )
         resolve_image.assert_awaited_once_with("/api/ai_task/images/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_uses_a_task_name_per_image() -> None:
+    """Images generated at the same time get their own task name, so HA stores both."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/api/ai_task/images/x.png?authSig=abc"}}
+        )
+        with patch.object(provider, "resolve_image", AsyncMock(return_value=b"png")):
+            await asyncio.gather(provider.ai_generate_image("A"), provider.ai_generate_image("B"))
+
+        task_names = {
+            call.kwargs["service_data"]["task_name"] for call in hass.send_command.await_args_list
+        }
+        assert len(task_names) == 2
+        assert all(name.startswith("music_assistant_") for name in task_names)
 
 
 async def test_ai_generate_image_fetches_an_absolute_url_from_the_connected_instance() -> None:

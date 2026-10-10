@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from functools import partial
 from itertools import batched
 from sys import intern
@@ -658,7 +659,9 @@ class HomeAssistantProvider(PluginProvider):
             domain="ai_task",
             service="generate_image",
             service_data={
-                "task_name": "music_assistant",
+                # Home Assistant names the stored image after the task and the current second,
+                # so images generated at the same time need their own task name
+                "task_name": f"music_assistant_{secrets.token_hex(4)}",
                 "instructions": prompt,
                 "entity_id": entity_id,
             },
