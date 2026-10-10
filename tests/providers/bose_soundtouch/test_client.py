@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock, patch
+import contextlib
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
+from aiohttp import ClientError, WSMsgType
 from defusedxml import ElementTree as DefusedET
 
 from music_assistant.providers.bose_soundtouch.client import SoundtouchDevice
@@ -11,9 +15,13 @@ from music_assistant.providers.bose_soundtouch.client.client import (
     create_notification_xml,
     create_zone_xml,
 )
+from music_assistant.providers.bose_soundtouch.client.exceptions import ApiError, NotFoundError
 from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus, SourceStatus
 from music_assistant.providers.bose_soundtouch.client.schema.models import Zone, ZoneMember
 from music_assistant.providers.bose_soundtouch.helpers import extract_preset_id
+
+if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
 
 INFO_XML = """
 <info deviceID="ABC123">
@@ -22,6 +30,10 @@ INFO_XML = """
   <networkInfo type="SCM">
     <macAddress>001122334455</macAddress>
     <ipAddress>192.168.1.50</ipAddress>
+  </networkInfo>
+  <networkInfo type="SMSC">
+    <macAddress>66778899AABB</macAddress>
+    <ipAddress>10.0.0.9</ipAddress>
   </networkInfo>
   <components>
     <component>
@@ -63,10 +75,9 @@ async def test_parse_info() -> None:
     assert info.device_id == "ABC123"
     assert info.name == "Living Room"
     assert info.model == "SoundTouch 20"
-    assert isinstance(info.mac_addresses, set)
-    assert "001122334455" in info.mac_addresses
-    assert isinstance(info.ip_addresses, set)
-    assert "192.168.1.50" in info.ip_addresses
+    # the interface we are connected on (10.0.0.9) comes first, even though listed last
+    assert info.mac_addresses == ["66778899AABB", "001122334455"]
+    assert info.ip_addresses == ["10.0.0.9", "192.168.1.50"]
     assert info.software_version == "27.0.6.46330"
 
 
@@ -77,8 +88,7 @@ async def test_parse_info_falls_back_to_connection_ip() -> None:
         mock_get.return_value = DefusedET.fromstring('<info deviceID="X"><name>N</name></info>')
         info = await client.get_info()
 
-    assert isinstance(info.ip_addresses, set)
-    assert "10.0.0.9" in info.ip_addresses
+    assert info.ip_addresses == ["10.0.0.9"]
 
 
 async def test_parse_now_playing() -> None:
@@ -113,6 +123,27 @@ async def test_parse_now_playing_standby() -> None:
     assert now_playing.content_item is None
     assert now_playing.source == "STANDBY"
     assert now_playing.track is None
+
+
+async def test_now_playing_endpoint_probed_once() -> None:
+    """Firmware serving only now_playing is detected once, then queried directly."""
+    client = _get_client()
+    element: Element[str] = DefusedET.fromstring(NOW_PLAYING_XML)
+
+    async def get(endpoint: str) -> Element[str]:
+        if endpoint == "nowPlaying":
+            raise NotFoundError
+        return element
+
+    with patch.object(client, "_get", side_effect=get) as mock_get:
+        await client.get_now_playing()
+        await client.get_now_playing()
+
+    assert [c.args[0] for c in mock_get.call_args_list] == [
+        "nowPlaying",
+        "now_playing",
+        "now_playing",
+    ]
 
 
 async def test_parse_volume() -> None:
@@ -176,6 +207,62 @@ async def test_parse_zone_empty() -> None:
         assert zone.leader.ip is None
         assert zone.leader.mac is None
     assert len(zone.members) == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<nowPlaying><track>Song",
+        b'<!DOCTYPE x [<!ENTITY a "b">]><nowPlaying>&a;</nowPlaying>',
+    ],
+    ids=["truncated", "entity"],
+)
+async def test_get_malformed_xml_raises_api_error(body: bytes) -> None:
+    """Malformed xml from the speaker surfaces as an ApiError, which callers already handle."""
+    client = _get_client()
+    response = Mock(status=200, content_type="text/xml", read=AsyncMock(return_value=body))
+    with patch.object(client.session_config.session, "get") as mock_get:
+        mock_get.return_value.__aenter__.return_value = response
+        with pytest.raises(ApiError, match="malformed xml"):
+            await client.get_now_playing()
+
+
+def _ws_connection(*messages: tuple[WSMsgType, str | bytes | None]) -> MagicMock:
+    connection = MagicMock()
+    connection.__aenter__.return_value.__aiter__.return_value = [
+        Mock(type=msg_type, data=data) for msg_type, data in messages
+    ]
+    return connection
+
+
+async def test_websocket_notification_loop_reconnects() -> None:
+    """Notifications keep arriving after the speaker closes the channel or a connect fails."""
+    client = _get_client()
+    on_connect = Mock()
+    connections = [
+        _ws_connection(
+            (WSMsgType.TEXT, "a"),
+            (WSMsgType.BINARY, "é".encode("latin-1")),
+            (WSMsgType.CLOSE, None),
+        ),
+        ClientError(),
+        _ws_connection((WSMsgType.TEXT, "c")),
+    ]
+    messages: list[str] = []
+    with (
+        patch.object(client.session_config.session, "ws_connect", side_effect=connections),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        async with contextlib.aclosing(
+            client.websocket_notification_loop(on_connect=on_connect)
+        ) as notifications:
+            async for message in notifications:
+                messages.append(message)
+                if len(messages) == 3:
+                    break
+
+    assert messages == ["a", "é", "c"]
+    assert on_connect.call_count == 2
 
 
 async def test_build_zone_xml() -> None:

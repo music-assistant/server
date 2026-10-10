@@ -301,6 +301,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.name,
                     queue.display_name,
                 )
+            # a queue edit made during the call compared the queue against the track the player
+            # held before this one, so it can have left this track in place of the real next one
+            self.update_next_item_on_player(queue_id)
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
             # Player state updates can lag behind queue loading, so wait before validating.

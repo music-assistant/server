@@ -106,6 +106,8 @@ async def test_pause_keeps_the_last_played_position(
     """A pause outside MA moves neither the progress nor the resume behind where it played."""
     ctrl = _controller(_book())
     await ctrl.play_index(QUEUE_ID, 0, seek_position=RESUMED_AT)
+    # the stream server records the book once its first chunk went out to the player
+    ctrl.mark_item_served(QUEUE_ID, "book")
     for stream_elapsed in (0, 91, 121):
         _player_reports(ctrl, PlaybackState.PLAYING, stream_elapsed)
     session_start, last_reported = RESUMED_AT, 121

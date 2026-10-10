@@ -83,12 +83,12 @@ class DiscoveryController(CoreController):
 
     @property
     def aiozc(self) -> AsyncZeroconf:
-        """Return the shared AsyncZeroconf instance for discovery consumers."""
+        """Return the shared AsyncZeroconf instance, which lives for the whole server run."""
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
 
     async def start_zeroconf(self) -> None:
-        """Create the shared zeroconf instance (aiozc) ahead of the setup of this controller."""
+        """Create the shared zeroconf instance (aiozc), once per server run and ahead of setup."""
         if self._aiozc is None:
             config = await self.mass.config.get_core_config(self.domain)
             self._aiozc = self._create_aiozc(config)
@@ -96,8 +96,6 @@ class DiscoveryController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
-        if self._aiozc is None:
-            self._aiozc = self._create_aiozc(config)
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()

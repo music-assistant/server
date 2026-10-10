@@ -304,7 +304,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if "state" in changed_keys and queue.state == PlaybackState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
 
-        # refill the queue (dynamic mode or autoplay) when running low on tracks
+        # refill the queue (dynamic mode or autoplay) when running low on tracks, and keep the
+        # Smart Fades ordering ahead of playback
         if "current_item_id" in changed_keys:
             running_low = (
                 queue.current_index is not None and (queue.items - queue.current_index) < 5
@@ -318,6 +319,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # next podcast episode/audiobook, or nothing at all)
                 task_id = f"fill_autoplay_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+            if queue.shuffle_enabled:
+                self._smart_shuffle.schedule_next_batch(queue)
 
     def _get_output_player_ids(self, player: Player) -> set[str]:
         """Return destination player IDs represented in the processing chain."""
@@ -491,6 +494,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
         # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
+            return
+        if prev_state["current_item_id"] not in queue_data.served_item_ids:
+            # the player stopped on an item it never received audio for (one from its own cached
+            # copy of the queue that the stream server then refused): it did not reach the end of
+            # the queue, so the queue must stay where it is and remain resumable
             return
 
         # retrieve prev_item here so it's available in the _settle_or_resume_delayed closure
@@ -686,6 +694,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
         if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
             #  Ignore items that had a stream error
+            return
+
+        if item_to_report.queue_item_id not in queue_data.served_item_ids:
+            # the player named an item it never received audio for (one from its own cached
+            # copy of the queue that the stream server then refused): nothing of it has played,
+            # whatever position the player reports for it
             return
 
         # a preloaded item is only probed once it actually streams

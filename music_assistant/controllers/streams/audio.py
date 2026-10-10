@@ -115,6 +115,12 @@ from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stre
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.stream_sources import (
+    DEFAULT_POLICY,
+    SourceCandidate,
+    rank_provider_mappings,
+    rank_stream_sources,
+)
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -3766,38 +3772,60 @@ class StreamsAudio:
         allowed: list[str] | None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
-        Return mapping candidates in steering, quality, and instance-fallback order.
+        Return the mapping candidates that may serve a stream, in the order to try them.
+
+        Every mapping is expanded to the instances that can resolve it; the stream source
+        ranking then orders the candidates.
 
         :param provider_mappings: Mappings attached to the media item.
-        :param preferred_providers: Provider instances tried before widening to the rest.
+        :param preferred_providers: Provider instances the playback user owns, tried first.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Ordered provider mapping candidates.
         """
-        ordered_mappings = sorted(
-            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
-        )
-        preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
-        fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
-        seen_candidates: set[tuple[str, str]] = set()
-        for mapping in ordered_mappings:
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], SourceCandidate] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
             for provider in self._get_mapping_providers(mapping, allowed):
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if (
-                    candidate_id in seen_candidates
-                    or provider.instance_id in excluded_provider_instances
-                ):
+                if provider.instance_id in excluded_provider_instances:
                     continue
-                seen_candidates.add(candidate_id)
-                candidate = (mapping, provider)
-                if provider.instance_id in preferred_providers:
-                    preferred_candidates.append(candidate)
-                else:
-                    fallback_candidates.append(candidate)
-        return [*preferred_candidates, *fallback_candidates]
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = SourceCandidate(
+                    mapping=mapping,
+                    provider=provider,
+                    is_streaming=isinstance(provider, MusicProvider)
+                    and provider.is_streaming_provider,
+                )
+        ranked = rank_stream_sources(
+            candidates.values(), pinned=None, preferred=preferred_providers, policy=DEFAULT_POLICY
+        )
+        if ranked and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "Stream source order: %s",
+                ", ".join(
+                    f"{candidate.provider.instance_id}/{candidate.mapping.item_id} "
+                    f"({candidate.reason})"
+                    for candidate in ranked
+                ),
+            )
+        return [(candidate.mapping, candidate.provider) for candidate in ranked]
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """
