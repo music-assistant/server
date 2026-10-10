@@ -298,8 +298,8 @@ class MusicAssistant:
         if self.unsupported_install:
             LOGGER.warning(
                 "This server is not installed through one of the supported installation methods "
-                "(see https://music-assistant.io/installation/). "
-                "Issues reported from it may be closed without support."
+                "(see https://music-assistant.io/installation/). Some features may not work as "
+                "expected, and issues reported from it may be closed without support."
             )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
