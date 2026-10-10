@@ -117,6 +117,11 @@ class WebsocketClientHandler:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
 
+    @property
+    def request_host(self) -> str:
+        """Return the host (and any port) the client used to reach the server."""
+        return self.request.headers.get("X-Forwarded-Host") or self.request.host
+
     def matches_token(self, token: str) -> bool:
         """
         Return True if this client authenticated with the given access token.
