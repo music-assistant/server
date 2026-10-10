@@ -1819,12 +1819,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 "original_uri": queue_item.uri,
             },
         )
-        if queue_item.media_item:
-            media.title = queue_item.media_item.name
-            media.artist = getattr(queue_item.media_item, "artist_str", "")
-            media.album = (
-                album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
+        if media_item := queue_item.media_item:
+            media.title = media_item.name
+            # podcast episodes have no artists, so the podcast stands in for artist and album
+            podcast = getattr(media_item, "podcast", None)
+            media.artist = getattr(media_item, "artist_str", "") or (
+                podcast.name if podcast else ""
             )
+            album = getattr(media_item, "album", None)
+            media.album = album.name if album else podcast.name if podcast else ""
             if queue_item.image:
                 # the image format needs to be 512x512 jpeg for maximum compatibility with players
                 # we prefer the imageproxy on the streamserver here because this request is sent

@@ -3054,7 +3054,8 @@ class Player(ABC):
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
-                    artist=getattr(media_item, "artist_str", None),
+                    artist=getattr(media_item, "artist_str", None)
+                    or (podcast.name if podcast else None),
                     album=album.name if album else podcast.name if podcast else description,
                     album_artist=getattr(album, "artist_str", None),
                     image_url=image_url,
