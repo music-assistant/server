@@ -67,6 +67,13 @@ async def test_server_info(mass: MusicAssistant) -> None:
     assert server_info.unsupported_install is True
 
 
+async def test_server_info_reports_official_build(mass: MusicAssistant) -> None:
+    """Test that the official release image is reported as a supported installation."""
+    mass.build_info = {"version": "2.11.0"}
+
+    assert mass.get_server_info().unsupported_install is False
+
+
 async def test_events(mass: MusicAssistant) -> None:
     """Test that events sent by signal_event can be seen by subscribe."""
     filters: list[tuple[EventType | tuple[EventType, ...] | None, str | tuple[str, ...] | None]] = [

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.auth import Scope
 
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.app_vars import has_bundled_app_vars
 from music_assistant.helpers.datetime import from_utc_timestamp, utc
 from music_assistant.helpers.diagnostics import (
     REDACTION_NOTICE,
@@ -169,6 +170,7 @@ class DiagnosticsController(CoreController):
             "machine": platform.machine(),
             "hass_addon": self.mass.running_as_hass_addon,
             "unsupported_install": self.mass.unsupported_install,
+            "bundled_app_vars": has_bundled_app_vars(),
             "build_info": self.mass.build_info,
             "safe_mode": self.mass.safe_mode,
             "uptime_seconds": round(time.monotonic() - self._started_at),

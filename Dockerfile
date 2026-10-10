@@ -102,6 +102,12 @@ RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
+# Identifies the official release image, see music_assistant/helpers/build_info.py
+ARG MASS_REVISION
+ARG MASS_WHEEL_SHA256
+RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
+    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
+
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root
 # IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
@@ -142,12 +148,6 @@ LABEL \
     io.hass.description="Music Assistant Server" \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
-
-# Identifies the official release image, see music_assistant/helpers/build_info.py
-ARG MASS_REVISION
-ARG MASS_WHEEL_SHA256
-RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
-    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
 
 VOLUME [ "/data" ]
 EXPOSE 8095

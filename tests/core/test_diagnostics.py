@@ -262,6 +262,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["unsupported_install"] is True
+    assert report["system"]["bundled_app_vars"] is False
     assert report["system"]["build_info"] is None
     assert report["system"]["counts"]["threads"] > 0
     # child process counts by name (a dict on Linux, None where /proc is unavailable)
