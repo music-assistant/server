@@ -5,9 +5,11 @@ from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
+from bandcamp_async_api import SearchResultArtist, SearchResultTrack
 from music_assistant_models.enums import MediaType, StreamType
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.bandcamp import BandcampProvider
 from tests.common import wait_for_sync_completion
 
 if TYPE_CHECKING:
@@ -20,7 +22,12 @@ async def bandcamp_provider(  # noqa: PLR0915
 ) -> AsyncGenerator[ProviderConfig]:
     """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
     # Mock the BandcampAPIClient to avoid real API calls
-    with mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
+    with (
+        mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class,
+        # the real throttler paces background requests 0.4s apart, which would make every
+        # test wait out its own sync
+        mock.patch.object(BandcampProvider.throttler.throttler, "acquire", return_value=0.0),
+    ):
         mock_client = mock.AsyncMock()
         mock_client_class.return_value = mock_client
 
@@ -97,46 +104,46 @@ async def bandcamp_provider(  # noqa: PLR0915
 
 @pytest.mark.usefixtures("bandcamp_provider")
 async def test_initial_sync(mass: MusicAssistant) -> None:
-    """Test that initial sync worked."""
-    # Test library access (requires identity token)
-    all_artists = await mass.music.artists.library_items()
-    artists = [artist for artist in all_artists if artist.provider == "bandcamp"]
+    """Test that the initial sync adds the collection to the library."""
+    artists = await mass.music.artists.library_items()
+    albums = await mass.music.albums.library_items()
+    tracks = await mass.music.tracks.library_items()
 
-    assert len(artists) >= 0  # May be empty if no collection items
-
-    all_albums = await mass.music.albums.library_items()
-    albums = [album for album in all_albums if album.provider == "bandcamp"]
-
-    assert len(albums) >= 0  # May be empty if no collection items
+    assert [artist.name for artist in artists] == ["Test Artist"]
+    assert [album.name for album in albums] == ["Test Album"]
+    assert [track.name for track in tracks] == ["Test Track"]
+    for item in (*artists, *albums, *tracks):
+        assert {mapping.provider_domain for mapping in item.provider_mappings} == {"bandcamp"}
 
 
 @pytest.mark.usefixtures("bandcamp_provider")
 async def test_search_functionality(mass: MusicAssistant) -> None:
-    """Test search functionality."""
-    # Mock search results
-    with mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
-        mock_client = mock.AsyncMock()
-        mock_client_class.return_value = mock_client
+    """Test that a global search returns the Bandcamp results."""
+    bandcamp_provider = next(prov for prov in mass.music.providers if prov.domain == "bandcamp")
+    assert isinstance(bandcamp_provider, BandcampProvider)
+    search_results = [
+        SearchResultArtist(id=321, name="Search Test Artist", url="https://search.bandcamp.com"),
+        SearchResultTrack(
+            id=987,
+            name="Search Test Track",
+            url="https://search.bandcamp.com/track/search-test",
+            artist_id=321,
+            artist_name="Search Test Artist",
+            album_id=654,
+            album_name="Search Test Album",
+        ),
+    ]
 
-        # Mock search results
-        mock_search_result_track = mock.AsyncMock()
-        mock_search_result_track.__class__.__name__ = "SearchResultTrack"
-        mock_search_result_track.artist_id = 123
-        mock_search_result_track.album_id = 456
-        mock_search_result_track.id = 789
-        mock_search_result_track.name = "Search Test Track"
-        mock_search_result_track.artist_name = "Search Test Artist"
-        mock_search_result_track.album_name = "Search Test Album"
-        mock_search_result_track.url = "https://test.bandcamp.com/track/search-test"
-
-        mock_client.search.return_value = [mock_search_result_track]
-
-        # Perform search
+    with mock.patch.object(
+        bandcamp_provider._client, "search", return_value=search_results
+    ) as mock_search:
         results = await mass.music.search("test query", [MediaType.TRACK], limit=5)
 
-        # Filter for bandcamp results
-        bandcamp_tracks = [track for track in results.tracks if track.provider == "bandcamp"]
-        assert len(bandcamp_tracks) >= 0  # May be empty if search is mocked differently
+    mock_search.assert_awaited_once_with("test query")
+    assert [(track.name, track.item_id) for track in results.tracks] == [
+        ("Search Test Track", "321-654-987")
+    ]
+    assert results.tracks[0].provider == bandcamp_provider.instance_id
 
 
 @pytest.mark.usefixtures("bandcamp_provider")
