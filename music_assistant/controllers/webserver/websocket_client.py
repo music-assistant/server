@@ -119,7 +119,7 @@ class WebsocketClientHandler:
 
     @property
     def request_host(self) -> str:
-        """Return the host (and any port) the client used to reach the server."""
+        """Return the host (and any port) the client says it used to reach the server."""
         return self.request.headers.get("X-Forwarded-Host") or self.request.host
 
     def matches_token(self, token: str) -> bool:
