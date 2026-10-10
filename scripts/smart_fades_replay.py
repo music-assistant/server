@@ -1,15 +1,15 @@
 r"""
-Replay the smart fades planner over real track pairs from a server's stored analysis.
+Replay the smart fades planner over random track pairs from a server's stored analysis.
 
 Plans the transition of each pair the way playback would, without playing anything, and writes
 ``pairs.csv`` (one row per pair) and ``summary.txt`` (tiers and overlap lengths, quick fade
 triggers, vocal and drum overlap, music style) into ``--out``. To measure a planner change, run
 it on both sides of the change with the same databases, seed and buffer; ``--code`` loads
-``music_assistant`` from another checkout, for a commit that does not have this script.
+``music_assistant`` from another checkout.
 
-Both databases are copied with their -wal/-shm files into a temporary directory, checkpointed
-there, and only those copies are read. The given paths are never written to and no other server
-data, such as the auth database, is opened.
+Both databases are copied with their -wal file into a temporary directory and only those copies
+are read. The given paths are never written to and no other server data, such as the auth
+database, is opened.
 
 Usage policy: this reads stored analysis data and library metadata only. It never opens, decodes
 or writes audio.
@@ -19,7 +19,7 @@ Example, from the repository root::
     python -m scripts.smart_fades_replay \
         --analysis-db ~/.musicassistant/audio_analysis.db \
         --library-db ~/.musicassistant/library.db \
-        --pairs random --n 3000 --seed 20261010 --buffer 45 --out /tmp/replay
+        --n 3000 --seed 20261010 --buffer 45 --out /tmp/replay
 """
 
 from __future__ import annotations
@@ -32,14 +32,12 @@ import random
 import re
 import shutil
 import sqlite3
-import statistics
 import sys
 import tempfile
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
-from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -48,6 +46,14 @@ import numpy as np
 if TYPE_CHECKING:
     import numpy.typing as npt
 
+    from music_assistant.controllers.streams.smart_fades.models import (
+        BandProfile,
+        Deck,
+        TransitionPlan,
+    )
+    from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
+    from music_assistant.controllers.streams.smart_fades.planner.context import TransitionContext
+    from music_assistant.controllers.streams.smart_fades.planner.selection import ScoredCandidate
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 # ruff: noqa: T201
@@ -58,11 +64,8 @@ TrackKey = tuple[str, str]
 Row = dict[str, Any]
 
 DEFAULT_CODE = Path(__file__).resolve().parents[1]
-# below this much outgoing room playback skips the crossfade (MIN_CROSSFADE_DURATION)
-MIN_CROSSFADE_SECONDS = 3.0
-TIERS = ("FULL_BLEND", "TEMPO_BLEND", "QUICK_FADE")
 SHORT_FADE_SECONDS = 8.0
-_BPM_BANDS = ("<=8", "8-12", "12-20", ">20")
+BPM_BANDS = ("<=8", "8-12", "12-20", ">20")
 
 # Measuring sticks for the vocal and drum facts. They are fixed here, independent of the
 # planner's own limits, so runs on both sides of a planner change measure alike.
@@ -119,14 +122,14 @@ _BUCKET_KEYWORDS = {
     ),
     "pop": "pop, schlager, christmas, musical, variété, kerst",
 }
-# longest keyword first, so of two keywords ending at the same place the longer one wins
-_KEYWORD_ORDER = sorted(
-    (
-        (keyword, bucket)
-        for bucket, keywords in _BUCKET_KEYWORDS.items()
-        for keyword in keywords.split(", ")
-    ),
-    key=lambda item: -len(item[0]),
+_KEYWORD_BUCKET = {
+    keyword: bucket
+    for bucket, keywords in _BUCKET_KEYWORDS.items()
+    for keyword in keywords.split(", ")
+}
+# longest first, so of two keywords starting at the same place the longer one matches
+_KEYWORD_PATTERN = re.compile(
+    "|".join(re.escape(keyword) for keyword in sorted(_KEYWORD_BUCKET, key=len, reverse=True))
 )
 
 # why a shipped fade is as short as it is, in summary column order
@@ -134,12 +137,16 @@ CAUSES = (
     "QF: tempo",
     "QF: meter",
     "QF: beat_grid",
-    "QF: re-anchored",
     "rejection -> rescue/fallback/handoff",
     "blend: longer rungs rejected",
     "blend: short top rung",
 )
 VOCAL_CLASSES = ("both sing", "outgoing only", "incoming only", "neither", "unknown")
+# shipped via and source of the plans that no selection pass won
+_UNPHRASED = {
+    "FALLBACK_CROSSFADE": ("fallback", "fallback-crossfade"),
+    "SHORT_VOCAL_HANDOFF": ("handoff", "emergency-handoff"),
+}
 
 
 @dataclass(slots=True)
@@ -150,105 +157,131 @@ class TrackInfo:
     mapped: bool = False
     album: str = ""
     album_id: int | None = None
-    # (album_id, disc_number, track_number) of every album the track is on
-    album_positions: list[tuple[int, int | None, int | None]] = field(default_factory=list)
     bucket: str = UNKNOWN_BUCKET
     genre_source: str = ""
-    genres: str = ""
 
 
-class PlannerProbe:
-    """Runs the loaded checkout's planner as playback does and keeps its internals per plan."""
+class Replayer:
+    """Plans pairs with the loaded checkout's planner as playback would, one CSV row each."""
 
-    def __init__(self) -> None:
-        """Wrap the planner's context build and candidate selection where the checkout has them."""
+    def __init__(
+        self,
+        analyses: dict[TrackKey, AudioAnalysisData],
+        tracks: dict[TrackKey, TrackInfo],
+        ceiling: float,
+    ) -> None:
+        """
+        Load the planner and wrap its candidate selection to keep every pass of a plan.
+
+        :param analyses: Analysis per track.
+        :param tracks: Library facts per track.
+        :param ceiling: Most seconds of outgoing tail to plan with.
+        """
         # music_assistant loads from --code, so it is imported only once that is on sys.path
+        from music_assistant.controllers.streams.audio import (  # noqa: PLC0415
+            MIN_CROSSFADE_DURATION,
+        )
+        from music_assistant.controllers.streams.smart_fades.helpers import (  # noqa: PLC0415
+            SMART_CROSSFADE_DURATION,
+        )
         from music_assistant.controllers.streams.smart_fades.models import (  # noqa: PLC0415
             SmartFadeNotApplicable,
         )
         from music_assistant.controllers.streams.smart_fades.planner import (  # noqa: PLC0415
-            planner as planner_module,
+            SmartCrossFadePlanner,
+        )
+        from music_assistant.controllers.streams.smart_fades.planner.selection import (  # noqa: PLC0415
+            CandidateSelector,
         )
 
-        self.hooks: list[str] = []
-        self.context: Any = None
-        # per selection pass: every scored entry, and the winner (None when all were rejected)
-        self.passes: list[list[Any]] = []
-        self.winners: list[Any] = []
-        self._not_applicable: type[Exception] = SmartFadeNotApplicable
-        self._planner_class: Any = planner_module.SmartCrossFadePlanner
+        self._analyses = analyses
+        self._tracks = tracks
+        self._ceiling = min(ceiling, float(SMART_CROSSFADE_DURATION))
+        self._min_room = float(MIN_CROSSFADE_DURATION)
+        self._not_applicable = SmartFadeNotApplicable
         self._logger = logging.getLogger("scripts.smart_fades_replay.planner")
         self._logger.setLevel(logging.WARNING)
-        self._hook_context(planner_module)
-        self._hook_selection()
+        self._planner = SmartCrossFadePlanner(self._logger)
+        self._passes: list[_SelectionPass] = []
+        select, score = CandidateSelector.select, CandidateSelector._score
 
-    def plan(
-        self, fade_out: AudioAnalysisData, fade_in: AudioAnalysisData, buffer_duration: float
-    ) -> tuple[Any, str, str]:
-        """
-        Plan one transition.
+        def select_and_keep(
+            self_: CandidateSelector, candidates: Sequence[Candidate], ctx: TransitionContext
+        ) -> ScoredCandidate | None:
+            self._passes.append(selection_pass := _SelectionPass(ctx))
+            selection_pass.winner = select(self_, candidates, ctx)
+            return selection_pass.winner
 
-        Returns ``(plan, "plan", "")``, or ``(None, outcome, reason)`` with outcome
-        ``not_applicable`` or ``error``.
-
-        :param fade_out: Analysis of the outgoing track.
-        :param fade_in: Analysis of the incoming track.
-        :param buffer_duration: Seconds of outgoing tail playback would hold.
-        """
-        self.context = None
-        self.passes.clear()
-        self.winners.clear()
-        planner = self._planner_class(self._logger)
-        try:
-            return planner.plan(fade_out, fade_in, buffer_duration), "plan", ""
-        except self._not_applicable as err:
-            return None, "not_applicable", str(err)
-        except Exception as err:
-            return None, "error", f"{type(err).__name__}: {err}"
-
-    def _hook_context(self, planner_module: Any) -> None:
-        """Keep the transition context of each plan."""
-        build = getattr(planner_module, "build_transition_context", None)
-        if build is None:
-            return
-
-        def build_and_keep(*args: Any, **kwargs: Any) -> Any:
-            self.context = build(*args, **kwargs)
-            return self.context
-
-        planner_module.build_transition_context = build_and_keep
-        self.hooks.append("context")
-
-    def _hook_selection(self) -> None:
-        """Keep every selection pass's scored entries and its winner."""
-        try:
-            from music_assistant.controllers.streams.smart_fades.planner.selection import (  # noqa: PLC0415
-                CandidateSelector,
-            )
-        except ImportError:
-            return
-        select = CandidateSelector.select
-
-        def select_and_keep(selector: Any, candidates: Any, ctx: Any) -> Any:
-            self.passes.append([])
-            winner = select(selector, candidates, ctx)
-            self.winners.append(winner)
-            return winner
-
-        CandidateSelector.select = select_and_keep  # type: ignore[assignment]
-        self.hooks.append("select")
-        score = getattr(CandidateSelector, "_score", None)
-        if score is None:
-            return
-
-        def score_and_keep(selector: Any, candidate: Any, ctx: Any) -> Any:
-            entry = score(selector, candidate, ctx)
-            if self.passes:
-                self.passes[-1].append(entry)
+        def score_and_keep(
+            self_: CandidateSelector, candidate: Candidate, ctx: TransitionContext
+        ) -> ScoredCandidate:
+            entry = score(self_, candidate, ctx)
+            self._passes[-1].scored.append(entry)
             return entry
 
+        CandidateSelector.select = select_and_keep  # type: ignore[assignment]
         CandidateSelector._score = score_and_keep  # type: ignore[assignment]
-        self.hooks.append("score")
+
+    def replay(self, out_key: TrackKey, in_key: TrackKey) -> Row:
+        """
+        Plan one pair and return its CSV row.
+
+        :param out_key: The outgoing track.
+        :param in_key: The incoming track.
+        """
+        fade_out, fade_in = self._analyses[out_key], self._analyses[in_key]
+        out_info, in_info = self._tracks[out_key], self._tracks[in_key]
+        row: Row = {
+            "out_item": out_key[0],
+            "out_provider": out_key[1],
+            "in_item": in_key[0],
+            "in_provider": in_key[1],
+            "out_track": out_info.name,
+            "in_track": in_info.name,
+            "out_album": out_info.album,
+            "in_album": in_info.album,
+            "out_bucket": out_info.bucket,
+            "in_bucket": in_info.bucket,
+            "out_duration": round(fade_out.duration or 0.0, 2),
+            "in_duration": round(fade_in.duration or 0.0, 2),
+            "bpm_out": round(fade_out.bpm or 0.0, 2),
+            "bpm_in": round(fade_in.bpm or 0.0, 2),
+            "bpb_out": fade_out.beats_per_bar or 4,
+            "bpb_in": fade_in.beats_per_bar or 4,
+        }
+        # playback holds up to half the outgoing track and skips the fade below the minimum room
+        buffer_duration = float(min(self._ceiling, int((fade_out.duration or 0.0) / 2)))
+        row["buffer"] = buffer_duration
+        if buffer_duration < self._min_room:
+            return {**row, "outcome": "no_crossfade"}
+        self._passes.clear()
+        try:
+            plan = self._planner.plan(fade_out, fade_in, buffer_duration)
+        except self._not_applicable as err:
+            return {**row, "outcome": "not_applicable", "reason": str(err)}
+        except Exception as err:
+            return {**row, "outcome": "error", "reason": f"{type(err).__name__}: {err}"}
+        if not self._passes:
+            raise SystemExit(
+                "the loaded planner bypassed the candidate selection this script wraps"
+            )
+        ctx = self._passes[0].context
+        row["outcome"] = "plan"
+        row.update(_plan_facts(ctx, plan, self._passes))
+        row.update(_vocal_facts(ctx, plan))
+        row.update(_rhythm_facts(ctx, plan))
+        row["cause"] = _cause(row)
+        return row
+
+
+@dataclass(slots=True)
+class _SelectionPass:
+    """One candidate selection of a plan: its context, every scored entry, and the winner."""
+
+    context: TransitionContext
+    scored: list[ScoredCandidate] = field(default_factory=list)
+    # None when every candidate was rejected
+    winner: ScoredCandidate | None = None
 
 
 class _KickTrack(NamedTuple):
@@ -269,8 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     code_file = _import_music_assistant(Path(args.code))
     print("music_assistant loaded from", code_file, flush=True)
     with tempfile.TemporaryDirectory(prefix="smart_fades_replay_") as tmp:
-        analysis_db = _snapshot_db(Path(args.analysis_db).expanduser(), Path(tmp, "analysis"))
-        analyses, version = _load_analyses(analysis_db)
+        with closing(_snapshot(Path(args.analysis_db), Path(tmp, "analysis"))) as conn:
+            analyses, version = _load_analyses(conn)
         analyses = {k: v for k, v in analyses.items() if v.bpm and v.beats is not None}
         excluded = sum(1 for v in analyses.values() if (v.duration or 0.0) < args.min_track_seconds)
         analyses = {
@@ -278,27 +311,20 @@ def main(argv: list[str] | None = None) -> int:
         }
         keys = sorted(analyses)
         if args.library_db:
-            library_db = _snapshot_db(Path(args.library_db).expanduser(), Path(tmp, "library"))
-            tracks = _load_tracks(library_db, keys)
+            with closing(_snapshot(Path(args.library_db), Path(tmp, "library"))) as conn:
+                tracks = {key: _track_info(conn, key) for key in keys}
         else:
             tracks = {key: TrackInfo(name=_unmapped_name(key)) for key in keys}
-    if args.pairs == "random":
-        pairs = random_pairs(
-            keys,
-            tracks,
-            args.n,
-            args.seed,
-            _bucket_pool(keys, tracks, args.out_bucket),
-            _bucket_pool(keys, tracks, args.in_bucket),
-        )
-    else:
-        pairs = album_pairs(keys, tracks)
-
-    from music_assistant.controllers.streams.smart_fades import helpers  # noqa: PLC0415
-
-    ceiling = min(args.buffer, float(helpers.SMART_CROSSFADE_DURATION))
-    probe = PlannerProbe()
-    rows = [_replay_pair(probe, o, i, analyses, tracks, ceiling) for o, i in pairs]
+    pairs = random_pairs(
+        keys,
+        tracks,
+        args.n,
+        args.seed,
+        _bucket_pool(keys, tracks, args.out_bucket),
+        _bucket_pool(keys, tracks, args.in_bucket),
+    )
+    replayer = Replayer(analyses, tracks, args.buffer)
+    rows = [replayer.replay(out_key, in_key) for out_key, in_key in pairs]
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -311,8 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         f"smart_fades analysis_version {version}; tracks {len(keys)} {dict(providers)}; "
         f"excluded <{args.min_track_seconds:g}s: {excluded}; "
         f"unmapped in library: {sum(1 for key in keys if not tracks[key].mapped)}\n"
-        f"pairs: {args.pairs} n={len(pairs)} seed={args.seed} buffer={args.buffer:g}s "
-        f"out_bucket={args.out_bucket} in_bucket={args.in_bucket}; probe hooks: {probe.hooks}"
+        f"pairs: n={len(pairs)} seed={args.seed} buffer={args.buffer:g}s "
+        f"out_bucket={args.out_bucket} in_bucket={args.in_bucket}"
     )
     summary = summarize(rows, tracks, header)
     (out / "summary.txt").write_text(summary, encoding="utf-8")
@@ -324,19 +350,13 @@ def tag_bucket(tag: str) -> str | None:
     """
     Return the style bucket of one genre tag, or None when no keyword matches.
 
-    The keyword that ends last wins, so the head noun decides ("pop rock" is rock, "dance-pop"
-    is pop); of two ending at the same place the longer wins ("rock opera" is rock).
+    The last keyword in the tag wins, so the head noun decides ("pop rock" is rock, "dance-pop"
+    is pop); of two starting at the same place the longer wins ("rock opera" is rock).
 
     :param tag: A genre tag as stored in the library.
     """
-    tag = tag.lower().strip()
-    best: tuple[tuple[int, int], str] | None = None
-    for keyword, bucket in _KEYWORD_ORDER:
-        for match in re.finditer(re.escape(keyword), tag):
-            rank = (match.end(), len(keyword))
-            if best is None or rank > best[0]:
-                best = (rank, bucket)
-    return best[1] if best else None
+    matches = _KEYWORD_PATTERN.findall(tag.lower())
+    return _KEYWORD_BUCKET[matches[-1]] if matches else None
 
 
 def style_bucket(tags: Iterable[str]) -> str:
@@ -411,35 +431,6 @@ def random_pairs(
     return pairs
 
 
-def album_pairs(
-    keys: list[TrackKey], tracks: dict[TrackKey, TrackInfo]
-) -> list[tuple[TrackKey, TrackKey]]:
-    """
-    Return every pair of consecutive tracks on an album, across disc boundaries.
-
-    :param keys: Every track to pair.
-    :param tracks: Library facts per track, for the album positions.
-    """
-    by_album: dict[int, list[tuple[int, int, TrackKey]]] = defaultdict(list)
-    for key in keys:
-        for album_id, disc, track_number in tracks[key].album_positions:
-            if track_number is not None:
-                by_album[album_id].append((disc or 1, track_number, key))
-    pairs: list[tuple[TrackKey, TrackKey]] = []
-    for entries in by_album.values():
-        # one track per position: the first by sort order when an album lists two
-        at: dict[tuple[int, int], TrackKey] = {}
-        for disc, track_number, key in sorted(entries):
-            at.setdefault((disc, track_number), key)
-        positions = sorted(at)
-        for here, there in pairwise(positions):
-            next_on_disc = there[0] == here[0] and there[1] == here[1] + 1
-            next_disc = there[0] == here[0] + 1 and there[1] == 1
-            if next_on_disc or next_disc:
-                pairs.append((at[here], at[there]))
-    return pairs
-
-
 def summarize(rows: list[Row], tracks: dict[TrackKey, TrackInfo], header: str) -> str:
     """
     Render the run summary.
@@ -452,7 +443,7 @@ def summarize(rows: list[Row], tracks: dict[TrackKey, TrackInfo], header: str) -
     lines = [header]
     lines += _outcome_section(rows, plans)
     lines += _overlap_section(plans)
-    lines += _trigger_section(rows, plans)
+    lines += _trigger_section(plans)
     lines += _vocal_section(plans)
     lines += _rhythm_section(plans)
     lines += _style_section(rows, tracks)
@@ -468,23 +459,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--analysis-db", required=True, help="the server's audio_analysis.db")
-    parser.add_argument(
-        "--library-db", help="the server's library.db, for names, albums and genres"
-    )
+    parser.add_argument("--library-db", help="the server's library.db, for names, albums, genres")
     parser.add_argument(
         "--code",
         default=str(DEFAULT_CODE),
         help="checkout to load music_assistant from (default: this one)",
     )
-    parser.add_argument("--pairs", choices=("random", "album"), default="random")
-    parser.add_argument("--n", type=int, default=3000, help="number of random pairs")
+    parser.add_argument("--n", type=int, default=3000, help="number of pairs")
     parser.add_argument("--seed", type=int, default=20261010, help="random pair seed")
     parser.add_argument(
         "--buffer", type=float, default=45.0, help="outgoing room ceiling in seconds"
     )
     buckets = (*BUCKETS, UNKNOWN_BUCKET)
-    parser.add_argument("--out-bucket", choices=buckets, help="random outgoing tracks: this style")
-    parser.add_argument("--in-bucket", choices=buckets, help="random incoming tracks: this style")
+    parser.add_argument("--out-bucket", choices=buckets, help="outgoing tracks of this style only")
+    parser.add_argument("--in-bucket", choices=buckets, help="incoming tracks of this style only")
     parser.add_argument(
         "--min-track-seconds",
         type=float,
@@ -493,9 +481,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--out", required=True, help="directory for pairs.csv and summary.txt")
     args = parser.parse_args(argv)
-    needs_library = args.pairs == "album" or args.out_bucket or args.in_bucket
-    if needs_library and not args.library_db:
-        parser.error("--pairs album and the bucket filters need --library-db")
+    if (args.out_bucket or args.in_bucket) and not args.library_db:
+        parser.error("the bucket filters need --library-db")
     return args
 
 
@@ -513,31 +500,23 @@ def _import_music_assistant(code: Path) -> str:
     return str(loaded)
 
 
-def _snapshot_db(source: Path, target_dir: Path) -> Path:
-    """Copy a database and its -wal/-shm files into target_dir and fold the WAL into the copy."""
+def _snapshot(source: Path, target_dir: Path) -> sqlite3.Connection:
+    """Copy a database and its -wal file into target_dir and open the copy."""
+    source = source.expanduser()
     if not source.is_file():
         raise SystemExit(f"no database at {source}")
     target_dir.mkdir(parents=True)
-    target = target_dir / source.name
-    for suffix in ("", "-wal", "-shm"):
-        side_file = source.with_name(source.name + suffix)
-        if side_file.is_file():
-            shutil.copyfile(side_file, target.with_name(target.name + suffix))
-    # the checkpoint writes to the copy only; every read after it opens the copy read-only
-    with closing(sqlite3.connect(target)) as conn:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("PRAGMA journal_mode=DELETE")
-    return target
-
-
-def _open_read_only(path: Path) -> sqlite3.Connection:
-    """Open a database read-only."""
-    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    for suffix in ("", "-wal"):
+        if (side_file := source.with_name(source.name + suffix)).is_file():
+            shutil.copyfile(side_file, target_dir / side_file.name)
+    conn = sqlite3.connect(target_dir / source.name)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _load_analyses(path: Path) -> tuple[dict[TrackKey, AudioAnalysisData], int | None]:
+def _load_analyses(
+    conn: sqlite3.Connection,
+) -> tuple[dict[TrackKey, AudioAnalysisData], int | None]:
     """
     Rebuild every track's AudioAnalysisData as the smart fades mixer loads it.
 
@@ -548,18 +527,17 @@ def _load_analyses(path: Path) -> tuple[dict[TrackKey, AudioAnalysisData], int |
     from music_assistant.controllers.streams import audio_analysis  # noqa: PLC0415
 
     domain = audio_analysis.SMART_FADES_ANALYSIS_DOMAIN
-    with closing(_open_read_only(path)) as conn:
-        version = conn.execute(
-            "SELECT MAX(analysis_version) FROM audio_analysis "
-            "WHERE media_type = 'track' AND aa_provider_domain = ?",
-            (domain,),
-        ).fetchone()[0]
-        rows = conn.execute(
-            "SELECT id, item_id, provider, aa_provider_domain, "
-            "CAST(header AS BLOB) AS header, payload FROM audio_analysis "
-            "WHERE media_type = 'track' AND aa_provider_domain = ? AND analysis_version = ?",
-            (domain, version),
-        ).fetchall()
+    version = conn.execute(
+        "SELECT MAX(analysis_version) FROM audio_analysis "
+        "WHERE media_type = 'track' AND aa_provider_domain = ?",
+        (domain,),
+    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT id, item_id, provider, aa_provider_domain, "
+        "CAST(header AS BLOB) AS header, payload FROM audio_analysis "
+        "WHERE media_type = 'track' AND aa_provider_domain = ? AND analysis_version = ?",
+        (domain, version),
+    ).fetchall()
     analyses: dict[TrackKey, AudioAnalysisData] = {}
     for row in rows:
         data = audio_analysis._merged_from_rows([dict(row)], {domain}, (domain,))
@@ -568,24 +546,13 @@ def _load_analyses(path: Path) -> tuple[dict[TrackKey, AudioAnalysisData], int |
     return analyses, version
 
 
-def _load_tracks(path: Path, keys: list[TrackKey]) -> dict[TrackKey, TrackInfo]:
+def _track_info(conn: sqlite3.Connection, key: TrackKey) -> TrackInfo:
     """
-    Look up each analysed track's name, albums and style bucket in the library.
+    Look up one analysed track's name, album and style bucket in the library.
 
     The bucket comes from the first genre source that yields one: the track's genres, its
-    albums', its artists', then the library's normalized genre mappings.
+    albums', then its artists'.
     """
-    tracks: dict[TrackKey, TrackInfo] = {}
-    with closing(_open_read_only(path)) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
-        has_genre_mappings = {"genres", "genre_media_item_mapping"} <= tables
-        for key in keys:
-            tracks[key] = _track_info(conn, key, has_genre_mappings)
-    return tracks
-
-
-def _track_info(conn: sqlite3.Connection, key: TrackKey, has_genre_mappings: bool) -> TrackInfo:
-    """Look up one track's library facts."""
     item_id, provider = key
     mapping = conn.execute(
         "SELECT item_id FROM provider_mappings WHERE media_type = 'track' "
@@ -599,53 +566,31 @@ def _track_info(conn: sqlite3.Connection, key: TrackKey, has_genre_mappings: boo
         "SELECT name, metadata FROM tracks WHERE item_id = ?", (lib_id,)
     ).fetchone()
     artists = conn.execute(
-        "SELECT a.item_id, a.name, a.metadata FROM track_artists ta "
+        "SELECT a.name, a.metadata FROM track_artists ta "
         "JOIN artists a ON a.item_id = ta.artist_id WHERE ta.track_id = ? ORDER BY a.item_id",
         (lib_id,),
     ).fetchall()
     albums = conn.execute(
-        "SELECT at.album_id, at.disc_number, at.track_number, al.name, al.metadata "
-        "FROM album_tracks at JOIN albums al ON al.item_id = at.album_id "
-        "WHERE at.track_id = ? ORDER BY at.album_id",
+        "SELECT al.item_id, al.name, al.metadata FROM album_tracks at "
+        "JOIN albums al ON al.item_id = at.album_id WHERE at.track_id = ? ORDER BY at.album_id",
         (lib_id,),
     ).fetchall()
     info = TrackInfo(
         name=f"{'/'.join(a['name'] for a in artists)} - {track['name'] if track else ''}",
         mapped=True,
         album=albums[0]["name"] if albums else "",
-        album_id=albums[0]["album_id"] if albums else None,
-        album_positions=[(a["album_id"], a["disc_number"], a["track_number"]) for a in albums],
+        album_id=albums[0]["item_id"] if albums else None,
     )
-    sources = [
+    sources = (
         ("track", _genres(track["metadata"]) if track else []),
         ("album", [tag for album in albums for tag in _genres(album["metadata"])]),
         ("artist", [tag for artist in artists for tag in _genres(artist["metadata"])]),
-    ]
-    if has_genre_mappings:
-        items = [
-            ("track", lib_id),
-            *(("album", album["album_id"]) for album in albums),
-            *(("artist", artist["item_id"]) for artist in artists),
-        ]
-        names = [
-            row["name"]
-            for media_type, media_id in items
-            for row in conn.execute(
-                "SELECT g.name FROM genre_media_item_mapping m JOIN genres g "
-                "ON g.item_id = m.genre_id WHERE m.media_type = ? AND m.media_id = ?",
-                (media_type, media_id),
-            )
-        ]
-        sources.append(("normalized", names))
+    )
     for source, tags in sources:
-        if not tags:
-            continue
         # tags without a style (such as "Soundtrack") fall through to the next source
         if (bucket := style_bucket(tags)) != UNKNOWN_BUCKET:
-            info.bucket, info.genre_source, info.genres = bucket, source, "|".join(tags)
+            info.bucket, info.genre_source = bucket, source
             break
-        if not info.genres:
-            info.genre_source, info.genres = f"{source} (no style)", "|".join(tags)
     return info
 
 
@@ -675,148 +620,52 @@ def _bucket_pool(
     return pool
 
 
-def _replay_pair(
-    probe: PlannerProbe,
-    out_key: TrackKey,
-    in_key: TrackKey,
-    analyses: dict[TrackKey, AudioAnalysisData],
-    tracks: dict[TrackKey, TrackInfo],
-    ceiling: float,
-) -> Row:
-    """Plan one pair and return its CSV row."""
-    fade_out, fade_in = analyses[out_key], analyses[in_key]
-    out_info, in_info = tracks[out_key], tracks[in_key]
-    assert fade_out.bpm is not None
-    assert fade_in.bpm is not None
-    row: Row = {
-        "out_item": out_key[0],
-        "out_provider": out_key[1],
-        "in_item": in_key[0],
-        "in_provider": in_key[1],
-        "out_track": out_info.name,
-        "in_track": in_info.name,
-        "out_album": out_info.album,
-        "in_album": in_info.album,
-        "out_bucket": out_info.bucket,
-        "in_bucket": in_info.bucket,
-        "out_duration": round(fade_out.duration or 0.0, 2),
-        "in_duration": round(fade_in.duration or 0.0, 2),
-        "bpm_out": round(fade_out.bpm, 2),
-        "bpm_in": round(fade_in.bpm, 2),
-        "bpm_diff_pct": round(abs(1.0 - fade_in.bpm / fade_out.bpm) * 100, 2),
-        "bpb_out": fade_out.beats_per_bar or 4,
-        "bpb_in": fade_in.beats_per_bar or 4,
-    }
-    # playback holds up to half the outgoing track, under the smart fades ceiling
-    buffer_duration = float(min(ceiling, int((fade_out.duration or 0.0) / 2)))
-    row["buffer"] = buffer_duration
-    if buffer_duration < MIN_CROSSFADE_SECONDS:
-        row["outcome"] = "no_crossfade"
-        return row
-    plan, outcome, reason = probe.plan(fade_out, fade_in, buffer_duration)
-    row["outcome"] = outcome
-    if plan is None:
-        row["reason"] = reason
-        return row
-    row.update(_plan_facts(probe, plan))
-    row.update(_vocal_facts(probe.context, plan, fade_out, fade_in))
-    row.update(_rhythm_facts(probe.context, plan, fade_out))
-    row["cause"] = _cause(row)
-    return row
-
-
-def _plan_facts(probe: PlannerProbe, plan: Any) -> Row:
+def _plan_facts(ctx: TransitionContext, plan: TransitionPlan, passes: list[_SelectionPass]) -> Row:
     """Tier, shape and provenance of a shipped plan."""
-    strategy = _name(_attr(plan, "metrics", "strategy"))
-    fadein_trim = _attr(plan, "fadein_trim_start")
-    return {
-        "ctx_tier": _name(_attr(probe.context, "tier")),
-        "tier": _name(plan.tier),
-        "qf_trigger": _quick_fade_trigger(probe.context),
-        "strategy": strategy,
-        **_selection_facts(probe, strategy),
-        "overlap_s": round(float(plan.crossfade_duration), 3),
-        "anchor_s": round(float(plan.fade_out_window), 3),
-        "fadeout_trim_s": round(
-            float(_attr(plan, "fadeout_trim", "trimmed_seconds", default=0.0)), 3
-        ),
-        "fadein_trim_s": round(float(fadein_trim), 3) if fadein_trim is not None else "",
-        "tempo_stretch": bool(_attr(plan, "tempo_plan")),
-    }
-
-
-def _selection_facts(probe: PlannerProbe, strategy: str) -> Row:
-    """Which pass shipped the plan, the winner's generator and bars, and what it beat."""
-    winner = next((entry for entry in probe.winners if entry is not None), None)
-    if probe.winners and probe.winners[0] is not None:
-        via = "main"
-    elif winner is not None:
-        via = "rescue"
-    elif strategy == "FALLBACK_CROSSFADE":
-        via = "fallback"
-    elif strategy == "SHORT_VOCAL_HANDOFF":
-        via = "handoff"
-    else:
-        via = "unknown"
+    quick_fade = plan.tier.name == "QUICK_FADE"
+    strategy = plan.metrics.strategy.name
+    winner = next((p.winner for p in passes if p.winner is not None), None)
+    bars: int | str = ""
+    longer_rejected = 0
     if winner is None:
-        # the fallback and the handoff are built from a 1-bar spec of their own
-        source = {"fallback": "fallback-crossfade", "handoff": "emergency-handoff"}.get(via, "")
-        return {"shipped_via": via, "source": source, "bars": 1, "longer_rejected": 0}
-    spec = _attr(winner, "candidate", "spec")
-    bars = _attr(spec, "bars", default=0)
-    main_pass = probe.passes[0] if probe.passes else []
-    longer_rejected = sum(
-        1
-        for entry in main_pass
-        if _attr(entry, "rejected", default=False)
-        and _attr(entry, "candidate", "spec", "bars", default=0) > bars
-    )
+        via, source = _UNPHRASED[strategy]
+    else:
+        via = "main" if passes[0].winner is not None else "rescue"
+        source, bars = winner.candidate.spec.source, winner.candidate.spec.bars
+        longer_rejected = sum(
+            1 for entry in passes[0].scored if entry.rejected and entry.candidate.spec.bars > bars
+        )
     return {
+        "bpm_diff_pct": round(ctx.bpm_diff_percent, 2),
+        "ctx_tier": ctx.tier.name,
+        "tier": plan.tier.name,
+        # as the planner logs it: only the beat grid depends on the anchor a candidate moved to
+        "qf_trigger": str(ctx.quick_fade_trigger or "beat_grid") if quick_fade else "",
+        "strategy": strategy,
         "shipped_via": via,
-        "source": _attr(spec, "source", default=""),
+        "source": source,
         "bars": bars,
         "longer_rejected": longer_rejected,
+        "overlap_s": round(plan.crossfade_duration, 3),
+        "anchor_s": round(plan.fade_out_window, 3),
+        "fadeout_trim_s": round(plan.fadeout_trim.trimmed_seconds, 3) if plan.fadeout_trim else 0.0,
+        "fadein_trim_s": round(plan.fadein_trim_start or 0.0, 3),
+        "tempo_stretch": bool(plan.tempo_plan),
     }
 
 
-def _quick_fade_trigger(ctx: Any) -> str:
-    """Return what made the context tier a quick fade, or "" for a blend."""
-    if _name(_attr(ctx, "tier")) != "QUICK_FADE":
-        return ""
-    if hasattr(ctx, "quick_fade_trigger"):
-        return str(_attr(ctx, "quick_fade_trigger", "value", default=""))
-    # a planner that does not record the trigger: rederive it in its tier check order
-    from music_assistant.controllers.streams.smart_fades.planner import context  # noqa: PLC0415
-
-    if _attr(ctx, "cross_meter"):
-        return "meter"
-    blendable: Callable[[Any], bool] | None = getattr(context, "_tail_is_blendable", None)
-    downbeats, anchor = _attr(ctx, "outgoing", "downbeats"), _attr(ctx, "default_anchor")
-    if blendable is None or downbeats is None or anchor is None:
-        return "unknown"
-    return "tempo" if blendable(downbeats[downbeats <= anchor]) else "beat_grid"
-
-
-def _vocal_facts(
-    ctx: Any, plan: Any, fade_out: AudioAnalysisData, fade_in: AudioAnalysisData
-) -> Row:
+def _vocal_facts(ctx: TransitionContext, plan: TransitionPlan) -> Row:
     """Vocal duty of the 8 outgoing bars before the anchor and the 8 incoming bars after the trim."""
-    anchor = float(plan.fade_out_window)
-    trim = float(_attr(plan, "fadein_trim_start", default=0.0))
-    out_length = min(WINDOW_BARS * _bar_seconds(fade_out), anchor)
-    in_length = WINDOW_BARS * _bar_seconds(fade_in)
-    out_windows = _attr(ctx, "vocal_out_scoring", "windows")
-    in_windows = _attr(ctx, "vocal_in_scoring", "windows")
-    out_duty = (
-        _coverage(out_windows, anchor - out_length, anchor) / out_length
-        if out_windows is not None and out_length > 0
-        else None
-    )
-    in_duty = (
-        _coverage(in_windows, trim, trim + in_length) / in_length
-        if in_windows is not None
-        else None
-    )
+    anchor, trim = plan.fade_out_window, plan.fadein_trim_start or 0.0
+    out_length = min(WINDOW_BARS * _bar_seconds(ctx.outgoing), anchor)
+    in_length = WINDOW_BARS * _bar_seconds(ctx.incoming)
+    out_duty = in_duty = None
+    if ctx.vocal_out_scoring is not None and out_length > 0:
+        out_duty = (
+            _coverage(ctx.vocal_out_scoring.windows, anchor - out_length, anchor) / out_length
+        )
+    if ctx.vocal_in_scoring is not None:
+        in_duty = _coverage(ctx.vocal_in_scoring.windows, trim, trim + in_length) / in_length
     return {
         "out_vocal_duty": round(out_duty, 3) if out_duty is not None else "",
         "in_vocal_duty": round(in_duty, 3) if in_duty is not None else "",
@@ -824,19 +673,17 @@ def _vocal_facts(
     }
 
 
-def _rhythm_facts(ctx: Any, plan: Any, fade_out: AudioAnalysisData) -> Row:
-    """Kick overlap if the 8 outgoing bars before the anchor faded over the incoming head."""
-    out_track = _kick_track(_attr(ctx, "outgoing_profile"))
-    in_track = _kick_track(_attr(ctx, "incoming_profile"))
-    offset = _attr(ctx, "buffer_offset")
-    if out_track is None or in_track is None or offset is None:
+def _rhythm_facts(ctx: TransitionContext, plan: TransitionPlan) -> Row:
+    """Kick overlap if the 8 outgoing bars before the anchor faded over the trimmed incoming head."""
+    out_track, in_track = _kick_track(ctx.outgoing_profile), _kick_track(ctx.incoming_profile)
+    if out_track is None or in_track is None:
         return {"rhythm_safe": ""}
-    bar_out = _bar_seconds(fade_out)
-    anchor = float(plan.fade_out_window)
+    bar_out = _bar_seconds(ctx.outgoing)
+    anchor, trim = plan.fade_out_window, plan.fadein_trim_start or 0.0
     length = min(WINDOW_BARS * bar_out, anchor)
     times = np.arange(0.0, length, SAMPLE_STEP) + SAMPLE_STEP / 2
-    out_kick, out_bars = _kicks_at(out_track, offset + anchor - length + times)
-    in_kick, in_bars = _kicks_at(in_track, times)
+    out_kick, out_bars = _kicks_at(out_track, ctx.buffer_offset + anchor - length + times)
+    in_kick, in_bars = _kicks_at(in_track, trim + times)
     # 4p(1-p) peaks mid-fade, where both decks play loudest together
     weight = 4 * (times / length) * (1 - times / length)
     out_kick_bars = int(out_track.kick[out_bars].sum())
@@ -850,19 +697,15 @@ def _rhythm_facts(ctx: Any, plan: Any, fade_out: AudioAnalysisData) -> Row:
     }
 
 
-def _kick_track(profile: Any) -> _KickTrack | None:
+def _kick_track(profile: BandProfile | None) -> _KickTrack | None:
     """Per-bar kick presence from a planner band profile, None when there is none."""
-    try:
-        starts = np.asarray(profile.bar_starts, dtype=np.float64)
-        low = np.asarray(profile.bar_power["low"], dtype=np.float64)
-        reference = float(profile.reference["low"])
-    except AttributeError, KeyError, TypeError:
+    if profile is None or not len(profile.bar_starts) or profile.reference["low"] <= 0:
         return None
-    if not len(starts) or reference <= 0:
-        return None
+    starts = profile.bar_starts
     median_bar = float(np.median(np.diff(starts))) if len(starts) > 1 else 2.0
     ends = np.append(starts[1:], starts[-1] + median_bar)
-    return _KickTrack(starts, ends, low >= KICK_FRACTION * reference)
+    kick = profile.bar_power["low"] >= KICK_FRACTION * profile.reference["low"]
+    return _KickTrack(starts, ends, kick)
 
 
 def _kicks_at(
@@ -880,19 +723,17 @@ def _coverage(windows: Iterable[tuple[float, float]], start: float, end: float) 
     return sum(max(0.0, min(right, end) - max(left, start)) for left, right in windows)
 
 
-def _bar_seconds(analysis: AudioAnalysisData) -> float:
-    """Length of one bar of a track."""
-    assert analysis.bpm is not None
-    return (analysis.beats_per_bar or 4) * 60.0 / analysis.bpm
+def _bar_seconds(deck: Deck) -> float:
+    """Length of one bar of a deck."""
+    return deck.beats_per_bar * 60.0 / deck.bpm
 
 
 def _cause(row: Row) -> str:
     """Name what kept the shipped fade as short as it is; meaningful for short fades only."""
-    if row["shipped_via"] in ("rescue", "fallback", "handoff"):
+    if row["shipped_via"] != "main":
         return "rejection -> rescue/fallback/handoff"
     if row["tier"] == "QUICK_FADE":
-        # a blend context whose shipped candidate re-anchored onto an unblendable grid
-        return f"QF: {row['qf_trigger']}" if row["qf_trigger"] else "QF: re-anchored"
+        return f"QF: {row['qf_trigger']}"
     if row["longer_rejected"]:
         return "blend: longer rungs rejected"
     return "blend: short top rung"
@@ -926,32 +767,31 @@ def _outcome_section(rows: list[Row], plans: list[Row]) -> list[str]:
 def _overlap_section(plans: list[Row]) -> list[str]:
     """Shipped overlap length per tier."""
     lines = ["", "== shipped overlap (s): tier n median p10 p90 <4s <8s"]
-    for tier in (*TIERS, "ALL"):
-        values = [row["overlap_s"] for row in plans if tier in ("ALL", row["tier"])]
-        if not values:
+    for tier in ("FULL_BLEND", "TEMPO_BLEND", "QUICK_FADE", "ALL"):
+        values = np.array([row["overlap_s"] for row in plans if tier in ("ALL", row["tier"])])
+        if not len(values):
             continue
+        p10, median, p90 = np.percentile(values, (10, 50, 90))
         lines.append(
-            f"  {tier:12s} {len(values):5d} {statistics.median(values):6.2f} "
-            f"{np.percentile(values, 10):6.2f} {np.percentile(values, 90):6.2f} "
-            f"{100 * sum(v < 4 for v in values) / len(values):5.1f}% "
-            f"{100 * sum(v < SHORT_FADE_SECONDS for v in values) / len(values):5.1f}%"
+            f"  {tier:12s} {len(values):5d} {median:6.2f} {p10:6.2f} {p90:6.2f} "
+            f"{100 * np.mean(values < 4):5.1f}% {100 * np.mean(values < SHORT_FADE_SECONDS):5.1f}%"
         )
     return lines
 
 
-def _trigger_section(rows: list[Row], plans: list[Row]) -> list[str]:
+def _trigger_section(plans: list[Row]) -> list[str]:
     """Why quick fades happen, the tempo gaps, and the short fades by cause."""
-    quick = [row for row in plans if row.get("ctx_tier") == "QUICK_FADE"]
+    quick = [row for row in plans if row["tier"] == "QUICK_FADE"]
     triggers = dict(Counter(row["qf_trigger"] for row in quick).most_common())
-    bands = Counter(_bpm_band(row["bpm_diff_pct"]) for row in rows)
-    gaps = sum(1 for row in plans if row["tier"] == "QUICK_FADE" and 8 < row["bpm_diff_pct"] <= 20)
+    bands = Counter(_bpm_band(row["bpm_diff_pct"]) for row in plans)
+    gaps = sum(1 for row in quick if 8 < row["bpm_diff_pct"] <= 20)
     short = [row for row in plans if row["overlap_s"] < SHORT_FADE_SECONDS]
     causes = Counter(row["cause"] for row in short)
     return [
         "",
-        f"== QUICK_FADE (context tier) {len(quick)}; first trigger: {triggers}",
-        "  bpm diff (all pairs): "
-        + ", ".join(f"{band}: {_pct(bands[band], len(rows))}" for band in _BPM_BANDS),
+        f"== QUICK_FADE {len(quick)}; trigger: {triggers}",
+        "  bpm diff (planned pairs): "
+        + ", ".join(f"{band}: {_pct(bands[band], len(plans))}" for band in BPM_BANDS),
         f"  QUICK_FADE pairs 8-20% apart: {gaps}",
         "",
         f"== short (<8 s) shipped: {len(short)} of {len(plans)}, by cause",
@@ -963,24 +803,27 @@ def _vocal_section(plans: list[Row]) -> list[str]:
     """Overlap length per vocal class, with the causes of the short fades."""
     lines = [
         "",
-        "== vocal class (8-bar windows): n, <8 s, median overlap | causes of the <8 s ones",
+        "== vocal class (8-bar windows): n, <8 s, median overlap | <8 s by cause:",
+        "   " + " | ".join(CAUSES),
     ]
-    populations = (
-        ("all", plans),
-        ("rhythm-safe", [row for row in plans if row.get("rhythm_safe") is True]),
-    )
-    for title, population in populations:
-        lines.append(f"  [{title}] " + " | ".join(CAUSES))
+    rhythm_safe = [row for row in plans if row["rhythm_safe"] is True]
+    for title, population in (("all", plans), ("rhythm-safe", rhythm_safe)):
+        lines.append(f"  [{title}]")
         for cls in VOCAL_CLASSES:
-            members = [row for row in population if row["vocal_class"] == cls]
-            if not members:
+            overlaps = np.array(
+                [row["overlap_s"] for row in population if row["vocal_class"] == cls]
+            )
+            if not len(overlaps):
                 continue
-            short = [row for row in members if row["overlap_s"] < SHORT_FADE_SECONDS]
-            causes = Counter(row["cause"] for row in short)
+            causes = Counter(
+                row["cause"]
+                for row in population
+                if row["vocal_class"] == cls and row["overlap_s"] < SHORT_FADE_SECONDS
+            )
             lines.append(
-                f"   {cls:13s} {len(members):5d} {100 * len(short) / len(members):5.1f}% "
-                f"{statistics.median(row['overlap_s'] for row in members):5.2f}s | "
-                + " | ".join(str(causes[cause]) for cause in CAUSES)
+                f"   {cls:13s} {len(overlaps):5d} "
+                f"{100 * np.mean(overlaps < SHORT_FADE_SECONDS):5.1f}% "
+                f"{np.median(overlaps):5.2f}s | " + " | ".join(str(causes[c]) for c in CAUSES)
             )
     return lines
 
@@ -992,9 +835,9 @@ def _rhythm_section(plans: list[Row]) -> list[str]:
         "== rhythm (8 bars at the anchor vs incoming head): "
         "n, either kickless, kick clash >2 weighted bars",
     ]
-    populations = (("QUICK_FADE", [row for row in plans if row["tier"] == "QUICK_FADE"]),)
-    for title, population in (*populations, ("all plans", plans)):
-        known = [row for row in population if row.get("rhythm_safe") != ""]
+    quick = [row for row in plans if row["tier"] == "QUICK_FADE"]
+    for title, population in (("QUICK_FADE", quick), ("all plans", plans)):
+        known = [row for row in population if row["rhythm_safe"] != ""]
         kickless = sum(1 for row in known if not row["out_kick_bars"] or not row["in_kick_bars"])
         clash = sum(1 for row in known if row["kick_clash_bars"] > CLASH_LIMIT_BARS)
         lines.append(
@@ -1022,13 +865,6 @@ def _style_section(rows: list[Row], tracks: dict[TrackKey, TrackInfo]) -> list[s
             by_bucket[row[f"{side}_bucket"]].append(row)
         for bucket in sorted(by_bucket, key=lambda b: -len(by_bucket[b])):
             lines.append(_style_line(bucket, by_bucket[bucket]))
-    known = [row for row in rows if UNKNOWN_BUCKET not in (row["out_bucket"], row["in_bucket"])]
-    lines += [
-        "",
-        "== same bucket vs cross bucket (both known)",
-        _style_line("same bucket", [r for r in known if r["out_bucket"] == r["in_bucket"]]),
-        _style_line("cross bucket", [r for r in known if r["out_bucket"] != r["in_bucket"]]),
-    ]
     return lines
 
 
@@ -1037,19 +873,18 @@ def _style_line(label: str, rows: list[Row]) -> str:
     plans = [row for row in rows if row["outcome"] == "plan"]
     if not plans:
         return f"  {label:28s} pairs {len(rows):5d} (no plans)"
-    overlaps = [row["overlap_s"] for row in plans]
+    overlaps = np.array([row["overlap_s"] for row in plans])
     one_sided = sum(1 for row in plans if row["vocal_class"] in ("outgoing only", "incoming only"))
-    rhythm_safe = sum(1 for row in plans if row.get("rhythm_safe") is True)
+    rhythm_safe = sum(1 for row in plans if row["rhythm_safe"] is True)
     quick = sum(1 for row in plans if row["tier"] == "QUICK_FADE")
     return (
         f"  {label:28s} pairs {len(rows):5d} "
         f"N/A {100 * (len(rows) - len(plans)) / len(rows):4.1f}% "
-        f"<8s {100 * sum(v < SHORT_FADE_SECONDS for v in overlaps) / len(overlaps):5.1f}% "
-        f"median {statistics.median(overlaps):5.2f}s "
+        f"<8s {100 * np.mean(overlaps < SHORT_FADE_SECONDS):5.1f}% "
+        f"median {np.median(overlaps):5.2f}s "
         f"QF {100 * quick / len(plans):5.1f}% "
         f"one-sided vocal {100 * one_sided / len(plans):5.1f}% "
-        f"rhythm-safe {100 * rhythm_safe / len(plans):5.1f}% "
-        f"FULL+TEMPO {100 * (len(plans) - quick) / len(plans):5.1f}%"
+        f"rhythm-safe {100 * rhythm_safe / len(plans):5.1f}%"
     )
 
 
@@ -1081,20 +916,6 @@ def _bpm_band(diff_pct: float) -> str:
 def _pct(count: int, total: int) -> str:
     """Format a count with its share of the total."""
     return f"{count} ({100 * count / total:.1f}%)" if total else "0"
-
-
-def _attr(obj: Any, *names: str, default: Any = None) -> Any:
-    """Read a nested attribute of a planner object, or the default when any step is missing."""
-    for name in names:
-        if obj is None:
-            return default
-        obj = getattr(obj, name, None)
-    return default if obj is None else obj
-
-
-def _name(value: Any) -> str:
-    """Name of an enum member, or the value as text ("" for None)."""
-    return str(getattr(value, "name", "" if value is None else value))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Tests for the smart fades replay script's pure helpers."""
+"""Tests for the smart fades replay script."""
 
 import sqlite3
 from contextlib import closing
@@ -7,16 +7,18 @@ from typing import Any
 
 import pytest
 
+from music_assistant.controllers.streams.smart_fades.planner.selection import CandidateSelector
 from scripts.smart_fades_replay import (
+    Replayer,
     TrackInfo,
-    _snapshot_db,
-    album_pairs,
+    _snapshot,
     random_pairs,
     style_bucket,
     summarize,
     tag_bucket,
     vocal_class,
 )
+from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
 
 @pytest.mark.parametrize(
@@ -86,20 +88,6 @@ def test_random_pairs_draw_from_the_bucket_pools() -> None:
     assert all(out in keys[:2] and inc in keys[4:] for out, inc in pairs)
 
 
-def test_album_pairs_follow_track_order_across_discs() -> None:
-    """Consecutive tracks pair up, also from a disc's last track to the next disc's first."""
-    a, b, c, d = (("a", "p"), ("b", "p"), ("c", "p"), ("d", "p"))
-    tracks = {
-        a: TrackInfo(name="a", album_positions=[(1, 1, 1)]),
-        b: TrackInfo(name="b", album_positions=[(1, 1, 2)]),
-        c: TrackInfo(name="c", album_positions=[(1, 2, 1)]),
-        # a gap: track 3 of disc 2 has no predecessor in the library
-        d: TrackInfo(name="d", album_positions=[(1, 2, 3)]),
-    }
-
-    assert album_pairs([a, b, c, d], tracks) == [(a, b), (b, c)]
-
-
 def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
     """The summary counts outcomes, overlap by tier, quick fade triggers and N/A reasons."""
     rows = [
@@ -119,14 +107,14 @@ def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
     assert summary.startswith("header\n")
     assert "QUICK_FADE: 2 (50.0%), FULL_BLEND: 1 (25.0%), not_applicable: 1 (25.0%)" in summary
     assert "  QUICK_FADE       2   2.50   2.10   2.90 100.0% 100.0%" in summary
-    assert "first trigger: {'tempo': 1, 'meter': 1}" in summary
+    assert "== QUICK_FADE 2; trigger: {'tempo': 1, 'meter': 1}" in summary
     assert "== short (<8 s) shipped: 2 of 3, by cause" in summary
-    assert "   both sing         1 100.0%  2.00s | 1 | 0 | 0 | 0 | 0 | 0 | 0" in summary
+    assert "   both sing         1 100.0%  2.00s | 1 | 0 | 0 | 0 | 0 | 0" in summary
     assert "  outgoing tail is mostly silent: 1" in summary
     assert "bucketed 1 (100.0%)" in summary
 
 
-def test_snapshot_db_folds_the_wal_into_a_copy_and_leaves_the_source_alone(
+def test_snapshot_reads_the_wal_from_a_copy_and_leaves_the_source_alone(
     tmp_path: Path,
 ) -> None:
     """The copy holds the WAL's rows while the source files stay byte for byte the same."""
@@ -141,18 +129,38 @@ def test_snapshot_db_folds_the_wal_into_a_copy_and_leaves_the_source_alone(
     files = {path.name: path.read_bytes() for path in source.parent.iterdir()}
     assert "library.db-wal" in files
 
-    copy = _snapshot_db(source, tmp_path / "copy")
+    with closing(_snapshot(source, tmp_path / "copy")) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT name FROM tracks")] == [("in the wal",)]
 
     assert {path.name: path.read_bytes() for path in source.parent.iterdir()} == files
     writer.close()
-    with closing(sqlite3.connect(f"{copy.as_uri()}?mode=ro", uri=True)) as conn:
-        assert conn.execute("SELECT name FROM tracks").fetchall() == [("in the wal",)]
-    assert not copy.with_name("library.db-wal").exists()
+
+
+def test_replayer_plans_a_pair_and_reports_its_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthetic pair runs through the planner and comes back with its plan, vocal and drum facts."""
+    # the replayer wraps the selector's methods; monkeypatch puts the originals back afterwards
+    monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
+    monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
+    out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
+    analyses = {key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3) for key in (out_key, in_key)}
+    tracks = {key: TrackInfo(name=key[0]) for key in analyses}
+
+    row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
+
+    assert row["outcome"] == "plan"
+    assert row["tier"] == row["ctx_tier"] == "FULL_BLEND"
+    assert row["qf_trigger"] == ""
+    assert row["shipped_via"] == "main"
+    assert row["source"]
+    assert row["bars"] == 8
+    assert row["vocal_class"] == "unknown"
+    assert row["rhythm_safe"] is False
+    assert row["cause"] == "blend: short top rung"
 
 
 def _pair_row() -> dict[str, Any]:
     """Return the per-pair columns every row carries."""
-    return {"out_bucket": "rock", "in_bucket": "unknown", "bpm_diff_pct": 25.0}
+    return {"out_bucket": "rock", "in_bucket": "unknown"}
 
 
 def _plan_row(
@@ -162,6 +170,7 @@ def _plan_row(
     return {
         **_pair_row(),
         "outcome": "plan",
+        "bpm_diff_pct": 25.0,
         "ctx_tier": tier,
         "tier": tier,
         "qf_trigger": qf_trigger,
