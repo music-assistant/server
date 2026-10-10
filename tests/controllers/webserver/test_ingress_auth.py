@@ -15,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.errors import RateLimited
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -739,7 +740,8 @@ async def test_pending_ha_logins_are_capped(mass_minimal: MusicAssistant) -> Non
     provider = _oauth_provider(mass_minimal)
     states = [await _start_ha_login(provider) for _ in range(MAX_OAUTH_STATES)]
 
-    assert await provider.get_authorization_url("http://ma.local:8095/auth/callback") is None
+    with pytest.raises(RateLimited):
+        await provider.get_authorization_url("http://ma.local:8095/auth/callback")
     assert list(provider._oauth_sessions) == states
 
     get_token = AsyncMock(return_value={})
@@ -767,10 +769,22 @@ async def test_concurrent_ha_logins_stay_within_the_limit(mass_minimal: MusicAss
         ]
         await asyncio.sleep(0)
         ha_answers.set()
-        results = await asyncio.gather(*starts)
+        results = await asyncio.gather(*starts, return_exceptions=True)
 
     assert len(provider._oauth_sessions) == MAX_OAUTH_STATES
-    assert results.count(None) == 10
+    assert sum(isinstance(result, RateLimited) for result in results) == 10
+
+
+async def test_a_refused_ha_login_start_returns_429(auth_manager: AuthenticationManager) -> None:
+    """Starting a HA login over HTTP while too many are pending answers with a 429."""
+    webserver = auth_manager.mass.webserver
+    request = make_mocked_request("GET", "/auth/authorize?provider_id=homeassistant")
+    with patch.object(
+        auth_manager, "get_authorization_url", AsyncMock(side_effect=RateLimited("busy"))
+    ):
+        response = await webserver._handle_auth_authorize(request)
+
+    assert response.status == 429
 
 
 async def _start_ha_login(provider: HomeAssistantOAuthProvider) -> str:

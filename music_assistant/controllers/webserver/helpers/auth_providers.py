@@ -18,7 +18,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -654,10 +654,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         Get Home Assistant OAuth authorization URL using hass_client.
 
-        Returns None when Home Assistant is not reachable or too many sign-ins are pending.
+        Returns None when Home Assistant is not reachable.
 
         :param redirect_uri: The callback URL.
         :param return_url: Optional URL to redirect to after successful login.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         # Get the correct HA URL (external URL if running as add-on)
         ha_url = await self._get_external_ha_url()
@@ -690,8 +691,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
         for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
             del self._oauth_sessions[expired]
         if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
-            self.logger.warning("Refusing Home Assistant sign-in: too many sign-ins are pending")
-            return None
+            raise RateLimited("Too many Home Assistant sign-ins are pending")
 
         state = secrets.token_urlsafe(32)
         # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
