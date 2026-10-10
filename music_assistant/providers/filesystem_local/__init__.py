@@ -60,6 +60,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import (
     CONF_PATH,
+    CONF_PROVIDERS,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -317,7 +318,15 @@ class LocalFileSystemProvider(MusicProvider):
 
     @property
     def instance_name_postfix(self) -> str | None:
-        """Return a (default) instance name postfix for this provider instance."""
+        """Return the end of the folder path that tells this source apart from its siblings."""
+        own = Path(self.base_path).parts
+        others = [Path(path).parts for path in self._get_sibling_paths()]
+        # the shortest tail that no other source of this kind ends with, e.g. "nas/music"
+        # next to "usb/music"
+        for depth in range(1, len(own) + 1):
+            tail = own[-depth:]
+            if all(other[-depth:] != tail for other in others):
+                return str(Path(*tail))
         return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
@@ -3888,3 +3897,15 @@ class LocalFileSystemProvider(MusicProvider):
         """Read file contents. Override for network storage."""
         async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
             return cast("bytes", await f.read())
+
+    def _get_sibling_paths(self) -> list[str]:
+        """Return the folders of the other configured sources of this provider domain."""
+        paths: list[str] = []
+        for instance_id, conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
+            if instance_id == self.instance_id or conf.get("domain") != self.domain:
+                continue
+            with contextlib.suppress(InvalidDataError):
+                path = self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+                if isinstance(path, str):
+                    paths.append(path)
+        return paths
