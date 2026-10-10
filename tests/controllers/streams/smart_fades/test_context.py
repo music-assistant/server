@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionTier,
 )
@@ -16,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFa
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
+    choose_tier,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
@@ -79,6 +81,26 @@ def _with_vocal_activity(
     return analysis
 
 
+def _with_meter(analysis: AudioAnalysisData, beats_per_bar: int) -> AudioAnalysisData:
+    """Set the track's time signature numerator."""
+    analysis.beats_per_bar = beats_per_bar
+    return analysis
+
+
+def _with_irregular_downbeats(analysis: AudioAnalysisData) -> AudioAnalysisData:
+    """Shift every other downbeat so the bar intervals alternate well past the 0.1s std limit."""
+    downbeats = np.asarray(analysis.downbeats, dtype=np.float32)
+    downbeats[1::2] += 0.3
+    analysis.downbeats = downbeats.tolist()
+    return analysis
+
+
+def _with_downbeats_before(analysis: AudioAnalysisData, end: float) -> AudioAnalysisData:
+    """Drop every downbeat from ``end`` on, leaving the buffered tail a few downbeats only."""
+    analysis.downbeats = [downbeat for downbeat in analysis.downbeats or [] if downbeat < end]
+    return analysis
+
+
 def test_context_energy_only_when_vocal_data_missing() -> None:
     """Analyses without a stored vocal-activity timeline disable all vocal-aware masks."""
     context = _context(_analysis(120.0), _analysis(120.0))
@@ -129,6 +151,71 @@ def test_context_tier_full_blend_for_compatible_pair() -> None:
     )
 
     assert context.tier is TransitionTier.FULL_BLEND
+
+
+@pytest.mark.parametrize(
+    ("fade_out", "fade_in", "trigger"),
+    [
+        pytest.param(
+            _analysis(120.0), _with_meter(_analysis(120.0), 3), QuickFadeTrigger.METER, id="meter"
+        ),
+        pytest.param(
+            _with_meter(_analysis(120.0), 3),
+            _analysis(150.0),
+            QuickFadeTrigger.METER,
+            id="meter-before-tempo",
+        ),
+        pytest.param(
+            _with_irregular_downbeats(_analysis(120.0)),
+            _analysis(120.0),
+            QuickFadeTrigger.BEAT_GRID,
+            id="irregular-grid",
+        ),
+        pytest.param(
+            _with_downbeats_before(_analysis(120.0), 200.0),
+            _analysis(120.0),
+            QuickFadeTrigger.BEAT_GRID,
+            id="few-downbeats",
+        ),
+        pytest.param(
+            _with_irregular_downbeats(_analysis(120.0)),
+            _analysis(150.0),
+            QuickFadeTrigger.BEAT_GRID,
+            id="grid-before-tempo",
+        ),
+        pytest.param(_analysis(120.0), _analysis(150.0), QuickFadeTrigger.TEMPO, id="tempo"),
+    ],
+)
+def test_context_records_the_quick_fade_trigger(
+    fade_out: AudioAnalysisData, fade_in: AudioAnalysisData, trigger: QuickFadeTrigger
+) -> None:
+    """A quick fade context names the first check, in tier order, that ruled out a blend."""
+    context = _context(fade_out, fade_in)
+
+    assert context.tier is TransitionTier.QUICK_FADE
+    assert context.quick_fade_trigger is trigger
+    # the candidate builders' tier call agrees with the context's
+    assert choose_tier(context.outgoing, context.incoming, context.default_anchor) == (
+        context.cross_meter,
+        context.tier,
+    )
+
+
+@pytest.mark.parametrize(
+    ("in_key", "in_mode", "tier"),
+    [
+        pytest.param("C", "major", TransitionTier.FULL_BLEND, id="full-blend"),
+        pytest.param("F#", "major", TransitionTier.TEMPO_BLEND, id="tempo-blend"),
+    ],
+)
+def test_context_blend_has_no_quick_fade_trigger(
+    in_key: str, in_mode: str, tier: TransitionTier
+) -> None:
+    """A blend tier carries no quick fade trigger."""
+    context = _context(_analysis(120.0), _analysis(120.0, key=in_key, mode=in_mode))
+
+    assert context.tier is tier
+    assert context.quick_fade_trigger is None
 
 
 def test_context_mix_out_anchor_is_downbeat_snapped() -> None:

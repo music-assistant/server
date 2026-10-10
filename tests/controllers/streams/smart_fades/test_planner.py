@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -23,12 +24,17 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner, assembly
 from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    Candidate,
     CandidateFactory,
     CandidateSpec,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
+)
+from music_assistant.controllers.streams.smart_fades.planner.selection import (
+    CandidateSelector,
+    ScoredCandidate,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
     COLLISION_SECONDS_LIMIT,
@@ -544,6 +550,94 @@ class TestFallbackCrossfade:
         assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
         assert plan.eq_plan.mid_out is None
         assert plan.eq_plan.mid_in is None
+
+
+class TestPlanSummaryLog:
+    """Every plan logs one DEBUG line naming what shipped and why."""
+
+    def test_blend_names_its_generator_and_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A full blend logs tier, strategy, source, bars, overlap and the tempo gap."""
+        # A minor and C major are relative major/minor: the same Camelot slot
+        line = _summary_line(
+            caplog, _analysis(120.0, key="A", mode="minor"), _analysis(120.0, key="C", mode="major")
+        )
+
+        assert line == (
+            "planned transition: tier=full_blend strategy=energy_aligned source=energy-ladder "
+            "bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%)"
+        )
+
+    def test_quick_fade_names_its_trigger_and_signed_tempo_gap(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A tempo-gap quick fade logs the tempo trigger and a negative gap for a slower B."""
+        line = _summary_line(caplog, _analysis(150.0), _analysis(120.0))
+
+        assert line.startswith("planned transition: tier=quick_fade trigger=tempo ")
+        assert line.endswith(" bpm=150.0->120.0 (-20.0%)")
+
+    def test_cross_meter_quick_fade_names_the_meter_trigger(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A cross-meter quick fade logs the meter trigger."""
+        inc = _analysis(120.0)
+        inc.beats_per_bar = 3
+
+        line = _summary_line(caplog, _analysis(120.0), inc)
+
+        assert line.startswith("planned transition: tier=quick_fade trigger=meter ")
+
+    def test_rescue_pass_winner_is_marked(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A candidate shipped by the rescue pass is marked as such."""
+        select = CandidateSelector.select
+        calls = itertools.count()
+
+        def reject_main_pass(
+            selector: CandidateSelector, candidates: Sequence[Candidate], ctx: TransitionContext
+        ) -> ScoredCandidate | None:
+            return None if next(calls) == 0 else select(selector, candidates, ctx)
+
+        monkeypatch.setattr(CandidateSelector, "select", reject_main_pass)
+
+        line = _summary_line(caplog, _analysis(120.0), _analysis(150.0))
+
+        assert " source=trim-closing-anchor (rescue pass) bars=1 " in line
+
+    def test_fallback_logs_its_source_without_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The plain fallback crossfade logs its own source name and no bar count."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(1.0, 1.9), (10.0, 12.1)])
+
+        line = _summary_line(caplog, out, inc)
+
+        assert " strategy=fallback_crossfade source=fallback-crossfade overlap=" in line
+
+    def test_handoff_logs_its_source_without_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The emergency handoff logs its own source name and no bar count."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
+
+        line = _summary_line(caplog, out, inc)
+
+        assert " strategy=short_vocal_handoff source=emergency-handoff overlap=" in line
+
+
+def _summary_line(
+    caplog: pytest.LogCaptureFixture, fade_out: AudioAnalysisData, fade_in: AudioAnalysisData
+) -> str:
+    """Plan one pair and return its single DEBUG summary line."""
+    with caplog.at_level(logging.DEBUG, logger=LOGGER.name):
+        _plan(fade_out, fade_in)
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("planned transition: ")
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    return records[0].getMessage()
 
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:

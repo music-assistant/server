@@ -20,7 +20,10 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.models import SmartFadeNotApplicable
+from music_assistant.controllers.streams.smart_fades.models import (
+    SmartFadeNotApplicable,
+    TransitionTier,
+)
 
 from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAssembler
 from .candidates import (
@@ -38,6 +41,8 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.smart_fades.models import TransitionPlan
     from music_assistant.models.audio_analysis import AudioAnalysisData
+
+    from .context import TransitionContext
 
 
 class TransitionPlanner(ABC):
@@ -105,7 +110,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
             raise SmartFadeNotApplicable("no feasible transition candidate")
         selector = CandidateSelector(default_policies(), self.logger)
         winner = selector.select(candidates, ctx)
-        if winner is None:
+        rescue_pass = winner is None
+        if rescue_pass:
             # every phrased candidate breached a hard rejection: retry with the
             # ungated audible-end ladder plus a modest late-anchored rescue rung
             # before falling back to the handoff
@@ -117,23 +123,22 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 candidate for spec in rescue_specs if (candidate := factory.build(spec)) is not None
             ]
             winner = selector.select(rescue_candidates, ctx) if rescue_candidates else None
-            if winner is not None:
-                self.logger.debug(
-                    "shipping a rescue-pass candidate (source=%s) instead of the emergency handoff",
-                    winner.candidate.spec.source,
-                )
         if winner is None:
             # a plain volume crossfade reads far less abrupt than the click-free
             # handoff, so it ships unless its vocal collision is too severe
             fallback = FallbackCrossfadeFactory(ctx, factory, self.logger).build()
             if fallback is not None:
-                self.logger.debug("shipping plain fallback crossfade")
-                plan = fallback
+                plan, source = fallback, "fallback-crossfade"
             else:
-                self.logger.debug("shipping click-free emergency handoff")
                 plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
+                source = "emergency-handoff"
+            bars = None
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
+            source, bars = winner.candidate.spec.source, winner.candidate.spec.bars
+            if rescue_pass:
+                source += " (rescue pass)"
+        self._log_plan(ctx, plan, source, bars)
         # the caller reads the outgoing grid off the planner after a successful
         # plan and expects it masked to the plan's own anchor
         self.outgoing = replace(
@@ -142,3 +147,29 @@ class SmartCrossFadePlanner(TransitionPlanner):
             downbeats=ctx.outgoing.downbeats[ctx.outgoing.downbeats <= plan.fade_out_window],
         )
         return plan
+
+    def _log_plan(
+        self, ctx: TransitionContext, plan: TransitionPlan, source: str, bars: int | None
+    ) -> None:
+        """
+        Log the one DEBUG line that sums up the shipped plan.
+
+        :param ctx: The transition's context.
+        :param plan: The plan that ships.
+        :param source: The winning candidate's generator, or the fallback/handoff that shipped.
+        :param bars: The winning candidate's bar count; None for the unphrased fallback/handoff.
+        """
+        trigger = ctx.quick_fade_trigger if plan.tier is TransitionTier.QUICK_FADE else None
+        self.logger.debug(
+            "planned transition: tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
+            "bpm=%.1f->%.1f (%+.1f%%)",
+            plan.tier.value,
+            f" trigger={trigger}" if trigger is not None else "",
+            plan.metrics.strategy,
+            source,
+            f" bars={bars}" if bars is not None else "",
+            plan.crossfade_duration,
+            ctx.outgoing.bpm,
+            ctx.incoming.bpm,
+            (ctx.incoming.bpm / ctx.outgoing.bpm - 1.0) * 100,
+        )
