@@ -203,6 +203,34 @@ class TestDressedScenarios:
         assert echo.plan.echo is not None
         assert echo.plan.echo.cut_s == pytest.approx(0.5)
 
+    def test_an_echo_out_needs_a_first_downbeat_to_drop_in_on(self) -> None:
+        """Without an incoming downbeat close to its start the echo out is not built."""
+        out, inc = _track(120.0), _track(150.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=30.0,
+            entry_s=None,
+            source="echo-out",
+            ideal_bars=1,
+            style=TransitionStyle.ECHO_OUT,
+        )
+        late = dataclasses.replace(
+            ctx,
+            incoming=dataclasses.replace(
+                ctx.incoming, downbeats=np.array([20.0], dtype=np.float32)
+            ),
+        )
+        none = dataclasses.replace(
+            ctx,
+            incoming=dataclasses.replace(ctx.incoming, downbeats=np.array([], dtype=np.float32)),
+        )
+
+        assert CandidateFactory(ctx, LOGGER).build(spec) is not None
+        assert CandidateFactory(late, LOGGER).build(spec) is None
+        assert CandidateFactory(none, LOGGER).build(spec) is None
+
     def test_kick_against_kick_25_percent_apart_echoes_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

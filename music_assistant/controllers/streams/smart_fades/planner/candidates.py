@@ -1060,7 +1060,8 @@ class CandidateFactory:
         Build an echo out: the dry signal stops on a downbeat and its last beat echoes out.
 
         The echo ends near the spec's anchor and the next track starts on its first
-        downbeat at the cut, both at full level; ``None`` when no echo fits the buffer.
+        downbeat at the cut, both at full level; ``None`` when no echo fits the buffer or the
+        next track has no first downbeat close enough to drop in on.
         """
         import numpy as np  # noqa: PLC0415
 
@@ -1076,11 +1077,13 @@ class CandidateFactory:
         cut = float(fitting[np.argmin(np.abs(fitting - (spec.anchor_s - echo_length)))])
         fade_out_window, fadeout_trim = self._tail_end(cut + echo_length)
         crossfade_duration = fade_out_window - cut
-        entry: float | None = None
-        if len(ctx.incoming.downbeats):
-            entry = float(ctx.incoming.downbeats[0])
-            if entry > crossfade_duration + _MAX_UNHEARD_INTRO_S:
-                entry = None
+        # the next track drops in on its first downbeat: without one close to its start,
+        # the echo has nothing to land on and a filter out or the cut does better
+        if not len(ctx.incoming.downbeats):
+            return None
+        entry = float(ctx.incoming.downbeats[0])
+        if entry > crossfade_duration + _MAX_UNHEARD_INTRO_S:
+            return None
         plan = TransitionPlan(
             tier=spec.tier,
             fade_out_window=fade_out_window,
