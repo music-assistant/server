@@ -3,6 +3,19 @@
     "path": {
       "label": "Folder"
     },
+    "overlap_warning": {
+      "label": "Files in this folder are also read by {0}, so they would be imported twice."
+    },
+    "overlap_warning_unnamed": {
+      "label": "Files in this folder are also read by another music source, so they would be imported twice."
+    },
+    "overlap_choice": {
+      "label": "Use this folder anyway?",
+      "options": {
+        "use_folder": "Use it anyway",
+        "choose_another": "Choose another folder"
+      }
+    },
     "setup_content_type": {
       "label": "What do you want to add?",
       "options": {
@@ -46,6 +59,9 @@
   "setup_flow": {
     "user": {
       "title": "Choose a folder"
+    },
+    "overlap": {
+      "title": "Already read by another source"
     }
   },
   "errors": {

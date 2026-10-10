@@ -7,6 +7,9 @@ import os
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
+
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
@@ -27,6 +30,18 @@ _CONTENT_TYPE_ENTRY = replace(
     value=CONF_ENTRY_CONTENT_TYPE.default_value,
     expanded_options=True,
 )
+# the warning for a folder that other music sources read too, with their names, or without
+# them for a caller that does not see every source
+_OVERLAP_WARNING = ConfigEntry(key="overlap_warning", type=ConfigEntryType.ALERT, required=False)
+_OVERLAP_WARNING_UNNAMED = ConfigEntry(
+    key="overlap_warning_unnamed", type=ConfigEntryType.ALERT, required=False
+)
+_OVERLAP_CHOICE = ConfigEntry(
+    key="overlap_choice",
+    type=ConfigEntryType.STRING,
+    options=[ConfigValueOption("use_folder"), ConfigValueOption("choose_another")],
+    expanded_options=True,
+)
 
 
 async def run_setup(session: SetupSession) -> None:
@@ -34,7 +49,8 @@ async def run_setup(session: SetupSession) -> None:
     Run the setup flow: collect the content type and folder, then create the provider.
 
     A new folder must be an existing folder in an available storage location the caller may
-    use; on reconfigure an unchanged folder is accepted without these checks.
+    use, and the user confirms it when other music sources read its files too; on reconfigure
+    an unchanged folder is accepted without these checks.
 
     :param session: The setup session driving the flow.
     """
@@ -64,6 +80,9 @@ async def run_setup(session: SetupSession) -> None:
                 await _check_folder(session, path)
             except SetupFlowError as err:
                 errors = {CONF_ENTRY_PATH.key: err}
+                continue
+            if not await _confirm_overlap(session, path):
+                errors = None
                 continue
         try:
             await session.finish(setup_data)
@@ -104,6 +123,25 @@ async def _check_folder(session: SetupSession, path: str) -> None:
             translation_key="music_directory_not_found",
             translation_args=[path],
         )
+
+
+async def _confirm_overlap(session: SetupSession, path: str) -> bool:
+    """
+    Return whether to use a folder, asking the user first when other music sources read it too.
+
+    :param session: The setup session driving the flow.
+    :param path: The checked folder.
+    """
+    sources = session.mass.storage.get_overlapping_sources(path, session.context.instance_id)
+    if not sources:
+        return True
+    warning = (
+        replace(_OVERLAP_WARNING, translation_params=[", ".join(sources)])
+        if session.context.manages_all_sources
+        else _OVERLAP_WARNING_UNNAMED
+    )
+    submitted = await session.form([warning, _OVERLAP_CHOICE], step_id="overlap")
+    return submitted[_OVERLAP_CHOICE.key] == "use_folder"
 
 
 def _folder_not_allowed(path: str) -> SetupFlowError:
