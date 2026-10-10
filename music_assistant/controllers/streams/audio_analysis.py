@@ -1590,8 +1590,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         Reads at its own pace from the buffer's retained window. On clean end-of-stream the
         providers are finalized, unless the source ended far short of the expected duration.
-        If the reader falls a full window behind playback (the chunk it needs has been
-        evicted) or the buffer is torn down first, the session is dropped.
+        If the reader falls behind the played audio the buffer keeps (the chunk it needs has
+        been evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.

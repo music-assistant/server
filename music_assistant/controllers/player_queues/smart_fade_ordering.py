@@ -4,9 +4,9 @@ Smart Fades-aware ordering for Smart Shuffle.
 This only reorders tracks MA has already selected. It uses stored tempo, key and end-to-start
 energy; missing analysis stays neutral and nothing is analysed just to place a track in the queue.
 
-Both dynamic refills and fixed queues consider every remaining track in the run being ordered;
-dynamic mode simply orders one refill batch at a time from the queue tail. Close choices retain
-some randomness.
+Both modes order one batch of upcoming tracks at a time and consider every track in it: a fixed
+queue its next batch once playback gets close, dynamic mode each refill batch from the queue tail.
+Close choices retain some randomness.
 
 This does not call the full transition planner to rank candidates. Smart Fades still decides the
 actual transition.
@@ -200,7 +200,11 @@ async def _order_run(
         )
         analysis_by_track.update(zip(batch, loaded, strict=True))
 
-    features = [_features(analysis_by_track[track]) for track in typed_tracks]
+    # Extracting the features scans each track's whole energy curve: too much CPU work for the
+    # event loop.
+    features = await asyncio.to_thread(
+        _features_of, [analysis_by_track[track] for track in typed_tracks]
+    )
     seam_features = (
         _features(analysis_by_track[preceding_track]) if preceding_track is not None else None
     )
@@ -232,6 +236,11 @@ async def _order_run(
         )
 
     return [items[index] for index in order]
+
+
+def _features_of(analyses: list[AudioAnalysisData | None]) -> list[_TrackFeatures]:
+    """Return the ordering features of each analysis, in the same order."""
+    return [_features(analysis) for analysis in analyses]
 
 
 def _pick_order(
