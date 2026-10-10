@@ -18,7 +18,7 @@ from music_assistant.helpers.rating import (
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
-# Import of the rating embedded in the file's tags, see music_assistant.helpers.rating
+# Import the rating embedded in the file's tags
 CONF_RATING_IMPORT_ENABLED = "rating_import_enabled"
 CONF_RATING_FAVORITE_THRESHOLD = "rating_favorite_threshold"
 CONF_RATING_DISLIKE_THRESHOLD = "rating_dislike_threshold"
