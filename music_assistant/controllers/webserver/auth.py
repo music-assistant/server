@@ -996,7 +996,8 @@ class AuthenticationManager:
         await self._sync_ha_oauth_provider()
 
         providers = []
-        for provider_id, provider in self.login_providers.items():
+        # a concurrent listing can add or remove the HA provider while this one awaits
+        for provider_id, provider in list(self.login_providers.items()):
             providers.append(
                 {
                     "provider_id": provider_id,
