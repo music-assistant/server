@@ -696,7 +696,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
         state = secrets.token_urlsafe(32)
         code_verifier = secrets.token_urlsafe(64)
-        # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
+        # Keep each sign-in's details keyed by state to support concurrent OAuth sessions
         # This prevents race conditions when multiple users/sessions login simultaneously
         self._oauth_sessions[state] = (
             return_url,
