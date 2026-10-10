@@ -1,5 +1,6 @@
 """Tests for the tracks controller."""
 
+import pathlib
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
@@ -45,6 +46,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.builtin.constants import CONF_KEY_TRACKS, StoredItem
+from tests.conftest import full_mass_context
 
 from .helpers import ISRC, create_album, create_track
 
@@ -67,6 +69,13 @@ CUSTOM_THUMB = MediaItemImage(
 def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
     """Run on a library-only instance: these tests only touch the library."""
     return music_mass
+
+
+@pytest.fixture
+async def booted_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """Run on a fully booted instance, for tests that need the builtin provider."""
+    async with full_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
 
 
 @pytest.fixture
@@ -3187,12 +3196,14 @@ async def test_stale_library_read_does_not_store_the_former_album_thumb(
     assert await _stored_image_paths(mass, db_track.item_id) == [TRACK_THUMB.path]
 
 
-async def test_edit_stores_the_image_of_a_url_track_on_an_album(mass: MusicAssistant) -> None:
+async def test_edit_stores_the_image_of_a_url_track_on_an_album(
+    booted_mass: MusicAssistant,
+) -> None:
     """Editing a URL track that is on an album keeps the image picked for it, not the album's."""
-    db_track = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
-    builtin = cast("BuiltinProvider", mass.get_provider("builtin"))
+    db_track = await _add_track_on_album_with_thumb(booted_mass, TRACK_THUMB)
+    builtin = cast("BuiltinProvider", booted_mass.get_provider("builtin"))
     url = "http://example.com/track1.mp3"
-    await mass.music.tracks.add_provider_mappings(
+    await booted_mass.music.tracks.add_provider_mappings(
         db_track.item_id,
         [
             ProviderMapping(
@@ -3200,14 +3211,14 @@ async def test_edit_stores_the_image_of_a_url_track_on_an_album(mass: MusicAssis
             )
         ],
     )
-    mass.config.set(CONF_KEY_TRACKS, [StoredItem(item_id=url, name=db_track.name)])
+    booted_mass.config.set(CONF_KEY_TRACKS, [StoredItem(item_id=url, name=db_track.name)])
 
     # the edit dialog sends the library track with the image picked for it
-    edited = await mass.music.tracks.get_library_item(db_track.item_id)
+    edited = await booted_mass.music.tracks.get_library_item(db_track.item_id)
     edited.metadata.images = UniqueList([CUSTOM_THUMB])
-    await mass.music.tracks.update_item_in_library(edited.item_id, edited, overwrite=True)
+    await booted_mass.music.tracks.update_item_in_library(edited.item_id, edited, overwrite=True)
 
-    assert mass.config.get(CONF_KEY_TRACKS) == [
+    assert booted_mass.config.get(CONF_KEY_TRACKS) == [
         StoredItem(item_id=url, name=db_track.name, image_url=CUSTOM_THUMB.path)
     ]
 
