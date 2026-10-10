@@ -105,6 +105,9 @@ class NugsProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # a reload may follow a switch to another account, which the cached details cannot tell
+        for cached in (self._get_subscription_info, self._get_user_id):
+            await self.mass.cache.delete(cached.__name__, provider=self.instance_id)
         await self.login()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:

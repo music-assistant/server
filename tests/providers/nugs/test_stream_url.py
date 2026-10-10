@@ -63,6 +63,22 @@ def _set_quality(provider: NugsProvider, quality: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_init_drops_cached_account_info(provider: NugsProvider) -> None:
+    """Loading the provider drops the cached account details, which may be another account's."""
+    cache: Any = provider.mass.cache
+    cache.delete = AsyncMock()
+    provider.login = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.handle_async_init()
+
+    assert sorted(c.args[0] for c in cache.delete.await_args_list) == [
+        "_get_subscription_info",
+        "_get_user_id",
+    ]
+    assert all(c.kwargs["provider"] == provider.instance_id for c in cache.delete.await_args_list)
+
+
+@pytest.mark.asyncio
 async def test_stream_url_fetches_account_info_on_cache_miss(provider: NugsProvider) -> None:
     """Without cached account details the subscription and user id are read from nugs.net."""
     _install_cache_miss(provider)
