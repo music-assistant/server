@@ -618,14 +618,15 @@ class StorageController(CoreController):
         :param path: An absolute path.
         """
         path = os.path.normpath(path)
-        return [
-            location.path
-            for location in self._locations
-            if location.usage == StorageUsage.MEDIA
-            and location.path != path
-            and is_within(location.path, path)
-            and not await self.is_available(location.path)
-        ]
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
+        # a discovered drive or share that went away is only remembered as a mountpoint
+        candidates = sorted(
+            candidate
+            for candidate in media | self._seen_mountpoints
+            if candidate != path and is_within(candidate, path)
+        )
+        await self._probe_outdated(candidates)
+        return [candidate for candidate in candidates if not await self.is_available(candidate)]
 
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
