@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
+import tarfile
+import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +18,7 @@ import pytest
 import yaml
 
 from scripts.release_workflow import (
+    APP_SECRETS_PATH,
     OCI_REVISION_ANNOTATION,
     OCI_WHEEL_ANNOTATION,
     GitRepository,
@@ -28,6 +32,7 @@ from scripts.release_workflow import (
     select_release,
     set_addon_version,
     update_addon_release,
+    verify_app_secrets,
     verify_oci_manifest,
 )
 
@@ -355,6 +360,46 @@ def test_release_assets_reject_duplicate_api_entries(tmp_path: Path) -> None:
 
     with pytest.raises(ReleaseWorkflowError, match="duplicate"):
         inspect_assets(version, release_json=release_json)
+
+
+@pytest.mark.parametrize(
+    ("wheel_secrets", "sdist_secrets", "error"),
+    [
+        (True, False, None),
+        (False, False, "does not contain"),
+        (True, True, "must not contain"),
+    ],
+)
+def test_app_secrets_ship_in_the_wheel_only(
+    tmp_path: Path, wheel_secrets: bool, sdist_secrets: bool, error: str | None
+) -> None:
+    """The app secrets must reach the wheel (and the image), never the source distribution."""
+    version = "2.10.0b8"
+    _write_dists(tmp_path, version, wheel_secrets=wheel_secrets, sdist_secrets=sdist_secrets)
+
+    if error is None:
+        verify_app_secrets(version, tmp_path)
+    else:
+        with pytest.raises(ReleaseWorkflowError, match=error):
+            verify_app_secrets(version, tmp_path)
+
+
+def test_release_workflow_builds_the_source_distribution_without_app_secrets() -> None:
+    """Only the wheel is built after the app secrets are provisioned, and both are verified."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["build_artifacts"]["steps"]]
+
+    assert (
+        step_names.index("Build source distribution")
+        < step_names.index("Provision app secrets")
+        < step_names.index("Build wheel")
+        < step_names.index("Verify bundled app secrets")
+    )
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert sdist_step["run"] == "python3 -m build --sdist"
+    wheel_step = _workflow_step(workflow, "build_artifacts", "Build wheel")
+    assert wheel_step["run"] == "python3 -m build --wheel"
 
 
 def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
@@ -908,6 +953,19 @@ def _api_asset(path: Path) -> dict[str, str | int]:
         "state": "uploaded",
         "digest": f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
     }
+
+
+def _write_dists(
+    directory: Path, version: str, *, wheel_secrets: bool, sdist_secrets: bool
+) -> None:
+    with zipfile.ZipFile(directory / f"music_assistant-{version}-py3-none-any.whl", "w") as wheel:
+        wheel.writestr("music_assistant/__init__.py", "")
+        if wheel_secrets:
+            wheel.writestr(APP_SECRETS_PATH, "{}")
+    with tarfile.open(directory / f"music_assistant-{version}.tar.gz", "w:gz") as sdist:
+        names = ["music_assistant/__init__.py"] + ([APP_SECRETS_PATH] if sdist_secrets else [])
+        for name in names:
+            sdist.addfile(tarfile.TarInfo(f"music_assistant-{version}/{name}"), io.BytesIO())
 
 
 def _commit(path: Path, message: str) -> str:

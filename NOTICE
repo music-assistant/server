@@ -97,3 +97,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+===============================================================================
+
+Bundled service credentials
+music_assistant/helpers/app_secrets.json
+
+The release builds of Music Assistant (the wheel and the container image)
+include this file. It holds the API keys and other credentials for the services
+Music Assistant integrates with, so these integrations work out of the box. The
+source code, including the source distribution, does not include it.
+
+This file is NOT covered by the Apache License 2.0. You may redistribute it
+unmodified, for use with Music Assistant only. Do not extract the credentials
+or use them in any other application; register your own with the service
+instead.
+
+Builds without this file can supply their own credentials, see
+music_assistant/helpers/app_vars.py.

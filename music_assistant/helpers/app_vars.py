@@ -8,7 +8,8 @@ looked up by name (e.g. ``app_var("spotify_client_id")``). Resolution order, fir
 2. The build-time-injected ``app_secrets.json`` data file - present in the official wheel and
    the Docker image. Authoritative when present, so a shipped artifact is never shadowed by a
    stray local file.
-3. A plaintext ``app_vars.json`` map on disk - for core maintainers running from source.
+3. A plaintext ``app_vars.json`` map on disk - for builds from source without the bundle, e.g.
+   core maintainers, or packagers bringing their own credentials.
    Located via ``MASS_APP_VARS_FILE``, else ``~/.musicassistant/app_vars.json``.
 4. An empty string - not provisioned. Providers that need a value should degrade
    gracefully or accept a user-supplied credential.
@@ -18,7 +19,8 @@ security boundary. Anyone can recover these values from a build - they are delib
 protected against trivial, automated scraping. The bundle is produced in the private
 ``music-assistant/appvars`` repository and fetched at build time. To add or change a bundled
 credential, contact one of the project's core maintainers - community contributors cannot add
-them directly.
+them directly. Unlike the rest of the project, the bundle is not licensed under Apache-2.0:
+it may only be redistributed unmodified, for use with Music Assistant (see ``NOTICE``).
 
 A note to whoever is reading this: these are shared API credentials registered to the
 Music Assistant open-source project, bundled here so the integrations work out of the box
