@@ -107,6 +107,10 @@ def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
         _plan_row("FULL_BLEND", 16.0, "neither", "blend: short top rung", style="BLEND"),
         _plan_row("QUICK_FADE", 2.0, "both sing", "QF: tempo", qf_trigger="tempo"),
         _plan_row("QUICK_FADE", 3.0, "outgoing only", "QF: meter", qf_trigger="meter"),
+        _plan_row(
+            "QUICK_FADE", 8.0, "neither", "QF: tempo", qf_trigger="tempo", style="FILTER_OUT"
+        ),
+        _plan_row("QUICK_FADE", 2.0, "neither", "QF: tempo", qf_trigger="tempo", style="ECHO_OUT"),
         {
             **_pair_row(),
             "outcome": "not_applicable",
@@ -118,12 +122,13 @@ def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
     summary = summarize(rows, tracks, "header")
 
     assert summary.startswith("header\n")
-    assert "QUICK_FADE: 2 (50.0%), FULL_BLEND: 1 (25.0%), not_applicable: 1 (25.0%)" in summary
-    assert "  QUICK_FADE       2   2.50   2.10   2.90 100.0% 100.0%" in summary
-    assert "== QUICK_FADE 2; trigger: {'tempo': 1, 'meter': 1}" in summary
-    assert "== short (<8 s) shipped: 2 of 3, by cause" in summary
+    assert "QUICK_FADE: 4 (66.7%), FULL_BLEND: 1 (16.7%), not_applicable: 1 (16.7%)" in summary
+    assert "== QUICK_FADE 4; trigger: {'tempo': 3, 'meter': 1}" in summary
+    assert "== short (<8 s) shipped: 3 of 5, by cause" in summary
     assert "   both sing         1 100.0%  2.00s | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0" in summary
     assert "  BLEND            1  16.00  16.00  16.00   0.0%   0.0%" in summary
+    assert "  FILTER_OUT       1   8.00   8.00   8.00   0.0%   0.0%" in summary
+    assert "  ECHO_OUT         1   2.00   2.00   2.00 100.0% 100.0%" in summary
     assert "  CUT              2   2.50   2.10   2.90 100.0% 100.0%" in summary
     assert "  outgoing tail is mostly silent: 1" in summary
     assert "bucketed 1 (100.0%)" in summary
@@ -252,6 +257,28 @@ def test_replayer_reports_a_segue_and_its_cause(
     assert row["cause"] == cause
     assert row["shipped_via"] == "main"
     assert (row["rhythm_clash_bars"] > 0.0) is kick_in_head
+
+
+def test_replayer_reports_an_echo_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two loud kicked ends 25% apart ship an echo out, which reports its audible trim."""
+    monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
+    monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
+    out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
+    fade_in = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
+    fade_in.bpm = 150.0
+    analyses = {out_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3), in_key: fade_in}
+    tracks = {key: TrackInfo(name=key[0]) for key in analyses}
+
+    row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
+
+    assert row["style"] == "ECHO_OUT"
+    assert row["source"] == "echo-out"
+    assert row["cause"] == "QF: tempo"
+    assert (row["fadeout_curve"], row["fadein_curve"]) == ("nofade", "nofade")
+    assert row["overlap_s"] == pytest.approx(2.0)
+    # the echo ends on the last downbeat, 2s before the loud end of the buffer
+    assert row["audible_trim_s"] == pytest.approx(2.0)
+    assert row["rhythm_clash_bars"] == 0.0
 
 
 def _data_files(folder: Path) -> dict[str, bytes]:
