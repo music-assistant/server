@@ -51,6 +51,7 @@ from music_assistant.controllers.player_queues.smart_fade_ordering import order_
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.recency import RecencySnapshot
@@ -184,7 +185,8 @@ class SmartShuffle:
             self.mass,
             batch,
             get_track=_queue_item_track,
-            preceding_track=_queue_item_track(items[until_index]),
+            get_streamdetails=_queue_item_streamdetails,
+            preceding_item=items[until_index],
         )
         if (
             self.queues.queue_data_or_none(queue_id) is not queue_data
@@ -287,7 +289,8 @@ async def _arrange_for_smart_fades(
                 mass,
                 ordered,
                 get_track=_queue_item_track,
-                preceding_track=_queue_item_track(preceding) if preceding is not None else None,
+                get_streamdetails=_queue_item_streamdetails,
+                preceding_item=preceding,
             )
             budget -= len(ordered)
             preceding = ordered[-1]
@@ -303,6 +306,11 @@ async def _arrange_for_smart_fades(
 def _queue_item_track(item: QueueItem | None) -> Track | None:
     """Return a queue item's Track payload, or None for a non-track boundary."""
     return item.media_item if item is not None and isinstance(item.media_item, Track) else None
+
+
+def _queue_item_streamdetails(item: QueueItem) -> StreamDetails | None:
+    """Return the stream details a queue item has already resolved, if any."""
+    return item.streamdetails
 
 
 def _tier(
