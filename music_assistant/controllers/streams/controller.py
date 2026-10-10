@@ -52,6 +52,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
+    CONF_LOG_LEVEL,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
@@ -612,6 +613,13 @@ class StreamsController(CoreController):
         await self._audio_analysis.close()
         await self.live_announcements.close()
         await self._server.close()
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # with GLOBAL the smart fades logger follows the controller's own level
+        if changed_keys & {f"values/{CONF_SMART_FADES_LOG_LEVEL}", f"values/{CONF_LOG_LEVEL}"}:
+            self._setup_smart_fades_logger(config)
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
         """
