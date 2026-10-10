@@ -162,7 +162,7 @@ class TestSegueScenarios:
 
     def test_beatless_intro_gets_a_long_segue_over_loud_ends(self) -> None:
         """A kickless incoming head 30% apart rides a 15s equal-power segue with its handover EQ."""
-        out = _track(120.0, vocals=_vocals((100.0, DURATION)))
+        out = _track(120.0, vocals=_vocals())
         inc = _track(156.0, low=_envelope(0.5, (0.0, 20.0, 0.01)), vocals=_vocals())
 
         plan = _plan(out, inc)
@@ -192,6 +192,24 @@ class TestSegueScenarios:
         assert (plan.fadeout_curve, plan.fadein_curve) == ("qsin", "qsin")
         # the equal-power shape keeps the lazy overlay's handover EQ
         assert plan.eq_plan.low_out is not None
+
+    def test_a_singing_side_keeps_the_kickless_tail_within_its_quiet_material(self) -> None:
+        """The same kickless tail with a sung outro segues over its quiet material only."""
+        out = _track(
+            120.0,
+            rms=_envelope(0.5, (236.0, DURATION, 0.1)),
+            low=_envelope(0.5, (225.0, DURATION, 0.01)),
+            vocals=_vocals((200.0, DURATION)),
+        )
+        inc = _track(150.0, rms=_envelope(0.5, (0.0, 6.0, 0.05)), vocals=_vocals())
+        segue = build_transition_context(out, inc, 45.0, LOGGER).segue
+        assert segue is not None
+
+        plan = _plan(out, inc)
+
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.crossfade_duration == pytest.approx(segue.quiet_tail + segue.quiet_head)
+        assert (plan.fadeout_curve, plan.fadein_curve) == ("nofade", "nofade")
 
     def test_a_segue_within_its_quiet_material_plays_both_edges_as_recorded(self) -> None:
         """A 12s quiet tail and a 3s quiet head overlap as recorded, no fade on either side."""

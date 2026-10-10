@@ -536,11 +536,11 @@ class TestSegueGenerator:
         assert list(SegueGenerator(allow_blend_context=True).generate(ctx))
 
     def test_a_kickless_side_rides_a_long_segue_over_loud_ends(self) -> None:
-        """Loud ends with a kickless head and one deck singing get the full 15s."""
+        """Loud ends with a kickless head and two instrumental decks get the full 15s."""
         ctx = _segue_ctx(
             segue=_segue(0.0),
             in_kickless=True,
-            vocal_out_scoring=_SUNG,
+            vocal_out_scoring=_SILENT,
             vocal_in_scoring=_SILENT,
         )
 
@@ -554,7 +554,7 @@ class TestSegueGenerator:
         ctx = _segue_ctx(
             segue=_segue(6.0, 2.0),
             in_kickless=True,
-            vocal_out_scoring=_SUNG,
+            vocal_out_scoring=_SILENT,
             vocal_in_scoring=_SILENT,
         )
 
@@ -565,22 +565,49 @@ class TestSegueGenerator:
         )
         assert all(spec.ideal_overlap_s == pytest.approx(15.0) for spec in specs)
 
-    def test_two_singing_decks_never_ride_a_long_segue(self) -> None:
-        """Loud ends with both decks singing get no long segue, kickless or not."""
+    @pytest.mark.parametrize(
+        ("out_mask", "in_mask"), [(_SUNG, _SILENT), (_SILENT, _SUNG), (_SUNG, _SUNG)]
+    )
+    def test_a_singing_deck_never_rides_a_long_segue(
+        self, out_mask: VocalMask, in_mask: VocalMask
+    ) -> None:
+        """Loud ends where either deck sings get no long segue, kickless or not."""
         ctx = _segue_ctx(
-            segue=_segue(0.0), in_kickless=True, vocal_out_scoring=_SUNG, vocal_in_scoring=_SUNG
+            segue=_segue(0.0),
+            in_kickless=True,
+            vocal_out_scoring=out_mask,
+            vocal_in_scoring=in_mask,
         )
 
         assert list(SegueGenerator().generate(ctx)) == []
 
+    def test_a_singing_deck_keeps_the_quiet_material_segue(self) -> None:
+        """With one deck singing, a kickless side steps from its quiet material, not from 15s."""
+        ctx = _segue_ctx(
+            segue=_segue(6.0, 2.0),
+            in_kickless=True,
+            vocal_out_scoring=_SUNG,
+            vocal_in_scoring=_SILENT,
+        )
+
+        specs = list(SegueGenerator().generate(ctx))
+
+        assert specs[0].overlap_s == pytest.approx(8.0)
+        assert specs[0].ideal_overlap_s == pytest.approx(8.0)
+
     def test_missing_vocal_data_counts_as_singing(self) -> None:
-        """A deck without vocal data sings: next to a silent deck it may, next to a sung one not."""
-        silent_in = _segue_ctx(segue=_segue(0.0), out_kickless=True, vocal_in_scoring=_SILENT)
-        sung_in = _segue_ctx(segue=_segue(0.0), out_kickless=True, vocal_in_scoring=_SUNG)
+        """A deck without vocal data sings, so it never rides a long segue."""
+        both_silent = _segue_ctx(
+            segue=_segue(0.0),
+            out_kickless=True,
+            vocal_out_scoring=_SILENT,
+            vocal_in_scoring=_SILENT,
+        )
+        out_unknown = _segue_ctx(segue=_segue(0.0), out_kickless=True, vocal_in_scoring=_SILENT)
         no_data = _segue_ctx(segue=_segue(0.0), out_kickless=True)
 
-        assert list(SegueGenerator().generate(silent_in))
-        assert list(SegueGenerator().generate(sung_in)) == []
+        assert list(SegueGenerator().generate(both_silent))
+        assert list(SegueGenerator().generate(out_unknown)) == []
         assert list(SegueGenerator().generate(no_data)) == []
 
     def test_saturated_vocals_on_both_decks_emit_nothing(self) -> None:

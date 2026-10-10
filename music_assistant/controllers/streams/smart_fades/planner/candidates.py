@@ -402,8 +402,8 @@ class SegueGenerator(CandidateGenerator):
         bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
         floor = max(_SEGUE_MIN_SECONDS, bars_ladder(ctx, TransitionTier.QUICK_FADE)[0] * bar_out)
         if _beatless_long_qualifies(ctx):
-            # one side without a beat can ride a long fade over loud material too; it
-            # is never shorter than the quiet material alone would give
+            # two near-instrumental decks, one without a beat, ride a long fade over
+            # loud material too; it is never shorter than the quiet material alone gives
             ideal = min(SEGUE_MAX_SECONDS, ctx.audio_end)
         elif ctx.segue.quiet_tail + ctx.segue.quiet_head >= floor:
             ideal = ctx.segue.overlap
@@ -1189,14 +1189,17 @@ def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
 
 
 def _beatless_long_qualifies(ctx: TransitionContext) -> bool:
-    """Whether a long segue may overlap loud material: one deck kickless and not both singing."""
+    """Whether a long segue may overlap loud material: one deck kickless, neither singing."""
     if not (ctx.out_kickless or ctx.in_kickless):
         return False
     # a deck without vocal data counts as singing
     out_duty, in_duty = _window_duties(ctx, SEGUE_MAX_SECONDS)
-    out_sings = out_duty is None or out_duty > _SINGS_DUTY
-    in_sings = in_duty is None or in_duty > _SINGS_DUTY
-    return not (out_sings and in_sings)
+    return (
+        out_duty is not None
+        and in_duty is not None
+        and out_duty <= _SINGS_DUTY
+        and in_duty <= _SINGS_DUTY
+    )
 
 
 def _segue_steps(ideal: float, floor: float, step: float) -> list[float]:
