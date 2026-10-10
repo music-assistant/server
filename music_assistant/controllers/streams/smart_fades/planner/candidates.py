@@ -1062,7 +1062,7 @@ class CandidateFactory:
         assert spec.anchor_s is not None  # a dressed spec carries its anchor
         ctx = self._ctx
         beat = 60.0 / ctx.outgoing.bpm
-        echo_length = _echo_length(ctx)
+        echo_length = len(ECHO_DECAYS) * beat
         downbeats = np.asarray(ctx.protective_downbeats, dtype=np.float64)
         fitting = downbeats[downbeats + echo_length <= ctx.buffer_duration]
         if not len(fitting):

@@ -267,17 +267,17 @@ class HighPassSweepFilter(Filter):
         start_s: float,
         end_s: float,
         *,
-        start_hz: float = 20.0,
-        end_hz: float = 600.0,
+        start_hz: float,
+        end_hz: float,
     ) -> None:
         """
         Initialize high-pass sweep filter.
 
         :param start_s: Time in seconds on the outgoing stream where the sweep starts;
-            the cutoff holds at ``start_hz`` before it.
+            the stream passes untouched before it.
         :param end_s: Time in seconds where the sweep reaches ``end_hz``; the cutoff
             holds there afterwards. Equal to ``start_s`` for an instant switch.
-        :param start_hz: Cutoff in Hz before and at the sweep start.
+        :param start_hz: Cutoff in Hz at the sweep start.
         :param end_hz: Cutoff in Hz at and after the sweep end.
         """
         self.start_s = start_s
@@ -293,7 +293,8 @@ class HighPassSweepFilter(Filter):
         return [
             f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
             f"{input_fadeout_label}asetnsamples=n={HIGHPASS_SWEEP_FRAME_SAMPLES}:p=0,"
-            f"asendcmd=c='{cmd}',{instance}=f={self.start_hz:.1f}[{self.output_fadeout_label}]",
+            f"asendcmd=c='{cmd}',{instance}=f={self.start_hz:.1f}"
+            f":enable='gte(t,{self.start_s:.3f})'[{self.output_fadeout_label}]",
         ]
 
     def __repr__(self) -> str:
@@ -331,8 +332,6 @@ class EchoOutFilter(Filter):
         logger: logging.Logger,
         cut_s: float,
         beat_s: float,
-        *,
-        decays: tuple[float, ...] = ECHO_DECAYS,
     ) -> None:
         """
         Initialize echo-out filter.
@@ -340,18 +339,16 @@ class EchoOutFilter(Filter):
         :param cut_s: Time in seconds on the outgoing stream where the dry signal stops.
         :param beat_s: Length of one beat in seconds: the repeated slice before the
             cut and the spacing of the taps.
-        :param decays: Gain of each tap, the first one starting at the cut.
         """
         self.cut_s = cut_s
         self.beat_s = beat_s
-        self.decays = decays
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Generate the echo out on the outgoing stream and passthrough on the incoming."""
         cut = self.cut_s
-        delays = "|".join(f"{k * self.beat_s * 1000:.3f}" for k in range(1, len(self.decays) + 1))
-        decays = "|".join(f"{decay:g}" for decay in self.decays)
+        delays = "|".join(f"{k * self.beat_s * 1000:.3f}" for k in range(1, len(ECHO_DECAYS) + 1))
+        decays = "|".join(f"{decay:g}" for decay in ECHO_DECAYS)
         # the echoed slice is gated to the beat before the cut, with de-click edges
         # inside it, so no audio from past the cut reaches the taps. aecho without
         # its dry input (in_gain=0) is just the taps; its tail beyond the stream end
@@ -369,7 +366,7 @@ class EchoOutFilter(Filter):
 
     def __repr__(self) -> str:
         """Return string representation of EchoOutFilter."""
-        return f"EchoOut(cut={self.cut_s:.2f}s, beat={self.beat_s:.3f}s, taps={len(self.decays)})"
+        return f"EchoOut(cut={self.cut_s:.2f}s, beat={self.beat_s:.3f}s, taps={len(ECHO_DECAYS)})"
 
 
 class StreamingCrossfadeFilter(Filter):

@@ -178,13 +178,14 @@ class TestHighPassSweepFilter:
 
     def test_sweep_strings(self) -> None:
         """The cutoff starts at start_hz and steps log-spaced to end_hz over the window."""
-        f = HighPassSweepFilter(LOGGER, 2.0, 5.0)
+        f = HighPassSweepFilter(LOGGER, 2.0, 5.0, start_hz=20.0, end_hz=600.0)
         strings = f.apply("[1]", "[0]")
         assert len(strings) == 2
         assert strings[0] == "[1]anull[fadein_pt_highpass]"  # codespell:ignore anull
         chain = strings[1]
         assert chain.startswith(f"[0]asetnsamples=n={HIGHPASS_SWEEP_FRAME_SAMPLES}:p=0,")
-        assert chain.endswith(",highpass@fadeout_hp=f=20.0[fadeout_highpass]")
+        # the filter only acts from the sweep start on
+        assert chain.endswith(",highpass@fadeout_hp=f=20.0:enable='gte(t,2.000)'[fadeout_highpass]")
         steps = chain.split("c='")[1].split("'")[0].split("; ")
         # 3 s at 25 ms per step; nothing before the window, the end lands on end_hz
         assert len(steps) == 120
@@ -198,11 +199,11 @@ class TestHighPassSweepFilter:
         f = HighPassSweepFilter(LOGGER, 1.5, 1.5, start_hz=30.0, end_hz=400.0)
         chain = f.apply("[1]", "[0]")[1]
         assert "asendcmd=c='1.500 highpass@fadeout_hp f 400.0'" in chain
-        assert "highpass@fadeout_hp=f=30.0[" in chain
+        assert "highpass@fadeout_hp=f=30.0:enable='gte(t,1.500)'[" in chain
 
     def test_repr(self) -> None:
         """The repr names the frequency range and the window."""
-        f = HighPassSweepFilter(LOGGER, 2.0, 5.0)
+        f = HighPassSweepFilter(LOGGER, 2.0, 5.0, start_hz=20.0, end_hz=600.0)
         assert repr(f) == "HighPassSweep(20->600Hz, 2.00s->5.00s)"
 
 
@@ -229,16 +230,6 @@ class TestEchoOutFilter:
         assert "afade=t=out:st=0.000:" in strings[2]
         assert "afade=t=in:st=0.000:" in strings[3]
         assert "afade=t=out:st=0.000:" in strings[3]
-
-    def test_tap_count_follows_the_decays(self) -> None:
-        """Each decay adds a tap one beat further out."""
-        one = EchoOutFilter(LOGGER, 4.0, 0.46875, decays=(0.6,)).apply("[1]", "[0]")[3]
-        assert "delays=468.750:decays=0.6[" in one
-        six = EchoOutFilter(LOGGER, 4.0, 0.25, decays=(0.6, 0.4, 0.3, 0.2, 0.1, 0.05))
-        assert (
-            "delays=250.000|500.000|750.000|1000.000|1250.000|1500.000"
-            ":decays=0.6|0.4|0.3|0.2|0.1|0.05[" in six.apply("[1]", "[0]")[3]
-        )
 
     def test_repr(self) -> None:
         """The repr names the cut, the beat and the tap count."""

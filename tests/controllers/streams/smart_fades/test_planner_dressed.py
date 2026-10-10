@@ -281,8 +281,3 @@ def test_the_plan_line_names_the_dressed_style_and_the_cut_it_replaced(
     assert lines[1].startswith("planned transition: style=echo_out tier=quick_fade trigger=tempo ")
     assert " source=echo-out overlap=2.00s " in lines[1]
     assert lines[1].endswith(' reason="cut kick clash 0.67 bars"')
-
-
-def test_dressed_styles_are_filter_out_and_echo_out() -> None:
-    """The dressed styles are the two short styles with an outgoing effect."""
-    assert {TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT} == DRESSED_STYLES

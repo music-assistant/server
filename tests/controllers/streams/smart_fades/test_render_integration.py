@@ -253,10 +253,12 @@ async def test_mid_swaps_between_tracks() -> None:
 
 @pytest.mark.asyncio
 async def test_highpass_sweep_takes_the_low_end_out() -> None:
-    """The swept high-pass leaves the bass alone before the sweep and removes it after."""
+    """The swept high-pass leaves the stream untouched before the sweep and removes the bass."""
     fade_out = _tone(60.0, 8.0) + _tone(3000.0, 8.0)
-    mix = await _render_outgoing(HighPassSweepFilter(logging.getLogger(), 2.0, 5.0), fade_out)
+    sweep = HighPassSweepFilter(logging.getLogger(), 2.0, 5.0, start_hz=20.0, end_hz=600.0)
+    mix = await _render_outgoing(sweep, fade_out)
     assert len(mix) == len(fade_out)
+    np.testing.assert_array_equal(_window(mix, 0.0, 2.0), _window(fade_out, 0.0, 2.0))
 
     def _level(x: np.ndarray, start_s: float, end_s: float, freq: float) -> float:
         return _band_rms(_window(x, start_s, end_s), freq - 5, freq + 5)
@@ -264,12 +266,11 @@ async def test_highpass_sweep_takes_the_low_end_out() -> None:
     def _ratio(start_s: float, end_s: float, freq: float) -> float:
         return _level(mix, start_s, end_s, freq) / _level(fade_out, start_s, end_s, freq)
 
-    # 20 Hz before the sweep is transparent for a 60 Hz tone; 600 Hz after it is ~-40 dB
-    assert _ratio(0.5, 1.9, 60.0) > 0.98
+    # 600 Hz after the sweep is ~-40 dB for a 60 Hz tone
     assert _ratio(5.5, 7.5, 60.0) < 0.03
     # the cutoff ramps rather than jumps: the bass drops through every part of the sweep
-    sweep = [_ratio(start, start + 1.0, 60.0) for start in (2.0, 3.0, 4.0)]
-    assert sweep[0] > sweep[1] > sweep[2] > _ratio(5.5, 7.5, 60.0)
+    levels = [_ratio(start, start + 1.0, 60.0) for start in (2.0, 3.0, 4.0)]
+    assert levels[0] > levels[1] > levels[2] > _ratio(5.5, 7.5, 60.0)
     # the top end passes throughout
     assert _ratio(5.5, 7.5, 3000.0) > 0.98
 
