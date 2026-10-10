@@ -247,3 +247,18 @@ class TestCandidateSelector:
         assert over_blend.candidate is blend
         assert over_cut is not None
         assert over_cut.candidate is segue
+
+    def test_a_segue_leaves_a_blend_in_place_also_behind_a_cheaper_cut(self) -> None:
+        """Any surviving blend keeps the segue out, even when a cut scores below it."""
+        segue = _named("segue", style=TransitionStyle.SEGUE, duration=15.0)
+        blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
+        cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
+        selector = CandidateSelector(
+            policies=[_BySourcePenaltyPolicy({"segue": 0.0, "cut": 5.0, "blend": 15.0})],
+            logger=logging.getLogger(__name__),
+        )
+
+        result = selector.select([blend, cut, segue], _ctx())
+
+        assert result is not None
+        assert result.candidate is cut

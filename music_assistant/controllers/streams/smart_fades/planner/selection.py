@@ -95,7 +95,7 @@ class CandidateSelector:
                     len(scored),
                 )
                 return None
-        elif replaced.candidate.plan.style is TransitionStyle.BLEND:
+        elif any(entry.candidate.plan.style is TransitionStyle.BLEND for entry in others):
             # a beatmatchable pair keeps its blend
             survivors = others
         else:
