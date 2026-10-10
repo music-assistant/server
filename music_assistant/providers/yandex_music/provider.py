@@ -2400,10 +2400,9 @@ class YandexMusicProvider(MusicProvider):
         we already have Yandex-curated wave tracks sitting in
         ``wave.prefetched`` ready to serve (no extra round-trip).
 
-        No-op when the station has no active session yet (prefetch cannot
-        safely create one — that requires holding the lock across the
-        network call and would stall readers), or when the buffer already
-        has items (avoids burning rate limit).
+        No-op when the station has no active session yet or when the buffer
+        already has items. An expired active session is replaced under the
+        station lock, retaining its settings.
 
         Three-phase lock discipline so the network round-trip does not
         block browse / drain paths that share the lock:
@@ -2439,6 +2438,20 @@ class YandexMusicProvider(MusicProvider):
                 session_id, current_track_id=str(cursor)
             )
         except RotorSessionExpiredError:
+            async with wave.lock:
+                if (
+                    self._wave_states.get(station_key) is not wave
+                    or wave.session_id != session_id
+                    or wave.ended
+                ):
+                    return
+                wave.reset_session()
+                tracks, _ = await self._fetch_rotor_session_batch(wave, station_key)
+                wave.prefetched.extend(tracks)
+                if tracks and wave.session_id:
+                    wave.radio_started_sent = await self._send_wave_feedback(
+                        wave, station_key, "radioStarted"
+                    )
             return
         except RotorSessionTerminatedError:
             tracks, batch_id, ended = [], None, True
@@ -3283,12 +3296,14 @@ class YandexMusicProvider(MusicProvider):
                 return []
             drained_yt = wave.prefetched[:limit]
             wave.prefetched = wave.prefetched[limit:]
-        tracks: list[Track] = []
-        for yt in drained_yt:
-            try:
-                tracks.append(parse_track(self, yt))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing prefetched wave track: %s", err)
+            tracks: list[Track] = []
+            seen_ids: set[str] = set()
+            for yt in drained_yt:
+                track = self._parse_my_wave_track(yt, seen_ids, station_key=station_key)
+                if track is not None:
+                    tracks.append(track)
+            if tracks:
+                wave.last_track_id = _parse_radio_item_id(tracks[0].item_id)[0]
         return tracks
 
     @use_cache(3600 * 3, allow_expired_cache=True)

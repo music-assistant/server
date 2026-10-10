@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import MediaType
 from ya_passport_auth import SecretStr
 from yandex_music import ClientAsync, Track
 
@@ -195,6 +197,131 @@ async def test_terminal_prefetch_does_not_end_replacement_wave() -> None:
         await provider._prefetch_rotor_session("user:onyourwave#discover")
     assert not new_wave.ended
     assert not old_wave.ended
+
+
+async def test_expired_prefetch_recovers_station_and_keeps_playback_feedback() -> None:
+    """Recovery keeps the station's settings, track identity and subsequent prefetch alive."""
+    provider, raw, wave = make_station_provider()
+    provider.config = Mock(instance_id="yandex_music_instance")
+    provider.manifest = Mock(domain="yandex_music")
+    mass = Mock()
+    provider.mass = mass
+    tasks: list[asyncio.Task[None]] = []
+
+    def schedule(coro: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    mass.create_task.side_effect = schedule
+    responses = iter(
+        [
+            {"unknownSession": True},
+            {
+                "radioSessionId": "fresh",
+                "batchId": "fresh-batch",
+                "sequence": [{"type": "track", "track": {"id": 43}, "liked": False}],
+            },
+            [{"id": 43}],
+            {
+                "batchId": "next-batch",
+                "sequence": [{"type": "track", "track": {"id": 44}, "liked": False}],
+            },
+            [{"id": 44}],
+        ]
+    )
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "feedback" in url:
+            return {"result": "ok"}
+        return next(responses)
+
+    post = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "post", post):
+        await provider._prefetch_rotor_session("user:onyourwave#discover")
+        assert wave.session_id == "fresh"
+        assert wave.settings == {"language": "russian"}
+        assert wave.radio_started_sent
+        tracks = await provider.get_similar_tracks("42@user:onyourwave#discover", limit=1)
+        assert [track.item_id for track in tracks] == ["43@user:onyourwave#discover"]
+        assert {pm.item_id for pm in tracks[0].provider_mappings} == {tracks[0].item_id}
+        assert wave.last_track_id == "43"
+        await provider.on_played(MediaType.TRACK, tracks[0].item_id, False, 0, tracks[0], True)
+        await asyncio.gather(*tasks)
+        assert [track.id for track in wave.prefetched] == [44]
+    creations = [c for c in post.await_args_list if "/rotor/session/new" in c.args[0]]
+    assert len(creations) == 1
+    assert creations[0].kwargs["json"]["seeds"] == [
+        "user:onyourwave",
+        "settingDiversity:discover",
+        "settingLanguage:russian",
+    ]
+    feedback = [c for c in post.await_args_list if "feedback" in c.args[0]]
+    assert [c.kwargs["json"]["event"]["type"] for c in feedback] == [
+        "radioStarted",
+        "trackStarted",
+    ]
+    assert any(
+        "/session/fresh/feedback" in c.args[0]
+        and c.kwargs["json"]["event"]["type"] == "trackStarted"
+        for c in feedback
+    )
+    assert not any("track:42" in c.kwargs.get("json", {}).get("seeds", []) for c in creations)
+
+
+@pytest.mark.parametrize("station", ["user:onyourwave", "user:onyourwave#discover", "genre:rock"])
+async def test_prefetched_tracks_keep_station_mapping_and_cursor(station: str) -> None:
+    """Drained tracks continue station playback instead of becoming stateless recommendations."""
+    provider, _, wave = make_station_provider()
+    provider.config = Mock(instance_id="yandex_music_instance")
+    provider.manifest = Mock(domain="yandex_music")
+    provider._wave_states = {station: wave}
+    wave.prefetched = [Track(id=43), Track(id=44)]
+    tracks = await provider.get_similar_tracks(f"42@{station}", limit=1)
+    assert [track.item_id for track in tracks] == [f"43@{station}"]
+    assert {pm.item_id for pm in tracks[0].provider_mappings} == {f"43@{station}"}
+    assert wave.last_track_id == "43"
+    assert [track.id for track in wave.prefetched] == [44]
+
+
+@pytest.mark.parametrize("replacement", ["state", "session", "ended"])
+async def test_expired_prefetch_cannot_reset_changed_station(replacement: str) -> None:
+    """An expired response must not replace newer state or restart an ended station."""
+    provider, raw, wave = make_station_provider()
+
+    async def respond(*_args: object, **_kwargs: object) -> object:
+        async with wave.lock:
+            if replacement == "state":
+                new_wave = _WaveState()
+                new_wave.session_id = "replacement"
+                provider._wave_states["user:onyourwave#discover"] = new_wave
+            elif replacement == "session":
+                wave.session_id = "replacement"
+            else:
+                wave.ended = True
+        return {"unknownSession": True}
+
+    post = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "post", post):
+        await provider._prefetch_rotor_session("user:onyourwave#discover")
+    assert post.await_count == 1
+    assert wave.batch_id == "old-batch"
+    assert wave.last_track_id == "42"
+    assert provider._wave_states["user:onyourwave#discover"].session_id == (
+        "expired" if replacement == "ended" else "replacement"
+    )
+
+
+async def test_expired_prefetch_recovery_attempt_is_bounded() -> None:
+    """Failed replacement creation clears expired state without looping."""
+    provider, raw, wave = make_station_provider()
+    post = AsyncMock(side_effect=[{"unknownSession": True}, None])
+    with patch.object(raw.request, "post", post):
+        await provider._prefetch_rotor_session("user:onyourwave#discover")
+    assert post.await_count == 2
+    assert wave.session_id is None
+    assert wave.batch_id is None
+    assert wave.settings == {"language": "russian"}
 
 
 async def test_public_station_pagination_delivers_final_prefetched_batch_once() -> None:
