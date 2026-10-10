@@ -176,6 +176,7 @@ class AirPlayStream:
         # answer clears the other.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
+        self._progress_anchor_generation = 0
         self._start_error: CliError | None = None
         # The binary's answers to an ANNOUNCE arm: announce_started carries the
         # actual audible instant plus clip duration, a reported announce failure
@@ -397,6 +398,7 @@ class AirPlayStream:
 
         :param force: If True, immediately kill the process without graceful shutdown.
         """
+        self._progress_anchor_generation += 1
         async with self._stop_lock:
             if self._cleanup_complete:
                 return
@@ -487,6 +489,7 @@ class AirPlayStream:
             return False
         if (cli_proc := self._cli_proc) is None:
             return False
+        self._progress_anchor_generation += 1
         # The FLUSH travels on the command pipe while audio travels on stdin, so
         # the binary can run its drain while bytes we already handed to stdin are
         # still in flight, and can read a write issued after it. Either would land
@@ -663,6 +666,8 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        self._progress_anchor_generation += 1
+        progress_generation = self._progress_anchor_generation
         # A START re-anchors playout from scratch — the binary zeroes its own
         # re-anchor total on start/resume — so drop any shift accumulated against
         # the previous anchor (this also covers the warm-seek FLUSH->refill->START
@@ -743,7 +748,14 @@ class AirPlayStream:
             )
         # A malformed ack still answered the START, so the commanded instant is
         # what the binary applied (see the parse fallback in _handle_status_line).
-        return self._start_ack[1] if self._start_ack else start_unix_ms
+        audible_unix_ms = self._start_ack[1] if self._start_ack else start_unix_ms
+        if self.active_route == "RAOP":
+            self.mass.create_task(
+                self._send_start_progress_anchor(audible_unix_ms, progress_generation),
+                task_id=f"airplay_progress_after_start_{self._stream_id}",
+                abort_existing=True,
+            )
+        return audible_unix_ms
 
     def rebase_position(self, position_ms: int) -> None:
         """
@@ -1712,6 +1724,29 @@ class AirPlayStream:
         ):
             return state_media
         return metadata
+
+    async def _send_start_progress_anchor(self, audible_unix_ms: int, generation: int) -> None:
+        """
+        Send a RAOP progress anchor once an acknowledged start becomes audible.
+
+        :param audible_unix_ms: Acknowledged audible start instant in Unix milliseconds.
+        :param generation: Start generation that owns this progress update.
+        """
+        # Live inputs do not necessarily have media metadata, so the normal
+        # media-updated push can omit PROGRESS. Some RAOP receivers then remain
+        # silent after a restart despite accepting audio. Wait until the audible
+        # instant, and discard updates belonging to a stopped/flushed/old start.
+        await asyncio.sleep(max(0, audible_unix_ms / 1000 - time.time()) + 0.1)
+        async with self._metadata_lock:
+            if (
+                generation != self._progress_anchor_generation
+                or not self.running
+                or not self.connected
+            ):
+                return
+            progress = int(self._start_position + max(0, time.time() - audible_unix_ms / 1000))
+            if await self.send_cli_command(f"PROGRESS={progress}"):
+                self._last_progress_sent = progress
 
     async def _send_current_metadata(
         self, send_artwork: bool = True, defer_artwork_followup: bool = False
