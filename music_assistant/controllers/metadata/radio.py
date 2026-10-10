@@ -656,11 +656,9 @@ class RadioArtworkMixin:
 
         :param track: Track to get image for.
         """
-        # Try track image
-        if track.metadata and track.metadata.images:
-            for img in track.metadata.images:
-                if img.type == ImageType.THUMB:
-                    return self.get_image_url(img, prefer_proxy=True)
+        # Try track image (which prefers the image of its album)
+        if image := track.image:
+            return self.get_image_url(image, prefer_proxy=True)
 
         # Try album image
         if track.album:
