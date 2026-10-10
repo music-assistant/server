@@ -6,7 +6,7 @@
     },
     "defer_idle_volume": {
       "label": "Apply volume changes at playback start",
-      "description": "Some Cast receivers accept a volume change while nothing is playing but keep playing at the old level once playback starts. Enable this if a volume change made while this player is idle does not take effect: the change is then shown right away and sent to the device when playback starts."
+      "description": "Some Cast receivers accept a volume change while nothing is playing but keep playing at the old level once playback starts. Enable this if a volume change made while this player is idle does not take effect. The change is then shown right away and sent to the device when Music Assistant starts playback on it."
     }
   },
   "manifest": {

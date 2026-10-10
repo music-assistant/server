@@ -16,7 +16,10 @@ import pytest
 from pychromecast import IDLE_APP_ID
 from pychromecast.error import NotConnected, PyChromecastError, RequestFailed, RequestTimeout
 
-from music_assistant.providers.chromecast.constants import MASS_APP_ID
+from music_assistant.providers.chromecast.constants import (
+    CONF_DEFER_IDLE_VOLUME,
+    MASS_APP_ID,
+)
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 
 
@@ -38,7 +41,11 @@ def _make_player(app_id: str | None, defer_idle_volume: bool = True) -> Chromeca
     chromecast.app_id = app_id
     with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
         player = ChromecastPlayer(provider, str(info.uuid), info, chromecast)
-    cast("MagicMock", player.config).get_value = MagicMock(return_value=defer_idle_volume)
+    cast("MagicMock", player.config).get_value = MagicMock(
+        side_effect=lambda key, default=None: (
+            defer_idle_volume if key == CONF_DEFER_IDLE_VOLUME else default
+        )
+    )
     return player
 
 
