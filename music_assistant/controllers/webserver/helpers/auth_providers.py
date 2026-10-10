@@ -665,10 +665,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
         for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
             del self._oauth_sessions[expired]
         if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
-            self.logger.warning(
-                "Refusing Home Assistant sign-in: %s sign-ins are already pending",
-                MAX_OAUTH_STATES,
-            )
+            self.logger.warning("Refusing Home Assistant sign-in: too many sign-ins are pending")
             return None
 
         # Get the correct HA URL (external URL if running as add-on)
