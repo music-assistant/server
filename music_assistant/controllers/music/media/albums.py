@@ -854,7 +854,7 @@ class AlbumsController(MediaControllerBase[Album]):
         Return the tracks of a library album: its library tracks plus what its providers add.
 
         A failing provider lookup leaves the listing incomplete, and is only raised when it
-        leaves nothing to play.
+        leaves nothing to play; a source that is not loaded leaves it incomplete as well.
 
         :param library_album: The library album.
         :param allowed_providers: The provider instances the listing is limited to, if any.
@@ -867,6 +867,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # we need to make sure that we don't return duplicates
         listings: list[list[Track]] = []
         lookup_error: Exception | None = None
+        unanswered = False
         fetched: set[tuple[str, str]] = set()
         for provider_mapping in library_album.provider_mappings:
             if not provider_mapping.available or (
@@ -877,6 +878,8 @@ class AlbumsController(MediaControllerBase[Album]):
             # an unavailable mapped instance hands the lookup to another account of the
             # service, which would list the album a second time over
             own_instance = self.mass.get_provider(provider_mapping.provider_instance)
+            # a source that is not loaded (yet) answers nothing, so the listing is not kept
+            unanswered = unanswered or own_instance is None
             own_lookup = (
                 own_instance is not None
                 and own_instance.instance_id == provider_mapping.provider_instance
@@ -924,7 +927,7 @@ class AlbumsController(MediaControllerBase[Album]):
         if lookup_error is not None and not any(track.available for track in result):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error
-        return Listing(result, complete=lookup_error is None)
+        return Listing(result, complete=lookup_error is None and not unanswered)
 
     async def _backfill_album_on_tracks(
         self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str

@@ -462,7 +462,10 @@ async def test_album_tracks_follow_the_listing_contract(mass: MusicAssistant) ->
         tracks = await mass.music.albums.tracks(album.item_id, "library", **kwargs)
         return [track.item_id for track in tracks]
 
-    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+    with (
+        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+    ):
         assert await _tracks() == ["t1", "t2", "t3"]
         assert await _tracks(sort_field=SortField.DURATION, sort_direction=SortDirection.DESC) == [
             "t2",
@@ -513,6 +516,20 @@ async def test_album_tracks_of_an_unavailable_provider_are_not_kept(mass: MusicA
     ):
         tracks = await mass.music.albums.tracks("album_x", "qobuz_1")
     assert [track.item_id for track in tracks] == ["t1"]
+
+
+async def test_album_tracks_of_a_source_not_loaded_are_assembled_again(
+    mass: MusicAssistant,
+) -> None:
+    """A listing assembled while one of the album's sources is not loaded is not kept."""
+    library_album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    fetch = AsyncMock(return_value=[_album_track("qobuz_1", "Shared", 1, available=True)])
+    # the library-only fixture loads no provider at all
+    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+        for _ in range(2):
+            tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+            assert [track.name for track in tracks] == ["Shared"]
+    assert fetch.await_count == 2
 
 
 async def test_album_tracks_missing_a_provider_are_assembled_again(mass: MusicAssistant) -> None:
