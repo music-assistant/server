@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -255,3 +256,28 @@ async def test_direct_radio_stream_is_served_only_once_the_overlay_mix_emits_aud
         await anext(stream)
 
     cast("MagicMock", controller.mass.player_queues.mark_item_served).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("requested_session", "marked"),
+    [("session-2", True), ("session-1", False), (None, True)],
+    ids=["current load", "superseded load", "no session named"],
+)
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_marks_served_only_for_the_queue_current_load(
+    requested_session: str | None, marked: bool
+) -> None:
+    """A stream left over from a superseded load serves nothing the current load should count."""
+    controller = _pcm_stream_controller()
+    cast("Any", controller.mass.player_queues.queue_data_or_none).return_value = SimpleNamespace(
+        session_id="session-2"
+    )
+    media = _media()
+    media.queue_session_id = requested_session
+
+    stream = controller.get_stream(media, PCM_FORMAT)
+    assert await anext(stream) == b"chunk-1"
+    await stream.aclose()
+
+    mark_item_served = cast("MagicMock", controller.mass.player_queues.mark_item_served)
+    assert mark_item_served.called is marked
