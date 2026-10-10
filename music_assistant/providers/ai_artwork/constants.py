@@ -56,6 +56,8 @@ MAX_CONTEXT_GENRES: Final = 3
 # the descriptions live in the cache, kept until the playlist (or the text engine) changes
 CACHE_CATEGORY_DESCRIPTIONS: Final = 1
 CACHE_KEY_GENERATION: Final = "generation"
+# a refresh shortly after loading picks up changed settings and playlists added meanwhile
+CATCH_UP_DELAY_SECONDS: Final = 120
 CACHE_KEEP_SECONDS: Final = 10 * 365 * 24 * 3600
 # the prompt asks for 140 characters, this only cuts off a model that ignores that
 MAX_DESCRIPTION_CHARS: Final = 200

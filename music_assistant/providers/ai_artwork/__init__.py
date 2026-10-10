@@ -51,6 +51,7 @@ from .constants import (
     CACHE_KEEP_SECONDS,
     CACHE_KEY_GENERATION,
     CANVAS_SIZE,
+    CATCH_UP_DELAY_SECONDS,
     CONCEPT_FROM_ENGINE,
     CONCEPT_PROMPT,
     CONF_ACTION_PREVIEW,
@@ -249,7 +250,14 @@ class AIArtworkProvider(MetadataProvider):
             name="AI playlist artwork",
             handler=self._refresh_covers,
             schedule=TaskSchedule.hourly(),
-            initial_delay=120,
+            initial_delay=CATCH_UP_DELAY_SECONDS,
+        )
+        # the schedule keeps its hourly rhythm across restarts and reloads, so changed settings
+        # (which reload the provider) would otherwise wait for the next hourly run
+        self.mass.call_later(
+            CATCH_UP_DELAY_SECONDS,
+            self._refresh_covers,
+            task_id=f"{self.instance_id}_catch_up",
         )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -258,6 +266,7 @@ class AIArtworkProvider(MetadataProvider):
 
         :param is_removed: Whether the provider is being removed rather than reloaded.
         """
+        self.mass.cancel_timer(f"{self.instance_id}_catch_up")
         self.mass.tasks.unregister_scheduled_task(
             f"{self.instance_id}_refresh", clear_persisted_state=is_removed
         )

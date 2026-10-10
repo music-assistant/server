@@ -452,6 +452,24 @@ async def test_scheduled_refresh_generates_missing_covers_and_removes_orphans(
     assert fresh_orphan.exists()
 
 
+async def test_refreshes_soon_after_loading(provider: AIArtworkProvider) -> None:
+    """Besides the hourly run, loading (also after a settings change) refreshes soon after."""
+    mass = _mass(provider)
+
+    await provider.loaded_in_mass()
+
+    assert (
+        mass.tasks.register_scheduled_task.call_args.kwargs["handler"] == provider._refresh_covers
+    )
+    mass.call_later.assert_called_once_with(
+        120, provider._refresh_covers, task_id=f"{INSTANCE_ID}_catch_up"
+    )
+
+    await provider.unload()
+
+    mass.cancel_timer.assert_called_once_with(f"{INSTANCE_ID}_catch_up")
+
+
 async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProvider) -> None:
     """A smart playlist gets a description from its rules and the listener's play counts."""
     _mass(provider).music.database.get_rows_from_query = AsyncMock(
