@@ -10,12 +10,12 @@ compose/reorder/disable them without touching the scoring math itself.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
-    TransitionStrategy,
     TransitionStyle,
     TransitionTier,
 )
@@ -198,20 +198,32 @@ class DeadAirPolicy(Policy):
 
 
 class OverlapPreferencePolicy(Policy):
-    """Prefer the tier's top rung and the context's chosen tier."""
+    """Prefer the context's preferred style, the longest overlap and the context's chosen tier."""
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
+    # per halving of a segue's overlap below its longest step
+    segue_halving_penalty: float = 4.0
+    # a candidate of another style than the context prefers
+    style_penalty: float = 15.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         spec = candidate.spec
-        if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
-            return Verdict.ok()  # the overlay has no rung/tier notion to score
+        if candidate.plan.style is TransitionStyle.SEGUE:
+            assert spec.ideal_overlap_s is not None  # every segue spec carries its longest step
+            penalty = self.segue_halving_penalty * math.log2(
+                spec.ideal_overlap_s / candidate.plan.crossfade_duration
+            )
+            if ctx.preferred_style is TransitionStyle.BLEND:
+                penalty += self.style_penalty
+            return Verdict.ok(penalty)
         rung_gap = RUNG_LADDER.index(spec.bars) - RUNG_LADDER.index(candidate.ideal_bars)
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
+        if ctx.preferred_style is TransitionStyle.SEGUE:
+            penalty += self.style_penalty
         return Verdict.ok(penalty)
 
 
@@ -223,8 +235,8 @@ class AnchorAlignmentPolicy(Policy):
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
-        if candidate.spec.strategy is TransitionStrategy.LAZY_OVERLAY:
-            return Verdict.ok()  # an unphrased overlay doesn't pretend beat alignment
+        if candidate.plan.style is TransitionStyle.SEGUE:
+            return Verdict.ok()  # an unsynced segue doesn't pretend beat alignment
         penalty = 0.0
         if not candidate.metrics.anchor_on_downbeat:
             penalty += self.downbeat_penalty

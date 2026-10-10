@@ -267,8 +267,6 @@ class TransitionStrategy(StrEnum):
     # even the fallback crossfade collided too severely; shipped the click-free
     # equal-power handoff as the last resort
     SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
-    # grid unusable but both decks ambient: long unphrased equal-power overlay
-    LAZY_OVERLAY = "lazy_overlay"
 
 
 @dataclass(frozen=True, slots=True)

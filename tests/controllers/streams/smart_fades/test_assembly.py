@@ -317,6 +317,62 @@ class TestQuickFadeSkipsEq:
         assert eq.mid_in is None
 
 
+class TestFinalizeSegue:
+    """A segue keeps the curves its factory picked; only two equal-power edges get the EQ."""
+
+    def _segue(self, ctx: TransitionContext, fadeout: str, fadein: str) -> Candidate:
+        spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=ctx.audio_end,
+            entry_s=None,
+            style=TransitionStyle.SEGUE,
+            overlap_s=15.0,
+            ideal_overlap_s=15.0,
+        )
+        candidate = CandidateFactory(ctx, LOGGER).build(spec)
+        assert candidate is not None
+        plan = replace(candidate.plan, fadeout_curve=fadeout, fadein_curve=fadein)
+        return replace(candidate, plan=plan)
+
+    @pytest.mark.parametrize(("fadeout", "fadein"), [("nofade", "qsin"), ("qsin", "nofade")])
+    def test_a_quiet_edge_ships_neutral_eq_and_its_curves(self, fadeout: str, fadein: str) -> None:
+        """A segue with a quiet side plays as a pure volume handover with the factory's curves."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, fadeout, fadein))
+
+        assert (plan.fadeout_curve, plan.fadein_curve) == (fadeout, fadein)
+        assert plan.eq_plan.low_out is None
+        assert plan.eq_plan.low_in is None
+        assert plan.eq_plan.high_out is None
+        assert plan.eq_plan.high_in is None
+
+    def test_two_equal_power_edges_keep_the_handover_eq(self) -> None:
+        """A segue fading both loud edges stages the bass handover like a blend."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, "qsin", "qsin"))
+
+        assert plan.eq_plan.low_out is not None
+        assert plan.eq_plan.low_in is not None
+
+    def test_the_factory_curve_survives_a_mastered_fade(self) -> None:
+        """Finalize does not re-run the mastered-fade rule over a segue's own choice."""
+        out, inc = _mastered_fade_pair()
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, "qsin", "qsin"))
+
+        assert plan.fadeout_curve == "qsin"
+
+
 class TestFallbackCrossfadeOnUnreliableMasks:
     """Saturated (unreliable) masks never push the fallback into deferral or a duck."""
 

@@ -145,22 +145,22 @@ class PlanAssembler:
         never needs it); this is where the bass/mid/high handover for the
         selected winner is computed and folded in.
         """
+        plan = candidate.plan
+        # a segue's factory already picked both curves
+        if plan.style is not TransitionStyle.SEGUE:
+            plan = replace(plan, fadeout_curve=_choose_fadeout_curve(self._ctx, plan))
         # the winner's metrics ride along: consumers read them off the plan
-        return replace(
-            candidate.plan,
-            eq_plan=self._choose_eq(candidate.plan, candidate.spec.strategy),
-            fadeout_curve=_choose_fadeout_curve(self._ctx, candidate.plan),
-            metrics=candidate.metrics,
-        )
+        return replace(plan, eq_plan=self._choose_eq(plan), metrics=candidate.metrics)
 
-    def _choose_eq(self, plan: TransitionPlan, strategy: TransitionStrategy) -> EqPlan:
+    def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
-        # an unsynced quick fade has no beatmatched handover to stage: shelving
-        # the decks would only bury the incoming track's entry; the long lazy
-        # overlay (also QUICK_FADE tier) keeps its handover EQ
-        if (
-            plan.tier is TransitionTier.QUICK_FADE
-            and strategy is not TransitionStrategy.LAZY_OVERLAY
+        # an unsynced cut has no beatmatched handover to stage: shelving the decks
+        # would only bury the incoming track's entry; neither has a segue with a
+        # quiet edge, which plays as recorded. A segue that fades both loud edges
+        # equal-power keeps its handover EQ
+        if plan.style is TransitionStyle.CUT or (
+            plan.style is TransitionStyle.SEGUE
+            and "nofade" in (plan.fadeout_curve, plan.fadein_curve)
         ):
             return EqPlan.neutral(swap_at=0.6 * plan.crossfade_duration)
         ctx = self._ctx

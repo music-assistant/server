@@ -3,7 +3,8 @@ Smart Fades - candidate selection.
 
 A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
-entry, then picks the lowest-penalty, non-rejected survivor. Every policy runs
+entry, then picks the lowest-penalty, non-rejected survivor; a segue only when
+it lasts at least as long as the best other survivor. Every policy runs
 on every candidate - no short-circuit on the first rejection - so the debug
 log always shows the complete scoreboard, not just whichever rule fired first.
 """
@@ -16,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
 
 from .candidates import Candidate
 from .context import TransitionContext
@@ -35,10 +37,25 @@ class ScoredCandidate:
 class CandidateSelector:
     """Scores every candidate against a fixed policy set and picks the best survivor."""
 
-    def __init__(self, policies: Sequence[Policy], logger: logging.Logger) -> None:
-        """Initialize the selector with the policy set to score every candidate against."""
+    def __init__(
+        self,
+        policies: Sequence[Policy],
+        logger: logging.Logger,
+        *,
+        segue_replaces_cuts_only: bool = False,
+    ) -> None:
+        """
+        Initialize the selector with the policy set to score every candidate against.
+
+        :param policies: The policies every candidate is judged by, in evaluation order.
+        :param logger: Logger for the scoreboard and the selection.
+        :param segue_replaces_cuts_only: Let a segue win only in place of a cut, never in
+            place of a blend or on its own; for a pass that a rescue pass follows, which
+            then weighs a segue that had no cut to replace.
+        """
         self._policies = tuple(policies)
         self._logger = logger
+        self._segue_replaces_cuts_only = segue_replaces_cuts_only
 
     def select(
         self, candidates: Sequence[Candidate], ctx: TransitionContext
@@ -46,6 +63,8 @@ class CandidateSelector:
         """
         Score every candidate; return the lowest-penalty survivor, or None when all are rejected.
 
+        A segue competes only when it lasts at least as long as the best other
+        survivor, so it never shortens the transition that would ship without it.
         Ties resolve to whichever candidate appears earlier in ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
@@ -65,6 +84,27 @@ class CandidateSelector:
                 reasons,
             )
             return None
+        others = [e for e in survivors if e.candidate.plan.style is not TransitionStyle.SEGUE]
+        replaced = min(others, key=lambda entry: entry.total_penalty) if others else None
+        if self._segue_replaces_cuts_only and (
+            replaced is None or replaced.candidate.plan.style is not TransitionStyle.CUT
+        ):
+            if not others:
+                self._logger.debug(
+                    "only segues survive (%d of %d candidates); none wins on its own",
+                    len(survivors),
+                    len(scored),
+                )
+                return None
+            survivors = others
+        elif replaced is not None:
+            survivors = [
+                entry
+                for entry in survivors
+                if entry.candidate.plan.style is not TransitionStyle.SEGUE
+                or entry.candidate.plan.crossfade_duration
+                >= replaced.candidate.plan.crossfade_duration
+            ]
         winner = min(survivors, key=lambda entry: entry.total_penalty)
         if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             ranked = sorted(survivors, key=lambda entry: entry.total_penalty)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import numpy as np
@@ -15,6 +16,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
     CandidateSpec,
+    SegueGenerator,
     bars_ladder,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -161,6 +163,92 @@ class TestRhythmClashMetric:
         assert candidate.plan.style is TransitionStyle.CUT
         assert candidate.plan.crossfade_duration == pytest.approx(8.0)
         assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
+
+
+def _rms(*segments: tuple[float, float, float]) -> list[float]:
+    """Build a flat 0.5 rms envelope over 240s, set to ``value`` per ``(start, end, value)``."""
+    t = np.arange(1800) * (240.0 / 1800)
+    env = np.full(1800, 0.5, dtype=np.float32)
+    for start, end, value in segments:
+        env[(t >= start) & (t < end)] = value
+    return env.tolist()
+
+
+def _segue_spec(ctx: TransitionContext, overlap: float) -> CandidateSpec:
+    return CandidateSpec(
+        tier=ctx.tier,
+        bars=1,
+        anchor_s=ctx.audio_end,
+        entry_s=None,
+        style=TransitionStyle.SEGUE,
+        overlap_s=overlap,
+        ideal_overlap_s=overlap,
+    )
+
+
+class TestBuildSegue:
+    """A segue enters the next track the overlap before the audible end, unsynced."""
+
+    def test_a_quiet_tail_plays_as_recorded_under_a_loud_head(self) -> None:
+        """A 10s quiet tail ends at the audible end with no stretch, no trim, nofade/qsin."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        ctx = _ctx(out, _analysis(150.0))
+        spec = next(iter(SegueGenerator().generate(ctx)))
+
+        candidate = CandidateFactory(ctx, LOGGER).build(spec)
+
+        assert candidate is not None
+        plan = candidate.plan
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.tier is TransitionTier.QUICK_FADE
+        assert plan.fade_out_window == pytest.approx(45.0)
+        assert plan.crossfade_duration == pytest.approx(10.0, abs=0.15)
+        assert not plan.tempo_plan
+        assert plan.fadein_trim_start is None
+        assert plan.fadeout_curve == "nofade"
+        assert plan.fadein_curve == "qsin"
+
+    def test_a_quiet_head_plays_as_recorded(self) -> None:
+        """An incoming head quiet over its first bar fades in with no curve."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        inc = _analysis(150.0)
+        inc.rms_energy = _rms((0.0, 4.0, 0.05))
+        ctx = _ctx(out, inc)
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_segue_spec(ctx, 14.0))
+
+        assert candidate is not None
+        assert candidate.plan.fadein_curve == "nofade"
+
+    def test_a_long_tail_enters_the_overlap_before_the_audible_end(self) -> None:
+        """A 30s quiet tail starts the next track 15s before the audible end."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((210.0, 240.0, 0.1))
+        ctx = _ctx(out, _analysis(150.0))
+        assert ctx.segue is not None
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_segue_spec(ctx, ctx.segue.overlap))
+
+        assert candidate is not None
+        plan = candidate.plan
+        assert plan.crossfade_duration == pytest.approx(15.0)
+        assert plan.fade_out_window - plan.crossfade_duration == pytest.approx(30.0)
+
+    def test_a_loud_tail_inside_a_mastered_fade_is_not_faded_twice(self) -> None:
+        """A loud edge fades equal-power, unless the record already fades itself there."""
+        ctx = _ctx(_analysis(120.0), _analysis(150.0))
+        factory = CandidateFactory(ctx, LOGGER)
+        faded = CandidateFactory(dataclasses.replace(ctx, fade_onset=20.0), LOGGER)
+
+        loud = factory.build(_segue_spec(ctx, 15.0))
+        mastered = faded.build(_segue_spec(ctx, 15.0))
+
+        assert loud is not None
+        assert mastered is not None
+        assert loud.plan.fadeout_curve == "qsin"
+        assert mastered.plan.fadeout_curve == "nofade"
 
 
 class TestUnheardIntroClamp:
