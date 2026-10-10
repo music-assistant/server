@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import logging
 import pathlib
+import weakref
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
@@ -323,6 +325,16 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
 
     # kept a mock so tests can still assert on the calls it received
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
+def bare_player_controller() -> PlayerController:
+    """Return a bare players controller, carrying just enough state for its real player locks."""
+    players = PlayerController.__new__(PlayerController)
+    players._player_command_locks = {}
+    players._players = {}
+    players._task_held_locks = weakref.WeakKeyDictionary()
+    players.logger = MagicMock()
+    return players
 
 
 def set_music_source_access(
