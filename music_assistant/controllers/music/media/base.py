@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import logging
 import os
 from abc import ABCMeta, abstractmethod
@@ -525,7 +524,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             raise InvalidDataError("Image exceeds the size limit")
         try:
             raw = base64.b64decode(data, validate=True)
-        except binascii.Error as err:
+        except ValueError as err:
             raise InvalidDataError("Image data is not valid base64") from err
         try:
             ext = await asyncio.to_thread(validate_custom_image, raw)

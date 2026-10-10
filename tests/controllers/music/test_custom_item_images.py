@@ -135,6 +135,14 @@ async def test_set_image_invalid_base64_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / CUSTOM_IMAGES_DIRNAME).exists()
 
 
+async def test_set_image_non_ascii_rejected(tmp_path: Path) -> None:
+    """Non-ASCII input is rejected like any other invalid base64."""
+    controller, _mass = _controller(tmp_path, [])
+    with pytest.raises(InvalidDataError):
+        await controller.set_item_image("1", "Zm9v\u00e9")
+    assert not (tmp_path / CUSTOM_IMAGES_DIRNAME).exists()
+
+
 async def test_set_image_oversized_rejected(tmp_path: Path) -> None:
     """An upload above the size limit is rejected before decoding."""
     controller, _mass = _controller(tmp_path, [])
