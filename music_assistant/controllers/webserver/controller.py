@@ -41,6 +41,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
+    RateLimited,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -1187,6 +1188,8 @@ class WebserverController(CoreController):
                 )
 
             return web.json_response({"authorization_url": auth_url})
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)

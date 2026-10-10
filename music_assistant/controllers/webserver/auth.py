@@ -1093,6 +1093,7 @@ class AuthenticationManager:
         :param return_url: URL to redirect to after OAuth completes.
         :return: Dictionary with authorization_url, or None plus an error when the provider
             does not support OAuth or return_url is invalid.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         if return_url:
             is_valid, _ = is_allowed_redirect_url(
