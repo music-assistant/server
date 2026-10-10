@@ -231,6 +231,9 @@ async def _resolve_item(
         LOGGER.debug("Found %s in library: %s", item_mapping.media_type.value, library_item.name)
         return library_item
 
+    # taken before the providers to search are picked: one that finishes loading during the
+    # searches was not searched, so its finishing must not turn a no-match into a miss
+    providers_loading = await _music_providers_loading(mass)
     streaming_providers = _get_streaming_providers(mass, item_mapping, provider_instance_to_skip)
     if not streaming_providers:
         # providers may still be loading, so this says nothing about the item itself
@@ -241,8 +244,8 @@ async def _resolve_item(
         ctrl, item_mapping, streaming_providers, artist_name
     )
     if result is None:
-        if await _music_providers_loading(mass):
-            # a provider that has not finished loading yet may still have it
+        if providers_loading:
+            # a provider that had not finished loading may still have it
             raise SearchIncomplete(item_mapping.name)
         LOGGER.debug("Could not resolve %s: %s", item_mapping.media_type.value, item_mapping.name)
         return None

@@ -162,3 +162,17 @@ async def test_no_match_while_a_provider_loads_is_incomplete() -> None:
 async def test_no_match_with_all_providers_settled_is_a_miss() -> None:
     """A provider that failed to load does not hold back a miss."""
     assert await parsers.parse_track(LASTFM_TRACK, _mass(ProviderStatus.ERROR), INSTANCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_provider_finishing_loading_during_the_search_is_no_miss() -> None:
+    """A provider that loads while the others are searched was not searched itself."""
+    mass = _mass(ProviderStatus.LOADING)
+
+    async def _search_while_provider_finishes(*_args: Any, **_kwargs: Any) -> list[Track]:
+        mass.config.get_provider_configs.return_value = [Mock(status=ProviderStatus.LOADED)]
+        return []
+
+    mass.music.tracks.search = AsyncMock(side_effect=_search_while_provider_finishes)
+    with pytest.raises(parsers.SearchIncomplete):
+        await parsers.parse_track(LASTFM_TRACK, mass, INSTANCE_ID)
