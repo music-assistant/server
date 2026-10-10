@@ -16,7 +16,7 @@ from contextlib import suppress
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
@@ -108,7 +108,7 @@ class Autoplay:
                 candidates += await self.mass.music.tracks.library_items(
                     genre=genre_ids,
                     limit=AUTOPLAY_BATCH_SIZE * 3,
-                    order_by="random_play_count",
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
                     summary=False,
                 )
         # top up with a whole-library random mix when the genre selection yields too few usable
@@ -118,7 +118,7 @@ class Autoplay:
             with suppress(MusicAssistantError):
                 candidates += await self.mass.music.tracks.library_items(
                     limit=AUTOPLAY_BATCH_SIZE * 3,
-                    order_by="random_play_count",
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
                     summary=False,
                 )
             result = self._dedupe(candidates, exclude)

@@ -24,6 +24,8 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
     TaskStatus,
 )
 from music_assistant_models.errors import (
@@ -1088,7 +1090,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(
-            limit=limit, order_by="timestamp_added_desc", summary=False
+            limit=limit,
+            sort_field=SortField.TIMESTAMP_ADDED,
+            sort_direction=SortDirection.DESC,
+            summary=False,
         )
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
