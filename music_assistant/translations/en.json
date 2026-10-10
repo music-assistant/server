@@ -949,7 +949,7 @@
   "core.tasks.manifest.name": "Background tasks",
   "core.webserver.config_entries.auth_allow_self_registration.description": "Allow users to create accounts via Home Assistant OAuth.",
   "core.webserver.config_entries.auth_allow_self_registration.label": "Allow User Self-Registration",
-  "core.webserver.config_entries.base_url.description": "The URL that Music Assistant shares with devices and apps on your local network. \nThe default \"auto\" automatically resolves to the server's primary IP address and the configured port at startup. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy.",
+  "core.webserver.config_entries.base_url.description": "The URL that Music Assistant shares with devices and apps on your local network. \nSet it yourself when the automatically detected address does not work for them, for example behind a reverse proxy, with a custom hostname or on a server connected to more than one network.",
   "core.webserver.config_entries.base_url.label": "Internal URL",
   "core.webserver.config_entries.bind_ip.description": "Bind the (web)server to this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \nSet this address for example to a docker-internal network, when you are running a reverse proxy to enhance security and protect outside access to the webinterface and API. \n\nThis is an advanced setting that should normally not be adjusted in regular setups.",
   "core.webserver.config_entries.bind_port.description": "The TCP port to run the webserver.",
