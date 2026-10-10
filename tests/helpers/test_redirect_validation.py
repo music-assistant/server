@@ -81,6 +81,7 @@ def test_build_code_redirect_url_encodes_token() -> None:
         ("https://example.com/ma/#/home", "https://example.com/ma", (True, "trusted")),
         ("https://ma.example.com/#/home", None, (True, "external")),
         ("https://other.example.com/#/home", "https://ma.example.com", (True, "external")),
+        ("http://ma.example.com/#/home", "https://ma.example.com", (True, "external")),
         ("https://app.music-assistant.io/#/home", "https://ma.example.com", (True, "external")),
     ],
 )

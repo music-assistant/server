@@ -100,7 +100,8 @@ def is_allowed_redirect_url(
                 return True, "trusted"
         if external_url:
             external_parsed = urlparse(external_url)
-            if parsed.netloc == external_parsed.netloc:
+            # match the scheme too, the token must not travel over plain http on the internet
+            if (parsed.scheme, parsed.netloc) == (external_parsed.scheme, external_parsed.netloc):
                 LOGGER.debug("Redirect URL trusted (external_url): %s", url)
                 return True, "trusted"
 
