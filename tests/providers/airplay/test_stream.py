@@ -1357,6 +1357,131 @@ async def test_start_sends_command_and_stamps_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_raop_repeated_starts_anchor_progress_without_metadata() -> None:
+    """Every RAOP start anchors progress even when a live input has no metadata."""
+    player = _make_player()
+    player.current_media = None
+    player.state.current_media = None
+    stream = AirPlayStream(player)
+    stream.active_route = "RAOP"
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    tasks: list[asyncio.Task[None]] = []
+
+    def create_task(coro: Coroutine[Any, Any, None], **_kwargs: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    player.provider.mass.create_task.side_effect = create_task
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            side_effect=_acking_write_cli_command(stream, START_UNIX_MS + 3000),
+        ) as write_command,
+        patch(
+            "music_assistant.providers.airplay.stream.time.time", return_value=START_UNIX_MS / 1000
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
+    ):
+        for _ in range(2):
+            await stream.start(START_UNIX_MS, 0)
+            await asyncio.gather(*tasks)
+            tasks.clear()
+
+    assert [args.args[0] for args in write_command.await_args_list].count("PROGRESS=0") == 2
+    assert sleep.await_args_list == [call(3.1), call(3.1)]
+
+
+@pytest.mark.asyncio
+async def test_start_progress_anchor_uses_rebased_position() -> None:
+    """The delayed anchor uses the settled position and actual audible start."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._start_position = 12.0
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
+        patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream.time.time",
+            return_value=START_UNIX_MS / 1000 + 2,
+        ),
+    ):
+        await stream._send_start_progress_anchor(START_UNIX_MS, 0)
+    send.assert_awaited_once_with("PROGRESS=14")
+    assert stream._last_progress_sent == 14
+
+
+@pytest.mark.asyncio
+async def test_airplay2_start_does_not_schedule_raop_progress() -> None:
+    """Native AirPlay 2 starts keep their existing metadata scheduling."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream.active_route = "AirPlay 2 (buffered, PTP)"
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=_acking_write_cli_command(stream),
+    ):
+        await stream.start(START_UNIX_MS, 0)
+    for scheduled in player.provider.mass.create_task.call_args_list:
+        assert not scheduled.kwargs["task_id"].startswith("airplay_progress_after_start_")
+        scheduled.args[0].close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidated_by", ["restart", "flush", "stop"])
+async def test_raop_progress_anchor_does_not_outlive_its_start(invalidated_by: str) -> None:
+    """A deferred progress update cannot act on a stopped, flushed or newer start."""
+    player = _make_player()
+    player.current_media = None
+    player.state.current_media = None
+    stream = AirPlayStream(player)
+    stream.active_route = "RAOP"
+    stream._cli_proc = _make_cli_proc(quiesced=False)
+    stream._connected.set()
+    pending: list[Coroutine[Any, Any, None]] = []
+
+    def create_task(coro: Coroutine[Any, Any, None], **_kwargs: Any) -> MagicMock:
+        pending.append(coro)
+        return MagicMock()
+
+    player.provider.mass.create_task.side_effect = create_task
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            side_effect=_acking_write_cli_command(stream),
+        ) as write_command,
+        patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await stream.start(START_UNIX_MS, 0)
+        old_progress = pending.pop()
+        if invalidated_by == "restart":
+            await stream.start(START_UNIX_MS + 1000, 12000)
+        elif invalidated_by == "flush":
+            await stream.flush()
+        else:
+            stream._cli_proc.kill = AsyncMock()
+            with patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock):
+                await stream.stop(force=True)
+        await old_progress
+        for coro in pending:
+            coro.close()
+
+    assert not any(args.args[0].startswith("PROGRESS=") for args in write_command.await_args_list)
+
+
+@pytest.mark.asyncio
 async def test_start_join_marks_the_command() -> None:
     """A late-join START carries START_JOIN=1 so the binary enforces clock readiness."""
     player = _make_player()
