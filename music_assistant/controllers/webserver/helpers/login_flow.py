@@ -21,6 +21,8 @@ MAX_PENDING_LOGINS: Final = 100
 NATIVE_APP_SCHEME: Final = "musicassistant://"
 # base64url (unpadded) SHA-256 digest, the only code challenge form accepted
 PKCE_CHALLENGE_RE: Final = re.compile(r"[A-Za-z0-9_-]{43}")
+# a PKCE code verifier (RFC 7636: 43 to 128 unreserved characters)
+PKCE_VERIFIER_RE: Final = re.compile(r"[A-Za-z0-9._~-]{43,128}")
 # an authorization code as identity providers issue them (URL safe characters only)
 AUTH_CODE_RE: Final = re.compile(r"[A-Za-z0-9._~-]{1,512}")
 
@@ -131,4 +133,6 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     :param code_verifier: The code verifier presented by the client.
     :param code_challenge: The code challenge the client started the sign-in with.
     """
+    if not PKCE_VERIFIER_RE.fullmatch(code_verifier):
+        return False
     return hmac.compare_digest(pkce_challenge(code_verifier), code_challenge)

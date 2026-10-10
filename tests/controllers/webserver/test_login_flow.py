@@ -42,6 +42,18 @@ def test_pkce_challenge_matches_the_rfc_example() -> None:
 
 
 @pytest.mark.parametrize(
+    "verifier", ["short", "x" * 129, "ü" * 43], ids=["short", "long", "non_ascii"]
+)
+def test_verify_pkce_refuses_a_verifier_outside_rfc_7636(verifier: str) -> None:
+    """
+    A verifier outside the RFC 7636 syntax is refused, even when its challenge matches.
+
+    :param verifier: The code verifier presented.
+    """
+    assert not verify_pkce(verifier, pkce_challenge(verifier))
+
+
+@pytest.mark.parametrize(
     ("return_url", "prefix"),
     [
         (None, "w."),
