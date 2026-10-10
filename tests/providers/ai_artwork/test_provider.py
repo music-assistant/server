@@ -173,8 +173,8 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider
     ("style", "expected"),
     [
         ("spotify", "Spotify editorial playlist cover"),
-        ("music_assistant", "glowing neon light lines"),
-        ("music_assistant_tiles", "Music Assistant app's genre tiles"),
+        ("music_assistant", "line-art spot illustration"),
+        ("neon", "glowing neon light lines"),
         ("apple_music", "mesh gradient"),
         ("risograph", "two-color risograph print"),
         ("gouache", "painterly editorial illustration in gouache"),
@@ -638,7 +638,7 @@ async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkPro
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
         provider,
-        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["neon", "spotify", "gouache"]},
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["type_cutout", "spotify", "gouache"]},
     )
     engine = provider.test_engine.provider  # type: ignore[attr-defined]
 
@@ -652,7 +652,7 @@ async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkPro
     with _no_engine_pickers():
         entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
-    # "neon" is no style of its own, so only Spotify and Gouache were asked for
+    # "type_cutout" is no style (anymore), so only Spotify and Gouache were asked for
     assert engine.ai_generate_image.await_count == 2
     assert [entry.key for entry in entries or () if entry.key.startswith(CONF_PREVIEW_IMAGE)] == [
         f"{CONF_PREVIEW_IMAGE}_spotify"

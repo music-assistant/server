@@ -74,7 +74,7 @@ class Style(StrEnum):
     """The artwork style presets."""
 
     MUSIC_ASSISTANT = "music_assistant"
-    MUSIC_ASSISTANT_TILES = "music_assistant_tiles"
+    NEON = "neon"
     SPOTIFY = "spotify"
     APPLE_MUSIC = "apple_music"
     RISOGRAPH = "risograph"
@@ -141,6 +141,32 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
     ),
     Style.MUSIC_ASSISTANT: StylePreset(
         art=(
+            "Style: a Music Assistant playlist cover. Modern, clean and full of vibe: a rich, "
+            "atmospheric gradient of two to three colors chosen specifically for this playlist's "
+            "mood and genre, so covers in a series each get their own distinct palette (do not "
+            "default to purple and orange), smooth and luminous with a soft light bloom and fine "
+            "film grain. The hero is a detailed white line-art spot illustration that symbolizes "
+            "the playlist's theme, like the icons on Music Assistant's genre tiles: one main, "
+            "clearly recognizable object (an instrument, vehicle, object or scene) with a few "
+            "related details such as sparkles, sound lines, stars or motion lines, drawn with "
+            "thick and thin rounded white strokes, with a few accents filled in one bright color "
+            "from the palette. It is drawn as an extreme close-up, so large that it does not fit "
+            "on the cover: it fills the upper and right part of the square and runs off the top "
+            "and right edges, cropped by them like a zoomed-in detail. The illustration stays "
+            "within the upper and right two thirds of the square; the lower-left area, where the "
+            "title goes, is plain gradient with no lines or details at all, gently darkening "
+            "there. Cohesive with a series of playlist covers."
+        ),
+        typography=(
+            'Typography: the playlist title "{title}" as the only text, in a bold, clean modern '
+            "sans-serif (like Inter Bold), white, crisp and perfectly legible, large, in the "
+            "clear lower-left corner, with nothing drawn behind or across it."
+        ),
+        title_area="lower-left area",
+        layout=TitleLayout.BOTTOM_LEFT_SMALL,
+    ),
+    Style.NEON: StylePreset(
+        art=(
             "Style: a Music Assistant playlist cover. A night scene that captures the playlist, "
             "drawn as glowing neon light lines and long-exposure light trails over a nearly black "
             "background, like a neon sign or light painting: the main subject outlined in sky "
@@ -152,26 +178,6 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
             "neon-tube script or clean sans-serif sign, centered near the bottom."
         ),
         title_area="lower area",
-        layout=TitleLayout.BOTTOM_LEFT_SMALL,
-    ),
-    Style.MUSIC_ASSISTANT_TILES: StylePreset(
-        art=(
-            "Style: a Music Assistant playlist cover in the style of the Music Assistant app's "
-            "genre tiles. A smooth diagonal gradient from deep teal (#1B7A8C) in the lower-left "
-            "to bright sky blue (#03A9F4, #29C4F6) in the upper-right, overlaid with a few "
-            "delicate, semi-transparent white flowing ribbon waves made of fine parallel lines, "
-            "like a soft wireframe mesh, sweeping across the square. In the upper-right area, one "
-            "simple white line-art icon with thick rounded strokes, flat and unfilled like a "
-            "modern app icon, that symbolizes the playlist (an instrument, object or scene from "
-            "its theme), with a few small sparkles or sound lines around it. Clean, flat and "
-            "minimal, no photography, cohesive with a series of playlist covers."
-        ),
-        typography=(
-            'Typography: the playlist title "{title}" as the only text, in a bold condensed '
-            "sans-serif (like Roboto Condensed Bold), white with a soft subtle shadow, in the "
-            "lower-left area."
-        ),
-        title_area="lower-left area",
         layout=TitleLayout.BOTTOM_LEFT_SMALL,
     ),
     Style.APPLE_MUSIC: StylePreset(
