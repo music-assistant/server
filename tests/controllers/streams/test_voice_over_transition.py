@@ -12,8 +12,9 @@ from music_assistant_models.enums import CrossfadeMode, MediaType
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.streamdetails import TailOverlap
 
+from music_assistant.controllers.streams import audio as audio_module
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
+from music_assistant.controllers.streams.constants import MIN_VOICE_OVER_DURATION, VOICE_OVER_RAMP
 from music_assistant.controllers.streams.smart_fades.fades import VoiceOverFade
 from tests.controllers.streams.test_crossfade_transition import (
     STANDARD_CROSSFADE_DURATION,
@@ -177,6 +178,102 @@ async def test_clip_tail_plays_plainly_when_another_item_follows(
     assert output == bytes([0x10]) * CLIP_SECONDS * SAMPLE_SIZE + (
         bytes([0x40]) * TRACK_SECONDS * SAMPLE_SIZE
     )
+
+
+async def test_clip_tail_plays_plainly_when_the_loaded_item_is_not_the_declared_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queue that changed after the tail was held back gets the held tail plainly."""
+    clip = _clip()
+    track = _track("item-2", "Track")
+    track.streamdetails.duration = TRACK_SECONDS
+    other = _track("item-3", "Other")
+    other.streamdetails.duration = TRACK_SECONDS
+    # the declared track is next while the tail is held back; another one is loaded
+    audio, queue, _mass = _voice_over_audio(
+        monkeypatch, next_item=track, load_next=[other, QueueEmpty]
+    )
+    _install_item_streams(monkeypatch, audio)
+
+    output = await _drain(_flow(audio, queue, clip))
+
+    cast("Any", audio.smart_fades_mixer.build).assert_not_awaited()
+    assert output == bytes([0x10]) * CLIP_SECONDS * SAMPLE_SIZE + (
+        bytes([0x40]) * TRACK_SECONDS * SAMPLE_SIZE
+    )
+    assert other.streamdetails.seek_position == 0
+
+
+async def test_an_overlap_below_the_floor_is_a_plain_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared overlap too short to be heard holds nothing back and mixes nothing."""
+    clip = _clip()
+    clip.streamdetails.tail_overlap = TailOverlap(
+        duration=MIN_VOICE_OVER_DURATION - 0.2, next_queue_item_id="item-2"
+    )
+    track = _track("item-2", "Track")
+    track.streamdetails.duration = TRACK_SECONDS
+    audio, queue, _mass = _voice_over_audio(
+        monkeypatch, next_item=track, load_next=[track, QueueEmpty]
+    )
+    _install_item_streams(monkeypatch, audio)
+
+    output = await _drain(_flow(audio, queue, clip))
+
+    cast("Any", audio.smart_fades_mixer.build).assert_not_awaited()
+    assert output == bytes([0x10]) * CLIP_SECONDS * SAMPLE_SIZE + (
+        bytes([0x40]) * TRACK_SECONDS * SAMPLE_SIZE
+    )
+    assert track.streamdetails.seek_position == 0
+
+
+def _prefetcher(next_item: SimpleNamespace) -> tuple[Any, list[str]]:
+    """Build a prefetcher whose queue has the given next item, logging the streams it opens."""
+    audio = MagicMock()
+    audio.mass.player_queues.get_next_item.return_value = next_item
+    opened: list[str] = []
+
+    def _item_stream(queue_item: SimpleNamespace, **_kwargs: object) -> AsyncGenerator[bytes]:
+        opened.append(queue_item.queue_item_id)
+
+        async def _stream() -> AsyncGenerator[bytes]:
+            for _ in range(TRACK_SECONDS):
+                yield bytes([0x40]) * SAMPLE_SIZE
+                await asyncio.sleep(0)
+
+        return _stream()
+
+    audio.get_queue_item_stream.side_effect = _item_stream
+    prefetcher = audio_module._IncomingFadePrefetcher(audio, TEST_PCM_FORMAT, "session-1")
+    return prefetcher, opened
+
+
+async def test_prefetch_gathers_the_declared_overlap_and_ramp() -> None:
+    """The incoming prefetch covers the declared overlap plus the ramp back to full level."""
+    track = _track("item-2", "Track")
+    track.streamdetails.duration = TRACK_SECONDS
+    prefetcher, opened = _prefetcher(track)
+    queue = SimpleNamespace(queue_id="queue-1")
+
+    prefetcher.ensure_started(cast("Any", queue), cast("Any", _clip()), CrossfadeMode.VOICE_OVER, 8)
+
+    assert opened == ["item-2"]
+    assert prefetcher._target == int(SAMPLE_SIZE * (OVERLAP + VOICE_OVER_RAMP))
+    await prefetcher.close()
+
+
+async def test_no_prefetch_when_the_next_item_is_not_the_declared_one() -> None:
+    """A declared overlap never prefetches an item it was not planned against."""
+    other = _track("item-3", "Other")
+    other.streamdetails.duration = TRACK_SECONDS
+    prefetcher, opened = _prefetcher(other)
+    queue = SimpleNamespace(queue_id="queue-1")
+
+    prefetcher.ensure_started(cast("Any", queue), cast("Any", _clip()), CrossfadeMode.VOICE_OVER, 8)
+
+    assert opened == []
+    assert prefetcher._task is None
 
 
 async def test_clip_plays_over_the_track_with_crossfade_disabled(
