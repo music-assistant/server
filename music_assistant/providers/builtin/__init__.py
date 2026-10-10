@@ -418,11 +418,12 @@ class BuiltinProvider(MusicProvider):
         else:
             return False
         self._ensure_stream_url(item.item_id)
-        if item.image:
-            self._ensure_remote_image_url(item.image.path)
+        image = _own_thumb(item)
+        if image:
+            self._ensure_remote_image_url(image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
-        if item.image:
-            stored_item["image_url"] = item.image.path
+        if image:
+            stored_item["image_url"] = image.path
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         # filter out existing
         stored_items = [x for x in stored_items if x["item_id"] != item.item_id]
@@ -485,12 +486,13 @@ class BuiltinProvider(MusicProvider):
             return
 
         # TODO: also allow updating description and other image types
+        image = _own_thumb(item)
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         for stored_item in stored_items:
             if stored_item["item_id"] == builtin_mapping.item_id:
                 stored_item["name"] = item.name
-                if item.image:
-                    stored_item["image_url"] = item.image.path
+                if image:
+                    stored_item["image_url"] = image.path
                 elif "image_url" in stored_item:
                     del stored_item["image_url"]
                 break
@@ -2104,6 +2106,11 @@ def _has_music_tags(media_info: AudioTags) -> bool:
     return any(
         media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
     )
+
+
+def _own_thumb(item: MediaItemType) -> MediaItemImage | None:
+    """Return the thumb an item holds itself (the image of a track prefers its album's)."""
+    return next((img for img in item.metadata.images or () if img.type == ImageType.THUMB), None)
 
 
 def _split_artist_from_title(item: PlaylistItem) -> PlaylistItem:
