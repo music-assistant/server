@@ -1346,6 +1346,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     )
     # the source is done delivering, so only the realtime flag can deny the holdback
     realtime_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1367,6 +1368,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
         extra_attributes={},
     )
     next_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=None,
         fade_in=False,
@@ -1718,6 +1720,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
         channels=2,
     )
     realtime_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1789,6 +1792,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
         channels=2,
     )
     first_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1800,6 +1804,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
         is_realtime=False,
     )
     second_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
         fade_in=False,
@@ -1907,6 +1912,7 @@ def _flow_waiting_for_its_source(
     :return: The flow stream, the queue's data holding its play log, and the mixer's build.
     """
     first_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1918,6 +1924,7 @@ def _flow_waiting_for_its_source(
         is_realtime=True,
     )
     second_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=incoming_buffer,
         fade_in=False,

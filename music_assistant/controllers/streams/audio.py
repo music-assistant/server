@@ -104,12 +104,14 @@ from music_assistant.controllers.streams.constants import (
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    MIN_VOICE_OVER_DURATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
     STREAMDETAILS_INBAND_TITLE_KEY,
+    VOICE_OVER_RAMP,
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
@@ -412,9 +414,15 @@ class _IncomingFadePrefetcher:
         next_item = self._audio.mass.player_queues.get_next_item(
             queue.queue_id, queue_item.queue_item_id
         )
+        tail_overlap = queue_item.streamdetails.tail_overlap if queue_item.streamdetails else None
         if (
             next_item is None
             or next_item.queue_item_id == queue_item.queue_item_id
+            # a declared overlap only ever plays into the item it was planned against
+            or (
+                tail_overlap is not None
+                and next_item.queue_item_id != tail_overlap.next_queue_item_id
+            )
             or next_item.media_type != MediaType.TRACK
             or (streamdetails := next_item.streamdetails) is None
             # without a duration the read below cannot be kept clear of the track's end
@@ -424,11 +432,13 @@ class _IncomingFadePrefetcher:
             or not audio_buffer.is_valid()
         ):
             return
-        overlap: float = (
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration
-        )
+        overlap: float
+        if tail_overlap is not None:
+            overlap = tail_overlap.duration + VOICE_OVER_RAMP
+        elif crossfade_mode == CrossfadeMode.SMART_CROSSFADE:
+            overlap = SMART_CROSSFADE_DURATION
+        else:
+            overlap = standard_crossfade_duration
         # never read a track to its end in the background: that would report it to its
         # provider as streamed before a single second of it has reached the player.
         # A track always plays at its own pace, so what is left of it after the seek is
@@ -2456,14 +2466,18 @@ class StreamsAudio:
                 # next track transition instead of the next stream session; a realtime
                 # source still gets its fade decided from what its boundary can
                 # actually deliver (see _select_buffered_crossfade)
-                if queue_track.media_type != MediaType.TRACK:
+                tail_overlap = queue_track.streamdetails.tail_overlap
+                if tail_overlap is not None:
+                    # the item declares its own transition into the next one
+                    item_crossfade_mode = CrossfadeMode.VOICE_OVER
+                elif queue_track.media_type != MediaType.TRACK:
                     item_crossfade_mode = CrossfadeMode.DISABLED
                 else:
                     item_crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
                     standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                         CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                     )
-                if item_crossfade_mode != crossfade_mode:
+                if item_crossfade_mode not in (crossfade_mode, CrossfadeMode.VOICE_OVER):
                     self.logger.debug(
                         "Crossfade mode for queue %s changed mid-session: %s -> %s",
                         queue.display_name,
@@ -2489,20 +2503,27 @@ class StreamsAudio:
                     "float", queue_track.extra_attributes.get("playback_speed", 1.0)
                 )
                 # calculate crossfade buffer size: the ceiling for this item's holdback
-                crossfade_buffer_duration = (
-                    SMART_CROSSFADE_DURATION
-                    if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-                    else standard_crossfade_duration
-                )
-                crossfade_buffer_duration = min(
-                    crossfade_buffer_duration,
-                    int(queue_track.streamdetails.duration / 2)
-                    if queue_track.streamdetails.duration
-                    else crossfade_buffer_duration,
-                )
-                # skip crossfade if buffer would be too small to be meaningful
-                if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
-                    crossfade_buffer_duration = 0
+                crossfade_buffer_duration: float
+                if tail_overlap is not None:
+                    # a declared overlap is held back exactly
+                    crossfade_buffer_duration = tail_overlap.duration
+                    if crossfade_buffer_duration < MIN_VOICE_OVER_DURATION:
+                        crossfade_buffer_duration = 0
+                else:
+                    crossfade_buffer_duration = (
+                        SMART_CROSSFADE_DURATION
+                        if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                        else standard_crossfade_duration
+                    )
+                    crossfade_buffer_duration = min(
+                        crossfade_buffer_duration,
+                        int(queue_track.streamdetails.duration / 2)
+                        if queue_track.streamdetails.duration
+                        else crossfade_buffer_duration,
+                    )
+                    # skip crossfade if buffer would be too small to be meaningful
+                    if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
+                        crossfade_buffer_duration = 0
                 # Ensure crossfade buffer size is aligned to frame boundaries
                 # Frame size = bytes_per_sample * channels
                 bytes_per_sample = pcm_format.bit_depth // 8
@@ -2526,7 +2547,18 @@ class StreamsAudio:
                 outgoing_queue_track = last_queue_track
                 if last_fadeout_part and last_streamdetails:
                     incoming_duration = 0.0
-                    if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
+                    # a tail overlap the outgoing item declared plays into the item it was
+                    # planned against, whatever the queue's crossfade setting
+                    requested_mode = item_crossfade_mode
+                    if (declared := last_streamdetails.tail_overlap) is not None:
+                        requested_mode = (
+                            CrossfadeMode.VOICE_OVER
+                            if queue_track.queue_item_id == declared.next_queue_item_id
+                            else CrossfadeMode.DISABLED
+                        )
+                    if requested_mode == CrossfadeMode.VOICE_OVER or (
+                        crossfade_buffer_size > 0 and requested_mode != CrossfadeMode.DISABLED
+                    ):
                         # the incoming track's audio may still be on its way: make sure it
                         # is being prepared, and play the tail out plainly meanwhile. A
                         # pause here costs the player its lead, a shorter tail only costs
@@ -2552,7 +2584,7 @@ class StreamsAudio:
                         last_fadeout_part = last_fadeout_part[played_out:]
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
-                            item_crossfade_mode,
+                            requested_mode,
                             standard_crossfade_duration,
                             fade_out_seconds=len(last_fadeout_part) / pcm_sample_size,
                             playback_speed=track_playback_speed,
@@ -2668,7 +2700,7 @@ class StreamsAudio:
                                 queue.queue_id, queue_track.queue_item_id
                             )
 
-                        if item_crossfade_mode == CrossfadeMode.DISABLED:
+                        if item_crossfade_mode == CrossfadeMode.DISABLED and not last_fadeout_part:
                             # no cross/smart fade: yield chunks directly without intermediate buffer
                             yield chunk
                             bytes_written += len(chunk)
@@ -2912,7 +2944,14 @@ class StreamsAudio:
                     last_fadeout_part = b""
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
                 # armed late (or not at all) leaves less than that
-                min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_DURATION)
+                min_fade_out_size = int(
+                    pcm_sample_size
+                    * (
+                        MIN_VOICE_OVER_DURATION
+                        if item_crossfade_mode == CrossfadeMode.VOICE_OVER
+                        else MIN_CROSSFADE_DURATION
+                    )
+                )
                 if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
@@ -3053,6 +3092,23 @@ class StreamsAudio:
         next_sample_rate: int | None = None,
     ) -> bool:
         """Get the crossfade config for a queue item."""
+        if queue_item.streamdetails and (tail_overlap := queue_item.streamdetails.tail_overlap):
+            # a declared overlap plays only into the track it was planned against
+            next_item = next_queue_item or self.mass.player_queues.get_next_item(
+                queue_item.queue_id, queue_item.queue_item_id
+            )
+            if (
+                next_item is None
+                or next_item.queue_item_id != tail_overlap.next_queue_item_id
+                or next_item.media_type != MediaType.TRACK
+            ):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the next item is not the track it was "
+                    "planned against",
+                    queue_item.name,
+                )
+                return False
+            return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
         if not (self.mass.player_queues.get(queue_item.queue_id)):
@@ -4445,13 +4501,15 @@ class StreamsAudio:
         The configured mode picks the fade; the held-back outgoing tail sizes its
         window, up to that mode's ceiling and to what the incoming track can supply.
         Too short a tail to blend at all means no fade rather than a different one.
+        A voice over takes the whole held-back tail as its window.
 
         :param streamdetails: Incoming track stream details.
         :param crossfade_mode: Requested crossfade mode.
         :param standard_crossfade_duration: Configured standard overlap in seconds.
         :param fade_out_seconds: Held-back outgoing tail in seconds.
         :param playback_speed: Incoming track playback-speed multiplier.
-        :return: Effective mode and fade-in duration in seconds.
+        :return: Effective mode and fade-in duration in seconds; for a voice over the
+            fade-in also covers the ramp back to full level after the window.
         """
         audio_buffer = streamdetails.buffer
         if crossfade_mode == CrossfadeMode.DISABLED or playback_speed <= 0:
@@ -4472,12 +4530,15 @@ class StreamsAudio:
 
         # The blend streams, so the incoming window does not have to be resident:
         # it arrives while the blend plays. The tail we held back is what bounds it.
-        window = min(
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration,
-            fade_out_seconds,
-        )
+        voice_over = crossfade_mode == CrossfadeMode.VOICE_OVER
+        window = fade_out_seconds
+        if not voice_over:
+            window = min(
+                SMART_CROSSFADE_DURATION
+                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                else standard_crossfade_duration,
+                window,
+            )
         if audio_buffer.eof:
             # the source is done, so what is resident is all there will ever be
             window = min(window, audio_buffer.duration_available / playback_speed)
@@ -4487,7 +4548,7 @@ class StreamsAudio:
             # window is stream time, the track's remaining audio is media time.
             remaining_media = max(0.0, streamdetails.duration - streamdetails.seek_position)
             window = min(window, remaining_media / playback_speed / 2)
-        if window < MIN_CROSSFADE_DURATION:
+        if window < (MIN_VOICE_OVER_DURATION if voice_over else MIN_CROSSFADE_DURATION):
             self.logger.debug(
                 "Not fading into %s: a %.1f second window is too short", streamdetails.uri, window
             )
@@ -4498,6 +4559,8 @@ class StreamsAudio:
             crossfade_mode.value,
             streamdetails.uri,
         )
+        if voice_over:
+            return crossfade_mode, window + VOICE_OVER_RAMP
         return crossfade_mode, window
 
     async def _resolve_media_stream_source(

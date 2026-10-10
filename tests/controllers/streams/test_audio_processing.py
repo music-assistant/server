@@ -1457,6 +1457,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
             streamdetails=SimpleNamespace(
                 fade_in=False,
                 stream_error=False,
+                tail_overlap=None,
                 uri=f"test://{item_id}",
                 seek_position=0,
                 duration=300,
@@ -1637,6 +1638,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
     streamdetails = SimpleNamespace(
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
@@ -1704,6 +1706,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         audio_format=pcm_format,
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://first",
         seek_position=0,
         seconds_streamed=0,
@@ -1734,6 +1737,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         ),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://skipped",
         seek_position=raw_seek_position,
         seconds_streamed=0,
@@ -1833,6 +1837,7 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         buffer=SimpleNamespace(cancelled=source_cancelled),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://track",
         seek_position=0,
         seconds_streamed=0,
@@ -2134,6 +2139,7 @@ def _flow_queue_item(item_id: str) -> Any:
         streamdetails=SimpleNamespace(
             fade_in=False,
             stream_error=False,
+            tail_overlap=None,
             uri=f"test://{item_id}",
             seek_position=0,
             duration=300,
