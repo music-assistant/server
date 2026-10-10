@@ -109,9 +109,11 @@ def ordered_batches(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], st
         _mass: object,
         items: list[QueueItem],
         *,
-        preceding_track: Track | None = None,
+        get_track: Callable[[QueueItem], Track | None],
+        preceding_item: QueueItem | None = None,
         **_kwargs: object,
     ) -> list[QueueItem]:
+        preceding_track = get_track(preceding_item) if preceding_item is not None else None
         calls.append((_ids(items), preceding_track.item_id if preceding_track else None))
         return list(reversed(items))
 
