@@ -1789,6 +1789,7 @@
   "provider.neteasecloudmusic.setup_flow.scan_qr.title": "Scan to sign in",
   "provider.neteasecloudmusic.setup_flow.user.description": "Enter the address of your local NeteaseCloudMusicApi-compatible backend service. The next step shows a QR code to sign in.",
   "provider.neteasecloudmusic.setup_flow.user.title": "Connect NetEase Cloud Music",
+  "provider.neteasecloudmusic_scrobble.manifest.description": "Scrobble tracks played through the NetEase Cloud Music provider back to your NetEase account (listening check-in), keeping your NetEase play counts and listening history in sync.",
   "provider.nicovideo.errors.create_playlist_failed": "Failed to create playlist '{0}' on NicoVideo.",
   "provider.nicovideo.errors.retrieve_created_playlist_failed": "Failed to retrieve the created playlist '{0}' from NicoVideo.",
   "provider.nicovideo.manifest.description": "Support for niconico video(nicovideo) in Music Assistant",
