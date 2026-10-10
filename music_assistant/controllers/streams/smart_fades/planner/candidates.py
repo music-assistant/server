@@ -410,7 +410,12 @@ class SegueGenerator(CandidateGenerator):
         else:
             return
         step = _SEGUE_STEP_BARS * bar_out if ctx.segue.snapped_out else _SEGUE_STEP_SECONDS
-        for overlap in _segue_steps(ideal, floor, step):
+        overlaps = _segue_steps(ideal, floor, step)
+        if ideal > ctx.segue.overlap >= floor:
+            # the quiet material's own length stays a step, so a long segue that has to
+            # shrink never ships shorter than the quiet material alone would
+            overlaps = sorted({*overlaps, ctx.segue.overlap}, reverse=True)
+        for overlap in overlaps:
             yield CandidateSpec(
                 tier=ctx.tier,
                 bars=1,

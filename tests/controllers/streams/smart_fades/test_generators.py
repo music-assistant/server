@@ -549,6 +549,22 @@ class TestSegueGenerator:
         assert specs[0].overlap_s == pytest.approx(15.0)
         assert specs[0].ideal_overlap_s == pytest.approx(15.0)
 
+    def test_a_long_segue_keeps_the_quiet_material_as_a_step(self) -> None:
+        """A kickless side with 8s of quiet material steps down from 15s and through 8s."""
+        ctx = _segue_ctx(
+            segue=_segue(6.0, 2.0),
+            in_kickless=True,
+            vocal_out_scoring=_SUNG,
+            vocal_in_scoring=_SILENT,
+        )
+
+        specs = list(SegueGenerator().generate(ctx))
+
+        assert [spec.overlap_s for spec in specs] == pytest.approx(
+            [15.0, 13.0, 11.0, 9.0, 8.0, 7.0, 5.0, 2.0]
+        )
+        assert all(spec.ideal_overlap_s == pytest.approx(15.0) for spec in specs)
+
     def test_two_singing_decks_never_ride_a_long_segue(self) -> None:
         """Loud ends with both decks singing get no long segue, kickless or not."""
         ctx = _segue_ctx(
