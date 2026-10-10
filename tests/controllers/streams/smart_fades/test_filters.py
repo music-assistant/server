@@ -14,6 +14,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     ShelfFilter,
     ShelfType,
     StreamingCrossfadeFilter,
+    VoiceOverMixFilter,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -234,3 +235,14 @@ class TestEchoOutFilter:
     def test_repr(self) -> None:
         """The repr names the cut, the beat and the tap count."""
         assert repr(EchoOutFilter(LOGGER, 4.0, 0.5)) == "EchoOut(cut=4.00s, beat=0.500s, taps=4)"
+
+
+def test_voice_over_mix_ducks_the_incoming_track_under_the_voice() -> None:
+    """The voice plays untouched; the track is ducked, ramps back and the sum is limited."""
+    voice_over = VoiceOverMixFilter(logger=LOGGER, overlap_seconds=3.0, ramp_seconds=0.4)
+    assert voice_over.apply("[fadein]", "[fadeout]") == [
+        "[fadein]volume=eval=frame:volume="
+        "'1-0.6*max(0\\,min(1\\,(3.000+0.400-t)/0.400))'[voice_over_in]",
+        "[fadeout][voice_over_in]amix=inputs=2:normalize=0,"
+        "alimiter=limit=-0.5dB:level=false:latency=true",
+    ]
