@@ -323,13 +323,7 @@ class AudioTags:
 
     @property
     def popm_rating(self) -> int | None:
-        """
-        Return the raw ID3 POPM rating (0-255), or None when the file carries none.
-
-        The byte is returned as-is because its meaning depends on the tagger that
-        wrote it; music_assistant.helpers.rating turns it into a rating once the
-        provider has chosen the scale to read it with.
-        """
+        """Return the raw ID3 POPM rating (0-255), or None when the file carries none."""
         popm = self.tags.get("popm")
         if popm is None:
             return None
@@ -340,11 +334,7 @@ class AudioTags:
 
     @property
     def rating_tag(self) -> float | None:
-        """
-        Return the raw Vorbis RATING or MP4 RATING value, or None when absent.
-
-        Returned as-is for the same reason as :attr:`popm_rating`.
-        """
+        """Return the raw Vorbis RATING or MP4 RATING value, or None when absent."""
         raw_rating = self.tags.get("rating")
         if raw_rating is None:
             return None
@@ -1117,10 +1107,8 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
-    # Rating: only the freeform RATING tag is read here. A bare `rate` atom is
-    # written as an integer, and mutagen parses unknown atoms only when they hold
-    # UTF-8 text, so an integer atom never reaches this dict. Supporting it would
-    # need raw atom extraction, which is not done here.
+    # only the freeform tag is read: a bare `rate` atom holds an integer, and mutagen
+    # parses unknown atoms only when they carry UTF-8 text
     if "----:com.apple.iTunes:RATING" in tags:
         result["rating"] = _decode_mp4_freeform_single(tags["----:com.apple.iTunes:RATING"])
 
@@ -1278,8 +1266,7 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
     )
     _store_series_tags(result, user_frames)
 
-    # Rating: ID3 keeps it in a POPM (popularimeter) frame. A file may carry one
-    # frame per rater, so the highest value is the one the user most likely set.
+    # a file can carry one POPM frame per rater, so take the highest
     if popm_ratings := [frame.rating for frame in tags.getall("POPM")]:  # type: ignore[no-untyped-call]
         result["popm"] = max(popm_ratings)
 

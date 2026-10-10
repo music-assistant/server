@@ -242,7 +242,6 @@ class LocalFileSystemProvider(MusicProvider):
     # set for the single sync that has to reparse an audiobook library that was
     # indexed before authors/narrators became artists
     _force_full_reparse: bool = False
-    # a one-time re-read is owed after rating import is switched on
     _rating_backfill_pending: bool = False
 
     def __init__(
@@ -557,8 +556,7 @@ class LocalFileSystemProvider(MusicProvider):
             )
             if not self._sync_tracks and not self._sync_playlists:
                 return
-            # re-read every file once after rating import is switched on, so a rating
-            # is imported for a library that was indexed before the option existed
+            # re-read once so a library indexed before the option existed is imported
             if self._sync_tracks and self.config.get_value(CONF_RATING_IMPORT_ENABLED):
                 self._rating_backfill_pending = not self.mass.config.get_raw_provider_config_value(
                     self.instance_id, CONF_RATING_IMPORT_BACKFILL_DONE, False
@@ -2574,11 +2572,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     def _rating_from_tags(self, tags: AudioTags) -> float | None:
         """
-        Read the rating embedded in the file's tags, normalized to 0.0-10.0.
+        Return the rating embedded in the file's tags, normalized to 0.0-10.0.
 
-        Returns None when rating import is disabled (the default) or when the file
-        carries no rating. The scale each format is read with comes from the provider
-        settings, because taggers disagree about what the values mean.
+        Returns None when rating import is disabled, or when the file carries no rating.
 
         :param tags: The parsed tags of the file.
         """
@@ -2598,7 +2594,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     def _favorite_from_tags(self, tags: AudioTags) -> bool | None:
         """
-        Derive the favorite state from the rating embedded in the file's tags.
+        Return the favorite state for the rating embedded in the file's tags.
 
         :param tags: The parsed tags of the file.
         """
@@ -2610,17 +2606,14 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _record_rating_favorite(self, tags: AudioTags, db_id: int) -> None:
         """
-        Record the rating-derived favorite state for a library track.
-
-        The state goes through the favorites controller rather than onto the item, so a
-        favorite the user set inside Music Assistant is never overridden, and a rating
-        is imported for a track that is already in the library.
+        Record the favorite state for the rating embedded in the file's tags.
 
         :param tags: The parsed tags of the file.
         :param db_id: The database id of the library track.
         """
         if (favorite := self._favorite_from_tags(tags)) is None:
             return
+        # through the controller, so a favorite the user set is never overridden
         await self.mass.music.favorites.record_from_provider(
             self.instance_id, MediaType.TRACK, db_id, favorite
         )
