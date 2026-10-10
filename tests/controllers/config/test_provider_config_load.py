@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig, ProviderError
 from music_assistant_models.enums import ConfigEntryType, ProviderStatus, ProviderType
@@ -28,6 +29,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers._demo_music_provider import MyDemoMusicprovider
 
 
 def _prov_conf(instance_id: str) -> ProviderConfig:
@@ -217,3 +219,22 @@ async def test_immediate_flush_for_rotated_token(mass_minimal: MusicAssistant) -
             instance, "refresh_token_global", "token_b", immediate=True
         )
     mock_save.assert_called_once_with(immediate=True)
+
+
+async def test_connection_failure_is_retried_without_traceback(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A provider that can not reach its service yet is loaded again later."""
+    domain = "_demo_music_provider"
+    instance = f"{domain}--test"
+    mass.config.set(
+        f"{CONF_PROVIDERS}/{instance}",
+        {"domain": domain, "type": "music", "instance_id": instance, "enabled": True},
+    )
+    unreachable = aiohttp.ClientConnectionError("Cannot connect to host example.com:443")
+    with patch.object(MyDemoMusicprovider, "handle_async_init", AsyncMock(side_effect=unreachable)):
+        await mass.load_provider(instance, allow_retry=True)
+
+    assert f"load_provider_{instance}" in mass._tracked_timers
+    assert "will be retried" in caplog.text
+    assert "Traceback" not in caplog.text
