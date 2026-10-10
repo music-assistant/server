@@ -30,12 +30,7 @@ _CONTENT_TYPE_ENTRY = replace(
     value=CONF_ENTRY_CONTENT_TYPE.default_value,
     expanded_options=True,
 )
-# the warning for a folder that other music sources read too, with their names, or without
-# them for a caller that does not see every source
 _OVERLAP_WARNING = ConfigEntry(key="overlap_warning", type=ConfigEntryType.ALERT, required=False)
-_OVERLAP_WARNING_UNNAMED = ConfigEntry(
-    key="overlap_warning_unnamed", type=ConfigEntryType.ALERT, required=False
-)
 _OVERLAP_CHOICE = ConfigEntry(
     key="overlap_choice",
     type=ConfigEntryType.STRING,
@@ -132,14 +127,14 @@ async def _confirm_overlap(session: SetupSession, path: str) -> bool:
     :param session: The setup session driving the flow.
     :param path: The checked folder.
     """
-    sources = session.mass.storage.get_overlapping_sources(path, session.context.instance_id)
+    context = session.context
+    # a caller that does not manage every source only learns of the sources it may use
+    sources = session.mass.storage.get_overlapping_sources(
+        path, context.instance_id, None if context.manages_all_sources else context.user
+    )
     if not sources:
         return True
-    warning = (
-        replace(_OVERLAP_WARNING, translation_params=[", ".join(sources)])
-        if session.context.manages_all_sources
-        else _OVERLAP_WARNING_UNNAMED
-    )
+    warning = replace(_OVERLAP_WARNING, translation_params=[", ".join(sources)])
     submitted = await session.form([warning, _OVERLAP_CHOICE], step_id="overlap")
     return submitted[_OVERLAP_CHOICE.key] == "use_folder"
 

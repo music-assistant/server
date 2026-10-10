@@ -1221,11 +1221,11 @@ async def test_a_member_may_only_reconfigure_the_source_it_owns(flow_mass: Music
     ],
     ids=["server", "admin", "member"],
 )
-async def test_a_flow_knows_whether_its_caller_manages_every_music_source(
+async def test_a_flow_knows_its_caller(
     flow_mass: MusicAssistant, user: User | None, manages_all_sources: bool
 ) -> None:
     """
-    Setting up and reconfiguring tell the flow whether its caller manages every music source.
+    Setting up and reconfiguring tell the flow its caller, and whether it manages every source.
 
     :param user: The calling user, None for the server itself.
     :param manages_all_sources: Whether that caller manages every music source.
@@ -1247,9 +1247,9 @@ async def test_a_flow_knows_whether_its_caller_manages_every_music_source(
         await flow_mass.config.setup_provider(FAKE_DOMAIN)
         await flow_mass.config.reconfigure_provider(instance_id)
 
-    assert [(context.kind, context.manages_all_sources) for context in contexts] == [
-        ("setup", manages_all_sources),
-        ("reconfigure", manages_all_sources),
+    assert [(context.kind, context.user, context.manages_all_sources) for context in contexts] == [
+        ("setup", user, manages_all_sources),
+        ("reconfigure", user, manages_all_sources),
     ]
 
 

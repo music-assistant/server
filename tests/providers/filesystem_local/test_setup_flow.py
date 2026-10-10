@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from music_assistant_models.enums import ConfigEntryType, FlowStepType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ConfigEntryType, FlowStepType, ProviderSharing
 
+from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.storage import StorageController, StorageKind, StorageUsage
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
@@ -28,6 +31,8 @@ MEMBER_AND_ADMIN = pytest.mark.parametrize(
 )
 # the source a flow creates, or sets up again
 INSTANCE_ID = "filesystem_local--test"
+# the user who starts the flow of a caller that does not manage every source
+MEMBER = User(user_id="member", username="member", role=UserRole.USER)
 
 
 class _Flow:
@@ -52,6 +57,7 @@ class _Flow:
             instance_id=INSTANCE_ID if setup_data else None,
             setup_data=setup_data,
             manages_all_sources=manages_all_sources,
+            user=None if manages_all_sources else MEMBER,
         )
         self.session = SetupSession(mass, "flow", context, self._finish)
         self.task = asyncio.create_task(run_setup(self.session))
@@ -629,12 +635,12 @@ async def test_a_folder_another_source_reads_is_confirmed_first(
     warning, choice = step["entries"]
     assert warning["type"] == ConfigEntryType.ALERT
     assert warning["label"] == (
-        "Files in this folder are also read by Everything, so they would be imported twice."
+        "Files in this folder are already read by: Everything. Using it would import them twice."
     )
     assert choice["label"] == "Use this folder anyway?"
     assert choice["expanded_options"] is True
     assert [option["title"] for option in choice["options"]] == [
-        "Use it anyway",
+        "Use this folder",
         "Choose another folder",
     ]
     assert flow.finished_with is None
@@ -666,23 +672,57 @@ async def test_another_folder_can_be_chosen(
     }
 
 
-async def test_a_member_is_not_told_which_source_reads_the_folder(
+@pytest.mark.parametrize(
+    ("sharing", "warned"),
+    [(None, True), (ProviderSharing.MEMBERS, True), (ProviderSharing.PRIVATE, False)],
+    ids=["household", "shared", "private"],
+)
+async def test_a_member_is_only_told_of_the_sources_it_may_use(
     start_flow: Callable[..., Awaitable[_Flow]],
     storage: StorageController,
     tree: Path,
     localize: Callable[[DataClassDictMixin], dict[str, Any]],
+    sharing: ProviderSharing | None,
+    warned: bool,
 ) -> None:
-    """A caller that does not see every source is warned without the name of the other source."""
-    store_source(storage, tree / "media", name="Everything")
+    """
+    A member is warned of a source it may use, by name, and never learns of another one.
+
+    :param sharing: How the other user shares the source, None for a source of the household.
+    :param warned: Whether the member is warned.
+    """
+    store_source(storage, tree / "media", "filesystem_local--other", "Their music")
+    if sharing is not None:
+        storage.mass.config.set(
+            f"{CONF_PROVIDERS}/filesystem_local--other/access",
+            ProviderAccess(owner="other", sharing=sharing).to_dict(),
+        )
     flow = await start_flow(manages_all_sources=False)
 
     step = localize(await flow.submit(tree / "media" / "Music"))
 
-    assert step["step_id"] == "overlap"
-    assert step["entries"][0]["label"] == (
-        "Files in this folder are also read by another music source, "
-        "so they would be imported twice."
-    )
+    if warned:
+        assert step["step_id"] == "overlap"
+        assert step["entries"][0]["label"] == (
+            "Files in this folder are already read by: Their music. "
+            "Using it would import them twice."
+        )
+    else:
+        assert step["type"] == FlowStepType.FINISH
+
+
+async def test_an_unchanged_folder_is_not_confirmed_again(
+    start_flow: Callable[..., Awaitable[_Flow]], storage: StorageController, tree: Path
+) -> None:
+    """A source set up again on the folder it already reads finishes without asking."""
+    store_source(storage, tree / "media", "filesystem_local--other")
+    music = str(tree / "media" / "Music")
+    flow = await start_flow(setup_data={CONF_CONTENT_TYPE: "music", "path": music})
+
+    step = await flow.submit(music)
+
+    assert step.type == FlowStepType.FINISH
+    assert flow.finished_with == {CONF_CONTENT_TYPE: "music", "path": music}
 
 
 async def test_reconfigure_leaves_out_the_source_itself(

@@ -4,15 +4,12 @@
       "label": "Folder"
     },
     "overlap_warning": {
-      "label": "Files in this folder are also read by {0}, so they would be imported twice."
-    },
-    "overlap_warning_unnamed": {
-      "label": "Files in this folder are also read by another music source, so they would be imported twice."
+      "label": "Files in this folder are already read by: {0}. Using it would import them twice."
     },
     "overlap_choice": {
       "label": "Use this folder anyway?",
       "options": {
-        "use_folder": "Use it anyway",
+        "use_folder": "Use this folder",
         "choose_another": "Choose another folder"
       }
     },

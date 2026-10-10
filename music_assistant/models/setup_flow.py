@@ -36,6 +36,8 @@ from music_assistant.helpers.security import contains_encrypted_value
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
+    from music_assistant_models.auth import User
+
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
@@ -132,6 +134,8 @@ class SetupFlowContext:
     # manages_all_sources: whether the caller manages every music source (the server itself
     # or such a user); false for a user who adds a music source of its own
     manages_all_sources: bool = True
+    # user: the user who started a provider flow; None when the server started it
+    user: User | None = None
 
 
 class SetupSession:

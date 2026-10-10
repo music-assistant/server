@@ -106,6 +106,7 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
 
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.helpers.json import SerializableType
@@ -570,17 +571,20 @@ class StorageController(CoreController):
             and self._is_visible(location, manages_all_sources)
         )
 
-    def get_overlapping_sources(self, path: str, exclude: str | None = None) -> list[str]:
+    def get_overlapping_sources(
+        self, path: str, exclude: str | None = None, user: User | None = None
+    ) -> list[str]:
         """
         Return the sorted names of the enabled music sources that read files of a folder too.
 
-        That is every source whose folder holds the folder, is it, or lies inside it.
+        That is every source whose folder is the same, contains it, or lies inside it.
 
         :param path: An absolute path.
-        :param exclude: The instance id of a music source to leave out, such as the one set up
-            again.
+        :param exclude: The instance id of a music source to leave out, such as the one being
+            reconfigured.
+        :param user: Only count the sources this user may use; None for every source.
         """
-        sources = self._get_source_folders(exclude)
+        sources = self._get_source_folders(exclude, user)
         return sorted(
             {*_sources_using(path, sources), *_sources_around(path, sources)}, key=str.casefold
         )
@@ -1079,7 +1083,9 @@ class StorageController(CoreController):
         # anything else in the record, a leftover or a value that is no path, is ignored
         return [folder for folder in self._get_registered_folders() if folder in recorded]
 
-    def _get_source_folders(self, exclude: str | None = None) -> list[tuple[str, str]]:
+    def _get_source_folders(
+        self, exclude: str | None = None, user: User | None = None
+    ) -> list[tuple[str, str]]:
         """
         Return the name and folder of every enabled music source reading a folder of this server.
 
@@ -1087,6 +1093,7 @@ class StorageController(CoreController):
         reads from its folder.
 
         :param exclude: The instance id of a music source to leave out.
+        :param user: Only return the sources this user may use; None for every source.
         """
         folders: list[tuple[str, str]] = []
         for instance_id, conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
@@ -1094,6 +1101,10 @@ class StorageController(CoreController):
                 instance_id == exclude
                 or not conf.get("enabled", True)
                 or conf.get("domain") not in FILESYSTEM_PROVIDER_DOMAINS
+                or (
+                    user is not None
+                    and not access_allows(source_access(self.mass, instance_id), user)
+                )
             ):
                 continue
             try:
