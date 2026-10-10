@@ -477,6 +477,16 @@ async def test_album_tracks_follow_the_listing_contract(mass: MusicAssistant) ->
     fetch.assert_awaited_once()
 
 
+async def test_library_album_tracks_are_the_whole_album(mass: MusicAssistant) -> None:
+    """The library tracks of an album are read without the listing page size."""
+    with patch.object(
+        mass.music.tracks, "get_library_items_by_query", AsyncMock(return_value=[])
+    ) as query:
+        await mass.music.albums.get_library_album_tracks("1")
+    assert query.await_args is not None
+    assert query.await_args.kwargs["limit"] == 0
+
+
 async def test_album_tracks_outside_the_library_are_listed_once(mass: MusicAssistant) -> None:
     """An album that is not in the library is fetched once, from the instance its provider resolves to."""
     fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1"), create_track("qobuz_1", "t2")])

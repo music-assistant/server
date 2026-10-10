@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ListingType, MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
@@ -188,6 +189,52 @@ async def test_a_waiting_request_assembles_itself_when_the_first_one_is_cancelle
         await first
     assert [track.item_id for track in await second] == ["t1"]
     assert assemble.await_count == 2
+
+
+async def test_a_waiting_request_assembles_itself_when_nothing_was_kept(
+    mass: MusicAssistant,
+) -> None:
+    """A request waiting on an incomplete assembly assembles its own, as the calling user."""
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "incomplete_twice")
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        return Listing([create_track("spotify_1", "t1")], complete=False)
+
+    assemble = AsyncMock(side_effect=_assemble)
+    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    await assembling.wait()
+    release.set()
+    first_items, second_items = await asyncio.gather(first, second)
+
+    assert assemble.await_count == 2
+    assert first_items == second_items
+    assert first_items[0] is not second_items[0]
+
+
+async def test_a_waiting_request_shares_the_failure_of_the_assembly(mass: MusicAssistant) -> None:
+    """A request waiting on an assembly that fails gets that failure, without asking again."""
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "failing")
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        raise MediaNotFoundError("album withdrawn")
+
+    assemble = AsyncMock(side_effect=_assemble)
+    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
+    await assembling.wait()
+    release.set()
+
+    for request in (first, second):
+        with pytest.raises(MediaNotFoundError):
+            await request
+    assemble.assert_awaited_once()
 
 
 async def test_an_assembly_overtaken_by_an_invalidation_is_not_kept(mass: MusicAssistant) -> None:

@@ -619,6 +619,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # base query returns this album's disc/track numbers for tracks that
         # appear on multiple albums
         return await self.mass.music.tracks.get_library_items_by_query(
+            limit=0,
             provider_filter=provider_filter,
             extra_query_parts=[
                 f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} "

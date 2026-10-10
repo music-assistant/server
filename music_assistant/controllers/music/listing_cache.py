@@ -30,8 +30,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
 
-# the fills in flight, keyed on the entry they fill, so concurrent misses assemble it once
-_fills: dict[str, asyncio.Future[tuple[Listing[Any], bool]]] = {}
+# the fills in flight, keyed on the entry they fill, so concurrent misses assemble it once;
+# a fill ends with the failure it ran into, or None
+_fills: dict[str, asyncio.Future[Exception | None]] = {}
 # how often the listings of a container were dropped: a fill only keeps what it assembled
 # while that number stood still
 _generations: dict[str, int] = {}
@@ -85,17 +86,17 @@ async def cached_listing[ItemT: MediaItem](
     while (items := await _read(mass, uri, key, item_type)) is None:
         if (fill := _fills.get(entry)) is None:
             return cast("list[ItemT]", await _assemble(mass, entry, uri, key, assemble))
-        # a concurrent request is assembling the listing: take what it keeps, with the
-        # calling user's favorites, or share its items when it keeps nothing
+        # a concurrent request is assembling the listing: what it keeps is read on the next
+        # round, what it does not keep (or when it goes away) is assembled here, as the
+        # calling user, and its failure is this request's failure too
         try:
-            assembled, kept = await asyncio.shield(fill)
+            error = await asyncio.shield(fill)
         except asyncio.CancelledError:
             if (task := asyncio.current_task()) and task.cancelling():
                 raise
-            # the assembling request went away, so the next round assembles it here
             continue
-        if not kept:
-            return cast("list[ItemT]", assembled.items)
+        if error is not None:
+            raise error
     return cast("list[ItemT]", items)
 
 
@@ -139,15 +140,16 @@ async def _assemble(
     """Assemble a listing in the calling task and keep it, for the requests waiting on it too."""
     fill = _fills[entry] = asyncio.get_running_loop().create_future()
     try:
-        assembled, kept = await _fill(mass, uri, key, assemble)
+        assembled = await _fill(mass, uri, key, assemble)
     except asyncio.CancelledError:
         fill.cancel()
         raise
     except Exception as err:
-        fill.set_exception(err)
+        # a result rather than the future's exception: nobody may be waiting to retrieve it
+        fill.set_result(err)
         raise
     else:
-        fill.set_result((assembled, kept))
+        fill.set_result(None)
         return assembled.items
     finally:
         _fills.pop(entry, None)
@@ -158,21 +160,20 @@ async def _fill(
     uri: str,
     key: str,
     assemble: Callable[[], Awaitable[Listing[Any]]],
-) -> tuple[Listing[Any], bool]:
-    """Assemble a listing and keep it, returning the listing and whether it was kept."""
+) -> Listing[Any]:
+    """Assemble a listing and keep it, unless it is incomplete or an invalidation overtook it."""
     generation = _generations.get(uri, 0)
     assembled = await assemble()
-    if not assembled.complete or _generations.get(uri, 0) != generation:
-        return assembled, False
-    # the items are serialized off the event loop, as the cache does for provider results
-    await mass.cache.set(
-        key,
-        cast("SerializableType", assembled.items),
-        expiration=LISTING_CACHE_EXPIRATION,
-        provider=uri,
-        category=CACHE_CATEGORY_LISTINGS,
-    )
-    return assembled, True
+    if assembled.complete and _generations.get(uri, 0) == generation:
+        # the items are serialized off the event loop, as the cache does for provider results
+        await mass.cache.set(
+            key,
+            cast("SerializableType", assembled.items),
+            expiration=LISTING_CACHE_EXPIRATION,
+            provider=uri,
+            category=CACHE_CATEGORY_LISTINGS,
+        )
+    return assembled
 
 
 def _rebuild(raw_items: list[dict[str, Any]], item_type: Any) -> list[Any]:
