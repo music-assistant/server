@@ -57,6 +57,21 @@ def test_streaming_crossfade_blends_the_exact_overlap() -> None:
     ]
 
 
+def test_streaming_crossfade_limits_its_mix_on_request() -> None:
+    """A ceiling appends a latency-compensated limiter to the mix; the inputs stay as they are."""
+    plain = StreamingCrossfadeFilter(logger=LOGGER, crossfade_samples=441000)
+    limited = StreamingCrossfadeFilter(logger=LOGGER, crossfade_samples=441000, limit_db=-0.5)
+
+    plain_strings = plain.apply("[fadein]", "[fadeout]")
+    limited_strings = limited.apply("[fadein]", "[fadeout]")
+
+    assert limited_strings[:2] == plain_strings[:2]
+    assert limited_strings[2] == (
+        "[xfade_out][xfade_in]amix=inputs=2:normalize=0,"
+        "alimiter=limit=-0.5dB:level=false:latency=true"
+    )
+
+
 def test_streaming_crossfade_emits_the_given_curves() -> None:
     """Explicit fadeout/fadein curves override the default qsin:qsin pair."""
     crossfade = StreamingCrossfadeFilter(

@@ -18,8 +18,9 @@ ECHO_DECAYS = (0.5, 0.25, 0.12, 0.06)
 ECHO_DECLICK_S = 0.015
 # Gain taken off the incoming track while the voice talks over it (0.6 is about -8 dB).
 VOICE_OVER_DUCK_DEPTH = 0.6
-# Ceiling of the voice over mix: a full-scale voice over full-scale music would clip.
-VOICE_OVER_MIX_CEILING_DB = -0.5
+# Ceiling of a mix that sums two streams at full level (a voice over music, an echo out's
+# taps over the next track): full-scale material would clip.
+MIX_CEILING_DB = -0.5
 
 
 class Filter(ABC):
@@ -401,6 +402,7 @@ class StreamingCrossfadeFilter(Filter):
         pre_crossfade_samples: int = 0,
         fadeout_curve: str = "qsin",
         fadein_curve: str = "qsin",
+        limit_db: float | None = None,
     ):
         """
         Initialize streaming crossfade filter.
@@ -410,11 +412,13 @@ class StreamingCrossfadeFilter(Filter):
             untouched before the overlap begins.
         :param fadeout_curve: afade curve applied to the outgoing stream.
         :param fadein_curve: afade curve applied to the incoming stream.
+        :param limit_db: Peak ceiling in dB the mix is limited to; None leaves it unlimited.
         """
         self.crossfade_samples = crossfade_samples
         self.pre_crossfade_samples = pre_crossfade_samples
         self.fadeout_curve = fadeout_curve
         self.fadein_curve = fadein_curve
+        self.limit_db = limit_db
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -426,13 +430,16 @@ class StreamingCrossfadeFilter(Filter):
         if pre:
             fadeout_chain += f",atrim=end_sample={pre + ns}"
             fadein_chain += f",adelay={pre}S:all=1"
+        mix = "[xfade_out][xfade_in]amix=inputs=2:normalize=0"
+        if self.limit_db is not None:
+            mix += f",alimiter=limit={self.limit_db}dB:level=false:latency=true"
         # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated
         # material. The final output stays unlabeled: this filter ends the chain and an
         # unconnected named output fails the whole graph.
         return [
             f"{input_fadeout_label}{fadeout_chain}[xfade_out]",
             f"{input_fadein_label}{fadein_chain}[xfade_in]",
-            "[xfade_out][xfade_in]amix=inputs=2:normalize=0",
+            mix,
         ]
 
     def __repr__(self) -> str:
@@ -486,7 +493,7 @@ class VoiceOverMixFilter(Filter):
         return [
             f"{input_fadein_label}{fadein_chain}[voice_over_in]",
             f"{input_fadeout_label}[voice_over_in]amix=inputs=2:normalize=0,"
-            f"alimiter=limit={VOICE_OVER_MIX_CEILING_DB}dB:level=false:latency=true",
+            f"alimiter=limit={MIX_CEILING_DB}dB:level=false:latency=true",
         ]
 
     def __repr__(self) -> str:

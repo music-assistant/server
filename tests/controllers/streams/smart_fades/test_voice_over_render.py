@@ -12,8 +12,8 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.controllers.streams.smart_fades.fades import VoiceOverFade
 from music_assistant.controllers.streams.smart_fades.filters import (
+    MIX_CEILING_DB,
     VOICE_OVER_DUCK_DEPTH,
-    VOICE_OVER_MIX_CEILING_DB,
 )
 
 PCM = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2)
@@ -85,7 +85,7 @@ async def test_voice_over_stays_under_the_ceiling() -> None:
     # the voice alone before the overlap is the clip's own audio, untouched
     blend = mix[int(fade.timing_info.pre_crossfade_duration * SR) * 2 :]
     peak_db = 20 * np.log10(float(np.max(np.abs(blend))))
-    assert peak_db <= VOICE_OVER_MIX_CEILING_DB + 0.05
+    assert peak_db <= MIX_CEILING_DB + 0.05
 
 
 async def test_a_streamed_incoming_part_blends_only_the_overlap_and_ramp() -> None:

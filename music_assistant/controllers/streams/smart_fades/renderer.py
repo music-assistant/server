@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    MIX_CEILING_DB,
     EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
@@ -125,7 +126,8 @@ class TransitionRenderer:
         self._append_shelf(filters, plan.eq_plan.mid_in, "fadein")
         # the streaming blend is positioned at the planned pre-point, so it can
         # emit while the incoming window is still arriving; the hard cut at the
-        # planned end keeps any time-stretch drift out of the incoming audio
+        # planned end keeps any time-stretch drift out of the incoming audio. An echo
+        # out sums its taps with the incoming track at full level, so its mix is limited
         filters.append(
             StreamingCrossfadeFilter(
                 logger=self.logger,
@@ -133,6 +135,7 @@ class TransitionRenderer:
                 pre_crossfade_samples=pre_crossfade_samples,
                 fadeout_curve=plan.fadeout_curve,
                 fadein_curve=plan.fadein_curve,
+                limit_db=MIX_CEILING_DB if plan.echo is not None else None,
             )
         )
         return filters

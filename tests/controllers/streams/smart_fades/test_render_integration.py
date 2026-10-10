@@ -22,12 +22,16 @@ from music_assistant.controllers.streams.smart_fades.fades import (
 from music_assistant.controllers.streams.smart_fades.filters import (
     ECHO_DECAYS,
     ECHO_DECLICK_S,
+    MIX_CEILING_DB,
     EchoOutFilter,
     Filter,
     HighPassSweepFilter,
     StreamingCrossfadeFilter,
 )
-from music_assistant.controllers.streams.smart_fades.models import TransitionStyle
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionPlan,
+    TransitionStyle,
+)
 from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateFactory,
@@ -163,6 +167,51 @@ async def _apply(fade: SmartFade, fade_out: bytes, fade_in: bytes) -> np.ndarray
     """Apply a built fade through the real mixer and return the rendered mix."""
     chunks = [chunk async for chunk in fade.apply(fade_out, fade_in, PCM)]
     return np.frombuffer(b"".join(chunks), dtype=np.float32)
+
+
+def _echo_out_plan() -> TransitionPlan:
+    """Return the finalized echo out of a 120 BPM track into one 30% faster."""
+    logger = logging.getLogger()
+    out_analysis, in_analysis = _analysis(120.0, 240.0), _analysis(156.0, 240.0)
+    ctx = build_transition_context(out_analysis, in_analysis, 45.0, logger)
+    candidate = CandidateFactory(ctx, logger).build(next(iter(EchoOutGenerator().generate(ctx))))
+    assert candidate is not None
+    plan = PlanAssembler(ctx, logger).finalize(candidate)
+    assert plan.style is TransitionStyle.ECHO_OUT
+    return plan
+
+
+def _beat_bursts(cut: float, beat: float, level: float, last_level: float) -> np.ndarray:
+    """
+    Build a 45s outgoing stream with a Hann-shaped burst on every beat.
+
+    :param cut: The echo's cut; the burst on the beat before it is 1 kHz, the others 2 kHz.
+    :param beat: Seconds per beat.
+    :param level: Peak of every other burst.
+    :param last_level: Peak of the burst on the beat before the cut.
+    """
+    mono = np.zeros(int(45.0 * SR), dtype=np.float32)
+    burst = np.hanning(int(0.05 * SR))
+    t = np.arange(len(burst)) / SR
+    last = round((cut - beat) / beat)
+    for index in range(int(45.0 / beat)):
+        freq, peak = (1000.0, last_level) if index == last else (2000.0, level)
+        start = int(index * beat * SR)
+        mono[start : start + len(burst)] = peak * burst * np.sin(2 * np.pi * freq * t)
+    return np.repeat(mono, 2)
+
+
+async def _render_plan(
+    plan: TransitionPlan, fade_out: np.ndarray, fade_in: np.ndarray, *, limited: bool = True
+) -> np.ndarray:
+    """Render a plan through the real mixer; ``limited=False`` drops the mix limiter."""
+    fade = SmartCrossFade(logging.getLogger(), _analysis(120.0, 240.0), _analysis(156.0, 240.0))
+    fade.filters, fade.timing_info = fade.renderer.render(plan, PCM, len(fade_in.tobytes()))
+    if not limited:
+        blend = fade.filters[-1]
+        assert isinstance(blend, StreamingCrossfadeFilter)
+        blend.limit_db = None
+    return await _apply(fade, fade_out.tobytes(), fade_in.tobytes())
 
 
 def _cf_slice(mix: np.ndarray, fade: SmartCrossFade, frac0: float, frac1: float) -> np.ndarray:
@@ -347,30 +396,13 @@ async def test_a_filter_out_plan_sweeps_the_outgoing_bass_away() -> None:
 @pytest.mark.asyncio
 async def test_an_echo_out_plan_echoes_the_last_beat_over_the_next_track() -> None:
     """A finalized echo out stops the outgoing track at its cut and echoes the beat before it."""
-    logger = logging.getLogger()
-    out_analysis, in_analysis = _analysis(120.0, 240.0), _analysis(156.0, 240.0)
-    ctx = build_transition_context(out_analysis, in_analysis, 45.0, logger)
-    candidate = CandidateFactory(ctx, logger).build(next(iter(EchoOutGenerator().generate(ctx))))
-    assert candidate is not None
-    plan = PlanAssembler(ctx, logger).finalize(candidate)
-    assert plan.style is TransitionStyle.ECHO_OUT
-    fade_in = _tone(5000.0, 45.0)
-    # the mixer renders exactly this plan
-    fade = SmartCrossFade(logger, out_analysis, in_analysis)
-    fade.filters, fade.timing_info = fade.renderer.render(plan, PCM, len(fade_in.tobytes()))
+    plan = _echo_out_plan()
     assert plan.echo is not None
     cut, beat = plan.echo.cut_s, plan.echo.beat_s
-    # a Hann-shaped burst on every outgoing beat: 1 kHz on the one before the cut, else 2 kHz
-    mono = np.zeros(int(45.0 * SR), dtype=np.float32)
-    burst = np.hanning(int(0.05 * SR))
-    t = np.arange(len(burst)) / SR
-    for index in range(int(45.0 / beat)):
-        freq = 1000.0 if index == round((cut - beat) / beat) else 2000.0
-        start = int(index * beat * SR)
-        mono[start : start + len(burst)] = 0.3 * burst * np.sin(2 * np.pi * freq * t)
-    fade_out = np.repeat(mono, 2)
+    fade_in = _tone(5000.0, 45.0)
+    fade_out = _beat_bursts(cut, beat, 0.3, 0.3)
 
-    mix = await _apply(fade, fade_out.tobytes(), fade_in.tobytes())
+    mix = await _render_plan(plan, fade_out, fade_in)
 
     # the outgoing track plays as recorded up to the cut, the next track not at all
     np.testing.assert_allclose(_window(mix, 0.0, cut), _window(fade_out, 0.0, cut), atol=1e-6)
@@ -385,6 +417,31 @@ async def test_an_echo_out_plan_echoes_the_last_beat_over_the_next_track() -> No
     # the next track enters at full level on its downbeat at the cut
     entered = _band_rms(_window(mix, cut + 0.05, end), 4950, 5050)
     assert entered / _band_rms(_window(fade_in, 0.05, end - cut), 4950, 5050) > 0.97
+
+
+@pytest.mark.asyncio
+async def test_an_echo_out_over_full_level_material_stays_under_the_ceiling() -> None:
+    """Near-full-scale taps over a near-full-scale next track are limited, not clipped."""
+    plan = _echo_out_plan()
+    assert plan.echo is not None
+    cut, beat = plan.echo.cut_s, plan.echo.beat_s
+    fade_in = _tone(5000.0, 45.0, level=0.98)
+    # quiet beats before the cut, a 0.98 peak beat the echo repeats
+    fade_out = _beat_bursts(cut, beat, 0.3, 0.98)
+
+    mix = await _render_plan(plan, fade_out, fade_in)
+    unlimited = await _render_plan(plan, fade_out, fade_in, limited=False)
+
+    peak_db = 20 * np.log10(float(np.max(np.abs(mix))))
+    assert peak_db <= MIX_CEILING_DB + 0.05
+    assert 20 * np.log10(float(np.max(np.abs(unlimited)))) > 0.0
+    # the limiter's latency compensation neither shifts nor pads the stream
+    assert len(mix) == len(unlimited)
+    frames = round((plan.fade_out_window + 45.0 - plan.crossfade_duration) * SR)
+    assert len(mix) == frames * 2
+    np.testing.assert_allclose(
+        _window(mix, 0.0, cut - beat - 0.1), _window(fade_out, 0.0, cut - beat - 0.1), atol=1e-5
+    )
 
 
 @pytest.mark.asyncio

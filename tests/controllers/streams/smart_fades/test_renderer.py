@@ -9,6 +9,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    MIX_CEILING_DB,
     EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
@@ -219,6 +220,9 @@ class TestDressedRendering:
         )
         # the sweep spans the overlap
         assert timing.pre_crossfade_duration == pytest.approx(32.0)
+        blend = filters[-1]
+        assert isinstance(blend, StreamingCrossfadeFilter)
+        assert blend.limit_db is None
 
     def test_echo_out_renders_on_the_outgoing_side(self) -> None:
         """The echo cuts the outgoing stream at its cut, ahead of the blend that starts there."""
@@ -235,6 +239,10 @@ class TestDressedRendering:
         assert isinstance(echo, EchoOutFilter)
         assert (echo.cut_s, echo.beat_s) == (38.0, 0.5)
         assert timing.pre_crossfade_duration == pytest.approx(38.0)
+        # the taps sum with the next track at full level, so the mix is limited
+        blend = filters[-1]
+        assert isinstance(blend, StreamingCrossfadeFilter)
+        assert blend.limit_db == MIX_CEILING_DB
 
 
 class TestMidSwapRendering:
