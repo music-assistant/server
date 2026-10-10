@@ -3206,6 +3206,21 @@ async def test_edit_stores_the_image_of_a_url_track_on_an_album(mass: MusicAssis
     ]
 
 
+async def test_summary_shows_the_album_thumb_through_its_album(mass: MusicAssistant) -> None:
+    """A track summary shows its album thumb without carrying it among its own images."""
+    db_track = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+
+    (summary,) = await mass.music.tracks.get_library_items_by_query(
+        in_library_only=False, summary=True
+    )
+
+    assert summary.image == ALBUM_THUMB
+    assert summary.metadata.images == [TRACK_THUMB]
+    # a client writing back the summary it listed
+    await mass.music.tracks.update_item_in_library(db_track.item_id, summary)
+    assert await _stored_image_paths(mass, db_track.item_id) == [TRACK_THUMB.path]
+
+
 async def test_library_overwrite_keeps_an_album_thumb_the_track_stores(
     mass: MusicAssistant,
 ) -> None:

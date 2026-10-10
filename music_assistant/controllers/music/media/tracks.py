@@ -1788,9 +1788,6 @@ class TracksController(MediaControllerBase[Track]):
             )
             item.disc_number = album["disc_number"] or 0
             item.track_number = album["track_number"] or 0
-            if album_thumb:
-                # always prefer album image over track image
-                item.metadata.images = UniqueList([album_thumb])
         return item
 
     async def _get_similar_tracks_from_provider(
