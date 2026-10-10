@@ -10,7 +10,7 @@
     },
     "base_url": {
       "label": "Internal URL",
-      "description": "The URL that Music Assistant shares with devices and apps on your local network. \nThe default \"auto\" automatically resolves to the server's primary IP address and the configured port at startup. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy."
+      "description": "The URL that devices and apps on your local network use to reach Music Assistant. \nSet it yourself when the detected address does not work for them, for example behind a reverse proxy, across VLANs or with a custom hostname."
     },
     "external_url": {
       "label": "External URL",
