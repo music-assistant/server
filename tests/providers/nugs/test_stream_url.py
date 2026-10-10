@@ -89,7 +89,7 @@ def _set_quality(provider: NugsProvider, quality: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("quality", "platform_id"), [("lossless", 2), ("mqa", 5), ("lossy", -1)])
+@pytest.mark.parametrize(("quality", "platform_id"), [("lossless", 2), ("lossy", -1)])
 async def test_stream_url_uses_quality_on_high_quality_plan(
     provider: NugsProvider, quality: str, platform_id: int
 ) -> None:
@@ -105,7 +105,6 @@ async def test_stream_url_uses_quality_on_high_quality_plan(
 @pytest.mark.asyncio
 async def test_stream_url_caps_quality_to_plan(provider: NugsProvider) -> None:
     """A plan without high quality streaming only requests the lossy stream."""
-    _set_quality(provider, "mqa")
     _stub_get_data(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": False}})
     session_get = _stub_http_session(provider)
 

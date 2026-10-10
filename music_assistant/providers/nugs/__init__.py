@@ -70,9 +70,8 @@ SUPPORTED_FEATURES = {
 CONF_QUALITY = "quality"
 QUALITY_LOSSY = "lossy"
 QUALITY_LOSSLESS = "lossless"
-QUALITY_MQA = "mqa"
 # platformID values nugs.net's own clients send to subPlayer.aspx for each quality
-PLATFORM_IDS = {QUALITY_LOSSY: -1, QUALITY_LOSSLESS: 2, QUALITY_MQA: 5}
+PLATFORM_IDS = {QUALITY_LOSSY: -1, QUALITY_LOSSLESS: 2}
 
 
 async def setup(
@@ -87,7 +86,7 @@ class NugsProvider(MusicProvider):
 
     _auth_token: str | None = None
     _token_expiry: float = 0
-    _warned_plan_quality: bool = False
+    _plan_quality_logged: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -99,7 +98,6 @@ class NugsProvider(MusicProvider):
                 default_value=QUALITY_LOSSLESS,
                 options=[
                     ConfigValueOption(QUALITY_LOSSLESS),
-                    ConfigValueOption(QUALITY_MQA),
                     ConfigValueOption(QUALITY_LOSSY),
                 ],
             ),
@@ -448,7 +446,7 @@ class NugsProvider(MusicProvider):
 
     async def _get_stream_url(self, item_id: str) -> str:
         """
-        Return the stream url for a track in the best quality available.
+        Return the stream url for a track in the configured quality, or lossy when unavailable.
 
         :param item_id: The nugs.net track id.
         """
@@ -496,16 +494,14 @@ class NugsProvider(MusicProvider):
 
         :param plan: The plan object of the user's nugs.net subscription.
         """
-        quality = str(self.config.get_value(CONF_QUALITY) or QUALITY_LOSSLESS)
-        if quality not in PLATFORM_IDS:
-            quality = QUALITY_LOSSLESS
+        quality = str(self.config.get_value(CONF_QUALITY))
         if quality != QUALITY_LOSSY and not plan.get("isHighQuality"):
-            if not self._warned_plan_quality:
-                self.logger.warning(
+            if not self._plan_quality_logged:
+                self.logger.info(
                     "Your nugs.net plan does not include %s streaming, using lossy instead",
                     quality,
                 )
-                self._warned_plan_quality = True
+                self._plan_quality_logged = True
             return QUALITY_LOSSY
         return quality
 

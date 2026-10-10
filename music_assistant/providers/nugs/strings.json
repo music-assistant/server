@@ -2,30 +2,22 @@
   "config_entries": {
     "quality": {
       "label": "Stream Quality",
-      "description": "Preferred streaming quality. Lossless and MQA need a nugs.net plan that includes HiFi streaming; lossy is used otherwise, or when a show isn't available in the selected quality.",
+      "description": "Preferred streaming quality. Lossless needs a nugs.net plan that includes HiFi streaming; lossy is used otherwise, or when a show isn't available in lossless.",
       "options": {
         "lossless": "Lossless",
-        "mqa": "MQA",
         "lossy": "Lossy"
       },
       "option_descriptions": {
         "lossless": "CD quality or better. Plays on any device.",
-        "mqa": "MQA-encoded lossless. Only unfolds to hi-res on an MQA-capable DAC, and only when volume normalization and DSP are off; elsewhere it sounds slightly worse than Lossless.",
         "lossy": "Compressed stream, uses the least bandwidth."
       }
     }
   },
   "media": {
     "recommendations": {
-      "nugs_popular_shows": {
-        "name": "Most Popular"
-      },
-      "nugs_recommended_shows": {
-        "name": "Recommended Shows"
-      },
-      "nugs_recent_shows": {
-        "name": "Recent Shows"
-      }
+      "nugs_popular_shows": { "name": "Most Popular" },
+      "nugs_recommended_shows": { "name": "Recommended Shows" },
+      "nugs_recent_shows": { "name": "Recent Shows" }
     }
   },
   "manifest": {
