@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, SortField
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
@@ -101,7 +101,7 @@ async def test_reconcile_duplicate_albums_query_matches_unknown_or_duplicate_and
         f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {refresh_before})"
     ]
     assert kwargs["limit"] == METADATA_SCAN_BATCH_SIZE
-    assert kwargs["order_by"] == "random"
+    assert kwargs["sort_field"] == SortField.RANDOM
 
 
 async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(

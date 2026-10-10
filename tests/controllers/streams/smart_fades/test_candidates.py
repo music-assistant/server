@@ -221,3 +221,32 @@ class TestFactoryMetrics:
         candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 1))
         assert candidate is not None
         assert candidate.ideal_bars == 1
+
+
+class TestQuickFadeBarsLadder:
+    """The quick-fade overlap length follows the tempo gap, capped short across meters."""
+
+    @pytest.mark.parametrize(
+        ("incoming_bpm", "same_meter_bars", "cross_meter_bars"),
+        [(126.0, 4, 2), (138.0, 2, 2), (150.0, 1, 1)],
+    )
+    def test_ladder_top_by_tempo_gap_and_meter(
+        self, incoming_bpm: float, same_meter_bars: int, cross_meter_bars: int
+    ) -> None:
+        """
+        A meter mismatch caps the tempo ladder at 2 bars instead of replacing it.
+
+        :param incoming_bpm: Incoming tempo against a 120 BPM outgoing track (5/15/25 % gap).
+        :param same_meter_bars: Expected top rung when both tracks are in 4/4.
+        :param cross_meter_bars: Expected top rung when the incoming track is in 3/4.
+        """
+        out = _analysis(120.0)
+        same_meter = _ctx(out, _analysis(incoming_bpm))
+        inc_three_four = _analysis(incoming_bpm)
+        inc_three_four.beats_per_bar = 3
+        cross_meter = _ctx(out, inc_three_four)
+
+        assert not same_meter.cross_meter
+        assert cross_meter.cross_meter
+        assert bars_ladder(same_meter, TransitionTier.QUICK_FADE)[0] == same_meter_bars
+        assert bars_ladder(cross_meter, TransitionTier.QUICK_FADE)[0] == cross_meter_bars

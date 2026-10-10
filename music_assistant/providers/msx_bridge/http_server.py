@@ -19,7 +19,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import aiohttp
 from aiohttp import WSMsgType, web
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, SortDirection, SortField
 from music_assistant_models.errors import InvalidProviderURI
 from music_assistant_models.media_items import AudioFormat, Track
 
@@ -967,7 +967,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         try:
             tracks = await asyncio.wait_for(
                 self.provider.mass.music.tracks.library_items(
-                    limit=50, order_by="last_played", summary=False
+                    limit=50,
+                    sort_field=SortField.LAST_PLAYED,
+                    sort_direction=SortDirection.ASC,
+                    summary=False,
                 ),
                 timeout=10.0,
             )
@@ -1343,7 +1346,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         prefix = self._get_prefix(request)
         start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=50, order_by="last_played", summary=False
+            limit=50,
+            sort_field=SortField.LAST_PLAYED,
+            sort_direction=SortDirection.ASC,
+            summary=False,
         )
         playlist = map_tracks_to_msx_playlist(
             list(tracks),
@@ -2257,7 +2263,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """Return recently played items."""
         limit = _int_param(request.query, "limit", 20)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=limit, order_by="last_played", summary=False
+            limit=limit,
+            sort_field=SortField.LAST_PLAYED,
+            sort_direction=SortDirection.ASC,
+            summary=False,
         )
         return web.json_response(
             {

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from music_assistant_models.enums import SortField
 from music_assistant_models.media_items import Playlist, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 
@@ -110,7 +111,7 @@ async def test_get_library_tracks_genre_then_topup() -> None:
 
     # genre query used random_play_count ordering and the genre id we collected
     first_call = queues.mass.music.tracks.library_items.await_args_list[0]
-    assert first_call.kwargs["order_by"] == "random_play_count"
+    assert first_call.kwargs["sort_field"] == SortField.RANDOM_PLAY_COUNT
     assert first_call.kwargs["genre"] == [10]
     # genre matches lead, batch size is respected
     assert result[:2] == genre_tracks
