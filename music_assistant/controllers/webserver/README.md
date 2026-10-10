@@ -194,7 +194,8 @@ Manages individual WebSocket connections:
    `auth/authorization_url` command) answers with the Home Assistant `authorization_url`
 2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant
 3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state, on the
-   External URL when the sign-in started there or in the Remote Access app, else on the base URL
+   External URL when the sign-in started there or over Remote Access (judged by the return URL,
+   or for a native app by how its websocket connection came in), else on the base URL
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
 6. **Token Generation**: A short-lived MA token is created and the callback answers with

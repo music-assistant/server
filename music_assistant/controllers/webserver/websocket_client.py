@@ -94,6 +94,16 @@ class WebsocketClientHandler:
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
             self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
+    @property
+    def webrtc_session_id(self) -> str | None:
+        """Return the id of the WebRTC session this client connected through, if any."""
+        return self._webrtc_session_id
+
+    @property
+    def request_host(self) -> str:
+        """Return the host (and any port) the client says it used to reach the server."""
+        return self.request.headers.get("X-Forwarded-Host") or self.request.host
+
     async def disconnect(self) -> None:
         """Disconnect client."""
         self._cancel()
