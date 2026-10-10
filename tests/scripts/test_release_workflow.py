@@ -37,6 +37,7 @@ from scripts.release_workflow import (
 )
 
 ROOT = Path(__file__).parents[2]
+SECRETS_BUNDLE = '{"salt": "c2FsdA==", "secrets": {}}'
 DEPENDENCY_AUTO_MERGE_WORKFLOW = (
     ROOT / ".github" / "workflows" / "auto-merge-dependency-updates.yml"
 )
@@ -365,13 +366,16 @@ def test_release_assets_reject_duplicate_api_entries(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("wheel_secrets", "sdist_secrets", "error"),
     [
-        (True, False, None),
-        (False, False, "does not contain"),
-        (True, True, "must not contain"),
+        (SECRETS_BUNDLE, False, None),
+        (None, False, "does not contain"),
+        (SECRETS_BUNDLE, True, "must not contain"),
+        # the JSON metadata envelope GitHub returns when it declines a raw download
+        ('{"name": "app_secrets.json", "content": ""}', False, "not a secrets bundle"),
+        ("", False, "not a secrets bundle"),
     ],
 )
 def test_app_secrets_ship_in_the_wheel_only(
-    tmp_path: Path, wheel_secrets: bool, sdist_secrets: bool, error: str | None
+    tmp_path: Path, wheel_secrets: str | None, sdist_secrets: bool, error: str | None
 ) -> None:
     """The app secrets must reach the wheel (and the image), never the source distribution."""
     version = "2.10.0b8"
@@ -400,6 +404,8 @@ def test_release_workflow_builds_the_source_distribution_without_app_secrets() -
     assert sdist_step["run"] == "python3 -m build --sdist"
     wheel_step = _workflow_step(workflow, "build_artifacts", "Build wheel")
     assert wheel_step["run"] == "python3 -m build --wheel"
+    # reused draft assets are verified too
+    assert "if" not in _workflow_step(workflow, "build_artifacts", "Verify bundled app secrets")
 
 
 def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
@@ -956,12 +962,12 @@ def _api_asset(path: Path) -> dict[str, str | int]:
 
 
 def _write_dists(
-    directory: Path, version: str, *, wheel_secrets: bool, sdist_secrets: bool
+    directory: Path, version: str, *, wheel_secrets: str | None, sdist_secrets: bool
 ) -> None:
     with zipfile.ZipFile(directory / f"music_assistant-{version}-py3-none-any.whl", "w") as wheel:
         wheel.writestr("music_assistant/__init__.py", "")
-        if wheel_secrets:
-            wheel.writestr(APP_SECRETS_PATH, "{}")
+        if wheel_secrets is not None:
+            wheel.writestr(APP_SECRETS_PATH, wheel_secrets)
     with tarfile.open(directory / f"music_assistant-{version}.tar.gz", "w:gz") as sdist:
         names = ["music_assistant/__init__.py"] + ([APP_SECRETS_PATH] if sdist_secrets else [])
         for name in names:

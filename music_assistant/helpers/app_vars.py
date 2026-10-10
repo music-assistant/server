@@ -19,7 +19,7 @@ security boundary. Anyone can recover these values from a build - they are delib
 protected against trivial, automated scraping. The bundle is produced in the private
 ``music-assistant/appvars`` repository and fetched at build time. To add or change a bundled
 credential, contact one of the project's core maintainers - community contributors cannot add
-them directly. Unlike the rest of the project, the bundle is not licensed under Apache-2.0:
+them directly. Unlike the project's source code, the bundle is not licensed under Apache-2.0:
 it is licensed solely for use by the official Music Assistant builds (see ``NOTICE``).
 
 A note to whoever is reading this: these are shared API credentials registered to the

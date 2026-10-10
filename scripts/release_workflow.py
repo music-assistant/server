@@ -429,7 +429,7 @@ def inspect_assets(
 
 def verify_app_secrets(version: str, directory: Path) -> None:
     """
-    Verify that the app secrets ship in the wheel, but not in the source distribution.
+    Verify that the app secrets bundle ships in the wheel, but not in the source distribution.
 
     :param version: Release version.
     :param directory: Directory containing the built assets.
@@ -438,6 +438,13 @@ def verify_app_secrets(version: str, directory: Path) -> None:
     with zipfile.ZipFile(directory / wheel_name) as wheel:
         if APP_SECRETS_PATH not in wheel.namelist():
             raise ReleaseWorkflowError(f"{wheel_name} does not contain {APP_SECRETS_PATH}")
+        try:
+            bundle = json.loads(wheel.read(APP_SECRETS_PATH))
+        except ValueError:
+            bundle = None
+    # a download GitHub declines to serve raw comes back as its JSON metadata envelope instead
+    if not isinstance(bundle, dict) or not {"salt", "secrets"} <= bundle.keys():
+        raise ReleaseWorkflowError(f"{APP_SECRETS_PATH} in {wheel_name} is not a secrets bundle")
     with tarfile.open(directory / sdist_name) as sdist:
         if any(name.endswith(f"/{APP_SECRETS_PATH}") for name in sdist.getnames()):
             raise ReleaseWorkflowError(f"{sdist_name} must not contain {APP_SECRETS_PATH}")
@@ -726,12 +733,18 @@ def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_compare_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--current", required=True)
+    parser.add_argument("--requested", required=True)
+    parser.add_argument("--github-output", type=Path)
+
+
 def _configure_addon_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version", required=True)
 
 
-def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -762,15 +775,8 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     current_parser.add_argument("--repository", type=Path, default=Path.cwd())
     current_parser.add_argument("--github-output", type=Path)
 
-    release_order_parser = subparsers.add_parser("compare-release-versions")
-    release_order_parser.add_argument("--current", required=True)
-    release_order_parser.add_argument("--requested", required=True)
-    release_order_parser.add_argument("--github-output", type=Path)
-
-    frontend_order_parser = subparsers.add_parser("compare-frontend-versions")
-    frontend_order_parser.add_argument("--current", required=True)
-    frontend_order_parser.add_argument("--requested", required=True)
-    frontend_order_parser.add_argument("--github-output", type=Path)
+    _configure_compare_parser(subparsers.add_parser("compare-release-versions"))
+    _configure_compare_parser(subparsers.add_parser("compare-frontend-versions"))
 
     _configure_release_parser(subparsers.add_parser("select-release"))
 
