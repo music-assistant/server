@@ -936,8 +936,10 @@ async def test_set_provider_mappings_upsert_writes_explicit_in_library(
 async def test_library_items_default_filters_in_library_only() -> None:
     """Test that library_items passes in_library_only=True by default."""
     ctrl = Mock(spec=MediaControllerBase)
+    ctrl.media_type = MediaType.TRACK
     ctrl._ensure_provider_filter = Mock(return_value=None)
     ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.resolve_sort = MediaControllerBase.resolve_sort.__get__(ctrl)
     ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
 
     await ctrl.library_items()
@@ -950,8 +952,10 @@ async def test_library_items_default_filters_in_library_only() -> None:
 async def test_library_items_defaults_to_summary() -> None:
     """library_items defaults to summary=True so list endpoints return slim rows."""
     ctrl = Mock(spec=MediaControllerBase)
+    ctrl.media_type = MediaType.TRACK
     ctrl._ensure_provider_filter = Mock(return_value=None)
     ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.resolve_sort = MediaControllerBase.resolve_sort.__get__(ctrl)
     ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
 
     await ctrl.library_items()

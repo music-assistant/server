@@ -2,102 +2,87 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Final
 
 from music_assistant_models.api import SortOptionInfo
 from music_assistant_models.enums import MediaType, SortDirection, SortField
 
-
-@dataclass
-class SortFieldDefinition:
-    """
-    Definition and metadata for a sort field.
-
-    Used internally by the server to provide sort options to clients.
-    """
-
-    field: SortField
-    supports_direction: bool
-    default_direction: SortDirection | None = None
-    label_key: str | None = None
-
-
-# Complete definitions for all sort fields
-SORT_FIELD_DEFINITIONS: dict[SortField, SortFieldDefinition] = {
-    SortField.NAME: SortFieldDefinition(
+# what each sort field offers: whether it takes a direction and its default, and the label key
+SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
+    SortField.NAME: SortOptionInfo(
         field=SortField.NAME,
         supports_direction=True,
         default_direction=SortDirection.ASC,
         label_key="name",
     ),
-    SortField.SORT_NAME: SortFieldDefinition(
+    SortField.SORT_NAME: SortOptionInfo(
         field=SortField.SORT_NAME,
         supports_direction=True,
         default_direction=SortDirection.ASC,
         label_key="sort_name",
     ),
-    SortField.TIMESTAMP_ADDED: SortFieldDefinition(
+    SortField.TIMESTAMP_ADDED: SortOptionInfo(
         field=SortField.TIMESTAMP_ADDED,
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="timestamp_added",
     ),
-    SortField.TIMESTAMP_MODIFIED: SortFieldDefinition(
+    SortField.TIMESTAMP_MODIFIED: SortOptionInfo(
         field=SortField.TIMESTAMP_MODIFIED,
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="timestamp_modified",
     ),
-    SortField.LAST_PLAYED: SortFieldDefinition(
+    SortField.LAST_PLAYED: SortOptionInfo(
         field=SortField.LAST_PLAYED,
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="last_played",
     ),
-    SortField.PLAY_COUNT: SortFieldDefinition(
+    SortField.PLAY_COUNT: SortOptionInfo(
         field=SortField.PLAY_COUNT,
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="play_count",
     ),
-    SortField.DURATION: SortFieldDefinition(
+    SortField.DURATION: SortOptionInfo(
         field=SortField.DURATION,
         supports_direction=True,
         default_direction=SortDirection.ASC,
         label_key="duration",
     ),
-    SortField.YEAR: SortFieldDefinition(
+    SortField.YEAR: SortOptionInfo(
         field=SortField.YEAR,
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="year",
     ),
-    SortField.POSITION: SortFieldDefinition(
+    SortField.POSITION: SortOptionInfo(
         field=SortField.POSITION,
         supports_direction=True,
         default_direction=SortDirection.ASC,
         label_key="position",
     ),
-    SortField.ARTIST_NAME: SortFieldDefinition(
+    SortField.ARTIST_NAME: SortOptionInfo(
         field=SortField.ARTIST_NAME,
         supports_direction=True,
         default_direction=SortDirection.ASC,
         label_key="artist_name",
     ),
-    SortField.RANDOM: SortFieldDefinition(
+    SortField.RANDOM: SortOptionInfo(
         field=SortField.RANDOM,
         supports_direction=False,
         label_key="random",
     ),
-    SortField.RANDOM_PLAY_COUNT: SortFieldDefinition(
+    SortField.RANDOM_PLAY_COUNT: SortOptionInfo(
         field=SortField.RANDOM_PLAY_COUNT,
         supports_direction=False,
         label_key="random_play_count",
     ),
 }
 
-# Maps each MediaType to its available sort fields
-MEDIA_TYPE_SORT_FIELDS: dict[MediaType, list[SortField]] = {
+# the sort fields the library listing of each media type offers
+MEDIA_TYPE_SORT_FIELDS: Final[dict[MediaType, list[SortField]]] = {
     MediaType.ARTIST: [
         SortField.NAME,
         SortField.SORT_NAME,
@@ -188,32 +173,18 @@ MEDIA_TYPE_SORT_FIELDS: dict[MediaType, list[SortField]] = {
 
 def get_default_direction(field: SortField) -> SortDirection:
     """
-    Get the default sort direction for a field.
+    Get the default sort direction of a field.
 
-    :param field: The SortField to get default direction for.
-    :return: Default SortDirection (ASC if none defined).
+    :param field: The sort field.
+    :return: The field's default direction, ASC for fields without one.
     """
-    definition = SORT_FIELD_DEFINITIONS.get(field)
-    if definition and definition.default_direction:
-        return definition.default_direction
-    return SortDirection.ASC
+    return SORT_FIELD_DEFINITIONS[field].default_direction or SortDirection.ASC
 
 
 def get_sort_options_for_media_type(media_type: MediaType) -> list[SortOptionInfo]:
     """
-    Get available sort options for a media type.
+    Get the sort options the library listing of a media type offers.
 
-    :param media_type: The MediaType to get sort options for.
-    :return: List of SortOptionInfo for the media type.
+    :param media_type: The media type of the listing.
     """
-    fields = MEDIA_TYPE_SORT_FIELDS.get(media_type, [])
-    return [
-        SortOptionInfo(
-            field=definition.field,
-            supports_direction=definition.supports_direction,
-            default_direction=definition.default_direction,
-            label_key=definition.label_key,
-        )
-        for field in fields
-        if (definition := SORT_FIELD_DEFINITIONS.get(field))
-    ]
+    return [SORT_FIELD_DEFINITIONS[field] for field in MEDIA_TYPE_SORT_FIELDS.get(media_type, [])]

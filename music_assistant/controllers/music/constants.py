@@ -65,24 +65,32 @@ CONF_TRACK_RECONCILIATION_RESCAN_DUE: Final[str] = "track_reconciliation_rescan_
 # max difference in seconds between two track durations to still consider them the same
 # recording; matches the widest duration window compare_track is willing to accept
 TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
-# Base SQL mappings for sort fields (can be overridden per MediaType)
-BASE_SORT_FIELD_SQL = {
-    SortField.NAME: "search_name",
-    SortField.SORT_NAME: "search_sort_name",
-    SortField.TIMESTAMP_ADDED: "timestamp_added",
-    SortField.TIMESTAMP_MODIFIED: "timestamp_modified",
-    SortField.LAST_PLAYED: "last_played",
-    SortField.PLAY_COUNT: "play_count",
-    SortField.DURATION: "duration",
-    SortField.YEAR: "year",
-    SortField.POSITION: "position",
-    # ARTIST_NAME is media-type specific, implemented in subclasses
+
+# ORDER BY expression per sort field, with `{prefix}` standing for the "<table>." qualifier
+# of the columns (empty when the listing is a derived query). ARTIST_NAME joins another table,
+# so the media controllers that offer it render it themselves.
+BASE_SORT_FIELD_SQL: Final[dict[SortField, str]] = {
+    SortField.NAME: "{prefix}search_name",
+    SortField.SORT_NAME: "{prefix}search_sort_name",
+    SortField.TIMESTAMP_ADDED: "{prefix}timestamp_added",
+    SortField.TIMESTAMP_MODIFIED: "{prefix}timestamp_modified",
+    SortField.LAST_PLAYED: "{prefix}last_played",
+    SortField.PLAY_COUNT: "{prefix}play_count",
+    SortField.DURATION: "{prefix}duration",
+    SortField.YEAR: "{prefix}year",
+    SortField.POSITION: "{prefix}position",
     SortField.RANDOM: "RANDOM()",
-    SortField.RANDOM_PLAY_COUNT: "RANDOM(), play_count",
+    # least played first, shuffled within equal play counts
+    SortField.RANDOM_PLAY_COUNT: "COALESCE({prefix}play_count, 0), RANDOM()",
 }
 
-# Legacy sort keys for backward compatibility (will be removed in future release)
-LEGACY_SORT_KEYS = {
+# sort fields served from a random sample of the matching rows
+RANDOM_SORT_FIELDS: Final[frozenset[SortField]] = frozenset(
+    {SortField.RANDOM, SortField.RANDOM_PLAY_COUNT}
+)
+
+# the deprecated order_by keys of library listings and the typed sort each one stands for
+LEGACY_SORT_KEYS: Final[dict[str, tuple[SortField, SortDirection | None]]] = {
     "name": (SortField.NAME, SortDirection.ASC),
     "name_desc": (SortField.NAME, SortDirection.DESC),
     "duration": (SortField.DURATION, SortDirection.ASC),
@@ -109,6 +117,13 @@ LEGACY_SORT_KEYS = {
     "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
     "random": (SortField.RANDOM, None),
     "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
+}
+
+# the deprecated order_by keys for a sort on the moment the calling user liked the item, kept
+# apart until music-assistant-models offers SortField.FAVORITE_TIMESTAMP
+FAVORITE_TIMESTAMP_SORT_KEYS: Final[dict[str, SortDirection]] = {
+    "favorite_timestamp": SortDirection.ASC,
+    "favorite_timestamp_desc": SortDirection.DESC,
 }
 
 # max number of library rows that may share one normalized title before the duplicate track

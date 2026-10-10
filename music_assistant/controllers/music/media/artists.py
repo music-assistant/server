@@ -182,7 +182,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
@@ -209,17 +209,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only return artists that have albums.
         :param artist_type: The artist's type
         :param sort_field: Sort field to use.
-        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
-        final_order_by = self._resolve_sort_parameters(
-            sort_field, sort_direction, order_by, default="sort_name"
-        )
-
+        field, direction, favorite_sort = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -238,7 +235,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=final_order_by,
+            sort_field=field,
+            sort_direction=direction,
+            favorite_sort=favorite_sort,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -961,7 +960,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             ],
             extra_query_params=query_params,
             limit=0,  # no limit, the full list is returned
-            order_by="year_desc",
+            sort_field=SortField.YEAR,
+            sort_direction=SortDirection.DESC,
             summary=True,
         )
 
