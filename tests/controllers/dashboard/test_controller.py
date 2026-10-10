@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -20,9 +21,12 @@ from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.dashboard.controller import (
     ALL_DASHBOARD_TYPES,
     DASHBOARD_VIEWER_USERNAME,
+    VIEWER_KEY_PARAM,
     _RegisteredDashboard,
 )
 from music_assistant.mass import MusicAssistant
+
+VIEWER_KEY = "test-viewer-key"
 
 
 def _make_controller() -> DashboardController:
@@ -32,6 +36,8 @@ def _make_controller() -> DashboardController:
     controller.logger = MagicMock()
     controller._dashboards = {}
     controller._sessions = {}
+    controller._session_owners = {}
+    controller._viewer_keys = {}
     # neither casting mechanism configured by default: individual tests opt in
     controller.mass.webserver.base_url = ""
     controller.mass.webserver.external_url = None
@@ -44,6 +50,12 @@ def _make_controller() -> DashboardController:
 def _query(url: str) -> dict[str, str]:
     """Parse a URL's query string into a flat dict for easy assertions."""
     return {key: values[0] for key, values in parse_qs(urlparse(url).query).items()}
+
+
+def _route_query(url: str) -> dict[str, str]:
+    """Parse the query string of the frontend route a launched URL points at."""
+    route = _query(url)["path"]
+    return {key: values[0] for key, values in parse_qs(urlparse(route).query).items()}
 
 
 async def test_resolve_dashboard_url_uses_https_base_url_when_configured() -> None:
@@ -178,6 +190,59 @@ async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
         url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, player_id)
 
     assert _query(url)["path"] == f"/now-playing?player={expected}"
+
+
+@pytest.mark.parametrize(
+    ("dashboard", "player_id", "expected_path"),
+    [
+        (DashboardType.PARTY, None, "/party?dashboard_id=chromecast_abc"),
+        (
+            DashboardType.NOW_PLAYING,
+            "player1",
+            "/now-playing?player=player1&dashboard_id=chromecast_abc",
+        ),
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz/dashboard?dashboard_id=chromecast_abc"),
+    ],
+)
+async def test_resolve_dashboard_url_embeds_dashboard_id(
+    dashboard: DashboardType, player_id: str | None, expected_path: str
+) -> None:
+    """The endpoint's dashboard id rides along in the route so the viewer knows its session."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id="chromecast_abc"
+        )
+
+    path = _query(url)["path"]
+    assert path.startswith(expected_path)
+    assert VIEWER_KEY_PARAM in _route_query(url)
+
+
+async def test_resolve_dashboard_url_viewer_key_is_stable_until_the_session_ends() -> None:
+    """Re-resolving keeps the key a showing display carries; hiding drops it."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    async def resolve() -> str:
+        with patch.object(
+            DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+        ):
+            url = await controller.resolve_dashboard_url(
+                DashboardType.PARTY, None, dashboard_id="dash1"
+            )
+        return _route_query(url)[VIEWER_KEY_PARAM]
+
+    first = await resolve()
+    assert first
+    assert await resolve() == first
+
+    await controller.hide_dashboard("dash1")
+    assert await resolve() != first
 
 
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
@@ -406,6 +471,7 @@ async def test_unregister_dashboard_removes_registration_and_session() -> None:
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
     )
+    controller._session_owners["dash1"] = "user-1"
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
@@ -415,6 +481,7 @@ async def test_unregister_dashboard_removes_registration_and_session() -> None:
 
     assert "dash1" not in controller._dashboards
     assert "dash1" not in controller._sessions
+    assert "dash1" not in controller._session_owners
     controller.mass.signal_event.assert_any_call(  # type: ignore[attr-defined]
         EventType.DASHBOARDS_UPDATED, data=[]
     )
@@ -599,6 +666,104 @@ async def test_show_dashboard_callback_error_propagates_without_storing_session(
     controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
 
 
+async def _resolve_key(controller: DashboardController) -> str:
+    """Resolve a party url for dash1 and return the viewer key it carries."""
+    with patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code")):
+        url = await controller.resolve_dashboard_url(
+            DashboardType.PARTY, None, dashboard_id="dash1"
+        )
+    return _route_query(url)[VIEWER_KEY_PARAM]
+
+
+def _register_resolving_endpoint(
+    controller: DashboardController, keys: list[str], fail: bool = False
+) -> None:
+    """Register dash1 with an on_show that resolves its url like a real consumer."""
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    async def on_show(_dashboard: DashboardType, _player_id: str | None) -> None:
+        keys.append(await _resolve_key(controller))
+        if fail:
+            raise MusicAssistantError("cast failed")
+
+    device = DashboardDevice(
+        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
+    )
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, on_show=on_show)
+
+
+async def _viewer_prefs_allowed(controller: DashboardController, key: str) -> bool:
+    """Whether the given key authorizes reading dash1's viewer preferences."""
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=_owner_user("user-1", {"visualizer_enabled": True})
+    )
+    prefs = await controller.get_viewer_preferences(
+        DashboardType.PARTY, dashboard_id="dash1", viewer_key=key
+    )
+    return bool(prefs)
+
+
+async def test_show_dashboard_rotates_the_viewer_key_on_every_show() -> None:
+    """A replacing show invalidates the previous cast's key."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys)
+
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    controller._session_owners["dash1"] = "user-1"
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    controller._session_owners["dash1"] = "user-1"
+
+    first, second = keys
+    assert first != second
+    assert not await _viewer_prefs_allowed(controller, first)
+    assert await _viewer_prefs_allowed(controller, second)
+
+
+async def test_get_url_between_shows_keeps_the_current_viewer_key() -> None:
+    """Re-resolving the url after a show does not rotate the key."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys)
+
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    assert await _resolve_key(controller) == keys[0]
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    assert await _resolve_key(controller) == keys[1]
+
+
+async def test_show_dashboard_failure_restores_the_previous_viewer_key() -> None:
+    """A failed replacing show keeps the earlier cast's key and drops the failed one."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys)
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    controller._session_owners["dash1"] = "user-1"
+    _register_resolving_endpoint(controller, keys, fail=True)
+
+    with pytest.raises(MusicAssistantError, match="cast failed"):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    old_key, failed_key = keys
+    assert controller._viewer_keys["dash1"] == old_key
+    assert await _viewer_prefs_allowed(controller, old_key)
+    assert not await _viewer_prefs_allowed(controller, failed_key)
+
+
+async def test_show_dashboard_failure_without_previous_key_leaves_no_key() -> None:
+    """A failing first show does not leave a valid key behind."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys, fail=True)
+
+    with pytest.raises(MusicAssistantError):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    assert keys
+    assert "dash1" not in controller._viewer_keys
+
+
 async def test_show_dashboard_api_path_emits_event_without_url() -> None:
     """An API registration emits DASHBOARD_SHOW with the session but no url, and stores it."""
     controller = _make_controller()
@@ -773,7 +938,7 @@ async def test_get_url_for_dashboard_returns_resolved_url() -> None:
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
     with (
-        patch.object(DashboardController, "_can_resolve_url_for_caller", return_value=True),
+        patch.object(DashboardController, "_can_resolve_url_for_caller", return_value=(True, None)),
         patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
     ):
         url = await controller.get_url_for_dashboard(DashboardType.PARTY)
@@ -826,7 +991,12 @@ async def test_get_url_for_dashboard_allows_owner_with_matching_session() -> Non
     ):
         url = await controller.get_url_for_dashboard(DashboardType.PARTY)
 
-    assert _query(url) == {"dashboard": "code456", "path": "/party"}
+    # the caller's own dashboard id and viewer key are embedded so its viewer can identify
+    # and authorize its session
+    assert _query(url)["dashboard"] == "code456"
+    route_query = _route_query(url)
+    assert route_query["dashboard_id"] == "dash1"
+    assert route_query[VIEWER_KEY_PARAM] == controller._viewer_keys["dash1"]
 
 
 async def test_get_url_for_dashboard_rejects_owner_without_session() -> None:
@@ -951,3 +1121,189 @@ async def test_get_dashboard_code_mints_fresh_code_each_call(mass: MusicAssistan
 
     assert result1["success"] is True
     assert result2["success"] is True
+
+
+def _owner_user(user_id: str, preferences: dict[str, Any] | None) -> MagicMock:
+    """Build a user-shaped mock carrying the given preferences."""
+    user = MagicMock()
+    user.user_id = user_id
+    user.preferences = preferences
+    return user
+
+
+async def test_viewer_preferences_follow_the_casting_user() -> None:
+    """A viewer receives the session owner's preferences, filtered to visualizer keys."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._session_owners["dash1"] = "user-1"
+    controller._viewer_keys["dash1"] = VIEWER_KEY
+    owner = _owner_user(
+        "user-1",
+        {
+            "visualizer_enabled": True,
+            "visualizer_preset": "martin - mandelbox explorer",
+            "visualizer_enabled.player1": False,
+            "theme": "dark",
+        },
+    )
+    controller.mass.webserver.auth.get_user = AsyncMock(return_value=owner)  # type: ignore[method-assign]
+
+    prefs = await controller.get_viewer_preferences(
+        DashboardType.PARTY, dashboard_id="dash1", viewer_key=VIEWER_KEY
+    )
+
+    assert prefs == {
+        "visualizer_enabled": True,
+        "visualizer_preset": "martin - mandelbox explorer",
+        "visualizer_enabled.player1": False,
+    }
+
+
+async def test_viewer_preferences_resolve_each_display_by_dashboard_id() -> None:
+    """Two displays showing the same dashboard each follow their own caster's preferences."""
+    controller = _make_controller()
+    for dashboard_id, owner_id in (("dash1", "user-1"), ("dash2", "user-2")):
+        controller._sessions[dashboard_id] = DashboardSession(
+            dashboard_id=dashboard_id, name=dashboard_id, dashboard=DashboardType.PARTY
+        )
+        controller._session_owners[dashboard_id] = owner_id
+        controller._viewer_keys[dashboard_id] = f"key-{dashboard_id}"
+    users = {
+        "user-1": _owner_user("user-1", {"visualizer_preset": "one"}),
+        "user-2": _owner_user("user-2", {"visualizer_preset": "two"}),
+    }
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda uid: users.get(uid)
+    )
+
+    prefs1 = await controller.get_viewer_preferences(
+        DashboardType.PARTY, dashboard_id="dash1", viewer_key="key-dash1"
+    )
+    prefs2 = await controller.get_viewer_preferences(
+        DashboardType.PARTY, dashboard_id="dash2", viewer_key="key-dash2"
+    )
+
+    assert prefs1 == {"visualizer_preset": "one"}
+    assert prefs2 == {"visualizer_preset": "two"}
+
+
+async def test_viewer_preferences_session_must_match_what_the_viewer_shows() -> None:
+    """A session that shows a different dashboard (or player) than claimed yields nothing."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1",
+        name="Living Room",
+        dashboard=DashboardType.NOW_PLAYING,
+        player_id="player1",
+    )
+    controller._session_owners["dash1"] = "user-1"
+    controller._viewer_keys["dash1"] = VIEWER_KEY
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=_owner_user("user-1", {"visualizer_preset": "one"})
+    )
+
+    prefs = await controller.get_viewer_preferences(
+        DashboardType.NOW_PLAYING, "player1", "dash1", VIEWER_KEY
+    )
+    assert prefs == {"visualizer_preset": "one"}
+
+    assert (
+        await controller.get_viewer_preferences(
+            DashboardType.NOW_PLAYING, "player2", "dash1", VIEWER_KEY
+        )
+        == {}
+    )
+    assert (
+        await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
+        == {}
+    )
+
+
+async def test_viewer_preferences_require_the_sessions_viewer_key() -> None:
+    """A missing, wrong or unissued key yields nothing, even for a real dashboard_id."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._session_owners["dash1"] = "user-1"
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=_owner_user("user-1", {"visualizer_preset": "one"})
+    )
+
+    # no key issued for the session yet
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", "x") == {}
+
+    controller._viewer_keys["dash1"] = VIEWER_KEY
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", "x") == {}
+    right = await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
+    assert right == {"visualizer_preset": "one"}
+
+
+async def test_dashboard_sessions_do_not_expose_the_viewer_key() -> None:
+    """dashboard/sessions is readable by guests, so the key must not appear in it."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._viewer_keys["dash1"] = VIEWER_KEY
+
+    sessions = await controller.get_dashboard_sessions()
+
+    assert VIEWER_KEY not in str([session.to_dict() for session in sessions])
+
+
+async def test_viewer_preferences_without_matching_session_are_empty() -> None:
+    """A missing dashboard_id, unknown session, or unknown owner yields empty preferences."""
+    controller = _make_controller()
+    assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
+
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+    controller._session_owners["dash1"] = "user-gone"
+    controller._viewer_keys["dash1"] = VIEWER_KEY
+    controller.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert (
+        await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
+        == {}
+    )
+
+
+async def test_preferences_change_signals_only_for_session_owners() -> None:
+    """A preference change pings sessions of that owner and nobody else."""
+    controller = _make_controller()
+    controller._session_owners["dash1"] = "user-1"
+    before = {"visualizer_preset": "one"}
+    after = {"visualizer_preset": "two"}
+
+    controller.notify_user_preferences_changed("someone-else", before, after)
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+    controller.notify_user_preferences_changed("user-1", before, after)
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )
+
+
+async def test_preferences_change_ignores_settings_a_viewer_never_sees() -> None:
+    """Preferences are written whole, so only a change to the visualizer keys is worth a ping."""
+    controller = _make_controller()
+    controller._session_owners["dash1"] = "user-1"
+
+    controller.notify_user_preferences_changed(
+        "user-1",
+        {"visualizer_preset": "one", "theme": "light"},
+        {"visualizer_preset": "one", "theme": "dark"},
+    )
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+    controller.notify_user_preferences_changed(
+        "user-1", None, {"visualizer_preset": "one", "theme": "dark"}
+    )
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )

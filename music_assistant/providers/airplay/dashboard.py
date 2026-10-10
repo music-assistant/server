@@ -169,10 +169,10 @@ class AirPlayDashboards:
         player = self.mass.players.get_player(player_id)
         if not isinstance(player, AirPlayControlPlayer):
             raise PlayerUnavailableError(f"Apple TV {player_id} is no longer available")
-        target_url = await self.mass.dashboard.resolve_dashboard_url(
-            dashboard, target_player_id, prefer_local=True
-        )
         dashboard_id = self._dashboard_id(player_id)
+        target_url = await self.mass.dashboard.resolve_dashboard_url(
+            dashboard, target_player_id, dashboard_id=dashboard_id, prefer_local=True
+        )
         launch_uri = self._build_launch_uri(dashboard, target_url, dashboard_id)
         # never log the full target url or the one-time viewer code embedded in it
         self.logger.debug(
