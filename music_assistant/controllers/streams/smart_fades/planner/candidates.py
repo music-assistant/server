@@ -465,10 +465,14 @@ class CandidateFactory:
         if spec.style is TransitionStyle.SEGUE:
             return self._build_segue(spec)
         candidate = self._build_timed(spec, stretch=True)
-        if candidate is not None and not self._kicks_carry_ramp(candidate.plan):
-            # a beatless side has no beat to match, so the pair blends unstretched
-            return self._build_timed(spec, stretch=False)
-        return candidate
+        if candidate is None or not candidate.plan.tempo_plan or self._both_kick(candidate.plan):
+            return candidate
+        # a beatless side has no beat to match, so the pair blends unstretched, unless the
+        # longer unstretched overlap reaches both kicks: those need the ramp to line up
+        unstretched = self._build_timed(spec, stretch=False)
+        if unstretched is not None and self._both_kick(unstretched.plan):
+            return candidate
+        return unstretched
 
     def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
         """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
@@ -692,19 +696,18 @@ class CandidateFactory:
             return TempoPlan()
         return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
 
-    def _kicks_carry_ramp(self, plan: TransitionPlan) -> bool:
+    def _both_kick(self, plan: TransitionPlan) -> bool:
         """
-        Whether both decks kick in a plan's overlap; True for a plan without a tempo ramp.
+        Whether both decks kick in a plan's overlap; a deck without band data counts as kicking.
 
-        A deck without band data never blocks the ramp.
+        :param plan: A timed plan, with or without a tempo ramp.
         """
-        if not plan.tempo_plan:
-            return True
         ctx = self._ctx
         # only the overlap counts: stretching a beatless stretch window (a breakdown) costs
         # less than two unmatched kicks on top of each other in the overlap
-        # the overlap plays at the ramp's final ratio, so it spans this much outgoing input
-        overlap_start = plan.fade_out_window - plan.crossfade_duration * self._bpm_ratio
+        # a ramped overlap plays at the ramp's final ratio, so it spans this much outgoing input
+        ratio = self._bpm_ratio if plan.tempo_plan else 1.0
+        overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
         trim = plan.fadein_trim_start or 0.0
         # a window that only grazes a kick bar, by less than a beat, holds no beat to match
         out_kicks = ctx.kick_out is None or (

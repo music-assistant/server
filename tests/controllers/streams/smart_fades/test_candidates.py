@@ -229,18 +229,18 @@ class TestTempoRampKickGate:
     )
     def test_a_kickless_overlap_blends_unstretched(self, kickless: str) -> None:
         """
-        A deck without a kick in the overlap drops the ramp; a graze under a beat counts.
+        A deck without a kick in either overlap drops the ramp; a graze under a beat counts.
 
         :param kickless: Where the kick is missing.
         """
-        ctx, ramped = self._ramped_blend()
-        plan = ramped.plan
-        overlap_start = plan.fade_out_window - plan.crossfade_duration * 122.0 / 120.0
+        ctx, _ = self._ramped_blend()
         everywhere = ((0.0, 45.0),)
+        # the ramped overlap spans outgoing 31-45 s and incoming 0-13.8 s, the
+        # unstretched one outgoing 29-45 s and incoming 0-16 s
         kicks_out, kicks_in = {
-            "outgoing overlap": (((0.0, overlap_start),), everywhere),
+            "outgoing overlap": (((0.0, 20.0),), everywhere),
             "incoming overlap": (everywhere, ((30.0, 45.0),)),
-            "incoming graze": (everywhere, ((plan.crossfade_duration - 0.2, 45.0),)),
+            "incoming graze": (everywhere, ((15.8, 45.0),)),
             "incoming, no outgoing data": (None, ((30.0, 45.0),)),
         }[kickless]
         gated = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
@@ -253,6 +253,20 @@ class TestTempoRampKickGate:
         # rebuilt unstretched: 8 outgoing bars at 120 BPM, without the 122/120 compensation
         assert candidate.plan.crossfade_duration == pytest.approx(16.0)
         assert candidate.plan.fadein_trim_start == 0.0
+
+    def test_a_rebuild_reaching_the_incoming_kick_keeps_the_ramp(self) -> None:
+        """
+        The ramped plan ships when only its shorter overlap misses the incoming kick.
+
+        Unstretched, the overlap would reach the kick at 14.5 s and play two unmatched beats.
+        """
+        ctx, ramped = self._ramped_blend()
+        assert ramped.plan.crossfade_duration < 14.5
+        late_kick = dataclasses.replace(ctx, kick_out=((0.0, 45.0),), kick_in=((14.5, 45.0),))
+
+        candidate = CandidateFactory(late_kick, LOGGER).build(_spec(ctx, 8))
+
+        assert candidate == ramped
 
     def test_a_trim_onto_a_beatless_intro_drops_the_ramp(self) -> None:
         """A rolling-intro trim that moves the overlap off a kicked head onto a breakdown."""
