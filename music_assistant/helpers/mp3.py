@@ -82,9 +82,9 @@ async def probe_mp3_seek_hints(
 
 def ffmpeg_http_headers(extra_input_args: Sequence[str]) -> dict[str, str]:
     """
-    Return the HTTP headers ffmpeg sends for the given input arguments.
+    Return the HTTP headers to probe with, matching what ffmpeg sends for the input arguments.
 
-    Falls back to MA's default headers for anything the arguments leave unset.
+    MA's own default headers fill in whatever the arguments leave unset.
 
     :param extra_input_args: The ffmpeg input arguments of the stream.
     """
