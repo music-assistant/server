@@ -261,12 +261,42 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Iterate over (available) players."""
         return iter(queue_data.queue for queue_data in self._queue_data.values())
 
-    @api_command("player_queues/all", required_scope=Scope.QUEUES_READ)
+    @api_command("player_queues/all", required_scope=Scope.QUEUES_READ, allow_impersonation=True)
+    def all_queues(self) -> tuple[PlayerQueue, ...]:
+        """Return the queues of the players the calling user may use."""
+        user = get_current_user()
+        return tuple(
+            queue
+            for queue in self.all()
+            if has_player_access(user, queue.queue_id, self.mass.players.get_player(queue.queue_id))
+        )
+
+    @api_command("player_queues/get", required_scope=Scope.QUEUES_READ, allow_impersonation=True)
+    def get_queue(self, queue_id: str) -> PlayerQueue | None:
+        """Return the queue, if the calling user may use its player."""
+        self._check_player_permission(queue_id)
+        return self.get(queue_id)
+
+    @api_command("player_queues/items", required_scope=Scope.QUEUES_READ, allow_impersonation=True)
+    def get_queue_items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
+        """Return the items of the queue, if the calling user may use its player."""
+        self._check_player_permission(queue_id)
+        return self.items(queue_id, limit, offset)
+
+    @api_command(
+        "player_queues/get_active_queue",
+        required_scope=Scope.QUEUES_READ,
+        allow_impersonation=True,
+    )
+    def get_player_active_queue(self, player_id: str) -> PlayerQueue | None:
+        """Return the active queue of the player, if the calling user may use it."""
+        self._check_player_permission(player_id)
+        return self.get_active_queue(player_id)
+
     def all(self) -> tuple[PlayerQueue, ...]:
         """Return all registered PlayerQueues."""
         return tuple(queue_data.queue for queue_data in self._queue_data.values())
 
-    @api_command("player_queues/get", required_scope=Scope.QUEUES_READ)
     def get(self, queue_id: str) -> PlayerQueue | None:
         """Return PlayerQueue by queue_id or None if not found."""
         queue_data = self._queue_data.get(queue_id)
@@ -305,14 +335,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             and player.state.active_source == queue_id
         )
 
-    @api_command("player_queues/items", required_scope=Scope.QUEUES_READ)
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return []
         return queue_data.items[offset : offset + limit]
 
-    @api_command("player_queues/get_active_queue", required_scope=Scope.QUEUES_READ)
     def get_active_queue(self, player_id: str) -> PlayerQueue | None:
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get_player(player_id):
@@ -321,9 +349,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     # Queue commands
 
-    @api_command("player_queues/shuffle", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/shuffle",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the queue."""
+        self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change; asking for the state it is already in is never a failure
@@ -347,9 +380,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return True
         return queue.shuffle_enabled and self._smart_shuffle.is_enabled(queue.queue_id)
 
-    @api_command("player_queues/autoplay", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/autoplay",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
         """Configure Autoplay setting on the queue."""
+        self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         if autoplay_enabled and queue.repeat_mode in (RepeatMode.ONE, RepeatMode.ALL):
@@ -360,15 +398,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id=queue_id)
 
     @api_command(
-        "player_queues/dont_stop_the_music", required_scope=Scope.QUEUES_CONTROL, alias=True
+        "player_queues/dont_stop_the_music",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+        alias=True,
     )
     def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
         """Backwards-compatible alias for the autoplay command, used by older clients."""
         self.set_autoplay(queue_id, dont_stop_the_music_enabled)
 
-    @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/repeat",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the queue."""
+        self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         if queue.repeat_mode == repeat_mode:
@@ -386,9 +432,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
         self.update_next_item_on_player(queue_id)
 
-    @api_command("player_queues/crossfade", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/crossfade",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
         """Enable or disable crossfade on the queue."""
+        self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         effective_before = queue.crossfade_enabled
@@ -403,7 +454,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.update_next_item_on_player(queue_id, force=True)
         self.signal_update(queue_id)
 
-    @api_command("player_queues/overlay", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/overlay",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def set_overlay(
         self,
         queue_id: str,
@@ -424,6 +479,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param volume: Overlay loudness relative to the music in percent
             (0-200, 100 = equally loud). Omit to leave unchanged.
         """
+        self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         changed = audible_change = False
         if source is not None:
@@ -462,7 +518,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     #                    What the user expects to see on the progress bar and what
     #                    we use for resume positions.
     # Conversion: media-time = stream-time x playback_speed.
-    @api_command("player_queues/set_playback_speed", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/set_playback_speed",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def set_playback_speed(
         self, queue_id: str, speed: float, queue_item_id: str | None = None
     ) -> None:
@@ -477,6 +537,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to configure.
         :param speed: playback speed multiplier (0.5 to 3.0). 1.0 = normal speed.
         """
+        self._check_player_permission(queue_id)
         if not (0.5 <= speed <= 3.0):
             raise InvalidDataError(f"Playback speed must be between 0.5 and 3.0, got {speed}")
         queue = self._queue_data[queue_id].queue
@@ -563,7 +624,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             shuffle,
         )
 
-    @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/move_item",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
         """
         Move queue item x up/down the queue.
@@ -574,6 +639,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - pos_shift: move item x positions up if negative value
         - pos_shift: move item to the front of the upcoming items if 0
         """
+        self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
@@ -603,7 +669,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
-    @api_command("player_queues/move_item_end", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/move_item_end",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def move_item_end(self, queue_id: str, queue_item_id: str) -> None:
         """
         Move queue item to the end the queue.
@@ -611,6 +681,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_id: id of the queue to process this request.
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         """
+        self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
@@ -631,9 +702,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
-    @api_command("player_queues/delete_item", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/delete_item",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
+        self._check_player_permission(queue_id)
         if isinstance(item_id_or_index, str):
             item_index = self.index_by_id(queue_id, item_id_or_index)
             if item_index is None:
@@ -651,9 +727,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items.pop(item_index)
         self.update_items(queue_id, queue_items)
 
-    @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/clear",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
+        self._check_player_permission(queue_id)
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
         # the discarded content must not carry over into whatever is played next
@@ -688,7 +769,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.signal_update(queue_id)
 
-    @api_command("player_queues/save_as_playlist", required_scope=Scope.LIBRARY_WRITE)
+    @api_command(
+        "player_queues/save_as_playlist",
+        required_scope=Scope.LIBRARY_WRITE,
+        allow_impersonation=True,
+    )
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
         """
         Save the current queue items as a new playlist.
@@ -696,6 +781,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
@@ -711,7 +797,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         playlist = await self.mass.music.playlists.create_playlist(name)
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
-    @api_command("player_queues/stop", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/stop",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.
@@ -721,7 +811,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         await self._handle_stop(queue_id)
 
-    @api_command("player_queues/play", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/play",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
@@ -733,7 +827,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         await self._handle_play(queue_id)
 
-    @api_command("player_queues/pause", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/pause",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def pause(self, queue_id: str) -> None:
         """
         Handle PAUSE command for given queue.
@@ -781,7 +879,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 task_name=f"watch_pause_{queue_player.player_id}",
             )
 
-    @api_command("player_queues/play_pause", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/play_pause",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def play_pause(self, queue_id: str) -> None:
         """
         Toggle play/pause on given playerqueue.
@@ -793,7 +895,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         await self.play(queue_id)
 
-    @api_command("player_queues/next", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/next",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     @handle_play_action
     async def next(self, queue_id: str) -> None:
         """
@@ -833,7 +939,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             task_id=f"queue_play_index_{queue_id}",
         )
 
-    @api_command("player_queues/previous", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/previous",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     @handle_play_action
     async def previous(self, queue_id: str) -> None:
         """
@@ -872,7 +982,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             task_id=f"queue_play_index_{queue_id}",
         )
 
-    @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/skip",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """
         Handle SKIP command for given queue.
@@ -882,13 +996,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
         """
+        self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         if (current_item := queue.current_item) is None:
             raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
         if not current_item.duration:
             raise InvalidCommand("Can not skip in items without duration.")
-        self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         if queue_data.pending_skip_item_id != current_item.queue_item_id:
             queue_data.pending_skip_seconds = 0
@@ -902,7 +1016,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_data.pending_skip_seconds -= seconds
             raise
 
-    @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/seek",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     @handle_play_action
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """
@@ -911,6 +1029,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         :param position: position in seconds to seek to in the current playing item.
         """
+        self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         queue_player = self.mass.players.get_player(queue_id, True)
@@ -931,7 +1050,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
-    @api_command("player_queues/resume", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/resume",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     @handle_play_action
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """
@@ -992,7 +1115,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
-    @api_command("player_queues/play_index", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/play_index",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     @handle_play_action
     async def play_index(  # noqa: PLR0915
         self,
@@ -1170,7 +1297,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         finally:
             self._set_transitioning(queue_id, False)
 
-    @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
+    @api_command(
+        "player_queues/transfer",
+        required_scope=Scope.QUEUES_CONTROL,
+        allow_impersonation=True,
+    )
     async def transfer_queue(  # noqa: PLR0915
         self,
         source_queue_id: str,
@@ -1178,6 +1309,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         auto_play: bool | None = None,
     ) -> None:
         """Transfer queue to another queue."""
+        self._check_player_permission(source_queue_id)
+        self._check_player_permission(target_queue_id)
         if not (source_queue := self.get(source_queue_id)):
             raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")
         if not (target_queue := self.get(target_queue_id)):

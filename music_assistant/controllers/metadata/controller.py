@@ -389,7 +389,9 @@ class MetaDataController(
             await self._link_track_to_musicbrainz(item)
             await self.mass.music.tracks.update_item_in_library(item.item_id, item)
 
-    @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def get_track_lyrics(
         self,
         track: Track,
@@ -427,13 +429,21 @@ class MetaDataController(
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         if track.provider == "library":
-            # try to update metadata first
-            await self._update_track_metadata(track, force_refresh=False)
+            # the stored item is refreshed, never the caller's copy of it; the refresh fills
+            # the household's library item from all its sources, so it runs as the server
+            track = await self.mass.music.tracks.get(
+                track.item_id, "library", allow_update_metadata=False
+            )
+            with system_auth_context():
+                await self._update_track_metadata(track, force_refresh=False)
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         # prefer lyrics from the track's own provider
-        track_provider = self.mass.get_provider(track.provider, provider_type=MusicProvider)
-        if track_provider and ProviderFeature.LYRICS in track_provider.supported_features:
+        track_provider = self.mass.music.get_visible_provider(track.provider)
+        if (
+            isinstance(track_provider, MusicProvider)
+            and ProviderFeature.LYRICS in track_provider.supported_features
+        ):
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
