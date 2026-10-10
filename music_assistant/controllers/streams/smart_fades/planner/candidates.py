@@ -401,11 +401,12 @@ class SegueGenerator(CandidateGenerator):
             return
         bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
         floor = max(_SEGUE_MIN_SECONDS, bars_ladder(ctx, TransitionTier.QUICK_FADE)[0] * bar_out)
-        if ctx.segue.quiet_tail + ctx.segue.quiet_head >= floor:
-            ideal = ctx.segue.overlap
-        elif _beatless_long_qualifies(ctx):
-            # one side without a beat can ride a long fade over loud material too
+        if _beatless_long_qualifies(ctx):
+            # one side without a beat can ride a long fade over loud material too; it
+            # is never shorter than the quiet material alone would give
             ideal = min(SEGUE_MAX_SECONDS, ctx.audio_end)
+        elif ctx.segue.quiet_tail + ctx.segue.quiet_head >= floor:
+            ideal = ctx.segue.overlap
         else:
             return
         step = _SEGUE_STEP_BARS * bar_out if ctx.segue.snapped_out else _SEGUE_STEP_SECONDS
@@ -933,15 +934,23 @@ class CandidateFactory:
             style=TransitionStyle.SEGUE,
             fadeout_trim=tail.fadeout_trim,
         )
-        # a side already quiet at its own edge plays as recorded: fading it again only
-        # buries it, while a side still loud there fades equal-power
+        assert ctx.segue is not None  # a segue spec comes from the segue facts
+        # within the quiet material a side already quiet at its own edge plays as
+        # recorded: fading it again only buries it, while a side still loud there fades
+        # equal-power. A longer overlap reaches loud parts on both sides, so both fade
+        # equal-power and two loud parts are never summed at full gain
+        within_material = (
+            plan.crossfade_duration <= ctx.segue.quiet_tail + ctx.segue.quiet_head + 1e-6
+        )
         bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
         anchor_media = ctx.buffer_offset + plan.fade_out_window
-        out_quiet = _quiet_over(ctx.outgoing.analysis, anchor_media - bar_out, anchor_media)
+        out_quiet = within_material and _quiet_over(
+            ctx.outgoing.analysis, anchor_media - bar_out, anchor_media
+        )
         if out_quiet or _choose_fadeout_curve(ctx, plan) == "nofade":
             plan = replace(plan, fadeout_curve="nofade")
         bar_in = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
-        if _quiet_over(ctx.incoming.analysis, 0.0, bar_in):
+        if within_material and _quiet_over(ctx.incoming.analysis, 0.0, bar_in):
             plan = replace(plan, fadein_curve="nofade")
         return Candidate(
             spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars

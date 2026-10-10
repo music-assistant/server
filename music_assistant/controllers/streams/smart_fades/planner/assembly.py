@@ -156,8 +156,8 @@ class PlanAssembler:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
         # an unsynced cut has no beatmatched handover to stage: shelving the decks
         # would only bury the incoming track's entry; nor does a segue with a quiet
-        # edge, which plays as recorded. A segue that fades both loud edges
-        # equal-power keeps its handover EQ
+        # edge, which plays as recorded. A segue that fades both sides equal-power
+        # keeps its handover EQ
         if plan.style is TransitionStyle.CUT or (
             plan.style is TransitionStyle.SEGUE
             and "nofade" in (plan.fadeout_curve, plan.fadein_curve)

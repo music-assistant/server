@@ -222,6 +222,23 @@ class TestBuildSegue:
         assert candidate is not None
         assert candidate.plan.fadein_curve == "nofade"
 
+    def test_an_overlap_past_the_quiet_material_fades_both_sides(self) -> None:
+        """Quiet edges play as recorded within the 14s of quiet material, not one step past it."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        inc = _analysis(150.0)
+        inc.rms_energy = _rms((0.0, 4.0, 0.05))
+        ctx = _ctx(out, inc)
+        factory = CandidateFactory(ctx, LOGGER)
+
+        within = factory.build(_segue_spec(ctx, 14.0))
+        past = factory.build(_segue_spec(ctx, 16.0))
+
+        assert within is not None
+        assert past is not None
+        assert (within.plan.fadeout_curve, within.plan.fadein_curve) == ("nofade", "nofade")
+        assert (past.plan.fadeout_curve, past.plan.fadein_curve) == ("qsin", "qsin")
+
     def test_a_long_tail_enters_the_overlap_before_the_audible_end(self) -> None:
         """A 30s quiet tail starts the next track 15s before the audible end."""
         out = _analysis(120.0)

@@ -172,6 +172,63 @@ class TestSegueScenarios:
         assert (plan.fadeout_curve, plan.fadein_curve) == ("qsin", "qsin")
         assert plan.eq_plan.low_out is not None
 
+    def test_a_kickless_tail_rides_past_its_quiet_material_equal_power(self) -> None:
+        """8.8s of quiet material and a kickless tail: a 15s segue, both sides fading."""
+        out = _track(
+            120.0,
+            rms=_envelope(0.5, (236.0, DURATION, 0.1)),
+            low=_envelope(0.5, (225.0, DURATION, 0.01)),
+            vocals=_vocals(),
+        )
+        inc = _track(150.0, rms=_envelope(0.5, (0.0, 6.0, 0.05)), vocals=_vocals())
+        segue = build_transition_context(out, inc, 45.0, LOGGER).segue
+        assert segue is not None
+        assert segue.quiet_tail + segue.quiet_head < 10.0
+
+        plan = _plan(out, inc)
+
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.crossfade_duration == pytest.approx(15.0)
+        assert (plan.fadeout_curve, plan.fadein_curve) == ("qsin", "qsin")
+        # the equal-power shape keeps the lazy overlay's handover EQ
+        assert plan.eq_plan.low_out is not None
+
+    def test_a_segue_within_its_quiet_material_plays_both_edges_as_recorded(self) -> None:
+        """A 12s quiet tail and a 3s quiet head overlap as recorded, no fade on either side."""
+        out = _track(
+            120.0,
+            rms=_envelope(0.5, (228.0, DURATION, 0.1)),
+            low=_envelope(0.5, (228.0, DURATION, 0.01)),
+        )
+        inc = _track(150.0, rms=_envelope(0.5, (0.0, 3.0, 0.05)))
+        segue = build_transition_context(out, inc, 45.0, LOGGER).segue
+        assert segue is not None
+
+        plan = _plan(out, inc)
+
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.crossfade_duration <= segue.quiet_tail + segue.quiet_head
+        assert (plan.fadeout_curve, plan.fadein_curve) == ("nofade", "nofade")
+
+    @pytest.mark.parametrize("kickless_tail", [False, True])
+    def test_more_quiet_material_never_shortens_the_segue(self, kickless_tail: bool) -> None:
+        """Lengthening the quiet tail never ships a shorter segue, with or without a kick."""
+        durations = []
+        for tail in (2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0):
+            kick_end = 225.0 if kickless_tail else DURATION - tail
+            out = _track(
+                120.0,
+                rms=_envelope(0.5, (DURATION - tail, DURATION, 0.1)),
+                low=_envelope(0.5, (kick_end, DURATION, 0.01)),
+                vocals=_vocals(),
+            )
+            inc = _track(150.0, rms=_envelope(0.5, (0.0, 2.0, 0.05)), vocals=_vocals())
+            plan = _plan(out, inc)
+            assert plan.style is TransitionStyle.SEGUE
+            durations.append(plan.crossfade_duration)
+
+        assert durations == sorted(durations)
+
     def test_kick_against_kick_with_loud_ends_keeps_todays_cut(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
