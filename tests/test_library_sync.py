@@ -1418,6 +1418,7 @@ async def test_provider_sync_suppresses_per_item_events() -> None:
     with (
         patch.object(MusicController, "active_sync_tasks", new_callable=PropertyMock) as tasks,
         patch.object(music_ctrl, "_queue_database_cleanup_task"),
+        patch.object(music_ctrl, "cleanup_library_shortcuts", Mock()),
     ):
         tasks.return_value = []
         await run_sync()
