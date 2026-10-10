@@ -9,7 +9,6 @@ import logging
 import random
 import uuid
 from collections.abc import AsyncGenerator, Sequence
-from copy import deepcopy
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -1672,9 +1671,11 @@ class YandexMusicProvider(MusicProvider):
         # "Load more" always uses single next batch.
         max_batches = batch_size_config if sub_subpath != "next" else 1
 
-        # Start a new session on fresh browse (not "load more").
         if sub_subpath != "next":
-            wave.reset_session()
+            if wave.ended:
+                wave.reset_session()
+            else:
+                wave.seen_track_ids.clear()
 
         queue: str | int | None = None
         if sub_subpath == "next":
@@ -1842,7 +1843,10 @@ class YandexMusicProvider(MusicProvider):
         max_batches = batch_size_config if not load_more else 1
 
         if not load_more:
-            wave.reset_session()
+            if wave.ended:
+                wave.reset_session()
+            else:
+                wave.seen_track_ids.clear()
 
         all_tracks: list[Track | BrowseFolder] = []
         last_batch_id: str | None = None
@@ -3027,17 +3031,8 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
-        """Fetch a live My Wave page, sharing only concurrently running requests."""
-        task = self.mass.create_task(
-            self._fetch_my_wave_playlist_tracks(page),
-            task_id=f"yandex_music_playlist.{self.instance_id}.{page}",
-            task_name="yandex_music_playlist_tracks",
-            log_exceptions=False,
-        )
-        return deepcopy(await asyncio.shield(task))
-
-    async def _fetch_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get My Wave tracks for virtual playlist (uses cursor for page > 0).
 
@@ -3053,9 +3048,11 @@ class YandexMusicProvider(MusicProvider):
                 self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
             )
 
-            # Start a fresh session on the first page; later pages continue it.
             if page == 0:
-                wave.reset_session()
+                if wave.ended:
+                    wave.reset_session()
+                else:
+                    wave.seen_track_ids.clear()
 
             queue: str | int | None = None
             if page > 0:
