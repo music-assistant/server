@@ -424,6 +424,30 @@ class AlbumsController(MediaControllerBase[Album]):
         in_library_only: bool = False,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
+        tracks, lookup_errors = await self.tracks_with_lookup_errors(
+            item_id, provider_instance_id_or_domain, in_library_only
+        )
+        if lookup_errors and not any(track.available for track in tracks):
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise list(lookup_errors.values())[-1]
+        return tracks
+
+    async def tracks_with_lookup_errors(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
+    ) -> tuple[list[Track], dict[str, Exception]]:
+        """
+        Return album tracks, and the providers whose listing of a library album failed.
+
+        Unlike tracks(), a failing provider is reported instead of only raised when nothing
+        is playable, so a caller can react to that provider's failure.
+
+        :param item_id: The provider item id of the album.
+        :param provider_instance_id_or_domain: The provider instance id or domain of the album.
+        :param in_library_only: Only return the tracks in the library.
+        """
         # always check if we have a library item for this album
         library_album = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
@@ -435,7 +459,7 @@ class AlbumsController(MediaControllerBase[Album]):
             await self._backfill_album_on_tracks(
                 album_tracks, item_id, provider_instance_id_or_domain
             )
-            return album_tracks
+            return album_tracks, {}
 
         # respect the current user's provider filter (if any) for both the
         # in-library tracks and the live provider fetches below
@@ -446,12 +470,12 @@ class AlbumsController(MediaControllerBase[Album]):
         listings: list[list[Track]] = []
         if in_library_only:
             # return in-library items only
-            return sorted(db_items, key=lambda x: (x.disc_number or 1, x.track_number))
+            return sorted(db_items, key=lambda x: (x.disc_number or 1, x.track_number)), {}
 
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
-        lookup_error: Exception | None = None
+        lookup_errors: dict[str, Exception] = {}
         fetched: set[tuple[str, str]] = set()
         for provider_mapping in library_album.provider_mappings:
             if not provider_mapping.available or (
@@ -466,10 +490,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 own_instance is not None
                 and own_instance.instance_id == provider_mapping.provider_instance
             )
-            listing = (
-                own_instance.instance_id if own_instance else provider_mapping.provider_instance,
-                provider_mapping.item_id,
+            served_by = (
+                own_instance.instance_id if own_instance else provider_mapping.provider_instance
             )
+            listing = (served_by, provider_mapping.item_id)
             if listing in fetched:
                 continue
             fetched.add(listing)
@@ -479,8 +503,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing provider must not take the whole album down: the tracks
-                # from the library and the other providers are still playable
-                lookup_error = err
+                # from the library and the other providers are still playable. the failure
+                # belongs to the instance that served the lookup, which may be another
+                # account of the service standing in for the mapped one
+                lookup_errors[served_by] = err
                 if own_lookup and isinstance(err, MediaNotFoundError):
                     await self.mass.music.mark_provider_mapping_unavailable(
                         library_album, provider_mapping
@@ -506,13 +532,10 @@ class AlbumsController(MediaControllerBase[Album]):
         for provider_track in select_album_tracks(db_items, listings):
             provider_track.album = library_album
             result.append(provider_track)
-        if lookup_error is not None and not any(track.available for track in result):
-            # nothing could be played at all, so surface the reason instead of an empty list
-            raise lookup_error
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback; a digital release stores its single
         # disc as disc 0 or 1
-        return sorted(result, key=lambda x: (x.disc_number or 1, x.track_number))
+        return sorted(result, key=lambda x: (x.disc_number or 1, x.track_number)), lookup_errors
 
     async def versions(
         self,

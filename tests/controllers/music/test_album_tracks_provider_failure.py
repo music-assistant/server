@@ -247,6 +247,29 @@ async def test_album_tracks_keep_a_mapping_another_account_does_not_find(
     assert _streaming_mapping_available(stored)
 
 
+@pytest.mark.parametrize("served_by", ["streaming_inst", "streaming_inst_2"])
+async def test_album_tracks_report_a_failure_by_the_instance_that_served_it(
+    mass: MusicAssistant, served_by: str
+) -> None:
+    """A failure is reported for the account that was asked, also when it stood in."""
+    db_album = await _seed_album(mass, with_library_tracks=True)
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    error = ProviderPermissionDenied("Not in your region")
+    with (
+        patch.object(mass, "get_provider", side_effect=_loaded_provider(served_by)),
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            side_effect=_failing_provider_fetch(error),
+        ),
+    ):
+        tracks, lookup_errors = await mass.music.albums.tracks_with_lookup_errors(
+            db_album.item_id, "library"
+        )
+    assert [track.name for track in tracks] == ["Track One", "Track Two"]
+    assert lookup_errors == {served_by: error}
+
+
 async def test_album_tracks_skip_an_unavailable_mapping(mass: MusicAssistant) -> None:
     """A mapping already marked unavailable is not fetched again."""
     db_album = await _seed_album(mass, with_library_tracks=True)

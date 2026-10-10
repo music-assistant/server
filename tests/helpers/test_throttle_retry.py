@@ -145,9 +145,12 @@ class TestBasicBehavior:
     async def test_retries_exhausted(self, provider: FakeProvider, fake_clock: FakeClock) -> None:
         """Exhausting all retries raises RetriesExhausted."""
         provider.set_side_effects([ResourceTemporarilyUnavailable("fail")] * 5)
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("test")
         assert provider.call_count == 5
+        # the last failure is kept, so a caller can tell a rate limit from another error
+        assert isinstance(exc_info.value.__cause__, ResourceTemporarilyUnavailable)
+        assert not isinstance(exc_info.value.__cause__, RateLimited)
 
     async def test_recovery_after_failures(
         self, provider: FakeProvider, fake_clock: FakeClock
