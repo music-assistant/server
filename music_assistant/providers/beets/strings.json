@@ -1,0 +1,39 @@
+{
+  "config_entries": {
+    "library_db": {
+      "label": "beets library database",
+      "description": "Path to beets' library.db as seen by Music Assistant, for example /media/beets/library.db. Music Assistant only reads it."
+    },
+    "music_directory": {
+      "label": "Music directory",
+      "description": "Where beets' music directory is mounted, as seen by Music Assistant."
+    },
+    "beets_directory": {
+      "label": "beets music directory on its own host",
+      "description": "Optional. The directory value from your beets config, for example /home/you/Music. Files beets stored with this full path are looked up in the music directory instead."
+    },
+    "replaygain_target_level": {
+      "label": "ReplayGain target level (dB)",
+      "description": "The replaygain targetlevel from your beets config. beets stores ReplayGain gains relative to it; the beets default is 89."
+    },
+    "r128_target_level": {
+      "label": "R128 target level (dB)",
+      "description": "The replaygain r128_targetlevel from your beets config. beets stores R128 gains relative to it; the beets default is 84."
+    }
+  },
+  "manifest": {
+    "description": "Play the music library you manage with beets."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Set up beets",
+      "description": "Point Music Assistant at your beets library database and music directory. Music Assistant never changes your beets library."
+    }
+  },
+  "errors": {
+    "library_db_not_found": "The beets library database file does not exist.",
+    "library_db_invalid": "This file is not a readable beets library database.",
+    "music_directory_not_found": "The music directory does not exist.",
+    "path_not_allowed": "This path is not in a storage location you can use."
+  }
+}
