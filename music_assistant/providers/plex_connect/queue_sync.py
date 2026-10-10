@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+# items fetched on each side of the selected track to map a newly created play queue
+CREATED_QUEUE_WINDOW = 200
+
 
 class QueueSyncMixin:
     """Mixin providing queue synchronisation between MA and Plex."""
@@ -398,17 +401,34 @@ class QueueSyncMixin:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = playqueue.playQueueVersion
 
-                self.play_queue_item_ids = {}
-                for i, item in enumerate(playqueue.items):
-                    _, play_queue_item_id = plex_item_fields(item)
-                    if play_queue_item_id is not None:
-                        self.play_queue_item_ids[i] = play_queue_item_id
+                self.play_queue_item_ids = self._play_queue_item_ids_by_position(playqueue)
+                total_count = playqueue.playQueueTotalCount
+                if total_count and len(playqueue.items) < total_count:
+                    # the create response only holds a window of the queue
+                    playqueue = await asyncio.to_thread(
+                        PlayQueue.get,
+                        plex_server,
+                        playQueueID=playqueue.playQueueID,
+                        window=CREATED_QUEUE_WINDOW,
+                    )
+                    self.play_queue_item_ids = self._play_queue_item_ids_by_position(playqueue)
 
                 LOGGER.info(
                     f"Created Plex PlayQueue {self.play_queue_id} with {len(plex_items)} tracks"
                 )
         except Exception:
             LOGGER.exception("Error creating Plex PlayQueue")
+
+    def _play_queue_item_ids_by_position(self, playqueue: PlayQueue) -> dict[int, int]:
+        """Map each queue position in a (windowed) play queue to its playQueueItemID."""
+        selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
+        window_start = selected_offset - self._selected_item_index(playqueue)
+        item_ids: dict[int, int] = {}
+        for i, item in enumerate(playqueue.items):
+            _, play_queue_item_id = plex_item_fields(item)
+            if play_queue_item_id is not None and window_start + i >= 0:
+                item_ids[window_start + i] = play_queue_item_id
+        return item_ids
 
     async def _sync_initial_queue_to_plex(self) -> None:
         """

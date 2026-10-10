@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     AudioError,
     MediaNotFoundError,
     QueueEmpty,
+    ResourceBusyError,
 )
 
 from music_assistant.constants import (
@@ -27,6 +28,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -258,15 +260,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # ignore this for flow mode
             return
 
-        async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
-            # Player state updates can lag behind queue loading, so wait before validating.
-            async with self.mass.players.wait_for_player_update(
-                queue_id,
-                attribute_name="playback_state",
-                attribute_value=PlaybackState.PLAYING,
-            ):
-                pass
-
+        async def _hand_over_to_player(next_item: QueueItem) -> None:
             player = self.mass.players.get_player(queue_id)
             if (
                 player is None
@@ -304,6 +298,30 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 queue_data.next_item_id_enqueued = next_item.queue_item_id
                 self.logger.debug(
                     "Enqueued next track %s on queue %s",
+                    next_item.name,
+                    queue.display_name,
+                )
+
+        async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            # Player state updates can lag behind queue loading, so wait before validating.
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+            ):
+                pass
+
+            # the checks must see the queue as a play action that holds the lock leaves it,
+            # so they only run once this holds the lock too. A handover that cannot get it
+            # in time is dropped: a changed queue schedules a fresh one, replacing this one.
+            try:
+                async with self.mass.players.get_player_lock(
+                    queue_id, PlayerLockPurpose.PLAYBACK, strict=True
+                ):
+                    await _hand_over_to_player(next_item)
+            except ResourceBusyError:
+                self.logger.debug(
+                    "Not enqueuing next track %s on queue %s: the player is still busy",
                     next_item.name,
                     queue.display_name,
                 )

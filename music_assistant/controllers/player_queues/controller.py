@@ -873,10 +873,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         )
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
-    @handle_play_action
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """
         Handle SKIP command for given queue.
+
+        Quick repeated presses add up into a single jump.
 
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
@@ -887,12 +888,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
         if not current_item.duration:
             raise InvalidCommand("Can not skip in items without duration.")
-        target = self._clamp_skip_target(
-            queue.corrected_elapsed_time + seconds, current_item.duration
-        )
-        await self.seek(queue_id, int(target))
+        self._check_player_permission(queue_id)
+        queue_data = self._queue_data[queue_id]
+        if queue_data.pending_skip_item_id != current_item.queue_item_id:
+            queue_data.pending_skip_seconds = 0
+        queue_data.pending_skip_item_id = current_item.queue_item_id
+        queue_data.pending_skip_seconds += seconds
+        try:
+            await self._apply_pending_skip(queue_id)
+        except asyncio.CancelledError:
+            # a press cancelled while waiting takes back its offset, unless it was already applied
+            if queue_data.pending_skip_item_id == current_item.queue_item_id:
+                queue_data.pending_skip_seconds -= seconds
+            raise
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
+    @handle_play_action
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """
         Handle SEEK command for given queue.
@@ -955,12 +966,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # so pressing play starts it over from the beginning
             resume_item = queue_items[0]
             resume_pos = 0
-        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
-            resume_item = self.get_item(queue_id, queue.current_index)
-            resume_pos = 0
-        elif not resume_item and queue.current_index is None and len(queue_items) > 0:
-            # items available in queue but no previous track, start at 0
-            resume_item = self.get_item(queue_id, 0)
+        elif not resume_item and len(queue_items) > 0:
+            # no (valid) current item: start at the current index, or over from the beginning
+            # when there is none or it lies beyond the items
+            resume_item = self.get_item(queue_id, queue.current_index) or queue_items[0]
             resume_pos = 0
 
         if resume_item is not None:
@@ -1483,6 +1492,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
+    async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Cancel the still-filling source of an item the player reported it could not play.
+
+        A player that gives up on a track moves on to the next one by itself, while the
+        failed track's source keeps filling its buffer and holds the provider stream slot
+        that next track needs. Safe to call for any item: only a source that still holds
+        a capped provider slot is cancelled.
+
+        :param queue_id: The queue the failed item belongs to.
+        :param queue_item_id: The queue item id the player failed to play.
+        """
+        if (queue_item := self.get_item(queue_id, queue_item_id)) is None:
+            return
+        await self._abort_source_buffer(queue_item)
+
     def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
         Call when the flow stream has finished generating all audio data for a queue.
@@ -1824,19 +1849,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if item_index in (center - 1, center):
                 return True
         # get_next_item accounts for repeat mode and unavailable items. Measured from the
-        # item the player last fetched, since that is the one it asks to follow; a player
-        # reading ahead of our playhead is otherwise refused the track it needs next
+        # item the player last fetched, since that is the one it asks to follow (a player
+        # reading ahead of our playhead is otherwise refused the track it needs next), and
+        # from the playhead itself: a player that gave up on a track before its stream
+        # delivered a byte asks for the one after it, which no fetch ever recorded. A
+        # served item the queue no longer holds (a clear or a replace) has no next item
         served_item_id = self._queue_data[queue_id].last_served_item_id
-        from_item: int | str | None
-        if served_item_id is not None and self.index_by_id(queue_id, served_item_id) is not None:
-            from_item = served_item_id
-        else:
-            # never served, or the queue no longer holds it (a clear or a replace)
-            from_item = queue.current_index
-        if from_item is None:
-            return False
-        next_item = self.get_next_item(queue_id, from_item)
-        return next_item is not None and next_item.queue_item_id == queue_item_id
+        for from_item in (served_item_id, queue.current_index):
+            if from_item is None:
+                continue
+            next_item = self.get_next_item(queue_id, from_item)
+            if next_item is not None and next_item.queue_item_id == queue_item_id:
+                return True
+        return False
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """
@@ -2005,6 +2030,32 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param duration: Duration of the item being skipped in.
         """
         return max(0.0, min(target, max(0.0, duration - SKIP_END_MARGIN)))
+
+    @handle_play_action
+    async def _apply_pending_skip(self, queue_id: str) -> None:
+        """
+        Seek by the skip seconds collected for the queue's current item, if any.
+
+        :param queue_id: queue_id of the queue to apply the pending skip to.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        # taken before seeking, so a failed seek does not carry its offset into later skips
+        item_id, seconds = queue_data.pending_skip_item_id, queue_data.pending_skip_seconds
+        queue_data.pending_skip_item_id = None
+        queue_data.pending_skip_seconds = 0
+        queue = queue_data.queue
+        if (
+            not seconds
+            or item_id is None
+            or (item := queue.current_item) is None
+            or item.queue_item_id != item_id
+            or not item.duration
+        ):
+            # nothing left to apply, or the item changed while waiting
+            return
+        target = self._clamp_skip_target(queue.corrected_elapsed_time + seconds, item.duration)
+        await self.seek(queue_id, int(target))
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""

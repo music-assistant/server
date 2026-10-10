@@ -877,6 +877,19 @@ async def test_the_speakers_retry_of_a_failure_is_not_reported_again(
         await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert caplog.text.count("ERROR_LSE") == 1
+    player.release_failed_item.assert_called_once_with("track0@3")
+
+
+async def test_a_failure_reported_only_through_the_cloud_queue_releases_the_item() -> None:
+    """The report endpoint is the speaker's other way of saying it gave up on an item."""
+    player = _player_for_error_reports()
+    cloud_queue = _make_cloud_queue()
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [_error_report()]})
+
+    await cloud_queue._handle_sonos_queue_time_played(player, request)
+
+    player.release_failed_item.assert_called_once_with("track0@3")
 
 
 async def test_a_batch_of_failures_resent_together_is_not_reported_again(
@@ -941,6 +954,8 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
     assert "refused track1@3" in caplog.text
     # nor may it take a place in the history that holds back repeats of real failures
     assert not player.reported_playback_errors
+    # and a refused track never started a source that would need releasing
+    player.release_failed_item.assert_not_called()
 
 
 async def test_another_http_error_is_still_reported(caplog: pytest.LogCaptureFixture) -> None:

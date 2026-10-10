@@ -591,12 +591,14 @@ def _spy_on_lock_order(controller: PlayerController) -> list[str]:
     acquire_lock = controller.get_player_lock
 
     def _record(
-        player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,
     ) -> AbstractAsyncContextManager[None]:
         # this records the order the locks are requested in, which is the order they
         # are entered in as well here: nothing else holds them in these tests
         lock_keys.append(f"{purpose.value}_{player_id}")
-        return acquire_lock(player_id, purpose)
+        return acquire_lock(player_id, purpose, strict=strict)
 
     controller.get_player_lock = _record  # type: ignore[assignment]
     return lock_keys

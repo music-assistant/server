@@ -516,8 +516,19 @@ class SyncGroupPlayer(Player):
                 # this may happen in race conditions where we just switched sync leaders
                 # and the new leader doesn't support enqueueing next media.
                 return
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
+            # the leader is commanded from under the group's lock, like play_media does,
+            # so leader-scoped work such as a member re-join cannot interleave with it.
+            # Strict, like the handover's own lock: a busy leader drops the handover
+            # rather than letting it run alongside whatever holds the leader
+            async with self.mass.players.get_player_lock(
+                sync_leader.player_id, PlayerLockPurpose.PLAYBACK, strict=True
+            ):
+                if self.sync_leader is not sync_leader:
+                    # the group was re-led while we waited: the new leader gets its own
+                    # handover from the queue, this one is for a leader that is gone
+                    return
+                # Use internal handler to bypass group redirect logic and avoid infinite loop
+                await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
