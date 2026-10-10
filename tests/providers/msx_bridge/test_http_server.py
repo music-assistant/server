@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit
 import pytest
 from aiohttp.test_utils import TestClient as AiohttpTestClient
 from aiohttp.test_utils import TestServer
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
@@ -1036,6 +1037,38 @@ async def test_msx_audio_arms_wait_before_enqueue(
             assert resp.status == 200
 
         assert call_order == ["arm", "enqueue"]
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_auto_advance_plays_without_authenticated_user(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """GET /msx/audio re-enqueues the TV's next track without an authenticated caller."""
+    mass_mock.webserver.auth.list_users = AsyncMock(
+        return_value=[User(user_id="admin", username="admin", role=UserRole.ADMIN)]
+    )
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+        token = provider.get_stream_token("msx_test")
+
+        mass_mock.streams = Mock()
+        mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+        mass_mock.player_queues.play_media = AsyncMock()
+
+        with patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_async_iter([b"encoded-chunk-1"]),
+        ):
+            resp = await client.get(
+                f"/msx/audio/msx_test?uri=library://track/2&from_playlist=1&token={token}"
+            )
+            assert resp.status == 200
+
+        mass_mock.player_queues.play_media.assert_awaited_once_with("msx_test", "library://track/2")
     finally:
         await client.close()
 
