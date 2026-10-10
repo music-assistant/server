@@ -1,7 +1,6 @@
 """Integration tests for the Bandcamp provider."""
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
@@ -13,14 +12,11 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.providers.bandcamp import BandcampProvider
 from tests.common import wait_for_sync_completion
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-
 
 @pytest.fixture
 async def bandcamp_provider(  # noqa: PLR0915
     mass: MusicAssistant,
-) -> AsyncGenerator[ProviderConfig]:
+) -> AsyncGenerator[BandcampProvider]:
     """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
     # Mock the BandcampAPIClient to avoid real API calls
     with (
@@ -41,7 +37,6 @@ async def bandcamp_provider(  # noqa: PLR0915
 
         # Configure mock client for collection access
         mock_collection = mock.AsyncMock(has_more=False, last_token=None)
-        mock_collection.items = []
 
         # Mock collection items for library tests
         mock_item_artist = mock.AsyncMock()
@@ -86,7 +81,6 @@ async def bandcamp_provider(  # noqa: PLR0915
         mock_track.artist = mock_artist
         mock_track.url = "https://test.bandcamp.com/track/test-track"
         mock_track.duration = 300
-        mock_track.streaming_url = {"mp3-320": "https://example.com/track.mp3"}
         mock_track.track_number = 1
         mock_track.lyrics = "Test lyrics"
         mock_track.tralbum_artist = None
@@ -107,7 +101,9 @@ async def bandcamp_provider(  # noqa: PLR0915
             )
             await mass.music.start_sync()
 
-        yield config
+        provider = mass.get_provider(config.instance_id)
+        assert isinstance(provider, BandcampProvider)
+        yield provider
 
 
 @pytest.mark.usefixtures("bandcamp_provider")
@@ -124,11 +120,10 @@ async def test_initial_sync(mass: MusicAssistant) -> None:
         assert {mapping.provider_domain for mapping in item.provider_mappings} == {"bandcamp"}
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_search_functionality(mass: MusicAssistant) -> None:
+async def test_search_functionality(
+    mass: MusicAssistant, bandcamp_provider: BandcampProvider
+) -> None:
     """Test that a global search returns the Bandcamp results."""
-    bandcamp_provider = next(prov for prov in mass.music.providers if prov.domain == "bandcamp")
-    assert isinstance(bandcamp_provider, BandcampProvider)
     search_results = [
         # the band row resolves the track's artist without a performer lookup search
         SearchResultArtist(id=321, name="Search Test Artist", url="https://search.bandcamp.com"),
@@ -155,95 +150,41 @@ async def test_search_functionality(mass: MusicAssistant) -> None:
     assert results.tracks[0].provider == bandcamp_provider.instance_id
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_get_artist_details(mass: MusicAssistant) -> None:
+async def test_get_artist_details(bandcamp_provider: BandcampProvider) -> None:
     """Test getting artist details."""
-    # Get the bandcamp provider instance
-    bandcamp_provider = None
-    for provider in mass.music.providers:
-        if provider.domain == "bandcamp":
-            bandcamp_provider = provider
-            break
-
-    assert bandcamp_provider is not None
-
     # Test artist retrieval
     artist = await bandcamp_provider.get_artist("123")
-    assert artist is not None
     assert artist.name == "Test Artist"
     assert artist.provider == bandcamp_provider.instance_id
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_get_album_details(mass: MusicAssistant) -> None:
+async def test_get_album_details(bandcamp_provider: BandcampProvider) -> None:
     """Test getting album details."""
-    # Get the bandcamp provider instance
-    bandcamp_provider = None
-    for provider in mass.music.providers:
-        if provider.domain == "bandcamp":
-            bandcamp_provider = provider
-            break
-
-    assert bandcamp_provider is not None
-
     # Test album retrieval
     album = await bandcamp_provider.get_album("123-456")
-    assert album is not None
     assert album.name == "Test Album"
     assert album.provider == bandcamp_provider.instance_id
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_get_track_details(mass: MusicAssistant) -> None:
+async def test_get_track_details(bandcamp_provider: BandcampProvider) -> None:
     """Test getting track details."""
-    # Get the bandcamp provider instance
-    bandcamp_provider = None
-    for provider in mass.music.providers:
-        if provider.domain == "bandcamp":
-            bandcamp_provider = provider
-            break
-
-    assert bandcamp_provider is not None
-
     # Test track retrieval
     track = await bandcamp_provider.get_track("123-456-789")
-    assert track is not None
     assert track.name == "Test Track"
     assert track.provider == bandcamp_provider.instance_id
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_get_album_tracks(mass: MusicAssistant) -> None:
+async def test_get_album_tracks(bandcamp_provider: BandcampProvider) -> None:
     """Test getting album tracks."""
-    # Get the bandcamp provider instance
-    bandcamp_provider = None
-    for provider in mass.music.providers:
-        if provider.domain == "bandcamp":
-            bandcamp_provider = provider
-            break
-
-    assert bandcamp_provider is not None
-
     # Test album tracks retrieval
     tracks = await bandcamp_provider.get_album_tracks("123-456")
     assert len(tracks) == 1
     assert tracks[0].name == "Test Track"
 
 
-@pytest.mark.usefixtures("bandcamp_provider")
-async def test_stream_details(mass: MusicAssistant) -> None:
+async def test_stream_details(bandcamp_provider: BandcampProvider) -> None:
     """Test stream details retrieval."""
-    # Get the bandcamp provider instance
-    bandcamp_provider = None
-    for provider in mass.music.providers:
-        if provider.domain == "bandcamp":
-            bandcamp_provider = provider
-            break
-
-    assert bandcamp_provider is not None
-
     # Test stream details retrieval
     stream_details = await bandcamp_provider.get_stream_details("123-456-789", MediaType.TRACK)
-    assert stream_details is not None
     assert stream_details.stream_type == StreamType.HTTP
     assert stream_details.path == "https://example.com/track.mp3"
