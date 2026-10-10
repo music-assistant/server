@@ -2307,8 +2307,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if sub_query_parts:
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
-        # Sample limit+offset rows so later pages aren't skipped past an exhausted sample.
-        sub_query += f" ORDER BY {self._get_sort_sql(sort_field, None)} LIMIT {limit + offset}"
+        sub_query += f" ORDER BY {self._get_sort_sql(sort_field, None)}"
+        # Sample limit+offset rows so later pages aren't skipped past an exhausted sample;
+        # an unlimited listing (limit 0) shuffles all rows.
+        if limit:
+            sub_query += f" LIMIT {limit + offset}"
 
         # The query now only consists of the random subquery, which applies all filters
         # within itself

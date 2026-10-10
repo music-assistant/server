@@ -558,6 +558,32 @@ def test_random_play_count_subquery_preserves_play_count_order(
     assert "LIMIT 12" in query
 
 
+@pytest.mark.asyncio
+async def test_random_sort_without_limit_returns_every_item(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """An unlimited random listing (limit 0) shuffles all rows instead of sampling none."""
+    query_parts: list[str] = []
+    artist_sorted_mass.music.tracks._apply_random_subquery(
+        query_parts=query_parts,
+        query_params={},
+        join_parts=[],
+        favorite=None,
+        search=None,
+        genre_ids=None,
+        provider_filter=None,
+        sort_field=SortField.RANDOM,
+        limit=0,
+    )
+    assert "LIMIT" not in query_parts[0]
+
+    everything = await artist_sorted_mass.music.tracks.library_items(limit=0)
+    shuffled = await artist_sorted_mass.music.tracks.library_items(
+        sort_field=SortField.RANDOM, limit=0
+    )
+    assert {item.item_id for item in shuffled} == {item.item_id for item in everything}
+
+
 def test_random_subquery_deduplicates_items_before_limit(mass: MusicAssistant) -> None:
     """Artist joins must not let duplicate item IDs consume the random sample limit."""
     query_parts: list[str] = []
