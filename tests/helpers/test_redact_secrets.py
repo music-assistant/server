@@ -25,6 +25,7 @@ FAKE_JWT = "eyJmYWtl.eyJmYWtlLXBheWxvYWQ.ZmFrZS1zaWduYXR1cmU"
         "ssl_private_key",
         "cookie",
         "Authorization",
+        "code",
     ],
 )
 def test_secret_key_value_is_hidden(key: str) -> None:
@@ -32,7 +33,9 @@ def test_secret_key_value_is_hidden(key: str) -> None:
     assert redact_secrets({key: FAKE_PASSWORD}) == {key: "<redacted>"}
 
 
-@pytest.mark.parametrize("key", ["token_id", "author", "translation_key", "username"])
+@pytest.mark.parametrize(
+    "key", ["token_id", "author", "translation_key", "username", "country_code"]
+)
 def test_look_alike_key_value_is_kept(key: str) -> None:
     """A key that only resembles a secret keeps its value."""
     assert redact_secrets({key: "visible"}) == {key: "visible"}

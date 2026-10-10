@@ -52,14 +52,14 @@ _SECRET_KEY_SUFFIXES = (
     "access_key",
     "private_key",
 )
-# the secure entries of a config values map can have any key
-_CONFIG_VALUES_KEY = "values"
+# a config values map (its secure entries can have any key) and a guest join code
+_SECRET_KEYS = ("values", "code")
 _RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
 # every redaction needs one of these in the (lowercased) message text: the end of a
-# secret key, a config values map or a JWT
+# secret key, a whole secret key or a JWT
 _SECRET_HINTS = (
     *(f'{suffix}"' for suffix in _SECRET_KEY_SUFFIXES),
-    f'"{_CONFIG_VALUES_KEY}"',
+    *(f'"{key}"' for key in _SECRET_KEYS),
     "eyj",
 )
 
@@ -330,8 +330,8 @@ def redact_secrets(data: Any) -> Any:
     """
     Return a copy of API message data with its secrets replaced by a placeholder, for logging.
 
-    Hides every string under a secret-looking key (passwords, tokens, keys) or a config
-    ``values`` map, and every JWT. The keys and all other values stay readable.
+    Hides every string under a secret-looking key (passwords, tokens, keys, join codes) or a
+    config ``values`` map, and every JWT. The keys and all other values stay readable.
 
     :param data: Decoded API message data (dicts, lists and scalars).
     """
@@ -342,7 +342,7 @@ def redact_json_secrets(message: str | bytes) -> str:
     """
     Return a JSON API message with its secrets replaced by a placeholder, for logging.
 
-    Hides the same values as redact_secrets; a message that is no valid JSON but could hold
+    Hides the same values as redact_secrets; a message that is not valid JSON but could hold
     a secret is replaced as a whole.
 
     :param message: The message in JSON, as sent over the API.
@@ -773,7 +773,7 @@ def _redact_secrets(data: Any, secret: bool) -> Any:
         return {
             key: _redact_secrets(
                 value,
-                secret or key == _CONFIG_VALUES_KEY or key.lower().endswith(_SECRET_KEY_SUFFIXES),
+                secret or key in _SECRET_KEYS or key.lower().endswith(_SECRET_KEY_SUFFIXES),
             )
             for key, value in data.items()
         }
