@@ -121,7 +121,10 @@ class AlbumsController(MediaControllerBase[Album]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/album_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/album_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
@@ -403,17 +406,20 @@ class AlbumsController(MediaControllerBase[Album]):
         in_library_only: bool = False,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        # always check if we have a library item for this album
-        library_album = await self.get_library_item_by_prov_id(
+        # always check if we have a library item for this album (on the user's sources)
+        library_album = await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
+            if provider_instance_id_or_domain == "library":
+                raise MediaNotFoundError(f"Album {item_id} not found in library")
+            # resolved once and then pinned, so the tracks and the album they are backfilled
+            # from come from the same (visible) account even if it drops mid-request
+            provider = self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
             album_tracks = await self._get_provider_album_tracks(
-                item_id, provider_instance_id_or_domain
+                item_id, provider.instance_id, strict=True
             )
-            await self._backfill_album_on_tracks(
-                album_tracks, item_id, provider_instance_id_or_domain
-            )
+            await self._backfill_album_on_tracks(album_tracks, item_id, provider.instance_id)
             return album_tracks
 
         # respect the current user's provider filter (if any) for both the
@@ -509,8 +515,8 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not provider or not isinstance(provider, MusicProvider):
+            provider = self.mass.music.get_visible_provider(provider_id)
+            if not isinstance(provider, MusicProvider):
                 continue
             if MediaType.ALBUM not in provider.supported_media_types:
                 continue
@@ -518,7 +524,7 @@ class AlbumsController(MediaControllerBase[Album]):
             search_query = streaming_search_query if provider.is_streaming_provider else album.name
             result.extend(
                 prov_item
-                for prov_item in await self.search(search_query, provider_id)
+                for prov_item in await self.search(search_query, provider.instance_id)
                 if loose_compare_strings(album.name, prov_item.name)
                 and compare_artists(prov_item.artists, album.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
@@ -834,29 +840,31 @@ class AlbumsController(MediaControllerBase[Album]):
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_album_tracks(
-        self, item_id: str, provider_instance_id_or_domain: str
+        self, item_id: str, provider_instance_id_or_domain: str, strict: bool = False
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        if prov := self.mass.get_provider(provider_instance_id_or_domain):
+        if prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain, strict):
             prov = cast("MusicProvider", prov)
             return await prov.get_album_tracks(item_id)
         return []
 
     async def _backfill_album_on_tracks(
-        self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str
+        self, album_tracks: list[Track], item_id: str, provider_instance: str
     ) -> None:
         """
         Fill in the parent album and its image on provider album tracks that omit them.
 
         :param album_tracks: The album tracks as listed by the provider.
         :param item_id: The provider album id.
-        :param provider_instance_id_or_domain: The provider the album tracks come from.
+        :param provider_instance: The exact provider instance the album tracks come from.
         """
         # some album-track listings omit the parent album and its image; backfill both
         # from the provider album so the queue shows the album name and artwork.
         if not album_tracks or (album_tracks[0].album and album_tracks[0].image):
             return
-        prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        prov_album = await self.get_provider_item(
+            item_id, provider_instance, strict_provider_instance=True
+        )
         album_mapping = ItemMapping.from_item(prov_album)
         for track in album_tracks:
             if prov_album.image and not track.image:

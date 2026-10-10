@@ -123,14 +123,15 @@ class RadioController(MediaControllerBase[Radio]):
             if radio.provider == "library"
             else (radio.provider, radio.item_id)
         )
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_id_or_domain, strict=True
+        )
         return await cast("MediaCatalogMixin", provider).get_dynamic_radio_tracks(item_id)
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
         items: list[PlaylistItem] = []
-        async for radio in self.iter_library_items():
+        async for radio in self.iter_library_items(provider=self._ensure_provider_filter(None)):
             entry = media_item_to_playlist_item(radio)
             if radio.favorite:
                 # favorite is library-level user state, so only a library export carries it

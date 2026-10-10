@@ -45,6 +45,8 @@ from music_assistant.controllers.streams.audio_analysis import (
     SMART_FADES_ANALYSIS_DOMAIN,
     _parse_row,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -471,13 +473,19 @@ class SonicSimilarityPlugin(PluginProvider):
         """
         if item_id != "inspired_by_recently_played":
             return UniqueList()
-        folder = await self._get_inspired_recommendations()
+        user = get_current_user()
+        sources = visible_music_sources(self.mass, user) if user else None
+        folder = await self._get_inspired_recommendations(
+            user.user_id if user else "", ",".join(sorted(sources)) if sources is not None else "*"
+        )
         if folder is None:
             return UniqueList()
         return folder.items
 
     @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+    async def _get_inspired_recommendations(
+        self, user_id: str, sources: str
+    ) -> RecommendationFolder | None:
         """
         Build the 'Inspired by recently played' folder with its items.
 
@@ -485,6 +493,10 @@ class SonicSimilarityPlugin(PluginProvider):
         recent tracks intersect the index. A None result is still cached
         (a negative hit), matching the previous behavior of caching the
         empty result for the same TTL.
+
+        :param user_id: The user whose recently played tracks seed the row; part of the
+            cache key, so one user's row is never served to another.
+        :param sources: The user's music sources, so a changed access selects a new key.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return None

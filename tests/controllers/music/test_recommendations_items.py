@@ -208,6 +208,21 @@ async def test_items_restricted_provider_returns_empty(
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_items_of_a_restricted_row_are_not_served_by_another_account(
+    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row of a hidden account is not answered by the user's own account of that service."""
+    mock_get_user.return_value = _restricted_user(mass)
+    mine = _build(_RowsProvider, instance_id="mine_instance")
+    mine.get_recommendation_items = AsyncMock()  # type: ignore[method-assign]
+    # the server would widen the hidden instance to the user's own account of the service
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: mine)
+    items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
+    assert items == []
+    mine.get_recommendation_items.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_rows_restricted_provider_returns_no_rows(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

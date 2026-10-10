@@ -274,6 +274,7 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     }
     mass = MagicMock()
     mass.get_provider = MagicMock(side_effect=lambda instance, **_kwargs: providers[instance])
+    mass.music.get_visible_provider = mass.get_provider
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     ctrl = ArtistsController.__new__(ArtistsController)
     ctrl.mass = mass

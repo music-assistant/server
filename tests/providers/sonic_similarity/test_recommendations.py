@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.media_items import ProviderMapping, Track
 
+from tests.common import set_music_source_access
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
 
 if TYPE_CHECKING:
@@ -84,13 +88,31 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
         return_value={"items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}]}
     )
 
-    first = await plugin.get_recommendation_items(ROW_ID)
-    # let the background cache-store task complete before the second call
-    await asyncio.gather(*background_tasks)
-    second = await plugin.get_recommendation_items(ROW_ID)
-
-    # the backend was fetched exactly once: the warm call came from the cache
-    assert mock_mass.music.recently_played.await_count == 1
-    assert plugin._handle_similar.await_count == 1
-    assert list(first) == [resolved]
-    assert list(second) == [resolved]
+    user = User(user_id="user-a", username="a", role=UserRole.USER)
+    set_music_source_access(mock_mass, {"spotify": None})
+    with patch(
+        "music_assistant.providers.sonic_similarity.provider.get_current_user", return_value=user
+    ):
+        first = await plugin.get_recommendation_items(ROW_ID)
+        # let the background cache-store task complete before the second call
+        await asyncio.gather(*background_tasks)
+        second = await plugin.get_recommendation_items(ROW_ID)
+        # the backend was fetched exactly once: the warm call came from the cache
+        assert mock_mass.music.recently_played.await_count == 1
+        assert plugin._handle_similar.await_count == 1
+        assert list(first) == [resolved]
+        assert list(second) == [resolved]
+        # a source hidden from the user since then makes the cached row stale
+        set_music_source_access(
+            mock_mass, {"spotify": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE)}
+        )
+        await plugin.get_recommendation_items(ROW_ID)
+        assert mock_mass.music.recently_played.await_count == 2
+    # another user's row is seeded by their own recently played tracks, not the cached one
+    other_user = User(user_id="user-b", username="b", role=UserRole.USER)
+    with patch(
+        "music_assistant.providers.sonic_similarity.provider.get_current_user",
+        return_value=other_user,
+    ):
+        await plugin.get_recommendation_items(ROW_ID)
+    assert mock_mass.music.recently_played.await_count == 3

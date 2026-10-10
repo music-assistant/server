@@ -42,6 +42,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_name,
     sanitize_m3u_value,
 )
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 # --------------------------------------------------------------------------- #
 #  Existing tests (EXTINF parsing)                                             #
@@ -1619,36 +1620,39 @@ def test_construct_keeps_the_provider_instance() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _make_controller() -> PlaylistController:
-    """Return a PlaylistController with a minimal mock mass."""
+def _make_controller(pages: list[list[Any]]) -> tuple[PlaylistController, AsyncMock]:
+    """Return a PlaylistController whose single resolved provider serves the given pages."""
     controller = PlaylistController.__new__(PlaylistController)
     controller.mass = MagicMock()
-    return controller
+    provider = MagicMock(spec=MediaCatalogMixin)
+    provider.get_playlist_tracks = AsyncMock(side_effect=pages)
+    controller.mass.music.resolve_visible_provider.return_value = provider
+    return controller, provider.get_playlist_tracks
 
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
     """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
-    controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
-    get_tracks = AsyncMock(side_effect=[page0, page1, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, page1, []])
 
     result = [t async for t in controller.tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
     assert get_tracks.await_count == 3
+    # the provider is resolved once for the whole listing, not again per page
+    cast("Any", controller.mass).music.resolve_visible_provider.assert_called_once_with(
+        "some_provider", strict=False
+    )
 
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
     """tracks() stops fetching once the provider yields an empty page."""
-    controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
-    get_tracks = AsyncMock(side_effect=[page0, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, []])
 
     result = [t async for t in controller.tracks("abc", "some_provider")]
 

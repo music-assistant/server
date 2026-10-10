@@ -630,19 +630,18 @@ async def test_a_play_report_never_reaches_another_members_account() -> None:
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_user: Mock) -> None:
-    """A mapping now served by another member's private account is left alone, search stands in."""
+    """A mapping now served only by another member's private account is left alone, search stands in."""
     mock_get_user.return_value = _user(USER_A)
-    mine = _music_source_prov("spotify--mine")
     theirs = _music_source_prov("spotify--theirs")
     controller = _controller_with_sources(
-        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+        {"tidal--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [theirs]
     )
     controller.mass.metadata = AsyncMock()
     substitute = Track(
         item_id="sub",
-        provider="spotify--mine",
+        provider="tidal--mine",
         name="Track",
-        provider_mappings={_mapping("spotify--mine")},
+        provider_mappings={_mapping("tidal--mine")},
     )
     ctrl = AsyncMock()
     ctrl.get_provider_item = AsyncMock(return_value=substitute)
@@ -661,7 +660,42 @@ async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_
     ):
         await controller.refresh_item(_library_track("spotify--gone"))
 
-    ctrl.get_provider_item.assert_awaited_once_with("sub", "spotify--mine", force_refresh=True)
+    ctrl.get_provider_item.assert_awaited_once_with("sub", "tidal--mine", force_refresh=True)
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_refresh_item_fetches_from_the_users_own_account_of_the_service(
+    mock_get_user: Mock,
+) -> None:
+    """A mapping whose lookup lands on a hidden account is fetched from the user's own one."""
+    mock_get_user.return_value = _user(USER_A)
+    mine = _music_source_prov("spotify--mine")
+    theirs = _music_source_prov("spotify--theirs")
+    controller = _controller_with_sources(
+        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+    )
+    controller.mass.metadata = AsyncMock()
+    library_track = _library_track("spotify--gone")
+    mapping = next(iter(library_track.provider_mappings))
+    fresh = Track(
+        item_id=mapping.item_id,
+        provider="spotify--mine",
+        name="Track",
+        provider_mappings={_mapping("spotify--mine")},
+    )
+    ctrl = AsyncMock()
+    ctrl.get_provider_item = AsyncMock(return_value=fresh)
+    ctrl.update_item_in_library = AsyncMock(return_value=fresh)
+
+    with (
+        patch.object(controller.mass, "get_provider", return_value=theirs),
+        patch.object(controller, "get_controller", return_value=ctrl),
+        patch.object(controller, "search", new_callable=AsyncMock) as search,
+    ):
+        await controller.refresh_item(library_track)
+
+    search.assert_not_awaited()
+    assert all(call.args[1] == "spotify--mine" for call in ctrl.get_provider_item.await_args_list)
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
