@@ -617,9 +617,10 @@ class StorageController(CoreController):
         Return the paths of the media locations below a folder that can not be used right now.
 
         A folder reads the files of the locations below it, which look empty while they are gone.
-        A location counts until it is gone for good: one added in Music Assistant or in Home
-        Assistant until it is removed there, any other drive or share while the folder it leaves
-        behind is there.
+        A location counts until it is gone for good: one added in Music Assistant until it is
+        removed there, a share the mount backends list (such as one added in Home Assistant)
+        while they list it, and any other drive or share that was mounted since the start while
+        the folder it leaves behind is there.
 
         :param path: An absolute path.
         :raises ActionUnavailable: When a mount backend does not list its network shares.
@@ -1297,7 +1298,7 @@ class StorageController(CoreController):
             try:
                 async with asyncio.timeout(SHARE_STATES_TIMEOUT):
                     paths.update(await mounter.get_mount_paths())
-            except Exception as err:
+            except (TimeoutError, MusicAssistantError) as err:
                 msg = f"{backend} did not list its network shares: {err or type(err).__name__}"
                 raise self._error(ActionUnavailable, msg, "shares_not_listed") from err
         return paths
