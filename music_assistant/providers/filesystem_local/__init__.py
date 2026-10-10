@@ -770,7 +770,7 @@ class LocalFileSystemProvider(MusicProvider):
             # no db item yet (e.g. browsing, or a manual refresh's second fetch after a
             # normal/NFO match resolved a new path before its mapping was persisted).
             # Recover identity from that path instead of falling back to its basename
-            if await self.exists(prov_artist_id):
+            if await self._has_path(prov_artist_id):
                 with self._ondemand_listing_scope():
                     name = Path(prov_artist_id).name
                     sort_name: str | None = None
@@ -807,9 +807,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # prov_artist_id is either an actual (relative) path or a name (as fallback)
         safe_artist_name = create_safe_string(prov_artist_id, lowercase=False, replace_space=False)
-        if await self.exists(prov_artist_id):
+        if await self._has_path(prov_artist_id):
             artist_path = prov_artist_id
-        elif await self.exists(safe_artist_name):
+        elif await self._has_path(safe_artist_name):
             artist_path = safe_artist_name
         else:
             for prov_mapping in db_artist.provider_mappings:
@@ -2966,7 +2966,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if cleaned_mbid:
             artist.mbid = cleaned_mbid
-        if not artist_path or not await self.exists(artist_path):
+        if not artist_path or not await self._has_path(artist_path):
             return artist
 
         # grab additional metadata within the Artist's folder

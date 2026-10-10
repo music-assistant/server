@@ -1,12 +1,13 @@
 """Tests that the filesystem provider rejects path-traversal outside its base path."""
 
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider, helpers
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
@@ -215,3 +216,36 @@ async def test_reads_refuse_a_base_symlink_re_pointed_after_first_use(tmp_path: 
     )
     assert isinstance(scan_errors.fatal, MediaNotFoundError)
     assert not items_to_process
+
+
+async def test_artist_folder_leading_outside_is_skipped(linked_tree: Path) -> None:
+    """An artist whose known folder now leads outside the base is parsed without that folder."""
+    (linked_tree / "Compilations" / "Hits").mkdir(parents=True)
+    provider = _make_provider(str(linked_tree))
+    provider.mass = MagicMock()
+    provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.set = AsyncMock()
+    provider.cache = provider.mass.cache
+    library_artist = Artist(
+        item_id="1",
+        provider="library",
+        name="elsewhere",
+        provider_mappings={
+            ProviderMapping(
+                item_id="elsewhere",
+                provider_domain="filesystem_local",
+                provider_instance=INSTANCE_ID,
+                url="elsewhere",
+            )
+        },
+    )
+
+    async def _library_items(**_kwargs: object) -> AsyncIterator[Artist]:
+        yield library_artist
+
+    provider.mass.music.artists.iter_library_items = _library_items
+
+    artist = await provider._parse_artist(name="elsewhere", album_dir="Compilations/Hits")
+
+    assert artist.name == "elsewhere"
+    assert not artist.metadata.images
