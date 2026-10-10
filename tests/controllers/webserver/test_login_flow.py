@@ -121,6 +121,7 @@ def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     [
         ("127.0.0.1", "127.0.0.1", "live", AuthTransport.REMOTE),
         ("::1", "::1", "live", AuthTransport.REMOTE),
+        ("0:0:0:0:0:0:0:1", "::1", "live", AuthTransport.REMOTE),
         ("192.168.1.10", "192.168.1.10", "live", AuthTransport.REMOTE),
         ("192.168.1.10", "127.0.0.1", "live", AuthTransport.DIRECT),
         ("127.0.0.1", "192.168.1.20", "live", AuthTransport.DIRECT),
@@ -130,6 +131,7 @@ def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     ids=[
         "loopback",
         "ipv6_loopback",
+        "ipv6_loopback_written_out",
         "bind_ip",
         "loopback_while_bound_to_an_ip",
         "other_peer",
