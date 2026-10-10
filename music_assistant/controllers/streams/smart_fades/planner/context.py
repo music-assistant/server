@@ -34,6 +34,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionTier,
 )
@@ -136,6 +137,8 @@ class TransitionContext:
     # masks carry no structure to plan around (every candidate would collide),
     # so collision-based decisions must abstain rather than veto everything
     vocal_collision_reliable: bool = True
+    # what made ``tier`` a quick fade; None when the tier is a blend
+    quick_fade_trigger: QuickFadeTrigger | None = None
 
 
 def build_transition_context(
@@ -248,7 +251,9 @@ def build_transition_context(
     # the tier reads the kick-folded anchor (the old planner's effective_end),
     # never the pure full-band mix_out_anchor: a kick-timed track's blendability
     # window ends where its kick dies, exactly as the old masked grid did
-    cross_meter, tier = choose_tier(outgoing, incoming, tier_anchor)
+    cross_meter, tier, quick_fade_trigger = _choose_tier_with_trigger(
+        outgoing, incoming, tier_anchor
+    )
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -334,6 +339,7 @@ def build_transition_context(
         natural_entry=natural_entry,
         protective_downbeats=tuple(float(x) for x in protective_downbeats),
         vocal_collision_reliable=vocal_collision_reliable,
+        quick_fade_trigger=quick_fade_trigger,
     )
 
 
@@ -592,24 +598,34 @@ def choose_tier(
     tier_anchor: float,
 ) -> tuple[bool, TransitionTier]:
     """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one."""
+    cross_meter, tier, _ = _choose_tier_with_trigger(outgoing, incoming, tier_anchor)
+    return cross_meter, tier
+
+
+def _choose_tier_with_trigger(
+    outgoing: Deck,
+    incoming: Deck,
+    tier_anchor: float,
+) -> tuple[bool, TransitionTier, QuickFadeTrigger | None]:
+    """Pick the transition tier, plus what made it a quick fade (None for a blend)."""
     cross_meter = outgoing.beats_per_bar != incoming.beats_per_bar
     if cross_meter:
         # no shared bar grid to beatmatch or blend across
-        return cross_meter, TransitionTier.QUICK_FADE
+        return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.METER
+    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+        return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.TEMPO
     anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= tier_anchor]
     if not _tail_is_blendable(anchored_downbeats):
-        return cross_meter, TransitionTier.QUICK_FADE
-    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
-        return cross_meter, TransitionTier.QUICK_FADE
+        return cross_meter, TransitionTier.QUICK_FADE, QuickFadeTrigger.BEAT_GRID
     out_a, in_a = outgoing.analysis, incoming.analysis
     # the 16-bar tier is earned by a verifiable energy anchor: without RMS data
     # the blend could land on a mastered fade-out unnoticed
     if out_a.rms_energy is not None and keys_compatible(out_a.key, out_a.mode, in_a.key, in_a.mode):
         # a non-4/4 meter has no corpus evidence to support a 16-bar blend
         if outgoing.beats_per_bar != 4:
-            return cross_meter, TransitionTier.TEMPO_BLEND
-        return cross_meter, TransitionTier.FULL_BLEND
-    return cross_meter, TransitionTier.TEMPO_BLEND
+            return cross_meter, TransitionTier.TEMPO_BLEND, None
+        return cross_meter, TransitionTier.FULL_BLEND, None
+    return cross_meter, TransitionTier.TEMPO_BLEND, None
 
 
 def _tail_is_blendable(downbeats: npt.NDArray[np.float32]) -> bool:
