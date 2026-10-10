@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncGenerator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -13,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.errors import RateLimited
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -29,6 +32,8 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    MAX_OAUTH_STATES,
+    OAUTH_STATE_TTL,
     AuthResult,
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
@@ -201,7 +206,11 @@ async def _ha_login_callback(
     :param details: The (username, display_name, avatar_url) Home Assistant returns for the user.
     """
     provider = _oauth_provider(mass)
-    provider._oauth_sessions["login_state"] = (None, "http://ma.local:8095/auth/callback")
+    provider._oauth_sessions["login_state"] = (
+        None,
+        "http://ma.local:8095/auth/callback",
+        time.monotonic() + OAUTH_STATE_TTL,
+    )
     hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
     with (
         patch.object(mass, "get_provider", return_value=hass_provider),
@@ -695,3 +704,110 @@ async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_iss
         "http://ha.local:8123", "ha_code", client_id="https://example.com"
     )
     assert result == AuthResult(success=False, error="No access token received from HA")
+
+
+async def test_ha_login_callback_refuses_an_expired_state(mass_minimal: MusicAssistant) -> None:
+    """A HA login that completes after its sign-in expired is refused without a token exchange."""
+    provider = _oauth_provider(mass_minimal)
+    state = await _start_ha_login(provider)
+
+    get_token = AsyncMock(return_value={"access_token": "ha_token"})
+    with (
+        _monotonic_after(OAUTH_STATE_TTL),
+        patch.object(auth_providers, "get_token", get_token),
+    ):
+        result = await provider.handle_oauth_callback("ha_code", state)
+
+    assert result == AuthResult(success=False, error="Invalid or expired state parameter")
+    get_token.assert_not_awaited()
+    assert state not in provider._oauth_sessions
+
+
+async def test_starting_a_ha_login_drops_expired_ones(mass_minimal: MusicAssistant) -> None:
+    """Abandoned HA logins are dropped once they expired and a new one starts."""
+    provider = _oauth_provider(mass_minimal)
+    abandoned = [await _start_ha_login(provider) for _ in range(3)]
+
+    with _monotonic_after(OAUTH_STATE_TTL):
+        state = await _start_ha_login(provider)
+
+    assert list(provider._oauth_sessions) == [state]
+    assert not set(abandoned) & set(provider._oauth_sessions)
+
+
+async def test_pending_ha_logins_are_capped(mass_minimal: MusicAssistant) -> None:
+    """Starting a HA login beyond the limit is refused and keeps the pending ones valid."""
+    provider = _oauth_provider(mass_minimal)
+    states = [await _start_ha_login(provider) for _ in range(MAX_OAUTH_STATES)]
+
+    with pytest.raises(RateLimited):
+        await provider.get_authorization_url("http://ma.local:8095/auth/callback")
+    assert list(provider._oauth_sessions) == states
+
+    get_token = AsyncMock(return_value={})
+    with patch.object(auth_providers, "get_token", get_token):
+        result = await provider.handle_oauth_callback("ha_code", states[0])
+    assert result == AuthResult(success=False, error="No access token received from HA")
+    get_token.assert_awaited_once()
+
+
+async def test_concurrent_ha_logins_stay_within_the_limit(mass_minimal: MusicAssistant) -> None:
+    """HA logins that start together while Home Assistant is slow to answer stay within the limit."""
+    provider = _oauth_provider(mass_minimal)
+    ha_answers = asyncio.Event()
+
+    async def slow_ha_url() -> str:
+        await ha_answers.wait()
+        return "http://ha.local:8123"
+
+    with patch.object(provider, "_get_external_ha_url", slow_ha_url):
+        starts = [
+            asyncio.create_task(
+                provider.get_authorization_url("http://ma.local:8095/auth/callback")
+            )
+            for _ in range(MAX_OAUTH_STATES + 10)
+        ]
+        await asyncio.sleep(0)
+        ha_answers.set()
+        results = await asyncio.gather(*starts, return_exceptions=True)
+
+    assert len(provider._oauth_sessions) == MAX_OAUTH_STATES
+    assert sum(isinstance(result, RateLimited) for result in results) == 10
+
+
+async def test_a_refused_ha_login_start_returns_429(auth_manager: AuthenticationManager) -> None:
+    """Starting a HA login over HTTP while too many are pending answers with a 429."""
+    webserver = auth_manager.mass.webserver
+    request = make_mocked_request("GET", "/auth/authorize?provider_id=homeassistant")
+    with patch.object(
+        auth_manager, "get_authorization_url", AsyncMock(side_effect=RateLimited("busy"))
+    ):
+        response = await webserver._handle_auth_authorize(request)
+
+    assert response.status == 429
+
+
+async def _start_ha_login(provider: HomeAssistantOAuthProvider) -> str:
+    """
+    Start a HA login on the given provider and return its OAuth state.
+
+    :param provider: The Home Assistant login provider to start the login on.
+    """
+    auth_url = await provider.get_authorization_url(
+        "http://ma.local:8095/auth/callback?provider_id=homeassistant"
+    )
+    assert auth_url is not None
+    return parse_qs(urlparse(auth_url).query)["state"][0]
+
+
+@contextmanager
+def _monotonic_after(seconds: float) -> Iterator[None]:
+    """
+    Make the login provider see a clock the given number of seconds ahead.
+
+    :param seconds: How far ahead of the real clock the login provider's clock runs.
+    """
+    now = time.monotonic()
+    clock = MagicMock(monotonic=MagicMock(return_value=now + seconds))
+    with patch.object(auth_providers, "time", clock):
+        yield
