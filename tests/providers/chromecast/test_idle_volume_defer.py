@@ -114,16 +114,22 @@ async def _play_media(fake: MagicMock) -> None:
 
 
 async def test_play_media_sends_a_kept_back_volume_after_the_load() -> None:
-    """The kept-back volume goes out once the media is loaded, before any audio plays."""
+    """The kept-back volume goes out once the media is loaded, without holding up play_media."""
     fake = _fake_play_media_player(pending_volume=36)
 
     await _play_media(fake)
 
     assert fake._pending_volume is None
-    load_index = fake.cc.mock_calls.index(
-        call.media_controller.send_message(data={"type": "LOAD", "media": {}}, inc_session_id=True)
+    fake._send_kept_back_volume.assert_called_once_with(36)
+    load_index = fake.mock_calls.index(
+        call.cc.media_controller.send_message(
+            data={"type": "LOAD", "media": {}}, inc_session_id=True
+        )
     )
-    assert fake.cc.mock_calls.index(call.set_volume(0.36)) > load_index
+    send_index = fake.mock_calls.index(
+        call.mass.create_task(fake._send_kept_back_volume.return_value)
+    )
+    assert send_index > load_index
 
 
 async def test_play_media_without_a_kept_back_volume_sends_none() -> None:
@@ -132,31 +138,31 @@ async def test_play_media_without_a_kept_back_volume_sends_none() -> None:
 
     await _play_media(fake)
 
-    fake.cc.set_volume.assert_not_called()
+    fake._send_kept_back_volume.assert_not_called()
+    fake.mass.create_task.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "error",
     [RequestFailed("volume"), RequestTimeout("volume", 10.0), NotConnected("down")],
 )
-async def test_play_media_survives_a_failed_volume_send(error: PyChromecastError) -> None:
-    """A failed volume send is logged, so it cannot fail a play command that already loaded."""
-    fake = _fake_play_media_player(pending_volume=36)
-    fake.cc.set_volume.side_effect = error
+async def test_kept_back_volume_send_failure_is_logged(error: PyChromecastError) -> None:
+    """A failed send is logged and swallowed: the media is already loading."""
+    player = _make_player(MASS_APP_ID)
+    cast("MagicMock", player.cc).set_volume.side_effect = error
 
-    await _play_media(fake)  # must not raise
+    await player._send_kept_back_volume(36)  # must not raise
 
-    assert fake._pending_volume is None
-    fake.logger.warning.assert_called_once()
+    cast("MagicMock", player.logger).warning.assert_called_once()
 
 
-async def test_play_media_propagates_an_unexpected_volume_error() -> None:
+async def test_kept_back_volume_send_propagates_an_unexpected_error() -> None:
     """Only cast send failures are swallowed; a real bug still surfaces."""
-    fake = _fake_play_media_player(pending_volume=36)
-    fake.cc.set_volume.side_effect = RuntimeError("bug")
+    player = _make_player(MASS_APP_ID)
+    cast("MagicMock", player.cc).set_volume.side_effect = RuntimeError("bug")
 
     with pytest.raises(RuntimeError):
-        await _play_media(fake)
+        await player._send_kept_back_volume(36)
 
 
 def _cast_status(*, volume_level: float, volume_muted: bool = False) -> MagicMock:

@@ -255,13 +255,10 @@ class ChromecastPlayer(Player):
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
         if (volume_level := self._pending_volume) is not None:
             # the media is loaded but no audio is out yet, so a volume kept back while
-            # idle lands before the first sample instead of after it
+            # idle lands before the first sample instead of after it. sent as a task, so
+            # a receiver slow to acknowledge it cannot hold up the playback start
             self._pending_volume = None
-            try:
-                await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
-            except PyChromecastError as err:
-                # the media is already loading, so this must not fail the play command
-                self.logger.warning("Could not apply the volume on %s: %s", self.display_name, err)
+            self.mass.create_task(self._send_kept_back_volume(volume_level))
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -593,6 +590,17 @@ class ChromecastPlayer(Player):
         # unanswered one leaves it reported for the full request timeout
         self.app_quit_sent = True
         await asyncio.to_thread(self.cc.quit_app)
+
+    async def _send_kept_back_volume(self, volume_level: int) -> None:
+        """
+        Send a volume that was kept back while idle, now that playback has started.
+
+        :param volume_level: The volume level (0..100) to send.
+        """
+        try:
+            await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
+        except PyChromecastError as err:
+            self.logger.warning("Could not apply the volume on %s: %s", self.display_name, err)
 
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
