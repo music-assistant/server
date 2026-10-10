@@ -426,13 +426,12 @@ class LoginProvider(ABC):
         """
         return None
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def handle_oauth_callback(self, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback if applicable.
 
         :param code: OAuth authorization code.
         :param state: OAuth state parameter for CSRF protection.
-        :param redirect_uri: The callback URL.
         """
         return AuthResult(success=False, error="OAuth not supported by this provider")
 
@@ -619,8 +618,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # Store OAuth state -> return_url mapping to support concurrent sessions
-        self._oauth_sessions: dict[str, str | None] = {}
+        # Store OAuth state -> (return_url, redirect_uri) mapping to support concurrent sessions
+        self._oauth_sessions: dict[str, tuple[str | None, str]] = {}
 
     @property
     def allow_self_registration(self) -> bool:
@@ -679,9 +678,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ha_url = inferred_ha_url
 
         state = secrets.token_urlsafe(32)
-        # Store return_url keyed by state to support concurrent OAuth sessions
+        # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
         # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = return_url
+        self._oauth_sessions[state] = (return_url, redirect_uri)
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -697,20 +696,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ),
         )
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def handle_oauth_callback(self, code: str, state: str) -> AuthResult:
         """
         Handle Home Assistant OAuth callback using hass_client.
 
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
         # Verify state and retrieve return_url from session
         if state not in self._oauth_sessions:
             return AuthResult(success=False, error="Invalid or expired state parameter")
 
-        # Retrieve and remove the return_url for this session (cleanup)
-        return_url = self._oauth_sessions.pop(state)
+        # Retrieve and remove the return_url and redirect_uri for this session (cleanup)
+        return_url, redirect_uri = self._oauth_sessions.pop(state)
 
         # Get the correct HA URL (external URL if running as add-on)
         # This must be the same URL used in get_authorization_url

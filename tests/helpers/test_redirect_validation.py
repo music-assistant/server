@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from music_assistant.helpers.redirect_validation import build_code_redirect_url
+import pytest
+
+from music_assistant.helpers.redirect_validation import (
+    build_code_redirect_url,
+    is_allowed_redirect_url,
+)
 
 
 def test_build_code_redirect_url_plain() -> None:
@@ -66,4 +71,24 @@ def test_build_code_redirect_url_encodes_token() -> None:
     assert (
         build_code_redirect_url("https://example.com/cb", "a b/c")
         == "https://example.com/cb?code=a%20b%2Fc"
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "external_url", "expected"),
+    [
+        ("https://ma.example.com/#/home", "https://ma.example.com", (True, "trusted")),
+        ("https://example.com/ma/#/home", "https://example.com/ma", (True, "trusted")),
+        ("https://ma.example.com/#/home", None, (True, "external")),
+        ("https://other.example.com/#/home", "https://ma.example.com", (True, "external")),
+        ("https://app.music-assistant.io/#/home", "https://ma.example.com", (True, "external")),
+    ],
+)
+def test_is_allowed_redirect_url_trusts_the_external_url(
+    url: str, external_url: str | None, expected: tuple[bool, str]
+) -> None:
+    """A redirect to the configured External URL is trusted, any other public host is not."""
+    assert (
+        is_allowed_redirect_url(url, base_url="http://192.168.1.10:8095", external_url=external_url)
+        == expected
     )
