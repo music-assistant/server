@@ -22,6 +22,7 @@ from music_assistant_models.media_items import RecommendationFolder, Track, Uniq
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import RequestPriority, with_request_priority
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
@@ -198,6 +199,9 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 return folder.items
         return UniqueList()
 
+    # a background job, also when it runs from the startup timer or a config action: the
+    # music provider searches it fans out must leave headroom for user actions and playback
+    @with_request_priority(RequestPriority.LOW)
     async def _refresh_recommendations(self) -> None:
         """Rebuild recommendation folders."""
         # Build into a local list and swap it in atomically at the end, so a slow,

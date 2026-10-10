@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionStyle,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
     CandidateSpec,
+    SegueGenerator,
     bars_ladder,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -101,6 +106,166 @@ class TestFactoryGoldenTiming:
         assert candidate.plan.fade_out_window == 20.0
         assert candidate.plan.crossfade_duration == pytest.approx(14.0, abs=1e-5)
         assert candidate.plan.fadein_trim_start == 0.0
+
+
+class TestBuiltStyle:
+    """The factory stamps the style it built on both the spec and the plan."""
+
+    def test_a_blend_tier_builds_a_blend(self) -> None:
+        """A beatmatched tier builds the BLEND style."""
+        ctx = _ctx(_analysis(120.0), _analysis(122.0))
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.tier is TransitionTier.FULL_BLEND
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert candidate.spec.style is TransitionStyle.BLEND
+
+    def test_a_quick_fade_tier_builds_a_cut(self) -> None:
+        """An unsynced quick fade builds the CUT style."""
+        ctx = _ctx(_analysis(120.0), _analysis(150.0))
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.tier is TransitionTier.QUICK_FADE
+        assert candidate.plan.style is TransitionStyle.CUT
+        assert candidate.spec.style is TransitionStyle.CUT
+
+
+class TestRhythmClashMetric:
+    """The kick clash metric integrates both decks' kick bars under the fade's gain."""
+
+    def test_a_blend_never_clashes(self) -> None:
+        """A beatmatched blend scores no clash, however many kicks overlap."""
+        out, inc = (
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+        )
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.FULL_BLEND
+
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert candidate.metrics.rhythm_clash_bars == 0.0
+
+    def test_four_bars_of_two_kicks_weigh_two_thirds_of_their_length(self) -> None:
+        """Kicks on both decks across a 4-bar cut weigh 2/3 of 4 bars."""
+        out, inc = (
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+        )
+        inc.bpm = 132.0
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.QUICK_FADE
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 4))
+
+        assert candidate is not None
+        assert candidate.plan.style is TransitionStyle.CUT
+        assert candidate.plan.crossfade_duration == pytest.approx(8.0)
+        assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
+
+
+def _rms(*segments: tuple[float, float, float]) -> list[float]:
+    """Build a flat 0.5 rms envelope over 240s, set to ``value`` per ``(start, end, value)``."""
+    t = np.arange(1800) * (240.0 / 1800)
+    env = np.full(1800, 0.5, dtype=np.float32)
+    for start, end, value in segments:
+        env[(t >= start) & (t < end)] = value
+    return env.tolist()
+
+
+def _segue_spec(ctx: TransitionContext, overlap: float) -> CandidateSpec:
+    return CandidateSpec(
+        tier=ctx.tier,
+        bars=1,
+        anchor_s=ctx.audio_end,
+        entry_s=None,
+        style=TransitionStyle.SEGUE,
+        overlap_s=overlap,
+        ideal_overlap_s=overlap,
+    )
+
+
+class TestBuildSegue:
+    """A segue enters the next track the overlap before the audible end, unsynced."""
+
+    def test_a_quiet_tail_plays_as_recorded_under_a_loud_head(self) -> None:
+        """A 10s quiet tail ends at the audible end with no stretch, no trim, nofade/qsin."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        ctx = _ctx(out, _analysis(150.0))
+        spec = next(iter(SegueGenerator().generate(ctx)))
+
+        candidate = CandidateFactory(ctx, LOGGER).build(spec)
+
+        assert candidate is not None
+        plan = candidate.plan
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.tier is TransitionTier.QUICK_FADE
+        assert plan.fade_out_window == pytest.approx(45.0)
+        assert plan.crossfade_duration == pytest.approx(10.0, abs=0.15)
+        assert not plan.tempo_plan
+        assert plan.fadein_trim_start is None
+        assert plan.fadeout_curve == "nofade"
+        assert plan.fadein_curve == "qsin"
+
+    def test_a_quiet_head_plays_as_recorded(self) -> None:
+        """An incoming head quiet over its first bar fades in with no curve."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        inc = _analysis(150.0)
+        inc.rms_energy = _rms((0.0, 4.0, 0.05))
+        ctx = _ctx(out, inc)
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_segue_spec(ctx, 14.0))
+
+        assert candidate is not None
+        assert candidate.plan.fadein_curve == "nofade"
+
+    def test_an_overlap_past_the_quiet_material_fades_both_sides(self) -> None:
+        """Quiet edges play as recorded within the 14s of quiet material, not one step past it."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((230.0, 240.0, 0.1))
+        inc = _analysis(150.0)
+        inc.rms_energy = _rms((0.0, 4.0, 0.05))
+        ctx = _ctx(out, inc)
+        factory = CandidateFactory(ctx, LOGGER)
+
+        within = factory.build(_segue_spec(ctx, 14.0))
+        past = factory.build(_segue_spec(ctx, 16.0))
+
+        assert within is not None
+        assert past is not None
+        assert (within.plan.fadeout_curve, within.plan.fadein_curve) == ("nofade", "nofade")
+        assert (past.plan.fadeout_curve, past.plan.fadein_curve) == ("qsin", "qsin")
+
+    def test_a_long_tail_enters_the_overlap_before_the_audible_end(self) -> None:
+        """A 30s quiet tail starts the next track 15s before the audible end."""
+        out = _analysis(120.0)
+        out.rms_energy = _rms((210.0, 240.0, 0.1))
+        ctx = _ctx(out, _analysis(150.0))
+        assert ctx.segue is not None
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_segue_spec(ctx, ctx.segue.overlap))
+
+        assert candidate is not None
+        plan = candidate.plan
+        assert plan.crossfade_duration == pytest.approx(15.0)
+        assert plan.fade_out_window - plan.crossfade_duration == pytest.approx(30.0)
+
+    def test_a_loud_tail_inside_a_mastered_fade_is_not_faded_twice(self) -> None:
+        """A loud edge fades equal-power, unless the record already fades itself there."""
+        ctx = _ctx(_analysis(120.0), _analysis(150.0))
+        factory = CandidateFactory(ctx, LOGGER)
+        faded = CandidateFactory(dataclasses.replace(ctx, fade_onset=20.0), LOGGER)
+
+        loud = factory.build(_segue_spec(ctx, 15.0))
+        mastered = faded.build(_segue_spec(ctx, 15.0))
+
+        assert loud is not None
+        assert mastered is not None
+        assert loud.plan.fadeout_curve == "qsin"
+        assert mastered.plan.fadeout_curve == "nofade"
 
 
 class TestUnheardIntroClamp:

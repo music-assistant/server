@@ -10,18 +10,24 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.bands import build_band_profile
-from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    Deck,
+    TransitionStyle,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     _INSTRUMENTAL_BLEND_BARS,
     CodaAnchorGenerator,
     EnergyLadderGenerator,
     ProtectiveAnchorGenerator,
     RescueAnchorGenerator,
+    SegueGenerator,
     VocalOnsetEntryGenerator,
     _entry_options,
     default_generators,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
+    SegueFacts,
     TransitionContext,
     build_transition_context,
 )
@@ -463,6 +469,161 @@ class TestRescueAnchorGenerator:
         assert RescueAnchorGenerator not in [type(g) for g in default_generators()]
 
 
+def _segue(tail: float, head: float = 0.0, *, snapped: bool = False) -> SegueFacts:
+    """Segue facts for a quiet tail and head, with the overlap capped at 15s."""
+    return SegueFacts(
+        quiet_tail=tail, quiet_head=head, snapped_out=snapped, overlap=min(tail + head, 15.0)
+    )
+
+
+def _segue_ctx(**overrides: Any) -> TransitionContext:
+    """Build a quick fade context 25% apart (a 1-bar, 2s top rung) for the segue generator."""
+    return _base_ctx(**{"tier": TransitionTier.QUICK_FADE, "bpm_diff_percent": 25.0, **overrides})
+
+
+_SILENT = VocalMask(windows=[])
+_SUNG = VocalMask(windows=[(0.0, 45.0)])
+
+
+class TestSegueGenerator:
+    """The segue steps down from the quiet material to the quick fade it replaces."""
+
+    def test_steps_of_two_seconds_from_the_material_down_to_the_floor(self) -> None:
+        """An unsnapped 9s tail + 1s head steps 10, 8, 6, 4, then the 2s floor."""
+        specs = list(SegueGenerator().generate(_segue_ctx(segue=_segue(9.0, 1.0))))
+
+        assert [spec.overlap_s for spec in specs] == pytest.approx([10.0, 8.0, 6.0, 4.0, 2.0])
+        assert all(spec.style is TransitionStyle.SEGUE for spec in specs)
+        assert all(spec.anchor_s == 45.0 and spec.entry_s is None for spec in specs)
+        assert all(spec.ideal_overlap_s == pytest.approx(10.0) for spec in specs)
+
+    def test_a_snapped_point_steps_two_bars_at_most_seven_times(self) -> None:
+        """A snapped 15s tail steps 2 bars (4s) at a time and ends on the floor."""
+        specs = list(SegueGenerator().generate(_segue_ctx(segue=_segue(15.0, snapped=True))))
+
+        assert [spec.overlap_s for spec in specs] == pytest.approx([15.0, 11.0, 7.0, 3.0, 2.0])
+
+    def test_never_more_than_seven_steps(self) -> None:
+        """A 15s overlap in 2s steps is cut to six steps plus the floor."""
+        specs = list(SegueGenerator().generate(_segue_ctx(segue=_segue(15.0))))
+
+        assert len(specs) == 7
+        assert specs[-1].overlap_s == pytest.approx(2.0)
+
+    def test_the_floor_is_the_quick_fade_top_rung(self) -> None:
+        """12% apart the quick fade is 4 bars (8s): no segue step goes shorter."""
+        ctx = _segue_ctx(bpm_diff_percent=12.0, segue=_segue(9.0))
+
+        assert [spec.overlap_s for spec in SegueGenerator().generate(ctx)] == pytest.approx(
+            [9.0, 8.0]
+        )
+
+    def test_material_below_the_floor_emits_nothing(self) -> None:
+        """A quiet tail shorter than the quick fade it would replace is no segue material."""
+        ctx = _segue_ctx(bpm_diff_percent=12.0, segue=_segue(6.0))
+
+        assert list(SegueGenerator().generate(ctx)) == []
+
+    def test_without_segue_facts_nothing_is_emitted(self) -> None:
+        """A context without RMS energy has no segue."""
+        assert list(SegueGenerator().generate(_segue_ctx())) == []
+
+    def test_a_blend_context_emits_only_when_asked(self) -> None:
+        """A beatmatchable pair keeps its blend; the rescue pass asks for the segue anyway."""
+        ctx = _base_ctx(tier=TransitionTier.FULL_BLEND, segue=_segue(9.0))
+
+        assert list(SegueGenerator().generate(ctx)) == []
+        assert list(SegueGenerator(allow_blend_context=True).generate(ctx))
+
+    def test_a_kickless_side_rides_a_long_segue_over_loud_ends(self) -> None:
+        """Loud ends with a kickless head and two instrumental decks get the full 15s."""
+        ctx = _segue_ctx(
+            segue=_segue(0.0),
+            in_kickless=True,
+            vocal_out_scoring=_SILENT,
+            vocal_in_scoring=_SILENT,
+        )
+
+        specs = list(SegueGenerator().generate(ctx))
+
+        assert specs[0].overlap_s == pytest.approx(15.0)
+        assert specs[0].ideal_overlap_s == pytest.approx(15.0)
+
+    def test_a_long_segue_keeps_the_quiet_material_as_a_step(self) -> None:
+        """A kickless side with 8s of quiet material steps down from 15s and through 8s."""
+        ctx = _segue_ctx(
+            segue=_segue(6.0, 2.0),
+            in_kickless=True,
+            vocal_out_scoring=_SILENT,
+            vocal_in_scoring=_SILENT,
+        )
+
+        specs = list(SegueGenerator().generate(ctx))
+
+        assert [spec.overlap_s for spec in specs] == pytest.approx(
+            [15.0, 13.0, 11.0, 9.0, 8.0, 7.0, 5.0, 2.0]
+        )
+        assert all(spec.ideal_overlap_s == pytest.approx(15.0) for spec in specs)
+
+    @pytest.mark.parametrize(
+        ("out_mask", "in_mask"), [(_SUNG, _SILENT), (_SILENT, _SUNG), (_SUNG, _SUNG)]
+    )
+    def test_a_singing_deck_never_rides_a_long_segue(
+        self, out_mask: VocalMask, in_mask: VocalMask
+    ) -> None:
+        """Loud ends where either deck sings get no long segue, kickless or not."""
+        ctx = _segue_ctx(
+            segue=_segue(0.0),
+            in_kickless=True,
+            vocal_out_scoring=out_mask,
+            vocal_in_scoring=in_mask,
+        )
+
+        assert list(SegueGenerator().generate(ctx)) == []
+
+    def test_a_singing_deck_keeps_the_quiet_material_segue(self) -> None:
+        """With one deck singing, a kickless side steps from its quiet material, not from 15s."""
+        ctx = _segue_ctx(
+            segue=_segue(6.0, 2.0),
+            in_kickless=True,
+            vocal_out_scoring=_SUNG,
+            vocal_in_scoring=_SILENT,
+        )
+
+        specs = list(SegueGenerator().generate(ctx))
+
+        assert specs[0].overlap_s == pytest.approx(8.0)
+        assert specs[0].ideal_overlap_s == pytest.approx(8.0)
+
+    def test_missing_vocal_data_counts_as_singing(self) -> None:
+        """A deck without vocal data sings, so it never rides a long segue."""
+        both_silent = _segue_ctx(
+            segue=_segue(0.0),
+            out_kickless=True,
+            vocal_out_scoring=_SILENT,
+            vocal_in_scoring=_SILENT,
+        )
+        out_unknown = _segue_ctx(segue=_segue(0.0), out_kickless=True, vocal_in_scoring=_SILENT)
+        no_data = _segue_ctx(segue=_segue(0.0), out_kickless=True)
+
+        assert list(SegueGenerator().generate(both_silent))
+        assert list(SegueGenerator().generate(out_unknown)) == []
+        assert list(SegueGenerator().generate(no_data)) == []
+
+    def test_saturated_vocals_on_both_decks_emit_nothing(self) -> None:
+        """When the vocal guard abstains, no segue is offered, also not in the rescue pass."""
+        ctx = _segue_ctx(segue=_segue(9.0), vocal_collision_reliable=False)
+
+        assert list(SegueGenerator().generate(ctx)) == []
+        assert list(SegueGenerator(allow_blend_context=True).generate(ctx)) == []
+
+    def test_loud_kicked_ends_emit_nothing(self) -> None:
+        """Without quiet material and with a kick on both sides there is no segue."""
+        ctx = _segue_ctx(segue=_segue(0.0), vocal_out_scoring=_SILENT, vocal_in_scoring=_SILENT)
+
+        assert list(SegueGenerator().generate(ctx)) == []
+
+
 class TestDefaultGenerators:
     """The standard generator set and its preference order."""
 
@@ -471,7 +632,7 @@ class TestDefaultGenerators:
         Generators run best-first.
 
         Order: energy ladder, coda anchor, protective anchor, onset entry,
-        lazy overlay, trim closing.
+        segue, trim closing.
         """
         names = [g.name for g in default_generators()]
         assert names == [
@@ -479,6 +640,6 @@ class TestDefaultGenerators:
             "coda-anchor",
             "protective-anchor",
             "vocal-onset-entry",
-            "lazy-overlay",
+            "segue",
             "trim-closing-anchor",
         ]

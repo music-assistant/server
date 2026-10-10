@@ -6,7 +6,7 @@ build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
 rejection/penalty policies, finalize the winner's EQ - or, when every
 candidate is rejected, retry with late-anchored rescue candidates (the
-ungated audible-end ladder plus a modest rescue rung), then ship a plain
+ungated audible-end ladder, a modest rescue rung and the segue), then ship a plain
 equal-power fallback crossfade - or, when even that collides too severely,
 the click-free emergency handoff as a last resort. Alternative strategies
 slot in as sibling ``TransitionPlanner`` subclasses.
@@ -23,14 +23,18 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
     QuickFadeTrigger,
     SmartFadeNotApplicable,
+    TransitionStyle,
     TransitionTier,
 )
 
 from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAssembler
 from .candidates import (
+    _SINGS_DUTY,
     CandidateFactory,
     RescueAnchorGenerator,
+    SegueGenerator,
     TrimClosingAnchorGenerator,
+    _window_duties,
     default_generators,
 )
 from .context import build_transition_context
@@ -109,21 +113,25 @@ class SmartCrossFadePlanner(TransitionPlanner):
             )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
-        selector = CandidateSelector(default_policies(), self.logger)
+        # a segue never replaces a blend and here never wins on its own: when every
+        # other candidate is rejected, the rescue pass weighs it
+        selector = CandidateSelector(default_policies(), self.logger, lone_segue_wins=False)
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:
-            # every phrased candidate breached a hard rejection: retry with the
-            # ungated audible-end ladder plus a modest late-anchored rescue rung
-            # before falling back to the handoff
+            # every candidate was rejected, or only segues survived: retry with the
+            # ungated audible-end ladder, a modest late-anchored rescue rung and
+            # a segue (also for a beatmatchable pair) before falling back to the handoff
             rescue_specs = [
                 *TrimClosingAnchorGenerator(min_gap=0.0).generate(ctx),
                 *RescueAnchorGenerator().generate(ctx),
+                *SegueGenerator(allow_blend_context=True).generate(ctx),
             ]
             rescue_candidates = [
                 candidate for spec in rescue_specs if (candidate := factory.build(spec)) is not None
             ]
-            winner = selector.select(rescue_candidates, ctx) if rescue_candidates else None
+            rescue_selector = CandidateSelector(default_policies(), self.logger)
+            winner = rescue_selector.select(rescue_candidates, ctx) if rescue_candidates else None
         if winner is None:
             # a plain volume crossfade reads far less abrupt than the click-free
             # handoff, so it ships unless its vocal collision is too severe
@@ -136,7 +144,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
             bars = None
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
-            source, bars = winner.candidate.spec.source, winner.candidate.spec.bars
+            source = winner.candidate.spec.source
+            bars = None if plan.style is TransitionStyle.SEGUE else winner.candidate.spec.bars
             if rescue_pass:
                 source += " (rescue pass)"
         self._log_plan(ctx, plan, source, bars)
@@ -158,7 +167,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param ctx: The transition's context.
         :param plan: The plan that ships.
         :param source: The winning candidate's generator, or the fallback/handoff that shipped.
-        :param bars: The winning candidate's bar count; None for the unphrased fallback/handoff.
+        :param bars: The winning candidate's bar count; None for an unphrased plan.
         """
         trigger = None
         if plan.tier is TransitionTier.QUICK_FADE:
@@ -166,8 +175,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
             # shipped candidate re-anchored into a quick fade lost its beat grid
             trigger = ctx.quick_fade_trigger or QuickFadeTrigger.BEAT_GRID
         self.logger.debug(
-            "planned transition: tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
-            "bpm=%.1f->%.1f (%+.1f%%)",
+            "planned transition: style=%s tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
+            "bpm=%.1f->%.1f (%+.1f%%)%s",
+            plan.style,
             plan.tier.value,
             f" trigger={trigger}" if trigger is not None else "",
             plan.metrics.strategy,
@@ -177,4 +187,40 @@ class SmartCrossFadePlanner(TransitionPlanner):
             ctx.outgoing.bpm,
             ctx.incoming.bpm,
             (ctx.incoming.bpm / ctx.outgoing.bpm - 1.0) * 100,
+            f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
         )
+
+
+def _segue_reason(ctx: TransitionContext, plan: TransitionPlan) -> str:
+    """Describe what a segue overlaps: the quiet material, its curves, who sings, who kicks."""
+    assert ctx.segue is not None  # a segue is only generated from its facts
+    out_duty, in_duty = _window_duties(ctx, plan.crossfade_duration)
+    vocals = _sides(
+        None if out_duty is None else out_duty > _SINGS_DUTY,
+        None if in_duty is None else in_duty > _SINGS_DUTY,
+    )
+    start = plan.fade_out_window - plan.crossfade_duration
+    kick = _sides(
+        None if ctx.kick_out is None else _overlaps(ctx.kick_out, start, plan.fade_out_window),
+        None if ctx.kick_in is None else _overlaps(ctx.kick_in, 0.0, plan.crossfade_duration),
+    )
+    return (
+        f"quiet tail {ctx.segue.quiet_tail:.1f}s + head {ctx.segue.quiet_head:.1f}s, "
+        f"curves {plan.fadeout_curve}/{plan.fadein_curve}, vocals {vocals}, kick {kick}"
+    )
+
+
+def _sides(out: bool | None, inc: bool | None) -> str:
+    """Name which deck has something: both, out-only, in-only, none, or unknown."""
+    if out is None or inc is None:
+        return "unknown"
+    if out and inc:
+        return "both"
+    if out:
+        return "out-only"
+    return "in-only" if inc else "none"
+
+
+def _overlaps(runs: tuple[tuple[float, float], ...], start: float, end: float) -> bool:
+    """Whether any run overlaps the window."""
+    return any(left < end and right > start for left, right in runs)
