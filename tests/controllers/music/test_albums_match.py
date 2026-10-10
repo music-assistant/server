@@ -66,6 +66,12 @@ RETAIL_SUFFIX_NAMES = [
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 def _artist() -> Artist:
     """Return the single album artist shared by every fixture album."""
     return Artist(

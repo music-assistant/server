@@ -1,10 +1,10 @@
 """
 Integration tests for dynamic radio stations on the RadioController.
 
-Uses a fully booted MusicAssistant instance (mirrors test_radio_export_import.py) with a
-small fake music provider that owns one dynamic and one non-dynamic radio station, to
-verify the guards and track-feed wiring introduced for dynamic radio stations (mirrors
-the existing dynamic-playlist wiring on PlaylistController/media_resolver).
+Uses a library-only MusicAssistant instance with a small fake music provider that owns one
+dynamic and one non-dynamic radio station, to verify the guards and track-feed wiring
+introduced for dynamic radio stations (mirrors the existing dynamic-playlist wiring on
+PlaylistController/media_resolver).
 """
 
 from __future__ import annotations
@@ -118,8 +118,8 @@ class FakeDynamicRadioProvider(MusicProvider):
 
 
 @pytest.fixture(name="radio_mass")
-async def radio_mass_fixture(mass: MusicAssistant) -> AsyncGenerator[MusicAssistant]:
-    """Return a booted instance with the fake dynamic-radio provider registered."""
+async def radio_mass_fixture(music_mass: MusicAssistant) -> AsyncGenerator[MusicAssistant]:
+    """Return a library-only instance with the fake dynamic-radio provider registered."""
     config = ProviderConfig(
         values={},
         type=ProviderType.MUSIC,
@@ -128,7 +128,7 @@ async def radio_mass_fixture(mass: MusicAssistant) -> AsyncGenerator[MusicAssist
         name="Fake Dynamic Radio",
     )
     provider = FakeDynamicRadioProvider(
-        mass,
+        music_mass,
         manifest=ProviderManifest(
             type=ProviderType.MUSIC,
             domain=FAKE_DOMAIN,
@@ -140,16 +140,16 @@ async def radio_mass_fixture(mass: MusicAssistant) -> AsyncGenerator[MusicAssist
         supported_features={ProviderFeature.LIBRARY_RADIOS, ProviderFeature.SEARCH},
     )
     provider.available = True
-    mass._providers[FAKE_INSTANCE] = provider
+    music_mass._providers[FAKE_INSTANCE] = provider
     try:
-        yield mass
+        yield music_mass
     finally:
-        mass._providers.pop(FAKE_INSTANCE, None)
+        music_mass._providers.pop(FAKE_INSTANCE, None)
 
 
 @pytest.fixture(name="radio_ctrl")
 def radio_ctrl_fixture(radio_mass: MusicAssistant) -> RadioController:
-    """Get the radio controller from the booted Music Assistant instance."""
+    """Get the radio controller from the library-only Music Assistant instance."""
     return radio_mass.music.radio
 
 

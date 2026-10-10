@@ -55,6 +55,12 @@ TRACK_THUMB = MediaItemImage(
 NEW_THUMB = MediaItemImage(type=ImageType.THUMB, path="http://images/new.jpg", provider="tidal_1")
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 @pytest.fixture
 async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]:
     """Return a music controller attached to the minimal mass instance."""

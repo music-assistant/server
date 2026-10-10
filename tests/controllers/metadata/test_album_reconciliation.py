@@ -44,6 +44,16 @@ _RETAIL_SUFFIX_NAMES = [
 ]
 
 
+@pytest.fixture(name="mass")
+async def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a real metadata controller."""
+    music_mass.metadata = MetaDataController(music_mass)
+    await music_mass.metadata.setup(
+        await music_mass.config.get_core_config(music_mass.metadata.domain)
+    )
+    return music_mass
+
+
 def _controller() -> MetaDataController:
     """Create a bare MetaDataController without running __init__."""
     ctrl = MetaDataController.__new__(MetaDataController)
