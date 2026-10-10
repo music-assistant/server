@@ -1025,6 +1025,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
+            # a player still playing (or paused on) an item will report once more on it, so that
+            # one stays served; the rest of the old load is never heard from again, and an idle
+            # player has nothing left that could be
+            prev_state = queue_data.prev_state
+            playing_item_id = (
+                prev_state["current_item_id"]
+                if prev_state is not None
+                and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                else None
+            )
+            queue_data.served_item_ids.intersection_update(
+                {playing_item_id} if playing_item_id else ()
+            )
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
@@ -1488,6 +1501,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         current_index = self.index_by_id(queue_id, item_id)
         queue.index_in_buffer = current_index
         self._queue_data[queue_id].last_served_item_id = item_id
+        self.mark_item_served(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
@@ -1495,6 +1509,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # clean up stale audio buffers for old queue items to prevent memory leaks
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
+
+    def mark_item_served(self, queue_id: str, item_id: str) -> None:
+        """
+        Record that audio of a queue item reached the player, so it can be reported as played.
+
+        :param queue_id: The queue the item belongs to.
+        :param item_id: The queue item whose first chunk of audio went out to the player.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is not None:
+            queue_data.served_item_ids.add(item_id)
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
