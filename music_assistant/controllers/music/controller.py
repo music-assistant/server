@@ -147,6 +147,7 @@ from music_assistant.helpers.provider_access import (
     source_owner,
     visible_music_sources,
     visible_playback_sources,
+    visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
@@ -2785,12 +2786,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        # an unavailable account of a streaming service resolves to another loaded account
-        # of that service, so the account actually serving the mapping is the one to check
-        provider = self.mass.get_provider(mapping.provider_instance)
-        if provider is None or not self._apply_user_provider_filter([provider]):
-            return None
-        return provider
+        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """

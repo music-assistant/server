@@ -1016,8 +1016,13 @@ class DynamicAPIAdapter:
         """Refresh authorization, impersonation, target filters and request preflight."""
         policy = self._request_policy(auth)
         entry = self._reauthorize_entry(entry, auth, policy)
+        # the handler's own scope value, the entry only carries its rendered catalog label
         impersonated_user = (
-            await self._resolve_impersonated_user(auth, str(impersonated)) if impersonated else None
+            await self._resolve_impersonated_user(
+                auth, str(impersonated), getattr(entry.handler, "required_scope", None)
+            )
+            if impersonated
+            else None
         )
         if impersonated_user is not None:
             self._enforce_target_filters(impersonated_user, entry.command, arguments)
@@ -1067,6 +1072,7 @@ class DynamicAPIAdapter:
         preflight = await self._preflight(decision, invocation.arguments, invocation.auth)
         auth, impersonated_user = await self._final_authentication(
             impersonated=impersonated,
+            required_scope=getattr(invocation.entry.handler, "required_scope", None),
         )
         # No authorization-sensitive await is permitted below this point.
         preflight = revalidate_preflight_command_sync(
@@ -1138,6 +1144,7 @@ class DynamicAPIAdapter:
         self,
         *,
         impersonated: Any,
+        required_scope: Any,
     ) -> tuple[tuple[AccessToken, Any] | None, Any | None]:
         """
         Refresh the caller, then resolve the target as the authoritative final await.
@@ -1151,7 +1158,7 @@ class DynamicAPIAdapter:
         )
         if auth is None or not impersonated:
             return auth, None
-        target = await self._resolve_impersonated_user(auth, str(impersonated))
+        target = await self._resolve_impersonated_user(auth, str(impersonated), required_scope)
         return auth, target
 
     def _authentication_is_still_exact(
@@ -1443,6 +1450,7 @@ class DynamicAPIAdapter:
         self,
         auth: tuple[AccessToken, Any] | None,
         requested_user: str,
+        required_scope: Any = None,
     ) -> Any:
         """Resolve and authorize an impersonated identity before elicitation."""
         context_tokens = self._set_auth_context(auth)
@@ -1451,10 +1459,12 @@ class DynamicAPIAdapter:
                 auth_middleware,
             )
 
+            # the target must hold the command's scope itself, as on MA's own transports
             target = await auth_middleware.resolve_impersonated_user(
                 self.mass,
                 AuthProviderType.BUILTIN,
                 requested_user,
+                required_scope=normalize_scope(required_scope),
             )
             return with_visible_music_sources(self.mass, target)
         except (InsufficientPermissions, UserNotFoundError) as exc:

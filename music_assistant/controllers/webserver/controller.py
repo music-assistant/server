@@ -819,7 +819,7 @@ class WebserverController(CoreController):
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and command_msg.args:
                 if impersonation_user := await resolve_command_impersonation(
-                    self.mass, command_msg.args
+                    self.mass, command_msg.args, handler.required_scope
                 ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)

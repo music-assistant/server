@@ -36,7 +36,7 @@ from music_assistant.providers.fastmcp_server.token_identity import TokenIdentit
 def _handler(
     command: str,
     target: Any,
-    scope: str = "library.read",
+    scope: Any = "library.read",
     *,
     allow_impersonation: bool = False,
 ) -> Any:
@@ -823,6 +823,56 @@ async def test_exact_identity_revoked_during_final_preflight_blocks_execution(
     assert called is False
 
 
+async def test_impersonation_checks_the_handlers_own_scope() -> None:
+    """The target's scope check gets the handler's scope value, not the rendered catalog label."""
+
+    async def save(provider_domain: str, values: dict[str, Any]) -> None:
+        del provider_domain, values
+
+    token = AccessToken(token="config", client_id="id-config", scopes=[])
+    handler = _handler(
+        "config/providers/save",
+        save,
+        (Scope.CONFIG_PROVIDERS_WRITE, Scope.LIBRARY_MANAGE),
+        allow_impersonation=True,
+    )
+    adapter = _adapter(
+        [handler],
+        current_token=[token],
+        policies={
+            "config": _custom(
+                config__write__provider=PolicyMode.ALLOW,
+                config__write__secret=PolicyMode.ALLOW,
+            )
+        },
+    )
+    adapter.mass.config.get_provider_config_entries = AsyncMock(return_value=[])
+    seen: list[Any] = []
+
+    async def resolve(_auth: Any, _requested: str, scope: Any = None) -> Any:
+        seen.append(scope)
+        return SimpleNamespace(
+            user_id="target", enabled=True, role="user", player_filter=[], provider_filter=[]
+        )
+
+    cast("Any", adapter)._resolve_impersonated_user = resolve
+    await adapter.call(
+        "ma_api:config/providers/save",
+        {"provider_domain": "demo", "values": {"token": "new-secret"}, "user": "target"},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=cast(
+            "Context",
+            SimpleNamespace(
+                elicit=AsyncMock(return_value=SimpleNamespace(action="accept", data=True))
+            ),
+        ),
+    )
+    assert seen
+    assert all(scope == handler.required_scope for scope in seen)
+
+
 @pytest.mark.parametrize(
     ("final_target", "permitted"),
     [
@@ -892,7 +942,7 @@ async def test_impersonation_target_is_fresh_after_final_preflight(
     adapter.mass.config.get_provider_config_entries = final_preflight_mutation
     resolutions = 0
 
-    async def resolve_live_target(_auth: Any, _requested: str) -> Any:
+    async def resolve_live_target(_auth: Any, _requested: str, _scope: Any = None) -> Any:
         nonlocal resolutions
         resolutions += 1
         return original_target if resolutions < 3 else live_target[0]
@@ -968,7 +1018,7 @@ async def test_bearer_revoked_during_final_impersonation_lookup_blocks_execution
     )
     resolutions = 0
 
-    async def resolve_and_revoke_bearer(_auth: Any, _requested: str) -> Any:
+    async def resolve_and_revoke_bearer(_auth: Any, _requested: str, _scope: Any = None) -> Any:
         nonlocal resolutions
         resolutions += 1
         if resolutions == 3:
@@ -1071,7 +1121,7 @@ async def test_final_auth_user_after_impersonation_lookup_is_used_for_execution(
     )
     resolutions = 0
 
-    async def resolve_and_replace_user(_auth: Any, _requested: str) -> Any:
+    async def resolve_and_replace_user(_auth: Any, _requested: str, _scope: Any = None) -> Any:
         nonlocal resolutions
         resolutions += 1
         return impersonated_user
@@ -1169,7 +1219,7 @@ async def test_final_impersonation_authority_uses_final_caller_and_target_identi
 
     adapter._scope_checker = check_final_scope
 
-    async def resolve_and_change_scope(_auth: Any, _requested: str) -> Any:
+    async def resolve_and_change_scope(_auth: Any, _requested: str, _scope: Any = None) -> Any:
         nonlocal resolutions, impersonate_scope
         resolutions += 1
         if resolutions == 3:
