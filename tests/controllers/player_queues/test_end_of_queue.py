@@ -305,7 +305,12 @@ async def test_adding_a_batch_to_a_finished_queue_reports_what_follows() -> None
 def _tracker(*items: Any) -> Any:
     """Build a playback tracker stand-in owning a queue holding the given items."""
     tracker = MagicMock()
-    tracker._queue_data = {QUEUE_ID: SimpleNamespace(items=list(items), flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {
+        QUEUE_ID: SimpleNamespace(
+            items=list(items), flow_mode_stream_log=[], served_item_ids={"i1"}
+        )
+    }
     return tracker
 
 
