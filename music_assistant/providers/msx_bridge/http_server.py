@@ -26,7 +26,6 @@ from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.streams.constants import output_pacing_args
-from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import join_task
@@ -1466,10 +1465,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             # play_media() instead of returning the previous track's media.
             player.expect_new_media()
             try:
-                async with ImpersonatedUser(
-                    self.provider.mass, await self.provider.get_owner_username()
-                ):
-                    await self.provider.mass.player_queues.play_media(player_id, uri)
+                await self.provider.mass.player_queues.play_media(player_id, uri)
             finally:
                 if from_playlist:
                     player._skip_ws_notify = False
@@ -2603,8 +2599,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        async with ImpersonatedUser(self.provider.mass, await self.provider.get_owner_username()):
-            await self.provider.mass.player_queues.play_media(player_id, track_uri)
+        await self.provider.mass.player_queues.play_media(player_id, track_uri)
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
