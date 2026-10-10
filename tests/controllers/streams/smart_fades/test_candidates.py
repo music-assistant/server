@@ -165,6 +165,29 @@ class TestRhythmClashMetric:
         assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
 
 
+class TestUnstretchedBuild:
+    """A spec built without its stretch keeps its shape and drops the ramp's compensation."""
+
+    def test_an_unstretched_build_drops_the_ramp(self) -> None:
+        """The same 8-bar spec builds ramped by default and unstretched on request."""
+        ctx = _ctx(_analysis(120.0), _analysis(122.0))
+        factory = CandidateFactory(ctx, LOGGER)
+
+        ramped = factory.build(_spec(ctx, 8))
+        unstretched = factory.build(_spec(ctx, 8), stretch=False)
+
+        assert ramped is not None
+        assert unstretched is not None
+        assert ramped.plan.tempo_plan
+        assert not unstretched.plan.tempo_plan
+        assert unstretched.spec == ramped.spec
+        assert unstretched.plan.fade_out_window == ramped.plan.fade_out_window
+        # 14 s of outgoing input renders in 13.8 s at 122/120; unstretched the overlap
+        # snaps a downbeat earlier, to 8 bars at 120 BPM
+        assert ramped.plan.crossfade_duration == pytest.approx(14.0 * 120.0 / 122.0)
+        assert unstretched.plan.crossfade_duration == pytest.approx(16.0)
+
+
 def _rms(*segments: tuple[float, float, float]) -> list[float]:
     """Build a flat 0.5 rms envelope over 240s, set to ``value`` per ``(start, end, value)``."""
     t = np.arange(1800) * (240.0 / 1800)

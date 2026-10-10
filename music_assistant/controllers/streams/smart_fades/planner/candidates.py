@@ -450,7 +450,7 @@ class CandidateFactory:
         self._ctx = ctx
         self._logger = logger
 
-    def build(self, spec: CandidateSpec) -> Candidate | None:
+    def build(self, spec: CandidateSpec, *, stretch: bool = True) -> Candidate | None:
         """
         Build one complete timed candidate for a spec, or ``None`` when it is infeasible.
 
@@ -461,6 +461,9 @@ class CandidateFactory:
         alignment; a 1-bar spec never fails this way, matching the plan floor.
         The returned candidate's spec reflects what was actually built: a
         re-anchored tail can downgrade the tier and cap the bar count.
+
+        :param spec: The candidate's spec.
+        :param stretch: Allow the gradual tempo ramp; False builds a blend's unstretched variant.
         """
         if spec.style is TransitionStyle.SEGUE:
             return self._build_segue(spec)
@@ -487,7 +490,9 @@ class CandidateFactory:
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
-        tempo_plan = self._choose_tempo_ramp(tier, tail, crossfade_duration)
+        tempo_plan = (
+            self._choose_tempo_ramp(tier, tail, crossfade_duration) if stretch else TempoPlan()
+        )
         crossfade_duration, fadein_trim_start = self._lock_in_timing(
             tail, crossfade_duration, fadein_start_pos, tempo_plan
         )
