@@ -99,25 +99,6 @@ def test_backing_vocals_count_as_singing() -> None:
     assert lyric_onset("[00:03.00](ooh ooh)\n[00:10.00]Main vocal") == 3.0
 
 
-@pytest.mark.parametrize(
-    ("offset_tag", "expected"),
-    [
-        pytest.param("[offset:+1500]", 8.0, id="positive offset: sung earlier than stamped"),
-        pytest.param("[offset:-1500]", 11.0, id="negative offset: sung later than stamped"),
-        pytest.param("[offset:0]", 9.5, id="zero offset"),
-    ],
-)
-def test_an_offset_header_shifts_the_onset(offset_tag: str, expected: float) -> None:
-    """The LRC offset applies to every timestamp, the first sung line's included."""
-    lyrics = f"[ar:Someone]\n{offset_tag}\n[00:00.00]♪\n[00:09.50]First line"
-    assert lyric_onset(lyrics) == pytest.approx(expected)
-
-
-def test_an_offset_cannot_push_the_onset_before_the_start() -> None:
-    """An offset larger than the first timestamp lands on the start, not before it."""
-    assert lyric_onset("[offset:+5000]\n[00:02.00]First line") == 0.0
-
-
 def test_an_untimed_line_cannot_set_the_onset() -> None:
     """A line without its own timestamp says nothing about when it is sung."""
     lyrics = "[00:04.00][Intro]\nan untimed line\n[00:11.00]Real line"

@@ -14,9 +14,6 @@ from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
 # the leading [mm:ss.xx] of a line that normalize_lrc_lyrics has already produced
 _LEADING_TIMESTAMP_RE = re.compile(r"^\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]\s*(.*)$")
-# the LRC header that shifts every timestamp, in milliseconds; a positive value means the
-# lines are sung earlier than their timestamps say
-_OFFSET_TAG_RE = re.compile(r"^\[offset:\s*([+-]?\d+)\s*\]\s*$", re.IGNORECASE | re.MULTILINE)
 
 # A line that is only one of these, bracketed or not, is a section label rather than
 # singing. Kept short on purpose: a bracketed line NOT on the list ("(ooh ooh)", "(yeah!)")
@@ -85,15 +82,11 @@ def lyric_onset(lrc_lyrics: str | None) -> float | None:
     """
     if not (normalized := normalize_lrc_lyrics(lrc_lyrics)):
         return None
-    # normalizing strips the offset header, so it is read from the raw text first
-    offset_match = _OFFSET_TAG_RE.search(lrc_lyrics or "")
-    offset_seconds = int(offset_match.group(1)) / 1000 if offset_match else 0.0
     # the earliest timestamp is often a zeroed header, a note marker or a section label
     for line in normalized.splitlines():
         if not (match := _LEADING_TIMESTAMP_RE.match(line.strip())):
             continue
         if not is_sung(match.group(3)):
             continue
-        timestamp = int(match.group(1)) * 60 + float(match.group(2).replace(":", "."))
-        return max(0.0, timestamp - offset_seconds)
+        return int(match.group(1)) * 60 + float(match.group(2).replace(":", "."))
     return None

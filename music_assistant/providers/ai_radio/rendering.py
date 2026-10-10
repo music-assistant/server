@@ -26,6 +26,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -582,7 +583,8 @@ class AIRadioRenderMixin:
                 streamdetails.item_id, streamdetails.provider
             )
         media_item = cast("Track", queue_item.media_item)
-        for mapping in media_item.provider_mappings:
+        # tried in the order playback would pick them: another master can have another intro
+        for mapping in rank_provider_mappings(media_item.provider_mappings):
             if not mapping.available:
                 continue
             onset = await audio_analysis.get_vocal_onset(mapping.item_id, mapping.provider_instance)
