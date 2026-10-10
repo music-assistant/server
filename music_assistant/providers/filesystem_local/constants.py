@@ -67,15 +67,6 @@ def content_type_config_entry(content_type: str) -> ConfigEntry:
     return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
 
 
-def folder_config_entry(path: str) -> ConfigEntry:
-    """
-    Return the line on the options page that shows which folder a source reads from.
-
-    :param path: The folder of the source.
-    """
-    return ConfigEntry(key="folder", type=ConfigEntryType.LABEL, translation_params=[path])
-
-
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
     type=ConfigEntryType.BOOLEAN,

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.auth import Scope
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     SetupFailedError,
@@ -86,6 +87,7 @@ from music_assistant.controllers.storage.models import (
     MountBackend,
     NetworkShareSpec,
     ShareType,
+    SourceFolder,
     StorageInfo,
     StorageKind,
     StorageLocation,
@@ -96,6 +98,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.provider_access import access_allows, source_access
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_folder_size, get_ip_from_host, join_task
 from music_assistant.models.core_controller import CoreController
@@ -231,6 +234,38 @@ class StorageController(CoreController):
         :param path: A media location the caller may see, or a folder inside one.
         """
         return await self.list_folders(path, _caller_manages_all_sources())
+
+    @api_command("storage/source_folder", required_scope=READ_SCOPES)
+    async def get_source_folder(self, instance_id: str) -> SourceFolder:
+        """
+        Return the folder a Local files music source reads from, and its storage location.
+
+        The location is given as last seen, without looking at it again.
+
+        :param instance_id: The instance id of a Local files music source the caller may use.
+        :raises InsufficientPermissions: The caller may not use this music source.
+        :raises InvalidDataError: The instance is not a Local files music source.
+        """
+        manages_all_sources = _caller_manages_all_sources()
+        if not manages_all_sources and not access_allows(
+            source_access(self.mass, instance_id), get_current_user()
+        ):
+            raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
+        conf = self.mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
+        folder = (
+            self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+            if conf.get("domain") in FILESYSTEM_PROVIDER_DOMAINS
+            else None
+        )
+        if not isinstance(folder, str):
+            msg = f"{instance_id} is not a Local files music source"
+            raise self._error(InvalidDataError, msg, "not_a_folder_source")
+        path = os.path.normpath(folder)
+        location = self.get_location_for_path(path)
+        if location is not None and not manages_all_sources:
+            visible = self._is_visible(location, manages_all_sources)
+            location = _without_private_details(location) if visible else None
+        return SourceFolder(path=path, location=location)
 
     @api_command("storage/local_folders/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def add_local_folder(self, path: str) -> StorageLocation:
