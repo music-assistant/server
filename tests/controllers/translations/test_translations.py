@@ -556,7 +556,7 @@ def test_setup_flow_field_errors_are_shared() -> None:
         )
 
     with _active_resolver(ctrl, None):
-        shared_errors = rejected_form("provider.qobuz").to_dict()["errors"]
+        shared_errors = rejected_form("provider.without_own_strings").to_dict()["errors"]
         owned_errors = rejected_form("provider.sendspin").to_dict()["errors"]
     assert shared_errors == {
         "username": "This field is required.",
