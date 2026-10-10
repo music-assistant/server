@@ -834,9 +834,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         result: list[Track] = []
         unique_ids: set[str] = set()
         provider_error: Exception | None = None
+        albums_ctrl = self.mass.music.albums
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
             try:
-                album_tracks, lookup_errors = await self.mass.music.albums.tracks_with_lookup_errors(
+                album_tracks, lookup_errors = await albums_ctrl.tracks_with_lookup_errors(
                     album.item_id, album.provider
                 )
             except PROVIDER_FETCH_ERRORS as err:
