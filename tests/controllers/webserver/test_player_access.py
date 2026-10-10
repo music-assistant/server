@@ -17,6 +17,7 @@ from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_player_access,
+    impersonated_user,
     player_access_filter,
     sendspin_player_id,
 )
@@ -83,6 +84,17 @@ def test_own_client_player_is_permitted() -> None:
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
     with _connected_on(OWN_CLIENT):
         assert has_player_access(user, OWN_CLIENT, _player(OWN_CLIENT, private=True))
+
+
+def test_own_client_player_is_not_lent_to_an_impersonated_user() -> None:
+    """The caller's private client player stays outside the filter of the user it acts as."""
+    target = _user(UserRole.USER, [ALLOWED_PLAYER])
+    token = impersonated_user.set(target)
+    try:
+        with _connected_on(OWN_CLIENT):
+            assert not has_player_access(target, OWN_CLIENT, _player(OWN_CLIENT, private=True))
+    finally:
+        impersonated_user.reset(token)
 
 
 def test_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
