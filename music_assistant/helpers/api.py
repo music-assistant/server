@@ -319,7 +319,7 @@ def parse_value(
     if not isinstance(value, value_type):
         # all options failed, raise exception
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
@@ -632,7 +632,7 @@ def _parse_fixed_length_tuple(
     # parsed against its own type and kept, including the members that are None
     if len(value) != len(subtypes):
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
@@ -724,10 +724,7 @@ def _parse_union(
             pass
     # if we get to this point, all possibilities failed
     # find out if we should raise or log this
-    err = (
-        f"Value {value} of type {type(value)} is invalid for {name}, "
-        f"expected value of type {value_type}"
-    )
+    err = f"Value of type {type(value)} is invalid for {name}, expected value of type {value_type}"
     if NoneType not in sub_value_types:
         # raise exception, we have no idea how to handle this value
         raise TypeError(err)
