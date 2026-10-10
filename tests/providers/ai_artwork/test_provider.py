@@ -41,8 +41,11 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
+    CONF_PREVIEW_CUSTOM_PROMPT,
     CONF_PREVIEW_IMAGE,
     CONF_PREVIEW_PLAYLIST,
+    CONF_PREVIEW_STYLE,
+    CONF_PREVIEW_TITLE_OVERLAY,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -593,6 +596,44 @@ async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvi
     assert not playlist.metadata.images
 
 
+async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) -> None:
+    """The preview tries its own style, prompt and title setting, not the configured ones."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(
+        return_value=_smart_playlist(name="Late Night Drive")
+    )
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: "custom",
+            CONF_PREVIEW_CUSTOM_PROMPT: "A tiny watercolor of {name}.",
+            CONF_PREVIEW_TITLE_OVERLAY: True,
+        },
+    )
+
+    with (
+        _no_engine_pickers(),
+        patch(
+            "music_assistant.providers.ai_artwork._render_cover", return_value=_png()
+        ) as render_cover,
+    ):
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _sent_prompt(provider) == "A tiny watercolor of Late Night Drive."
+    assert render_cover.call_args.args[1] is not None
+
+
+async def test_preview_falls_back_to_the_configured_style(provider: AIArtworkProvider) -> None:
+    """Without a style picked to preview, the preview uses the style the covers use."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_STYLE: "gouache"})
+
+    with _no_engine_pickers():
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert "painterly editorial illustration in gouache" in _sent_prompt(provider)
+
+
 async def test_preview_needs_a_playlist(provider: AIArtworkProvider) -> None:
     """Pressing preview without a playlist picked asks for one and generates nothing."""
     with pytest.raises(ActionUnavailable, match="Pick a playlist"):
@@ -620,17 +661,22 @@ async def test_settings_page_has_no_preview_until_asked(provider: AIArtworkProvi
     ]
 
 
-async def test_picking_a_preview_playlist_does_not_reload(provider: AIArtworkProvider) -> None:
-    """Only the preview playlist changing keeps the provider loaded; anything else reloads."""
+async def test_changing_preview_settings_does_not_reload(provider: AIArtworkProvider) -> None:
+    """Only preview settings changing keeps the provider loaded; anything else reloads."""
     config = MagicMock()
     with patch(
         "music_assistant.models.provider.Provider.update_config", AsyncMock()
     ) as base_update:
-        await provider.update_config(config, {f"values/{CONF_PREVIEW_PLAYLIST}"})
+        await provider.update_config(
+            config, {f"values/{CONF_PREVIEW_PLAYLIST}", f"values/{CONF_PREVIEW_STYLE}"}
+        )
+        await provider.update_config(config, {f"values/{CONF_PREVIEW_CUSTOM_PROMPT}"})
         assert provider.config is config
         base_update.assert_not_awaited()
 
-        await provider.update_config(config, {f"values/{CONF_STYLE}"})
+        await provider.update_config(
+            config, {f"values/{CONF_PREVIEW_TITLE_OVERLAY}", f"values/{CONF_STYLE}"}
+        )
         base_update.assert_awaited_once()
 
 

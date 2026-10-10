@@ -62,8 +62,11 @@ from .constants import (
     CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
+    CONF_PREVIEW_CUSTOM_PROMPT,
     CONF_PREVIEW_IMAGE,
     CONF_PREVIEW_PLAYLIST,
+    CONF_PREVIEW_STYLE,
+    CONF_PREVIEW_TITLE_OVERLAY,
     CONF_STYLE,
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
@@ -117,6 +120,26 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AIArtworkProvider(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+# the settings only read by the preview button, saved as soon as they are changed
+PREVIEW_KEYS: Final = frozenset(
+    {
+        CONF_PREVIEW_PLAYLIST,
+        CONF_PREVIEW_STYLE,
+        CONF_PREVIEW_CUSTOM_PROMPT,
+        CONF_PREVIEW_TITLE_OVERLAY,
+    }
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class CoverLook:
+    """The settings that shape how a cover looks."""
+
+    style: Style
+    custom_prompt: str
+    title_overlay: bool
 
 
 @dataclass(kw_only=True)
@@ -194,13 +217,13 @@ class AIArtworkProvider(MetadataProvider):
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """
-        Handle a config update, reloading unless only the playlist to preview changed.
+        Handle a config update, reloading unless only the preview settings changed.
 
         :param config: The updated provider config.
         :param changed_keys: The keys of the config that changed.
         """
-        if changed_keys == {f"values/{CONF_PREVIEW_PLAYLIST}"}:
-            # saved on its own as soon as it is picked, and only read by the preview button
+        if changed_keys and changed_keys <= {f"values/{key}" for key in PREVIEW_KEYS}:
+            # saved on their own as soon as they change, and only read by the preview button
             self.config = config
             return
         await super().update_config(config, changed_keys)
@@ -310,6 +333,30 @@ class AIArtworkProvider(MetadataProvider):
                 required=False,
                 default_value=None,
                 options=await self._preview_playlist_options(),
+                immediate_apply=True,
+            ),
+            ConfigEntry(
+                key=CONF_PREVIEW_STYLE,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=None,
+                options=[ConfigValueOption(value=style.value) for style in Style],
+                immediate_apply=True,
+            ),
+            ConfigEntry(
+                key=CONF_PREVIEW_CUSTOM_PROMPT,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=DEFAULT_CUSTOM_PROMPT,
+                depends_on=CONF_PREVIEW_STYLE,
+                depends_on_value=Style.CUSTOM.value,
+                immediate_apply=True,
+            ),
+            ConfigEntry(
+                key=CONF_PREVIEW_TITLE_OVERLAY,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
                 immediate_apply=True,
             ),
             ConfigEntry(
@@ -466,7 +513,7 @@ class AIArtworkProvider(MetadataProvider):
                 return False
             self._generated_at.append(time.time())
             try:
-                cover = await self._render(playlist, engine)
+                cover = await self._render(playlist, engine, self._look())
                 await asyncio.to_thread(
                     Path(self._images_dir, file_name).write_bytes,
                     cover,
@@ -484,13 +531,13 @@ class AIArtworkProvider(MetadataProvider):
             self.logger.info("Generated a cover for '%s'", playlist.name)
             return True
 
-    async def _render(self, playlist: Playlist, engine: ImageEngine) -> bytes:
-        """Return a newly generated cover for the playlist, in the configured style."""
-        prompt = await self._build_prompt(playlist)
+    async def _render(self, playlist: Playlist, engine: ImageEngine, look: CoverLook) -> bytes:
+        """Return a newly generated cover for the playlist, with the given look."""
+        prompt = await self._build_prompt(playlist, look)
         self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
         async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
             image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
-        return await asyncio.to_thread(_render_cover, image, self._overlay_layout(), playlist.name)
+        return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
     async def _preview(self) -> str:
         """Return a cover for the playlist picked to preview, as a data url, without storing it."""
@@ -502,7 +549,7 @@ class AIArtworkProvider(MetadataProvider):
             raise ActionUnavailable("Pick an image engine first")
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
         self.logger.info("Generating a preview cover for '%s'", playlist.name)
-        cover = await self._render(playlist, image_engine)
+        cover = await self._render(playlist, image_engine, self._preview_look())
         return await asyncio.to_thread(_preview_data_url, cover)
 
     async def _generate_description(self, playlist: Playlist, engine: AIEngine) -> str | None:
@@ -595,11 +642,11 @@ class AIArtworkProvider(MetadataProvider):
             or "n/a"
         )
 
-    async def _build_prompt(self, playlist: Playlist) -> str:
-        """Return the image prompt for the playlist."""
+    async def _build_prompt(self, playlist: Playlist, look: CoverLook) -> str:
+        """Return the image prompt for the playlist, with the given look."""
         context = await self._playlist_context(playlist)
         concept = await self._concept(playlist, context)
-        style = self._style()
+        style = look.style
         values = {
             "name": playlist.name,
             "title": playlist.name,
@@ -611,11 +658,11 @@ class AIArtworkProvider(MetadataProvider):
             "era": context.era or "",
         }
         if style == Style.CUSTOM:
-            template = str(self.config.get_value(CONF_CUSTOM_PROMPT) or DEFAULT_CUSTOM_PROMPT)
+            template = look.custom_prompt or DEFAULT_CUSTOM_PROMPT
             return _format_template(template, values).strip()
         preset = STYLE_PRESETS[style]
         art = preset.art
-        if self.config.get_value(CONF_TITLE_OVERLAY):
+        if look.title_overlay:
             art = preset.art_without_title or art
             text_rules = NO_TEXT_RULES.format(area=preset.title_area)
         else:
@@ -741,12 +788,26 @@ class AIArtworkProvider(MetadataProvider):
         except ValueError:
             return Style.MUSIC_ASSISTANT
 
-    def _overlay_layout(self) -> TitleLayout | None:
-        """Return how to draw the title over the image, None when the image carries it."""
-        if not self.config.get_value(CONF_TITLE_OVERLAY):
-            return None
-        style = self._style()
-        return CUSTOM_LAYOUT if style == Style.CUSTOM else STYLE_PRESETS[style].layout
+    def _look(self) -> CoverLook:
+        """Return the configured look of the covers."""
+        return CoverLook(
+            style=self._style(),
+            custom_prompt=str(self.config.get_value(CONF_CUSTOM_PROMPT) or ""),
+            title_overlay=bool(self.config.get_value(CONF_TITLE_OVERLAY)),
+        )
+
+    def _preview_look(self) -> CoverLook:
+        """Return the look picked to preview, using the configured style when none is picked."""
+        look = self._look()
+        try:
+            style = Style(str(self.config.get_value(CONF_PREVIEW_STYLE)))
+        except ValueError:
+            style = look.style
+        return CoverLook(
+            style=style,
+            custom_prompt=str(self.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or ""),
+            title_overlay=bool(self.config.get_value(CONF_PREVIEW_TITLE_OVERLAY)),
+        )
 
     def _extra_playlists(self) -> set[str]:
         """Return the library ids of the playlists opted in on top of the smart playlists."""
@@ -905,6 +966,13 @@ def _format_template(template: str, values: dict[str, str]) -> str:
         # unbalanced braces: the template is meant literally
         return template
     return result
+
+
+def _overlay_layout(look: CoverLook) -> TitleLayout | None:
+    """Return how to draw the title over the image, None when the image carries it."""
+    if not look.title_overlay:
+        return None
+    return CUSTOM_LAYOUT if look.style == Style.CUSTOM else STYLE_PRESETS[look.style].layout
 
 
 def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes:

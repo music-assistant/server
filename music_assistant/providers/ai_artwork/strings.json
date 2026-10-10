@@ -36,11 +36,32 @@
     },
     "preview_playlist": {
       "label": "Preview with playlist",
-      "description": "The playlist to make a preview cover for. Save any changes to the style first: the preview uses the saved settings."
+      "description": "The playlist to make a preview cover for."
+    },
+    "preview_style": {
+      "label": "Style to preview",
+      "description": "Try a style without changing the one your covers use. Leave empty to preview the style above.",
+      "options": {
+        "music_assistant": "Music Assistant",
+        "spotify": "Spotify",
+        "apple_music": "Apple Music",
+        "risograph": "Risograph",
+        "type_cutout": "Type cutout",
+        "gouache": "Gouache",
+        "custom": "Custom"
+      }
+    },
+    "preview_custom_prompt": {
+      "label": "Custom prompt to preview",
+      "description": "The prompt to try when previewing the Custom style. You can use the same placeholders as the custom prompt above."
+    },
+    "preview_title_overlay": {
+      "label": "Let Music Assistant add the playlist name to the preview",
+      "description": "Try the preview with the playlist name added by Music Assistant instead of designed by the image engine."
     },
     "preview": {
       "label": "Preview cover",
-      "description": "Generate a cover for the chosen playlist to see what the style looks like. It is only shown here and does not replace the playlist's cover.",
+      "description": "Generate a cover for the chosen playlist with the preview settings above. It is only shown here and does not change your settings or the playlist's cover.",
       "action_label": "Generate preview"
     },
     "preview_image": {
