@@ -438,13 +438,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
-    def get_visible_provider(self, instance_id_or_domain: str) -> ProviderInstanceType | None:
+    def get_visible_provider(
+        self, instance_id_or_domain: str, strict: bool = False
+    ) -> ProviderInstanceType | None:
         """
         Return the provider serving this instance id or domain, if the current user may see it.
 
         :param instance_id_or_domain: The provider instance id or domain to look up.
+        :param strict: Serve exactly this instance, never another account of the service.
         """
-        return visible_provider(self.mass, instance_id_or_domain, get_current_user())
+        return visible_provider(self.mass, instance_id_or_domain, get_current_user(), strict)
 
     def resolve_visible_provider(
         self, instance_id_or_domain: str, strict: bool = False

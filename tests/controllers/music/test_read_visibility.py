@@ -32,6 +32,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Radio,
     SearchResults,
+    Track,
     UniqueList,
 )
 
@@ -423,6 +424,25 @@ async def test_album_tracks_come_from_the_resolved_visible_account(
     my_spotify.get_album_tracks.assert_awaited_once_with("a1")
     my_spotify.get_album.assert_awaited_once_with("a1")
     _mock(music, THEIRS).get_album_tracks.assert_not_called()
+
+
+async def test_album_tracks_are_not_backfilled_from_another_account(
+    music: MusicController,
+) -> None:
+    """An account dropping mid-request does not hand the album backfill to another account."""
+    shared_spotify = _add_shared_spotify(music)
+    my_spotify = _add_my_spotify(music)
+
+    async def _list_and_drop(*_: object) -> list[Track]:
+        my_spotify.available = False
+        return [create_track(MY_SPOTIFY, "t1")]
+
+    my_spotify.get_album_tracks = AsyncMock(side_effect=_list_and_drop)
+
+    with _as_user(MEMBER), pytest.raises(ProviderUnavailableError):
+        await music.albums.tracks("a1", THEIRS)
+
+    shared_spotify.get_album.assert_not_called()
 
 
 async def test_album_tracks_of_a_hidden_library_album_come_from_the_users_account(
