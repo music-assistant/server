@@ -238,7 +238,7 @@ class _FakePlayers:
     def __init__(self, player_ids: set[str]) -> None:
         self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
 
-    def get_group_and_player_lock(self, queue_id: str) -> _FakeLock:
+    def get_group_and_player_lock(self, queue_id: str, strict: bool = False) -> _FakeLock:
         return _FakeLock()
 
     def get_player(self, player_id: str) -> _FakePlayer | None:

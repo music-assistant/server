@@ -114,22 +114,22 @@
 
     function displaySourcePosition(position) {
         if (typeof tvx.InteractionPlugin.executeAction !== "function") return;
-        var sourcePosition = Math.max(0, position + sourceOffset);
-        if (sourceDuration > 0) sourcePosition = Math.min(sourcePosition, sourceDuration);
-        tvx.InteractionPlugin.executeAction("player:label:position:" + (formatDuration(sourcePosition) || "0:00"));
-        if (sourceDuration > 0) {
-            tvx.InteractionPlugin.executeAction("player:label:duration:" + formatDuration(sourceDuration));
-            if (supportsProgressOverride) {
-                tvx.InteractionPlugin.executeAction("player:progress:duration:" + sourceDuration);
-                tvx.InteractionPlugin.executeAction("player:progress:position:" + sourcePosition);
-            }
-        } else {
+        if (!supportsProgressOverride || sourceDuration <= 0) {
+            // Without a supported source clock, labels must follow the same
+            // decoder clock as the native progress bar.
+            tvx.InteractionPlugin.executeAction("player:label:position:default");
             tvx.InteractionPlugin.executeAction("player:label:duration:default");
             if (supportsProgressOverride) {
                 tvx.InteractionPlugin.executeAction("player:progress:duration:-1");
                 tvx.InteractionPlugin.executeAction("player:progress:position:-1");
             }
+            return;
         }
+        var sourcePosition = Math.min(Math.max(0, position + sourceOffset), sourceDuration);
+        tvx.InteractionPlugin.executeAction("player:label:position:" + (formatDuration(sourcePosition) || "0:00"));
+        tvx.InteractionPlugin.executeAction("player:label:duration:" + formatDuration(sourceDuration));
+        tvx.InteractionPlugin.executeAction("player:progress:duration:" + sourceDuration);
+        tvx.InteractionPlugin.executeAction("player:progress:position:" + sourcePosition);
     }
 
     function startPositionTimer(startPosition) {
@@ -545,14 +545,15 @@
         if (dataId === "init") {
             supportsProgressOverride = false;
             var generation = ++capabilityGeneration;
-            // These actions were added in MSX 0.1.146; the bundled library version
-            // does not indicate what the host framework supports.
+            // These actions were added in Media Station X 0.1.146. TVX Framework
+            // has a separate version and does not indicate host action support.
             if (typeof tvx.InteractionPlugin.requestData === "function" &&
-                    typeof tvx.PluginTools.checkFramework === "function") {
+                    typeof tvx.PluginTools.checkApplication === "function") {
                 try {
                     tvx.InteractionPlugin.requestData("info:extended", function(info) {
                         if (pluginActive && generation === capabilityGeneration) {
-                            supportsProgressOverride = tvx.PluginTools.checkFramework(info, "0.1.146");
+                            supportsProgressOverride = tvx.PluginTools.checkApplication(info, "0.1.146", "Media Station X");
+                            displaySourcePosition(positionTimer ? getCurrentPosition() : pausedAtPosition);
                         }
                     });
                 } catch (e) {}

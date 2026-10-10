@@ -133,3 +133,15 @@ async def test_resume_falls_back_to_the_index_when_the_current_item_is_gone() ->
     await ctrl.resume(QUEUE_ID)
 
     assert _played(ctrl) == (QUEUE_ID, "old10", 0)
+
+
+async def test_resume_starts_over_when_the_position_lies_beyond_the_items() -> None:
+    """A stale item at an index past the end of the queue starts the queue from its first item."""
+    ctrl, queue = _controller()
+    queue.index_in_buffer = None
+    queue.current_index = 20
+    queue.current_item = _item("gone")
+
+    await ctrl.resume(QUEUE_ID)
+
+    assert _played(ctrl) == (QUEUE_ID, "old0", 0)

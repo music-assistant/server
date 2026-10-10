@@ -190,6 +190,8 @@ def test_native_seek_requests_source_position_without_faking_decoder_seek() -> N
         + """
 const actions=[];
 context.tvx.InteractionPlugin.executeAction=action=>actions.push(action);
+context.tvx.PluginTools.checkApplication=()=>true;
+context.tvx.InteractionPlugin.requestData=(id,cb)=>cb({});
 vm.runInNewContext(input.script,context);
 handler.handleRequest('init',null,()=>{});
 ws.onmessage({data:JSON.stringify({type:'clock_reset',playback_id:'generation',source_offset:120,source_duration:180,served_duration:60})});
@@ -216,9 +218,10 @@ process.stdout.write(JSON.stringify({sent,actions}));
 
 @pytest.mark.parametrize("version", ["0.1.145", "0.1.146", "0.1.165", None])
 @pytest.mark.parametrize("duration", [180, 0])
-@pytest.mark.parametrize("delivery", ["immediate", "delayed", "stale", "missing"])
-def test_native_progress_respects_framework_version(
-    version: str | None, duration: int, delivery: str
+@pytest.mark.parametrize("delivery", ["immediate", "delayed", "paused", "stale", "missing"])
+@pytest.mark.parametrize("framework_version", ["0.1.35", "9.9.9"])
+def test_native_progress_respects_application_version(
+    version: str | None, duration: int, delivery: str, framework_version: str
 ) -> None:
     """Older MSX keeps native progress without unsupported override actions."""
     node = shutil.which("node")
@@ -232,10 +235,15 @@ def test_native_progress_respects_framework_version(
 const actions=[], errors=[];
 context.window.addEventListener=()=>{};
 context.Date=Date;
+const fakeTvx=context.tvx;
 vm.runInNewContext(input.library, context);
+const tools=context.tvx.PluginTools;
+context.tvx=fakeTvx;
 context.Date={now:()=>0};
-context.tvx.PluginTools.checkFramework=context.window.TVXPluginTools.checkFramework;
-const info={info:{framework:{name:'MSX',version:input.version},application:{version:'9.9.9'}}};
+context.tvx.PluginTools.checkFramework=tools.checkFramework;
+context.tvx.PluginTools.checkApplication=tools.checkApplication;
+const info={info:{framework:{name:'TVX Framework',version:input.framework_version},
+    application:{name:'Media Station X',version:input.version}}};
 const callbacks=[];
 context.tvx.InteractionPlugin.requestData=(id,cb)=>{
     if (input.delivery==='immediate') cb(info);
@@ -251,14 +259,23 @@ vm.runInNewContext(input.script,context);
 handler.handleRequest('init',null,()=>{});
 if (input.delivery==='stale') {
     handler.handleRequest('init',null,()=>{});
-    callbacks[0]({info:{framework:{name:'MSX',version:'0.1.165'}}});
+    callbacks[0]({info:{framework:{name:'TVX Framework',version:'0.1.35'},
+        application:{name:'Media Station X',version:'0.1.165'}}});
 }
 ws.onmessage({data:JSON.stringify({type:'clock_reset',playback_id:'generation',
     source_offset:120,source_duration:input.duration,served_duration:60})});
 if (input.delivery!=='immediate') {
     timer();
     if (actions.some(action=>action.startsWith('player:progress:'))) throw Error('Premature override');
+    if (input.delivery==='paused') handler.handleEvent({event:'video:pause'});
     if (input.delivery!=='missing') callbacks.at(-1)(info);
+    if (input.delivery==='paused') {
+        if (timer !== null) throw Error('Capability detection resumed playback');
+        if (input.version==='0.1.146' || input.version==='0.1.165') {
+            const expected='player:progress:position:'+(input.duration ? 120 : -1);
+            if (!actions.includes(expected)) throw Error('Paused progress was not refreshed');
+        }
+    }
     actions.length=0;
 }
 handler.handleEvent({event:'video:play'});
@@ -271,7 +288,8 @@ process.stdout.write(JSON.stringify({sent,actions,errors}));
         input=json.dumps(
             {
                 "script": script,
-                "library": (static / "tvx-plugin.min.js").read_text(),
+                "library": (static / "tvx-plugin-module.min.js").read_text(),
+                "framework_version": framework_version,
                 "version": version,
                 "duration": duration,
                 "delivery": delivery,
@@ -285,10 +303,13 @@ process.stdout.write(JSON.stringify({sent,actions,errors}));
     data = json.loads(result.stdout)
     assert data["errors"] == []
     assert {"type": "position", "position": 0, "playback_id": "generation"} in data["sent"]
-    assert "player:label:position:2:00" in data["actions"]
     progress = [action for action in data["actions"] if action.startswith("player:progress:")]
     if delivery != "missing" and version in ("0.1.146", "0.1.165"):
+        assert f"player:label:position:{'2:00' if duration else 'default'}" in data["actions"]
+        assert f"player:label:duration:{'3:00' if duration else 'default'}" in data["actions"]
         assert f"player:progress:position:{120 if duration else -1}" in progress
         assert f"player:progress:duration:{duration if duration else -1}" in progress
     else:
         assert progress == []
+        assert "player:label:position:default" in data["actions"]
+        assert "player:label:duration:default" in data["actions"]
