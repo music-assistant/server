@@ -74,6 +74,7 @@ class Style(StrEnum):
     """The artwork style presets."""
 
     MUSIC_ASSISTANT = "music_assistant"
+    MUSIC_ASSISTANT_TILES = "music_assistant_tiles"
     SPOTIFY = "spotify"
     APPLE_MUSIC = "apple_music"
     RISOGRAPH = "risograph"
@@ -151,6 +152,26 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
             "neon-tube script or clean sans-serif sign, centered near the bottom."
         ),
         title_area="lower area",
+        layout=TitleLayout.BOTTOM_LEFT_SMALL,
+    ),
+    Style.MUSIC_ASSISTANT_TILES: StylePreset(
+        art=(
+            "Style: a Music Assistant playlist cover in the style of the Music Assistant app's "
+            "genre tiles. A smooth diagonal gradient from deep teal (#1B7A8C) in the lower-left "
+            "to bright sky blue (#03A9F4, #29C4F6) in the upper-right, overlaid with a few "
+            "delicate, semi-transparent white flowing ribbon waves made of fine parallel lines, "
+            "like a soft wireframe mesh, sweeping across the square. In the upper-right area, one "
+            "simple white line-art icon with thick rounded strokes, flat and unfilled like a "
+            "modern app icon, that symbolizes the playlist (an instrument, object or scene from "
+            "its theme), with a few small sparkles or sound lines around it. Clean, flat and "
+            "minimal, no photography, cohesive with a series of playlist covers."
+        ),
+        typography=(
+            'Typography: the playlist title "{title}" as the only text, in a bold condensed '
+            "sans-serif (like Roboto Condensed Bold), white with a soft subtle shadow, in the "
+            "lower-left area."
+        ),
+        title_area="lower-left area",
         layout=TitleLayout.BOTTOM_LEFT_SMALL,
     ),
     Style.APPLE_MUSIC: StylePreset(

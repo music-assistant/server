@@ -9,6 +9,7 @@
       "description": "The look of the generated covers.",
       "options": {
         "music_assistant": "Music Assistant",
+        "music_assistant_tiles": "Music Assistant Tiles",
         "spotify": "Spotify",
         "apple_music": "Apple Music",
         "risograph": "Risograph",
@@ -17,6 +18,7 @@
       },
       "option_descriptions": {
         "music_assistant": "The playlist's scene drawn in glowing neon lines on a dark background, in Music Assistant blue with one accent color, with a white neon title.",
+        "music_assistant_tiles": "Like the genre tiles in the Music Assistant app: a teal to sky blue gradient with soft white waves, a white line icon of the playlist's theme and a white title.",
         "spotify": "One striking full-bleed image with a vivid duotone or saturated color wash and a large, bold title.",
         "apple_music": "A soft, blurred, vivid mesh gradient with a small white title in the bottom-left corner.",
         "risograph": "A two-color screen print illustration on off-white paper, with halftone dots and grain and a chunky printed title.",
@@ -41,6 +43,7 @@
       "description": "The styles to try, shown side by side. Each style is one image generation.",
       "options": {
         "music_assistant": "Music Assistant",
+        "music_assistant_tiles": "Music Assistant Tiles",
         "spotify": "Spotify",
         "apple_music": "Apple Music",
         "risograph": "Risograph",

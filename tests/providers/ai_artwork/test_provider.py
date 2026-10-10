@@ -174,6 +174,7 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider
     [
         ("spotify", "Spotify editorial playlist cover"),
         ("music_assistant", "glowing neon light lines"),
+        ("music_assistant_tiles", "Music Assistant app's genre tiles"),
         ("apple_music", "mesh gradient"),
         ("risograph", "two-color risograph print"),
         ("gouache", "painterly editorial illustration in gouache"),
