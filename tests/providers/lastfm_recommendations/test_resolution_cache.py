@@ -322,14 +322,27 @@ def _linked(mappings: list[ProviderMapping]) -> Any:
 async def test_musicbrainz_link_is_fetched_instead_of_searched() -> None:
     """A track MusicBrainz links to the user's provider is fetched by id, never searched for."""
     mass = _mass_with_musicbrainz(_musicbrainz())
-    with _linked([APPLE_MUSIC_MAPPING]):
+    with _linked([APPLE_MUSIC_MAPPING]) as linked:
         resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
     assert resolved is not None
     assert resolved.name == "Chasing Cars"
+    linked.assert_awaited_once_with(mass, [], MediaType.TRACK, exclude_domains=set())
     mass.music.tracks.get_provider_item.assert_awaited_once_with(
-        "1", "apple_music--1", allow_fallback=False
+        "1", "apple_music--1", allow_fallback=False, strict_provider_instance=True
     )
     mass.music.tracks.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_linked_item_is_fetched_from_the_users_own_account() -> None:
+    """A link mapped to another account of the same service is fetched from the user's own."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    other_account = ProviderMapping(
+        item_id="1", provider_domain="apple_music", provider_instance="apple_music--2"
+    )
+    with _linked([other_account]):
+        await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert mass.music.tracks.get_provider_item.await_args.args == ("1", "apple_music--1")
 
 
 @pytest.mark.parametrize(
@@ -359,7 +372,10 @@ async def test_each_media_type_is_looked_up_as_its_musicbrainz_entity(
 async def test_no_link_to_the_users_providers_is_searched() -> None:
     """A track MusicBrainz links to none of the user's providers goes to the name search."""
     mass = _mass_with_musicbrainz(_musicbrainz())
-    with _linked([]):
+    spotify = ProviderMapping(
+        item_id="1", provider_domain="spotify", provider_instance="spotify--1"
+    )
+    with _linked([spotify]):
         await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
     mass.music.tracks.get_provider_item.assert_not_awaited()
     mass.music.tracks.search.assert_awaited_once()
@@ -411,4 +427,6 @@ async def test_item_fetched_via_musicbrainz_prefers_the_library_copy() -> None:
     with _linked([APPLE_MUSIC_MAPPING]):
         resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
     assert resolved is library_copy
+    library_lookups = mass.music.tracks.get_library_item_by_external_ids.await_args_list
+    assert library_lookups[-1].args == (fetched.external_ids,)
     mass.music.tracks.search.assert_not_awaited()

@@ -399,8 +399,8 @@ async def _resolve_via_musicbrainz(
     :param mass: MusicAssistant instance.
     :param providers: Streaming providers to resolve on, in order of preference.
     :param artist_name: Artist name to verify the linked item against, if known.
-    :returns: The verified item, or None when MusicBrainz could not settle it: no id, no link
-        to one of the providers, a failed lookup, or a linked item the provider no longer has.
+    :returns: The verified item, or None when MusicBrainz could not settle it, which says
+        nothing about whether a provider has it.
     """
     mbid = item_mapping.mbid
     musicbrainz = cast("MusicbrainzProvider | None", mass.get_provider("musicbrainz"))
@@ -423,19 +423,22 @@ async def _resolve_via_musicbrainz(
     )
     linked = {mapping.provider_domain: mapping for mapping in mappings}
     # only the first linked provider is asked; a miss there is left to the name search
-    mapping = next((linked[p.domain] for p in providers if p.domain in linked), None)
-    if mapping is None:
+    provider = next((p for p in providers if p.domain in linked), None)
+    if provider is None:
         return None
     try:
         async with _SEARCH_SEMAPHORE:
             result = await ctrl.get_provider_item(
-                mapping.item_id, mapping.provider_instance, allow_fallback=False
+                linked[provider.domain].item_id,
+                provider.instance_id,
+                allow_fallback=False,
+                strict_provider_instance=True,
             )
     except MusicAssistantError as err:
         LOGGER.debug(
             "Linked %s on %s could not be fetched: %s",
             item_mapping.media_type.value,
-            mapping.provider_instance,
+            provider.name,
             type(err).__name__,
         )
         return None
