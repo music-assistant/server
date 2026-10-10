@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import time
 from collections.abc import AsyncGenerator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -210,6 +212,7 @@ async def _ha_login_callback(
         None,
         "http://ma.local:8095/auth/callback",
         time.monotonic() + OAUTH_STATE_TTL,
+        "login_verifier",
     )
     hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
     with (
@@ -687,7 +690,7 @@ async def test_ha_login_callback_refuses_a_new_user_with_self_registration_off(
 async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_issued_to(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """The HA login exchanges its code with the client_id and callback it was started with."""
+    """The HA login exchanges its code with the client_id and PKCE pair it was started with."""
     provider = _oauth_provider(mass_minimal)
     redirect_uri = "https://example.com/ma/auth/callback?provider_id=homeassistant"
     auth_url = await provider.get_authorization_url(redirect_uri, "https://example.com/ma/#/home")
@@ -695,14 +698,19 @@ async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_iss
     query = parse_qs(urlparse(auth_url).query)
     assert query["client_id"] == ["https://example.com"]
     assert query["redirect_uri"] == [redirect_uri]
+    assert query["code_challenge_method"] == ["S256"]
 
     get_token = AsyncMock(return_value={})
     with patch.object(auth_providers, "get_token", get_token):
         result = await provider.handle_oauth_callback("ha_code", query["state"][0])
 
     get_token.assert_awaited_once_with(
-        "http://ha.local:8123", "ha_code", client_id="https://example.com"
+        "http://ha.local:8123", "ha_code", client_id="https://example.com", code_verifier=ANY
     )
+    assert get_token.await_args is not None
+    code_verifier = get_token.await_args.kwargs["code_verifier"]
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    assert query["code_challenge"] == [base64.urlsafe_b64encode(digest).rstrip(b"=").decode()]
     assert result == AuthResult(success=False, error="No access token received from HA")
 
 
