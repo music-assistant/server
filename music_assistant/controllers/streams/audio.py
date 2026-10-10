@@ -585,7 +585,7 @@ class StreamsAudio:
         self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             WeakValueDictionary()
         )
-        # seeks within the same episode reuse the probe instead of fetching it again,
+        # launches of the same URL reuse the probe instead of fetching it again,
         # a failed probe only until its retry time
         self._mp3_seek_hints: OrderedDict[
             tuple[str, frozenset[tuple[str, str]]], tuple[Mp3SeekHints, float | None]

@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.mp3")
 
 ID3V2_HEADER_SIZE: Final[int] = 10
-# room for two of the largest frames (2880 bytes at MPEG 2.5 layer II), past a little padding
+# room for the largest frame (2880 bytes at MPEG 2.5 layer II) plus the header of the next
+# one that mutagen needs to confirm a match, past a little padding
 FIRST_FRAME_WINDOW: Final[int] = 4096
 PROBE_TIMEOUT: Final[float] = 3.0
 
