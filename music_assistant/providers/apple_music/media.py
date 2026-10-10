@@ -40,6 +40,10 @@ if TYPE_CHECKING:
 class AppleMusicMediaManager:
     """Handles catalog reads and search for Apple Music."""
 
+    # Lookups here leave the favorite state unset: it comes from the library sync, which
+    # fetches ratings in batches, while a ratings call per lookup would double the requests
+    # against the shared, rate limited developer token.
+
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize media manager."""
         self.provider = provider
@@ -128,18 +132,14 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
             response = await self.api.get_data(endpoint, include="artists")
-        rating_response = await self.api.get_ratings([prov_album_id], MediaType.ALBUM)
-        is_favourite = rating_response.get(prov_album_id)
-        return cast("Album", parse_album(self.provider, response["data"][0], is_favourite))
+        return cast("Album", parse_album(self.provider, response["data"][0]))
 
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
         response = await self.api.get_data(endpoint, include="artists,albums")
-        rating_response = await self.api.get_ratings([prov_track_id], MediaType.TRACK)
-        is_favourite = rating_response.get(prov_track_id)
-        return parse_track(self.provider, response["data"][0], is_favourite)
+        return parse_track(self.provider, response["data"][0])
 
     async def get_playlist(
         self,
@@ -212,10 +212,7 @@ class AppleMusicMediaManager:
             )
             if not response.get("data"):
                 return None
-            track_data = response["data"][0]
-            track_ids = [track_data["id"]]
-            rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
-            return parse_track(self.provider, track_data, rating_response.get(track_data["id"]))
+            return parse_track(self.provider, response["data"][0])
         except MediaNotFoundError:
             return None
 
@@ -239,13 +236,7 @@ class AppleMusicMediaManager:
             )
             if not response.get("data"):
                 return None
-            album_data = response["data"][0]
-            album_ids = [album_data["id"]]
-            rating_response = await self.api.get_ratings(album_ids, MediaType.ALBUM)
-            return cast(
-                "Album | None",
-                parse_album(self.provider, album_data, rating_response.get(album_data["id"])),
-            )
+            return cast("Album | None", parse_album(self.provider, response["data"][0]))
         except MediaNotFoundError:
             return None
 
@@ -280,13 +271,11 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
-        track_ids = [track_obj["id"] for track_obj in response["data"] if "id" in track_obj]
-        rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
         tracks = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
-            track = parse_track(self.provider, track_obj, rating_response.get(track_obj["id"]))
+            track = parse_track(self.provider, track_obj)
             # the listing omits the album relation, so parse_track would make the album name
             # stand in as its id; callers attach the album they asked for instead, which saves
             # fetching it again for every album a library sync imports
@@ -319,12 +308,9 @@ class AppleMusicMediaManager:
         )
         if not response or "data" not in response:
             return result
-        playlist_track_ids = [track["id"] for track in response["data"] if track and track["id"]]
-        rating_response = await self.api.get_ratings(playlist_track_ids, MediaType.TRACK)
         for index, track in enumerate(response["data"]):
             if track and track["id"]:
-                is_favourite = rating_response.get(track["id"])
-                parsed_track = parse_track(self.provider, track, is_favourite)
+                parsed_track = parse_track(self.provider, track)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
         return result
@@ -357,13 +343,7 @@ class AppleMusicMediaManager:
                 response.get("errors"),
             )
             return []
-        track_ids = [t["id"] for t in tracks if t and t.get("id")]
-        rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
-        return [
-            parse_track(self.provider, t, rating_response.get(t["id"]))
-            for t in tracks
-            if t and t.get("id")
-        ]
+        return [parse_track(self.provider, t) for t in tracks if t and t.get("id")]
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -374,13 +354,11 @@ class AppleMusicMediaManager:
         except MediaNotFoundError:
             self.logger.info("No albums found for artist %s", prov_artist_id)
             return []
-        album_ids = [album["id"] for album in response if album["id"]]
-        rating_response = await self.api.get_ratings(album_ids, MediaType.ALBUM)
         albums = []
         for album in response:
             if not album["id"]:
                 continue
-            parsed = parse_album(self.provider, album, rating_response.get(album["id"]))
+            parsed = parse_album(self.provider, album)
             if parsed:
                 albums.append(cast("Album", parsed))
         return albums
@@ -394,10 +372,4 @@ class AppleMusicMediaManager:
         except MediaNotFoundError:
             self.logger.info("No top tracks found for artist %s", prov_artist_id)
             return []
-        track_ids = [track["id"] for track in response["data"] if track["id"]]
-        rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
-        return [
-            parse_track(self.provider, track, rating_response.get(track["id"]))
-            for track in response["data"]
-            if track["id"]
-        ]
+        return [parse_track(self.provider, track) for track in response["data"] if track["id"]]
