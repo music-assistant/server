@@ -141,29 +141,26 @@ async def _search_provider(
             return None
 
 
-async def _search_providers_concurrent(
+async def _search_providers(
     ctrl: ArtistsController | AlbumsController | TracksController,
     item_mapping: ItemMapping,
     providers: list[Any],
     artist_name: str | None,
 ) -> Artist | Album | Track | None:
     """
-    Search multiple providers concurrently and return the first verified match.
+    Search the providers one by one and return the first verified match.
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
-    :param providers: List of providers to search.
+    :param providers: Providers to search, in order of preference.
     :param artist_name: Artist name to verify candidate matches against, if known.
     :raises SearchIncomplete: When nothing matched and at least one provider search failed.
     """
-    tasks = [
-        asyncio.create_task(_search_provider(ctrl, item_mapping, provider))
-        for provider in providers
-    ]
-
     search_failed = False
-    for task in asyncio.as_completed(tasks):
-        candidates = await task
+    # each search is a request to a rate limited music service,
+    # so a hit on an earlier provider must spare the later ones
+    for provider in providers:
+        candidates = await _search_provider(ctrl, item_mapping, provider)
         if candidates is None:
             search_failed = True
             continue
@@ -182,10 +179,6 @@ async def _search_providers_concurrent(
                 result.name,
                 item_mapping.name,
             )
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             return result
 
     if search_failed:
@@ -238,9 +231,7 @@ async def _resolve_item(
         LOGGER.debug("No streaming providers available for resolution")
         raise SearchIncomplete(item_mapping.name)
 
-    result = await _search_providers_concurrent(
-        ctrl, item_mapping, streaming_providers, artist_name
-    )
+    result = await _search_providers(ctrl, item_mapping, streaming_providers, artist_name)
     if result is None:
         if providers_loading:
             # a provider that had not finished loading may still have it
