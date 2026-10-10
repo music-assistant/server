@@ -227,6 +227,25 @@ def build_vocal_windows(
     return VocalMask(windows=windows)
 
 
+def first_vocal_onset(analysis: AudioAnalysisData) -> float | None:
+    """
+    Return the second at which singing starts, or None when it cannot be told.
+
+    :param analysis: Stored analysis row to read the vocal-activity timeline from.
+    """
+    if (timeline := parse_vocal_probabilities(analysis)) is None:
+        return None
+    assert analysis.duration is not None  # guaranteed by the validated timeline
+    mask = build_vocal_windows(
+        timeline.probabilities,
+        timeline.frame_duration,
+        0.0,
+        analysis.duration,
+        beat_duration=60.0 / analysis.bpm if analysis.bpm and analysis.bpm > 0.0 else None,
+    )
+    return mask.windows[0][0] if mask.windows else None
+
+
 def mask_saturated(mask: VocalMask, span: float) -> bool:
     """
     Whether a mask's windows cover >=90% of a span (near-continuous vocal, no fine structure).
