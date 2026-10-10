@@ -10,7 +10,7 @@
     },
     "base_url": {
       "label": "Internal URL",
-      "description": "The URL that devices and apps on your local network use to reach Music Assistant. \nSet it yourself when the detected address does not work for them, for example behind a reverse proxy, across VLANs or with a custom hostname."
+      "description": "The URL that Music Assistant shares with devices and apps on your local network. \nSet it yourself when the automatically detected address does not work for them, for example behind a reverse proxy, with a custom hostname or on a server connected to more than one network."
     },
     "external_url": {
       "label": "External URL",
