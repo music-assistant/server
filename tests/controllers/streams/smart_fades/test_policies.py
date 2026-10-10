@@ -412,21 +412,6 @@ class TestOverlapPreferencePolicy:
 
         assert penalties == [0.0, 15.0, 20.0]
 
-    def test_a_dressed_transition_pays_only_its_rung(self) -> None:
-        """In a quick fade context a cut pays the style penalty, a dressed transition doesn't."""
-        ctx = _ctx(tier=TransitionTier.QUICK_FADE)
-        tier = TransitionTier.QUICK_FADE
-        candidates = [
-            _candidate(bars=1, ideal=1, tier=tier, style=TransitionStyle.ECHO_OUT),
-            _candidate(bars=4, ideal=4, tier=tier, style=TransitionStyle.FILTER_OUT),
-            _candidate(bars=2, ideal=4, tier=tier, style=TransitionStyle.FILTER_OUT),
-            _candidate(bars=1, ideal=1, tier=tier, style=TransitionStyle.CUT),
-        ]
-
-        penalties = [self.policy.evaluate(c, ctx).penalty for c in candidates]
-
-        assert penalties == pytest.approx([0.0, 0.0, 10.0, 15.0])
-
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""
         candidate = _candidate(bars=1, ideal=16, tier=TransitionTier.QUICK_FADE)

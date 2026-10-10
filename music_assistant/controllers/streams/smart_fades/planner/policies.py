@@ -29,9 +29,6 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
 from .candidates import RUNG_LADDER, Candidate, VocalOnsetEntryGenerator
 from .context import TransitionContext
 
-# Weighted bars of both decks' kicks together above which the drum check rejects
-RHYTHM_CLASH_LIMIT_BARS: float = 2.0
-
 # Ambition ordering of the transition tiers, most ambitious first
 _TIER_ORDER: tuple[TransitionTier, ...] = (
     TransitionTier.FULL_BLEND,
@@ -97,7 +94,7 @@ class VocalCollisionPolicy(Policy):
 class RhythmClashPolicy(Policy):
     """Reject or penalize a segue or a dressed transition that plays both decks' kicks together."""
 
-    clash_bars_limit: float = RHYTHM_CLASH_LIMIT_BARS
+    clash_bars_limit: float = 2.0
     penalty_scale: float = 20.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
@@ -228,11 +225,7 @@ class OverlapPreferencePolicy(Policy):
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
-        # a dressed transition only competes with others of its style, chosen at selection
-        if (
-            ctx.preferred_style is TransitionStyle.SEGUE
-            and candidate.plan.style not in DRESSED_STYLES
-        ):
+        if ctx.preferred_style is TransitionStyle.SEGUE:
             penalty += self.style_penalty
         return Verdict.ok(penalty)
 
