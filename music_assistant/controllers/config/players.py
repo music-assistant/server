@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InsufficientPermissions,
     UnsupportedFeaturedException,
 )
 
@@ -443,7 +444,9 @@ class PlayerConfigMixin:
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
+        :raises InsufficientPermissions: If the current user may not use the player.
         """
+        self._check_player_access(player_id)
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
             if not unpack_splitted_values:
@@ -1375,3 +1378,19 @@ class PlayerConfigMixin:
                 instance_id, {CONF_CONNECTED_PLAYERS: connected_players}
             )
         return values
+
+    def _check_player_access(self, player_id: str) -> None:
+        """Raise InsufficientPermissions when the current user may not use the given player."""
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+            has_player_access,
+        )
+
+        current_user = get_current_user()
+        if current_user and not has_player_access(
+            current_user, player_id, self.mass.players.get_player(player_id)
+        ):
+            msg = f"{current_user.username} does not have access to player {player_id}"
+            raise InsufficientPermissions(msg)
