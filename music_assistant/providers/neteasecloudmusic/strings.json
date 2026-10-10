@@ -35,8 +35,8 @@
     },
     "recommendations": {
       "personal_recommend": { "name": "Personal Recommendations" },
-      "recommended_new_tracks": { "name": "Recommended new tracks" },
-      "recommended_playlists": { "name": "Recommended playlists" }
+      "recommended_new_tracks": { "name": "[%key:common::media::recommendations::recommended_new_tracks::name%]" },
+      "recommended_playlists": { "name": "[%key:common::media::recommendations::recommended_playlists::name%]" }
     }
   },
   "manifest": {
