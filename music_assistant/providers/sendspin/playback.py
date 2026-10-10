@@ -614,8 +614,9 @@ class SendspinPlaybackSession:
                     history_end_us=history_end_us,
                 )
                 self._join_catchup[player_id] = state
+                # Start eagerly so the feed holds the write lock before any commit fanout.
                 snapshot_task = asyncio.create_task(
-                    self._feed_join_history(player_id, processor, history_snapshot)
+                    self._feed_join_history(player_id, state, history_snapshot), eager_start=True
                 )
                 self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
                 state.snapshot_task = snapshot_task
@@ -640,14 +641,11 @@ class SendspinPlaybackSession:
     async def _feed_join_history(
         self,
         player_id: str,
-        processor: _BufferedFfmpegProcessor,
+        state: _JoinCatchupState,
         history_snapshot: list[_HistoryChunk],
     ) -> None:
         """Feed historical PCM into a join-catchup processor."""
-        async with self._state_lock:
-            state = self._join_catchup.get(player_id)
-        if state is None or state.processor is not processor:
-            return
+        processor = state.processor
         async with state.write_lock:
             first_history_start_us: int | None = None
             previous_end_us: int | None = None
