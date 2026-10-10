@@ -48,6 +48,19 @@ def _provider_without_artist_tracks() -> MagicMock:
     return provider
 
 
+def _listing(
+    album_tracks: Callable[[str, str], Awaitable[list[Track]]],
+) -> Callable[[str, str], Awaitable[tuple[list[Track], dict[str, Exception]]]]:
+    """Return a fake album listing that reports no provider failures beside its tracks."""
+
+    async def _tracks_with_lookup_errors(
+        item_id: str, provider: str
+    ) -> tuple[list[Track], dict[str, Exception]]:
+        return await album_tracks(item_id, provider), {}
+
+    return _tracks_with_lookup_errors
+
+
 def _failing_album_tracks(
     failing: set[str],
 ) -> Callable[[str, str], Awaitable[list[Track]]]:
@@ -74,7 +87,11 @@ async def test_provider_artist_tracks_skip_failing_album(
             "get_provider_artist_albums",
             return_value=[_album("Broken"), _album("Fine")],
         ),
-        patch.object(mass.music.albums, "tracks", side_effect=_failing_album_tracks({"Broken"})),
+        patch.object(
+            mass.music.albums,
+            "tracks_with_lookup_errors",
+            side_effect=_listing(_failing_album_tracks({"Broken"})),
+        ),
     ):
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
     assert [track.name for track in tracks] == ["Fine track"]
@@ -120,8 +137,8 @@ async def test_provider_artist_tracks_stop_when_provider_is_rate_limited(
         ),
         patch.object(
             mass.music.albums,
-            "tracks",
-            side_effect=_album_tracks_failing_on("Limited", error, requested),
+            "tracks_with_lookup_errors",
+            side_effect=_listing(_album_tracks_failing_on("Limited", error, requested)),
         ),
     ):
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
@@ -146,8 +163,8 @@ async def test_provider_artist_tracks_go_on_after_one_album_keeps_failing(
         ),
         patch.object(
             mass.music.albums,
-            "tracks",
-            side_effect=_album_tracks_failing_on("Broken", error, requested),
+            "tracks_with_lookup_errors",
+            side_effect=_listing(_album_tracks_failing_on("Broken", error, requested)),
         ),
     ):
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
@@ -166,8 +183,8 @@ async def test_provider_artist_tracks_raise_when_every_album_fails(mass: MusicAs
         ),
         patch.object(
             mass.music.albums,
-            "tracks",
-            side_effect=_failing_album_tracks({"Broken", "Also Broken"}),
+            "tracks_with_lookup_errors",
+            side_effect=_listing(_failing_album_tracks({"Broken", "Also Broken"})),
         ),
         pytest.raises(MediaNotFoundError),
     ):
@@ -193,7 +210,39 @@ async def test_provider_artist_tracks_raise_when_remaining_tracks_unavailable(
             "get_provider_artist_albums",
             return_value=[_album("Broken"), _album("Trashed")],
         ),
-        patch.object(mass.music.albums, "tracks", side_effect=_album_tracks),
+        patch.object(
+            mass.music.albums, "tracks_with_lookup_errors", side_effect=_listing(_album_tracks)
+        ),
         pytest.raises(MediaNotFoundError),
     ):
         await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+
+
+async def test_provider_artist_tracks_stop_when_library_album_is_rate_limited(
+    mass: MusicAssistant,
+) -> None:
+    """A library album keeps its library tracks, and its provider's rate limit still stops."""
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
+    requested: list[str] = []
+    error = _exhausted(RateLimited("Apple Music Rate Limiter"))
+
+    async def _album_listing(
+        item_id: str, _provider: str
+    ) -> tuple[list[Track], dict[str, Exception]]:
+        requested.append(item_id)
+        if item_id == "InLibrary":
+            return [_track("InLibrary track")], {_PROVIDER: error}
+        return [_track(f"{item_id} track")], {}
+
+    with (
+        patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
+        patch.object(
+            mass.music.artists,
+            "get_provider_artist_albums",
+            return_value=[_album("Fine"), _album("InLibrary"), _album("Later")],
+        ),
+        patch.object(mass.music.albums, "tracks_with_lookup_errors", side_effect=_album_listing),
+    ):
+        tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+    assert requested == ["Fine", "InLibrary"]
+    assert [track.name for track in tracks] == ["Fine track", "InLibrary track"]

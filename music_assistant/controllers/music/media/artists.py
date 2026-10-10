@@ -836,29 +836,35 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_error: Exception | None = None
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
             try:
-                album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
+                album_tracks, lookup_errors = await self.mass.music.albums.tracks_with_lookup_errors(
+                    album.item_id, album.provider
+                )
             except PROVIDER_FETCH_ERRORS as err:
+                album_tracks, lookup_errors = [], {album.provider: err}
+            # a library album still lists its library tracks when the provider fails
+            if own_error := lookup_errors.get(album.provider):
                 # one failing album must not drop the artist's other tracks on this provider
-                provider_error = err
+                provider_error = own_error
                 self.logger.log(
-                    provider_fetch_log_level(err),
+                    provider_fetch_log_level(own_error),
                     "Unable to fetch tracks for album %s from provider %s: %s",
                     album.name,
                     provider_instance_id_or_domain,
-                    err,
+                    own_error,
                 )
-                if isinstance(err, RetriesExhausted) and isinstance(err.__cause__, RateLimited):
-                    # a rate limit holds for the whole provider, so every remaining album
-                    # would wait out the same backoff and fail as well; any other failure
-                    # may be this album's own, so the others are still tried
-                    break
-                continue
             for track in album_tracks:
                 unique_id = f"{track.name}.{track.version}"
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
                 result.append(track)
+            if isinstance(own_error, RetriesExhausted) and isinstance(
+                own_error.__cause__, RateLimited
+            ):
+                # a rate limit holds for the whole provider, so every remaining album would
+                # wait out the same backoff and fail as well; any other failure may be this
+                # album's own, so the others are still tried
+                break
         if provider_error is not None and not any(track.available for track in result):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise provider_error
