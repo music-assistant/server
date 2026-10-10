@@ -102,9 +102,9 @@ class CandidateSelector:
             plan, metrics = candidate.plan, candidate.metrics
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "candidate source=%s style=%s tier=%s bars=%d duration=%.2f anchor=%.2f fadein_trim=%s "
-                "total=%.2f rejected=%s trim=%.2f collision=%.2f weighted_collision=%.2f "
-                "on_downbeat=%s %s",
+                "candidate source=%s style=%s tier=%s bars=%d duration=%.2f anchor=%.2f "
+                "fadein_trim=%s total=%.2f rejected=%s trim=%.2f collision=%.2f "
+                "weighted_collision=%.2f rhythm_clash=%.2f on_downbeat=%s %s",
                 candidate.spec.source,
                 plan.style,
                 candidate.spec.tier,
@@ -117,6 +117,7 @@ class CandidateSelector:
                 metrics.audible_outgoing_trim,
                 metrics.collision_seconds,
                 metrics.weighted_collision_seconds,
+                metrics.rhythm_clash_bars,
                 metrics.anchor_on_downbeat,
                 " ".join(breakdown_entries),
             )

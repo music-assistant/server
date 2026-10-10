@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -87,6 +88,26 @@ class VocalCollisionPolicy(Policy):
         # steeply toward the rejection boundary (panel-recommended shape)
         normalized = metrics.weighted_collision_seconds / self.weighted_collision_limit
         return Verdict.ok(normalized**2 * self.weighted_penalty_scale)
+
+
+class RhythmClashPolicy(Policy):
+    """Reject or penalize a segue that plays both decks' kicks on top of each other."""
+
+    clash_bars_limit: float = 2.0
+    penalty_scale: float = 20.0
+
+    def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+        """Judge one candidate against the shared per-transition context."""
+        # only a segue is judged: a blend beatmatches its kicks, and a cut keeps the
+        # quick fade length it always had
+        if candidate.plan.style is not TransitionStyle.SEGUE:
+            return Verdict.ok()
+        if ctx.kick_out is None or ctx.kick_in is None:
+            return Verdict.ok()
+        clash = candidate.metrics.rhythm_clash_bars
+        if clash > self.clash_bars_limit:
+            return Verdict.reject("kick clash exceeds the guard limit")
+        return Verdict.ok((clash / self.clash_bars_limit) ** 2 * self.penalty_scale)
 
 
 class VocalTruncationPolicy(Policy):
@@ -219,6 +240,7 @@ def default_policies() -> tuple[Policy, ...]:
     """Return the standard policy set applied to every candidate, in evaluation order."""
     return (
         VocalCollisionPolicy(),
+        RhythmClashPolicy(),
         VocalTruncationPolicy(),
         AudibleTrimPolicy(),
         DeadAirPolicy(),

@@ -128,6 +128,41 @@ class TestBuiltStyle:
         assert candidate.spec.style is TransitionStyle.CUT
 
 
+class TestRhythmClashMetric:
+    """The kick clash metric integrates both decks' kick bars under the fade's gain."""
+
+    def test_a_blend_never_clashes(self) -> None:
+        """A beatmatched blend scores no clash, however many kicks overlap."""
+        out, inc = (
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+        )
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.FULL_BLEND
+
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert candidate.metrics.rhythm_clash_bars == 0.0
+
+    def test_four_bars_of_two_kicks_weigh_two_thirds_of_their_length(self) -> None:
+        """Kicks on both decks across a 4-bar cut weigh 2/3 of 4 bars."""
+        out, inc = (
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+        )
+        inc.bpm = 132.0
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.QUICK_FADE
+
+        candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 4))
+
+        assert candidate is not None
+        assert candidate.plan.style is TransitionStyle.CUT
+        assert candidate.plan.crossfade_duration == pytest.approx(8.0)
+        assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
+
+
 class TestUnheardIntroClamp:
     """A fade-in trim is bounded by what the overlap plays under the outgoing track."""
 

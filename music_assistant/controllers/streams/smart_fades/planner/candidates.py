@@ -904,7 +904,7 @@ class CandidateFactory:
         )
 
     def _score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
-        """Score a candidate: trims, retained vocal time, downbeat alignment, collision."""
+        """Score a candidate: trims, retained vocals, downbeat alignment, vocal and kick clash."""
         ctx = self._ctx
         audible_outgoing_trim = max(0.0, ctx.audio_end - plan.fade_out_window)
         anchor_on_downbeat = self._is_on_downbeat(plan.fade_out_window)
@@ -914,7 +914,7 @@ class CandidateFactory:
         outgoing_vocal_fade_seconds = 0.0
         collision_seconds = weighted_collision = 0.0
         if ctx.vocal_out_scoring is not None:
-            outgoing_windows = self._rendered_outgoing_windows(plan)
+            outgoing_windows = self._rendered_outgoing_windows(plan, ctx.vocal_out_scoring.windows)
             in_fade = [
                 (max(0.0, left), min(plan.crossfade_duration, right))
                 for left, right in outgoing_windows
@@ -926,9 +926,24 @@ class CandidateFactory:
             if ctx.vocal_in_scoring is not None:
                 collision_seconds, weighted_collision = collision_metrics(
                     outgoing_windows,
-                    self._rendered_incoming_windows(plan),
+                    self._rendered_incoming_windows(plan, ctx.vocal_in_scoring.windows),
                     plan.crossfade_duration,
                 )
+        rhythm_clash_bars = 0.0
+        # a blend beatmatches its kicks, so only an unsynced overlap can clash
+        if (
+            plan.style is not TransitionStyle.BLEND
+            and ctx.kick_out is not None
+            and ctx.kick_in is not None
+        ):
+            _, weighted_kicks = collision_metrics(
+                self._rendered_outgoing_windows(plan, ctx.kick_out),
+                self._rendered_incoming_windows(plan, ctx.kick_in),
+                plan.crossfade_duration,
+            )
+            rhythm_clash_bars = weighted_kicks / (
+                ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+            )
         return PlanMetrics(
             strategy=spec.strategy,
             audible_outgoing_trim=audible_outgoing_trim,
@@ -936,11 +951,13 @@ class CandidateFactory:
             anchor_on_downbeat=anchor_on_downbeat,
             collision_seconds=collision_seconds,
             weighted_collision_seconds=weighted_collision,
+            rhythm_clash_bars=rhythm_clash_bars,
         )
 
-    def _rendered_outgoing_windows(self, plan: TransitionPlan) -> list[tuple[float, float]]:
-        """Map the outgoing (unpadded) vocal scoring mask into rendered crossfade-local seconds."""
-        assert self._ctx.vocal_out_scoring is not None  # narrowed by the caller
+    def _rendered_outgoing_windows(
+        self, plan: TransitionPlan, windows: Iterable[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """Map buffer-local outgoing windows into rendered crossfade-local seconds."""
         rendered_anchor = self._rendered_time(plan, plan.fade_out_window)
         rendered_start = rendered_anchor - plan.crossfade_duration
         return [
@@ -948,14 +965,16 @@ class CandidateFactory:
                 self._rendered_time(plan, left) - rendered_start,
                 self._rendered_time(plan, right) - rendered_start,
             )
-            for left, right in self._ctx.vocal_out_scoring.windows
+            for left, right in windows
         ]
 
-    def _rendered_incoming_windows(self, plan: TransitionPlan) -> list[tuple[float, float]]:
-        """Map the incoming (unpadded) scoring mask into the plan's fadein-trim-relative seconds."""
-        assert self._ctx.vocal_in_scoring is not None  # narrowed by the caller
+    @staticmethod
+    def _rendered_incoming_windows(
+        plan: TransitionPlan, windows: Iterable[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """Map head-local incoming windows into the plan's fadein-trim-relative seconds."""
         trim = plan.fadein_trim_start or 0.0
-        return [(left - trim, right - trim) for left, right in self._ctx.vocal_in_scoring.windows]
+        return [(left - trim, right - trim) for left, right in windows]
 
     @staticmethod
     def _rendered_time(plan: TransitionPlan, input_time: float) -> float:

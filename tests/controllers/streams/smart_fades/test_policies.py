@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -19,6 +20,7 @@ from music_assistant.controllers.streams.smart_fades.planner.policies import (
     AudibleTrimPolicy,
     DeadAirPolicy,
     OverlapPreferencePolicy,
+    RhythmClashPolicy,
     Verdict,
     VocalCollisionPolicy,
     VocalTruncationPolicy,
@@ -177,6 +179,50 @@ class TestVocalCollisionPolicy:
         near = _candidate(weighted=WEIGHTED_COLLISION_LIMIT - 1e-6)
 
         assert self.policy.evaluate(near, ctx).penalty == pytest.approx(20.0, abs=0.01)
+
+
+class TestRhythmClashPolicy:
+    """Reject/penalize two kicks playing on top of each other, for a segue only."""
+
+    policy = RhythmClashPolicy()
+    kicks = ((0.0, 45.0),)
+
+    def _kick_ctx(self) -> TransitionContext:
+        return dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=self.kicks)
+
+    def test_rejects_a_segue_above_the_limit(self) -> None:
+        """A segue clashing for more than 2 weighted bars is rejected."""
+        candidate = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=2.01)
+
+        assert self.policy.evaluate(candidate, self._kick_ctx()).rejected is True
+
+    def test_penalty_quadratic_up_to_the_limit(self) -> None:
+        """Below the limit the penalty grows with the square of the clash."""
+        at_limit = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=2.0)
+        half = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=1.0)
+
+        assert self.policy.evaluate(at_limit, self._kick_ctx()).penalty == pytest.approx(20.0)
+        assert self.policy.evaluate(half, self._kick_ctx()).penalty == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("style", [TransitionStyle.BLEND, TransitionStyle.CUT])
+    def test_other_styles_are_not_judged(self, style: TransitionStyle) -> None:
+        """A blend or a cut is never rejected or penalized for its kicks."""
+        candidate = _candidate(style=style, rhythm_clash=9.0)
+
+        verdict = self.policy.evaluate(candidate, self._kick_ctx())
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
+
+    def test_abstains_without_kick_data(self) -> None:
+        """A deck without a band profile leaves nothing to judge."""
+        candidate = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=9.0)
+        ctx = dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=None)
+
+        verdict = self.policy.evaluate(candidate, ctx)
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
 
 
 class TestVocalTruncationPolicy:
@@ -366,12 +412,13 @@ class TestAnchorAlignmentPolicy:
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(6.0)
 
 
-def test_default_policies_returns_the_six_standard_policies() -> None:
-    """The standard policy tuple contains one instance of each of the six policies."""
+def test_default_policies_returns_the_seven_standard_policies() -> None:
+    """The standard policy tuple contains one instance of each of the seven policies."""
     policies = default_policies()
 
     assert [type(p) for p in policies] == [
         VocalCollisionPolicy,
+        RhythmClashPolicy,
         VocalTruncationPolicy,
         AudibleTrimPolicy,
         DeadAirPolicy,
