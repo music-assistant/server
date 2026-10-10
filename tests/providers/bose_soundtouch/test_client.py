@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from defusedxml import ElementTree as DefusedET
 
 from music_assistant.providers.bose_soundtouch.client import SoundtouchDevice
@@ -11,6 +12,7 @@ from music_assistant.providers.bose_soundtouch.client.client import (
     create_notification_xml,
     create_zone_xml,
 )
+from music_assistant.providers.bose_soundtouch.client.exceptions import ApiError
 from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus, SourceStatus
 from music_assistant.providers.bose_soundtouch.client.schema.models import Zone, ZoneMember
 from music_assistant.providers.bose_soundtouch.helpers import extract_preset_id
@@ -173,6 +175,24 @@ async def test_parse_zone_empty() -> None:
         assert zone.leader.ip is None
         assert zone.leader.mac is None
     assert len(zone.members) == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<nowPlaying><track>Song",
+        b'<!DOCTYPE x [<!ENTITY a "b">]><nowPlaying>&a;</nowPlaying>',
+    ],
+    ids=["truncated", "entity"],
+)
+async def test_get_malformed_xml_raises_api_error(body: bytes) -> None:
+    """Malformed xml from the speaker surfaces as an ApiError, which callers already handle."""
+    client = _get_client()
+    response = Mock(status=200, content_type="text/xml", read=AsyncMock(return_value=body))
+    with patch.object(client.session_config.session, "get") as mock_get:
+        mock_get.return_value.__aenter__.return_value = response
+        with pytest.raises(ApiError, match="malformed xml"):
+            await client.get_now_playing()
 
 
 async def test_build_zone_xml() -> None:
