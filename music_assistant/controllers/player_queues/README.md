@@ -258,13 +258,15 @@ are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
 part it already considers safe to move, one batch of `SMART_FADE_ORDERING_BATCH` tracks at a time
-(the size of a dynamic refill batch). A shuffle orders the first batch; when playback gets close to
-the last ordered track, the next batch is ordered in the background with fresh recency data, and
-written back only if the queue did not change meanwhile. Tracks only move inside their batch, so
-Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once favours tracks
-that already have analysis, which for streaming providers are the tracks played before. Within each
-recency tier of a batch, every track can be considered when choosing the next one. The last fixed
-track is used as the starting point.
+(the size of a dynamic refill batch). A shuffle orders the first batch inside its recency tiers.
+When playback gets close to the last ordered track, the next batch is ordered in the background:
+only its transitions change, items that are not tracks (such as DJ clips) keep their place, and the
+result is written back only if the queue did not change meanwhile. Tracks only move inside their
+batch, so Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once
+favours tracks that already have analysis, which for streaming providers are the tracks played
+before. The batch end is only kept in memory; after a restart, or once playback has passed it, the
+rest of the queue keeps the regular Smart Shuffle order until the next shuffle. The last fixed track
+is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
 accepted batch from the existing queue tail. Both modes order one batch at a time and consider every

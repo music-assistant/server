@@ -84,6 +84,8 @@ SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800
 # batch of upcoming items, the size of a dynamic refill batch. A shuffle orders the first batch, and
 # playback orders the next one when it gets close, so smart shuffle still decides which tracks play.
 SMART_FADE_ORDERING_BATCH = 25
+# playback orders the next batch while this many ordered items are still ahead of it
+SMART_FADE_ORDERING_LEAD = 5
 
 # Managed-pool sizing: a queue with dynamic sources is kept as a small bounded pool, topped up
 # near the end instead of enqueuing thousands of tracks.

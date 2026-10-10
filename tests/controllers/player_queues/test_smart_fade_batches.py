@@ -8,12 +8,13 @@ and smart shuffle keeps deciding which tracks come next.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -25,6 +26,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import SMART_FADE_ORDERING_BATCH
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.audio_analysis import AudioAnalysisData
 
 QUEUE_ID = "q1"
 NOW = 1_000_000_000
@@ -146,95 +148,130 @@ async def test_a_shuffle_without_smart_fades_ordering_forgets_the_batch_end() ->
     assert queue_data.fade_ordered_until is None
 
 
+@pytest.mark.parametrize(
+    ("current_index", "buffered_index", "until_index"), [(20, 20, 24), (10, 11, 12)]
+)
 async def test_the_next_batch_is_ordered_behind_the_last_ordered_item(
     ordered_batches: list[tuple[list[str], str | None]],
+    current_index: int,
+    buffered_index: int,
+    until_index: int,
 ) -> None:
     """The next batch starts right after the remembered item, which anchors its first transition."""
-    ctrl, queue_data = _controller(current_index=20)
+    ctrl, queue_data = _controller(current_index=current_index)
+    queue_data.queue.index_in_buffer = buffered_index
     items = list(queue_data.items)
-    queue_data.fade_ordered_until = "t24"
-    end = 25 + SMART_FADE_ORDERING_BATCH
+    queue_data.fade_ordered_until = f"t{until_index}"
+    start, end = until_index + 1, until_index + 1 + SMART_FADE_ORDERING_BATCH
 
     await ctrl._smart_shuffle.order_next_batch(QUEUE_ID)
 
-    assert ordered_batches == [(_ids(items[25:end]), "t24")]
-    assert _ids(queue_data.items) == _ids([*items[:25], *reversed(items[25:end]), *items[end:]])
-    assert queue_data.fade_ordered_until == "t25"
+    assert ordered_batches == [(_ids(items[start:end]), f"t{until_index}")]
+    assert _ids(queue_data.items) == _ids(
+        [*items[:start], *reversed(items[start:end]), *items[end:]]
+    )
+    assert queue_data.fade_ordered_until == f"t{start}"
 
 
-@pytest.mark.parametrize("ordered_until", [None, "t5"])
-async def test_the_next_batch_leaves_the_playing_and_the_next_item_alone(
+@pytest.mark.parametrize("ordered_until", [None, "t5", "t11"])
+async def test_playback_waits_for_the_next_shuffle_without_a_batch_end_ahead(
     ordered_batches: list[tuple[list[str], str | None]], ordered_until: str | None
 ) -> None:
-    """Without ordered items ahead, the batch starts behind the item after the buffered one."""
+    """A lost batch end, or one the player has reached, leaves the items behind the player alone."""
     ctrl, queue_data = _controller(current_index=10)
     queue_data.queue.index_in_buffer = 11
     queue_data.fade_ordered_until = ordered_until
-    items = list(queue_data.items)
+    items = queue_data.items
 
     await ctrl._smart_shuffle.order_next_batch(QUEUE_ID)
 
-    assert ordered_batches == [(_ids(items[13 : 13 + SMART_FADE_ORDERING_BATCH]), "t12")]
-    assert _ids(queue_data.items[:13]) == _ids(items[:13])
+    assert not ordered_batches
+    assert queue_data.items is items
 
 
+def _edit_queue(ctrl: PlayerQueuesController, queue_data: PlayerQueueData) -> None:
+    ctrl.update_items(QUEUE_ID, [*queue_data.items, _item(99)])
+
+
+def _move_on(_ctrl: PlayerQueuesController, queue_data: PlayerQueueData) -> None:
+    queue_data.queue.current_index = queue_data.queue.index_in_buffer = 21
+
+
+def _remove_queue(ctrl: PlayerQueuesController, _queue_data: PlayerQueueData) -> None:
+    ctrl._queue_data.pop(QUEUE_ID)
+
+
+@pytest.mark.parametrize("meanwhile", [_edit_queue, _move_on, _remove_queue])
 async def test_the_next_batch_is_dropped_when_the_queue_changed_meanwhile(
     monkeypatch: pytest.MonkeyPatch,
+    meanwhile: Callable[[PlayerQueuesController, PlayerQueueData], None],
 ) -> None:
-    """An edit that lands while the batch is ordered wins, and the remembered end stays."""
+    """An edit, a track change or a removal while the batch is ordered wins over the batch."""
     ctrl, queue_data = _controller(current_index=20)
     queue_data.fade_ordered_until = "t24"
-    edited = [*queue_data.items, _item(99)]
+    original = _ids(queue_data.items)
 
-    async def edit_meanwhile(
+    async def change_meanwhile(
         _mass: object, items: list[QueueItem], **_kwargs: object
     ) -> list[QueueItem]:
-        ctrl.update_items(QUEUE_ID, edited)
+        meanwhile(ctrl, queue_data)
         return list(reversed(items))
 
-    monkeypatch.setattr(f"{SMART_SHUFFLE}._interleave", list)
-    monkeypatch.setattr(f"{SMART_SHUFFLE}.order_queue_items", edit_meanwhile)
+    monkeypatch.setattr(f"{SMART_SHUFFLE}.order_queue_items", change_meanwhile)
 
     await ctrl._smart_shuffle.order_next_batch(QUEUE_ID)
 
-    assert queue_data.items is edited
+    assert _ids(queue_data.items)[: len(original)] == original
     assert queue_data.fade_ordered_until == "t24"
 
 
-async def test_the_next_batch_counts_copies_of_a_song_outside_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A song with another copy further down keeps the shorter duplicate gap inside its batch."""
-    # played five hours ago: past the duplicate gap, but within the week a single song waits
-    snapshot = RecencySnapshot(now=NOW, song_ts={("library", "t25"): NOW - 5 * 3600})
-    ctrl, queue_data = _controller(current_index=20, snapshot=snapshot)
-    song = queue_data.items[25]
-    copy = QueueItem(
-        queue_id=QUEUE_ID,
-        queue_item_id="t25-copy",
-        name=song.name,
-        duration=180,
-        media_item=song.media_item,
-    )
-    queue_data.items = [*queue_data.items, copy]
+async def test_the_next_batch_keeps_items_that_are_not_tracks_in_place() -> None:
+    """A DJ clip stays right in front of the track it announces when its batch is ordered."""
+    ctrl, queue_data = _controller(current_index=20)
+    items = queue_data.items
+    clip = QueueItem(queue_id=QUEUE_ID, queue_item_id="clip", name="DJ clip", duration=10)
+    queue_data.items = [*items[:30], clip, *items[30:]]
     queue_data.fade_ordered_until = "t24"
-
-    async def keep_order(
-        _mass: object, items: list[QueueItem], **_kwargs: object
-    ) -> list[QueueItem]:
-        return list(items)
-
-    monkeypatch.setattr(f"{SMART_SHUFFLE}._interleave", list)
-    monkeypatch.setattr(f"{SMART_SHUFFLE}.order_queue_items", keep_order)
+    # alternating tempos give the transition ordering plenty to rearrange
+    rows = {
+        item.queue_item_id: AudioAnalysisData(
+            duration=180.0,
+            bpm=140.0 if index % 2 == 0 else 90.0,
+            key="C",
+            mode="major",
+            rms_energy=[0.5] * 180,
+        )
+        for index, item in enumerate(items)
+    }
+    cast("MagicMock", ctrl.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        side_effect=lambda item_id, *_args, **_kwargs: rows.get(item_id)
+    )
+    before = _ids(queue_data.items)
 
     await ctrl._smart_shuffle.order_next_batch(QUEUE_ID)
 
-    # a single song heard five hours ago would be pushed behind the rest of its batch
-    assert queue_data.items[25] is song
+    after = _ids(queue_data.items)
+    assert after[25:30] != before[25:30]
+    assert after.index("clip") == 30
+    assert after[31] == "t30"
+
+
+@pytest.mark.usefixtures("ordered_batches")
+@pytest.mark.parametrize("option", [QueueOption.ADD, QueueOption.NEXT])
+async def test_a_shuffled_enqueue_remembers_the_end_of_its_first_batch(option: QueueOption) -> None:
+    """The remembered batch end is the 25th item behind what stays fixed, also for play next."""
+    ctrl, queue_data = _controller(current_index=2)
+
+    await ctrl._enqueue_with_option(QUEUE_ID, [_item(index) for index in range(100, 110)], option)
+
+    # an add keeps the item after the playing one, and play next pins its first item there
+    first_shuffled = 4
+    marker = queue_data.items[first_shuffled + SMART_FADE_ORDERING_BATCH - 1]
+    assert queue_data.fade_ordered_until == marker.queue_item_id
 
 
 @pytest.mark.parametrize(
-    ("ordered_until", "scheduled"), [("t30", False), ("t25", True), (None, True)]
+    ("ordered_until", "scheduled"), [("t30", False), ("t25", True), ("t20", False), (None, False)]
 )
 def test_the_next_batch_is_scheduled_once_playback_gets_close(
     ordered_until: str | None, scheduled: bool
@@ -261,6 +298,7 @@ def test_the_next_batch_is_only_scheduled_for_a_smart_fades_shuffled_queue(
 ) -> None:
     """A dynamic queue orders its own refill batches; without the ordering there is no batch."""
     ctrl, queue_data = _controller(current_index=20)
+    queue_data.fade_ordered_until = "t22"
     setattr(queue_data.queue, attribute, value)
 
     ctrl._smart_shuffle.schedule_next_batch(queue_data.queue)
