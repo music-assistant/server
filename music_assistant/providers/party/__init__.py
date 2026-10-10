@@ -492,8 +492,8 @@ class PartyPlugin(PluginProvider):
         """
         Get the guest access URL for party.
 
-        When remote access is enabled, returns a URL that works from anywhere via WebRTC.
-        Otherwise, returns a local URL that only works on the same network.
+        When an external URL or remote access is configured, returns a URL that works from
+        anywhere. Otherwise, returns a local URL that only works on the same network.
 
         :returns: The guest join URL, or None if guest access is disabled.
         """

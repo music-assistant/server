@@ -625,7 +625,12 @@ class BoseSoundTouchPlayer(Player):
             # Music Assistant is the active source; audio is rendered via the linked
             # protocol and Music Assistant owns the metadata, so don't override it here.
             self._attr_active_source = self.player_id
-        elif now_playing.content_item and now_playing.content_item.source:
+            # resuming a paused UPnP stream plays a few seconds and then stalls,
+            # so let Music Assistant stop and restart the stream at the position instead
+            self._attr_supported_features.discard(PlayerFeature.PAUSE)
+            return
+        self._attr_supported_features.add(PlayerFeature.PAUSE)
+        if now_playing.content_item and now_playing.content_item.source:
             # a native source (Bluetooth, AUX, Spotify, ...) is playing on the speaker
             if now_playing.content_item.source != SOURCE_INVALID:
                 # SOURCE_INVALID is some API flakiness
