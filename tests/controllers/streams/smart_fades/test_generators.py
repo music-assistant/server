@@ -573,6 +573,13 @@ class TestSegueGenerator:
         assert list(SegueGenerator().generate(sung_in)) == []
         assert list(SegueGenerator().generate(no_data)) == []
 
+    def test_saturated_vocals_on_both_decks_emit_nothing(self) -> None:
+        """When the vocal guard abstains, no segue is offered, also not in the rescue pass."""
+        ctx = _segue_ctx(segue=_segue(9.0), vocal_collision_reliable=False)
+
+        assert list(SegueGenerator().generate(ctx)) == []
+        assert list(SegueGenerator(allow_blend_context=True).generate(ctx)) == []
+
     def test_loud_kicked_ends_emit_nothing(self) -> None:
         """Without quiet material and with a kick on both sides there is no segue."""
         ctx = _segue_ctx(segue=_segue(0.0), vocal_out_scoring=_SILENT, vocal_in_scoring=_SILENT)

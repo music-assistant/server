@@ -393,6 +393,10 @@ class SegueGenerator(CandidateGenerator):
         """Emit the segue's shrink steps down to the quick fade it replaces, or nothing."""
         if ctx.segue is None:
             return
+        # both decks read near-continuous vocal, so the vocal guard abstains; a long
+        # segue there overlaps both voices, so the pair keeps today's transition
+        if not ctx.vocal_collision_reliable:
+            return
         if ctx.preferred_style is TransitionStyle.BLEND and not self._allow_blend_context:
             return
         bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm

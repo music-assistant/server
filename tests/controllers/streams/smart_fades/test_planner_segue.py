@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Sequence
 
@@ -278,6 +279,26 @@ class TestSegueScenarios:
         assert winners[0] is None
         assert plan.style is TransitionStyle.SEGUE
         assert plan.crossfade_duration == pytest.approx(4.0, abs=0.15)
+
+    def test_saturated_vocals_on_both_decks_keep_todays_plan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wall-to-wall vocals on both decks get no segue: today's plan ships unchanged."""
+        out = _quiet_tail_out()
+        out.vocal_activity = _vocals((0.0, DURATION))
+        inc = _track(150.0, vocals=_vocals((0.0, DURATION)))
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
+        # the quiet tail alone would make segue material
+        assert list(
+            SegueGenerator().generate(dataclasses.replace(ctx, vocal_collision_reliable=True))
+        )
+        assert list(SegueGenerator().generate(ctx)) == []
+
+        plan = _plan(out, inc)
+
+        assert plan.style is not TransitionStyle.SEGUE
+        assert plan == _plan_without_segue(monkeypatch, out, inc)
 
     def test_simultaneous_vocals_never_outlast_todays_plan(
         self, monkeypatch: pytest.MonkeyPatch
