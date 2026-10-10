@@ -165,6 +165,99 @@ class TestRhythmClashMetric:
         assert candidate.metrics.rhythm_clash_bars == pytest.approx(4 * 2 / 3)
 
 
+class TestTempoRampKickGate:
+    """The tempo ramp runs only where both decks kick: the stretch window and the overlap."""
+
+    @staticmethod
+    def _ramped_blend() -> tuple[TransitionContext, Candidate]:
+        """Build an 8-bar blend 1.7 % apart without band data, which ramps as it always did."""
+        ctx = _ctx(_analysis(120.0), _analysis(122.0))
+        candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 8))
+        assert candidate is not None
+        assert candidate.plan.tempo_plan
+        return ctx, candidate
+
+    @pytest.mark.parametrize(
+        ("kicks_out", "kicks_in"),
+        [(None, None), (((0.0, 45.0),), None), (None, ((0.0, 45.0),))],
+        ids=["no band data", "outgoing only", "incoming only"],
+    )
+    def test_missing_band_data_keeps_the_ramp(
+        self,
+        kicks_out: tuple[tuple[float, float], ...] | None,
+        kicks_in: tuple[tuple[float, float], ...] | None,
+    ) -> None:
+        """
+        A deck without band data never blocks the ramp.
+
+        :param kicks_out: Outgoing kick runs, None without a band profile.
+        :param kicks_in: Incoming kick runs, None without a band profile.
+        """
+        ctx, ramped = self._ramped_blend()
+        partial = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
+
+        candidate = CandidateFactory(partial, LOGGER).build(_spec(ctx, 8))
+
+        assert candidate == ramped
+
+    def test_a_blend_with_both_decks_kicked_keeps_its_ramp(self) -> None:
+        """Kicks on both decks throughout leave the ramped plan as it was."""
+        ctx, ramped = self._ramped_blend()
+        kicked = dataclasses.replace(ctx, kick_out=((0.0, 45.0),), kick_in=((0.0, 45.0),))
+
+        candidate = CandidateFactory(kicked, LOGGER).build(_spec(ctx, 8))
+
+        assert candidate == ramped
+
+    @pytest.mark.parametrize(
+        "kickless",
+        ["outgoing stretch window", "outgoing overlap", "incoming overlap", "incoming graze"],
+    )
+    def test_a_kickless_side_blends_unstretched(self, kickless: str) -> None:
+        """
+        A deck without a kick where the ramp plays drops the ramp; a graze under a beat counts.
+
+        :param kickless: Where the kick is missing.
+        """
+        ctx, ramped = self._ramped_blend()
+        plan = ramped.plan
+        overlap_start = plan.fade_out_window - plan.crossfade_duration * 122.0 / 120.0
+        everywhere = ((0.0, 45.0),)
+        kicks_out, kicks_in = {
+            "outgoing stretch window": (((overlap_start, 45.0),), everywhere),
+            "outgoing overlap": (((0.0, overlap_start),), everywhere),
+            "incoming overlap": (everywhere, ((30.0, 45.0),)),
+            "incoming graze": (everywhere, ((plan.crossfade_duration - 0.2, 45.0),)),
+        }[kickless]
+        gated = dataclasses.replace(ctx, kick_out=kicks_out, kick_in=kicks_in)
+
+        candidate = CandidateFactory(gated, LOGGER).build(_spec(ctx, 8))
+
+        assert candidate is not None
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert not candidate.plan.tempo_plan
+
+    @pytest.mark.parametrize(("intro_kick", "ramps"), [(0.5, True), (0.02, False)])
+    def test_a_beatless_intro_from_band_data_blends_unstretched(
+        self, intro_kick: float, ramps: bool
+    ) -> None:
+        """
+        An incoming head without a kick for its first 40 s blends unstretched.
+
+        :param intro_kick: Low-band level of the incoming head.
+        :param ramps: Whether the blend ramps its tempo.
+        """
+        t = np.arange(1800) * (240.0 / 1800)
+        inc = _analysis_with_bands(np.where(t < 40.0, intro_kick, 0.5), 0.3, 0.3, 0.3)
+        inc.bpm = 122.0
+        ctx = _ctx(_analysis_with_bands(0.5, 0.3, 0.3, 0.3), inc)
+
+        candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
+
+        assert candidate.plan.style is TransitionStyle.BLEND
+        assert bool(candidate.plan.tempo_plan) is ramps
+
+
 def _rms(*segments: tuple[float, float, float]) -> list[float]:
     """Build a flat 0.5 rms envelope over 240s, set to ``value`` per ``(start, end, value)``."""
     t = np.arange(1800) * (240.0 / 1800)

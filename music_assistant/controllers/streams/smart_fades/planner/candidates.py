@@ -464,6 +464,23 @@ class CandidateFactory:
         """
         if spec.style is TransitionStyle.SEGUE:
             return self._build_segue(spec)
+        candidate = self._build_timed(spec, stretch=True)
+        if candidate is not None and not self._kicks_carry_ramp(candidate.plan):
+            # a beatless side has no beat to match, so the pair blends unstretched
+            return self._build_timed(spec, stretch=False)
+        return candidate
+
+    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
+        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
+        return self._score(spec, plan)
+
+    def _build_timed(self, spec: CandidateSpec, *, stretch: bool) -> Candidate | None:
+        """
+        Build a blend or quick fade for a spec, or ``None`` when it is infeasible.
+
+        :param spec: The candidate's spec.
+        :param stretch: Allow the gradual tempo ramp.
+        """
         tail = self._anchored_tail(spec.anchor_s)
         # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
         # requested bar count still reflects the old tier, so cap it at the new
@@ -487,7 +504,9 @@ class CandidateFactory:
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
-        tempo_plan = self._choose_tempo_ramp(tier, tail, crossfade_duration)
+        tempo_plan = (
+            self._choose_tempo_ramp(tier, tail, crossfade_duration) if stretch else TempoPlan()
+        )
         crossfade_duration, fadein_trim_start = self._lock_in_timing(
             tail, crossfade_duration, fadein_start_pos, tempo_plan
         )
@@ -560,10 +579,6 @@ class CandidateFactory:
             metrics=self._score(built_spec, plan),
             ideal_bars=spec.ideal_bars or spec.bars,
         )
-
-    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
-        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
-        return self._score(spec, plan)
 
     @property
     def _bpm_ratio(self) -> float:
@@ -676,6 +691,31 @@ class CandidateFactory:
         if not 0.1 < self._ctx.bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             return TempoPlan()
         return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
+
+    def _kicks_carry_ramp(self, plan: TransitionPlan) -> bool:
+        """
+        Whether both decks kick where a plan's tempo ramp plays; True for a plan without one.
+
+        The outgoing deck must kick in the stretch window and in the overlap, the incoming
+        deck in the overlap; a deck without band data never blocks the ramp.
+        """
+        if not plan.tempo_plan:
+            return True
+        ctx = self._ctx
+        # the overlap plays at the ramp's final ratio, so it spans this much outgoing input
+        overlap_start = plan.fade_out_window - plan.crossfade_duration * self._bpm_ratio
+        trim = plan.fadein_trim_start or 0.0
+        # a window that only grazes a kick bar, by less than a beat, holds no beat to match
+        beat_out, beat_in = 60.0 / ctx.outgoing.bpm, 60.0 / ctx.incoming.bpm
+        if ctx.kick_out is not None and (
+            _kick_seconds(ctx.kick_out, plan.tempo_plan.steps[0][0], overlap_start) < beat_out
+            or _kick_seconds(ctx.kick_out, overlap_start, plan.fade_out_window) < beat_out
+        ):
+            return False
+        return (
+            ctx.kick_in is None
+            or _kick_seconds(ctx.kick_in, trim, trim + plan.crossfade_duration) >= beat_in
+        )
 
     def _compute_tempo_steps(
         self, tail: _AnchoredTail, crossfade_duration: float
@@ -1211,6 +1251,17 @@ def _segue_steps(ideal: float, floor: float, step: float) -> list[float]:
         overlap -= step
     steps.append(floor)
     return steps
+
+
+def _kick_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
+    """
+    Seconds of a window the kick runs cover.
+
+    :param runs: Disjoint kick runs, in the window's time base.
+    :param start_s: Window start.
+    :param end_s: Window end.
+    """
+    return sum(max(0.0, min(right, end_s) - max(left, start_s)) for left, right in runs)
 
 
 def _quiet_over(analysis: AudioAnalysisData, start_s: float, end_s: float) -> bool:
