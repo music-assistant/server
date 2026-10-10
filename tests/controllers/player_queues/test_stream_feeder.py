@@ -203,7 +203,10 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     assert "busy" in cast("MagicMock", controller.logger).debug.call_args.args[0]
 
 
-@pytest.mark.parametrize("change", ["session", "capability", "next_item", "queue_replaced"])
+@pytest.mark.parametrize(
+    "change",
+    ["session", "capability", "next_item", "queue_replaced", "stopped", "source", "flow_mode"],
+)
 async def test_enqueue_does_not_publish_a_stale_handover(change: str) -> None:
     """A replaced session during enqueue never claims a next item for the new queue."""
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
@@ -243,6 +246,12 @@ async def test_enqueue_does_not_publish_a_stale_handover(change: str) -> None:
             player.supports_enqueue = False
         elif change == "next_item":
             data.items = [current, _make_queue_item("q1", "different")]
+        elif change == "stopped":
+            player.state.playback_state = PlaybackState.IDLE
+        elif change == "source":
+            player.state.active_source = "other-source"
+        elif change == "flow_mode":
+            queue.flow_mode = True
         else:
             controller._queue_data["q1"] = PlayerQueueData(queue=queue, items=[current, next_item])
 

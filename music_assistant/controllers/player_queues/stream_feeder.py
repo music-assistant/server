@@ -318,8 +318,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
             if (
                 self.mass.players.get_player(queue_id) is not player
                 or not player.supports_enqueue
+                or player.state.playback_state != PlaybackState.PLAYING
+                or player.state.active_source not in (queue.queue_id, None)
                 or self._queue_data.get(queue_id) is not queue_data
                 or queue_data.session_id != session_id
+                or queue.flow_mode
                 or current_next is None
                 or current_next.queue_item_id != next_item.queue_item_id
             ):

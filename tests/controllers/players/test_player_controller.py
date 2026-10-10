@@ -7617,3 +7617,50 @@ async def test_failed_disable_keeps_the_previous_runtime_config(mock_mass: Magic
         )
     assert player.config is original
     assert player.state.enabled is True
+
+
+@pytest.mark.parametrize("failure_stage", ["callback", "provider"])
+@pytest.mark.parametrize("rollback_fails", [False, True])
+async def test_config_failure_restores_callback_state_and_original_error(
+    mock_mass: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    failure_stage: str,
+    rollback_fails: bool,
+) -> None:
+    """Restore callback-managed state and preserve the save error if rollback fails."""
+    controller = PlayerController(mock_mass)
+    mock_mass.players = controller
+    mock_mass.player_queues.get.return_value = None
+    player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+    original = PlayerConfig(provider="test_prov", player_id="player_1", values={}, enabled=True)
+    player.set_config(original)
+    controller._players[player.player_id] = player
+    original_error = RuntimeError("Original config failure")
+
+    async def apply_config() -> None:
+        if player.config is original and rollback_fails:
+            raise RuntimeError("Rollback callback failure")
+        player.extra_data["derived_enabled"] = player.config.enabled
+        if player.config is not original and failure_stage == "callback":
+            raise original_error
+
+    hooks = MagicMock(spec=PlayerProvider)
+    if failure_stage == "provider":
+        hooks.on_player_disabled.side_effect = original_error
+    mock_mass.get_provider.return_value = hooks
+    callback = AsyncMock(side_effect=apply_config)
+    with (
+        patch.object(player, "on_config_updated", callback),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        await controller.on_player_config_change(
+            PlayerConfig(provider="test_prov", player_id="player_1", values={}, enabled=False),
+            {ATTR_ENABLED},
+        )
+    assert caught.value is original_error
+    assert player.config is original
+    assert player.state.enabled is True
+    assert callback.await_count == 2
+    assert player.extra_data["derived_enabled"] is (not rollback_fails)
+    if rollback_fails:
+        assert "Rollback callback failure" in caplog.text

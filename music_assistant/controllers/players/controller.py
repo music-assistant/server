@@ -2460,8 +2460,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # ConfigController rolls back persistence on failure; keep the retained
             # runtime player consistent with that same previous configuration.
             if player and previous_config:
-                player.set_config(previous_config)
-                player.update_state()
+                try:
+                    player.set_config(previous_config)
+                    try:
+                        await player.on_config_updated()
+                    finally:
+                        player.update_state()
+                except Exception:
+                    self.logger.exception(
+                        "Failed to restore runtime configuration for player %s", config.player_id
+                    )
             raise
 
         if not player:
