@@ -122,11 +122,14 @@ class SmartShuffle:
             arranged = await _arrange_for_smart_fades(
                 self.mass, items, snapshot, windows, preceding_item=preceding_item
             )
-            if arranged:
-                queue_data.fade_ordered_until = arranged[
-                    min(len(arranged), SMART_FADE_ORDERING_BATCH) - 1
-                ].queue_item_id
+            queue_data.fade_ordered_until = (
+                arranged[min(len(arranged), SMART_FADE_ORDERING_BATCH) - 1].queue_item_id
+                if arranged
+                else None
+            )
             return arranged
+        # nothing is ordered for Smart Fades now, so an earlier batch end no longer applies
+        queue_data.fade_ordered_until = None
         return _arrange(items, snapshot, windows)
 
     def schedule_next_batch(self, queue: PlayerQueue) -> None:
@@ -173,10 +176,17 @@ class SmartShuffle:
             start = max(start, until_index + 1)
         if not (batch := items[start : start + SMART_FADE_ORDERING_BATCH]):
             return
+        # copies of a song outside this batch still make it a deliberate duplicate
+        song_counts = Counter(_song_key(item) for item in items[boundary + 1 :])
         windows = self.windows()
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
         ordered = await _arrange_for_smart_fades(
-            self.mass, batch, snapshot, windows, preceding_item=items[start - 1]
+            self.mass,
+            batch,
+            snapshot,
+            windows,
+            preceding_item=items[start - 1],
+            song_counts=song_counts,
         )
         if (
             self.queues.queue_data_or_none(queue_id) is not queue_data
@@ -251,14 +261,23 @@ async def _arrange_for_smart_fades(
     windows: RecencyWindows,
     *,
     preceding_item: QueueItem | None,
+    song_counts: Counter[tuple[str, str]] | None = None,
 ) -> list[QueueItem]:
     """
     Keep recency tiers fixed and improve the transitions of the first batch of upcoming items.
 
     The first SMART_FADE_ORDERING_BATCH items are reordered inside their own tier; the items after
     them keep the regular smart shuffle spacing.
+
+    :param mass: The Music Assistant instance the stored analysis is read from.
+    :param items: The upcoming queue items to reorder.
+    :param snapshot: The play-history snapshot to score recency against.
+    :param windows: The configured recency windows (singleton song window vs duplicate gap).
+    :param preceding_item: Locked item immediately before ``items``; used as the first anchor.
+    :param song_counts: How often each song occurs among all upcoming items, when ``items`` is only
+        a part of them; defaults to counting ``items``.
     """
-    counts = Counter(_song_key(item) for item in items)
+    counts = song_counts if song_counts is not None else Counter(_song_key(item) for item in items)
     tiers: dict[int, list[QueueItem]] = {0: [], 1: [], 2: []}
     for item in items:
         tiers[_tier(item, counts, snapshot, windows)].append(item)

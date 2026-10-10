@@ -27,6 +27,7 @@ from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "q1"
+NOW = 1_000_000_000
 SMART_SHUFFLE = "music_assistant.controllers.player_queues.smart_shuffle"
 
 
@@ -62,14 +63,18 @@ def _ids(items: list[QueueItem]) -> list[str]:
 
 
 def _controller(
-    count: int = 80, current_index: int = 0
+    count: int = 80, current_index: int = 0, snapshot: RecencySnapshot | None = None
 ) -> tuple[PlayerQueuesController, PlayerQueueData]:
     """Build a bare controller playing a shuffled queue with Smart Fades ordering enabled."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
     ctrl.mass = MagicMock()
     ctrl.mass.config.get_effective_player_queue_config_value = Mock(return_value=CONF_VALUE_ENABLED)
-    ctrl.mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=1_000_000_000))
+    # the default recency windows: a week for a single song, three hours for a duplicated one
+    ctrl.mass.config.get_raw_core_config_value = Mock(
+        side_effect=lambda _section, _key, default: default
+    )
+    ctrl.mass.music.recency.snapshot = AsyncMock(return_value=snapshot or RecencySnapshot(now=NOW))
     ctrl.mass.streams.is_smart_fades_active.return_value = True
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.update_next_item_on_player = Mock()  # type: ignore[method-assign]
@@ -128,6 +133,19 @@ async def test_a_shuffle_orders_only_the_first_batch_and_remembers_its_end(
     assert queue_data.fade_ordered_until == arranged[SMART_FADE_ORDERING_BATCH - 1].queue_item_id
 
 
+async def test_a_shuffle_without_smart_fades_ordering_forgets_the_batch_end() -> None:
+    """A reshuffle that orders nothing for Smart Fades leaves no stale batch end behind."""
+    ctrl, queue_data = _controller()
+    queue_data.queue.smart_fades_active = False
+    queue_data.fade_ordered_until = "t40"
+
+    await ctrl._smart_shuffle.arrange(
+        queue_data.queue, queue_data.items[1:], preceding_item=queue_data.items[0]
+    )
+
+    assert queue_data.fade_ordered_until is None
+
+
 async def test_the_next_batch_is_ordered_behind_the_last_ordered_item(
     ordered_batches: list[tuple[list[str], str | None]],
 ) -> None:
@@ -181,6 +199,38 @@ async def test_the_next_batch_is_dropped_when_the_queue_changed_meanwhile(
 
     assert queue_data.items is edited
     assert queue_data.fade_ordered_until == "t24"
+
+
+async def test_the_next_batch_counts_copies_of_a_song_outside_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A song with another copy further down keeps the shorter duplicate gap inside its batch."""
+    # played five hours ago: past the duplicate gap, but within the week a single song waits
+    snapshot = RecencySnapshot(now=NOW, song_ts={("library", "t25"): NOW - 5 * 3600})
+    ctrl, queue_data = _controller(current_index=20, snapshot=snapshot)
+    song = queue_data.items[25]
+    copy = QueueItem(
+        queue_id=QUEUE_ID,
+        queue_item_id="t25-copy",
+        name=song.name,
+        duration=180,
+        media_item=song.media_item,
+    )
+    queue_data.items = [*queue_data.items, copy]
+    queue_data.fade_ordered_until = "t24"
+
+    async def keep_order(
+        _mass: object, items: list[QueueItem], **_kwargs: object
+    ) -> list[QueueItem]:
+        return list(items)
+
+    monkeypatch.setattr(f"{SMART_SHUFFLE}._interleave", list)
+    monkeypatch.setattr(f"{SMART_SHUFFLE}.order_queue_items", keep_order)
+
+    await ctrl._smart_shuffle.order_next_batch(QUEUE_ID)
+
+    # a single song heard five hours ago would be pushed behind the rest of its batch
+    assert queue_data.items[25] is song
 
 
 @pytest.mark.parametrize(
