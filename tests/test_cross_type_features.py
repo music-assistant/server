@@ -562,19 +562,33 @@ async def test_library_artist_listing_skips_metadata_when_music_provider_has_res
 
 
 @pytest.mark.parametrize("kind", list(_ARTIST_LISTINGS))
-@pytest.mark.parametrize("music_listing", [[], InvalidDataError("boom")], ids=["empty", "error"])
-async def test_library_artist_listing_falls_back_to_metadata_provider(
-    kind: str, music_listing: list[Any] | Exception
-) -> None:
-    """Metadata providers are consulted when the artist's music providers return nothing."""
+async def test_library_artist_listing_falls_back_to_metadata_provider(kind: str) -> None:
+    """Metadata providers are consulted when the artist's music providers all return nothing."""
     _feature, _build, method, kwargs = _ARTIST_LISTINGS[kind]
-    controller, music_prov, metadata_prov, ref_item = _artist_listing_setup(kind, music_listing)
+    controller, music_prov, metadata_prov, ref_item = _artist_listing_setup(kind, [])
 
     result = await _library_artist_listing(controller, kind, None)
 
     assert [item.name for item in result] == ["Item C", "Item D"]
     getattr(music_prov, method).assert_awaited_once_with("artist_123", **kwargs)
     getattr(metadata_prov, method).assert_awaited_once_with(ref_item, **kwargs)
+
+
+@pytest.mark.parametrize("kind", list(_ARTIST_LISTINGS))
+async def test_library_artist_listing_does_not_fall_back_after_a_failed_music_provider(
+    kind: str,
+) -> None:
+    """A failed music provider (e.g. rate limited) never turns into metadata provider requests."""
+    _feature, _build, method, kwargs = _ARTIST_LISTINGS[kind]
+    controller, music_prov, metadata_prov, _ref_item = _artist_listing_setup(
+        kind, InvalidDataError("boom")
+    )
+
+    result = await _library_artist_listing(controller, kind, None)
+
+    assert result == []
+    getattr(music_prov, method).assert_awaited_once_with("artist_123", **kwargs)
+    getattr(metadata_prov, method).assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind", list(_ARTIST_LISTINGS))

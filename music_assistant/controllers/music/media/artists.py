@@ -1217,8 +1217,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         Return the per-provider listings of a feature for an in-library artist.
 
         The music providers attached to the artist are queried in parallel. Metadata and plugin
-        providers implementing the feature are queried only when those return nothing.
-        Providers that fail are logged and left out.
+        providers implementing the feature are queried only when those all answered and
+        returned nothing. Providers that fail are logged and left out.
 
         :param ref_item: The in-library artist.
         :param feature: The feature the listing is for.
@@ -1226,7 +1226,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param music_fetch: Fetches the listing for one of the artist's provider mappings.
         :param discovery_fetch: Fetches the listing from a metadata or plugin provider.
         """
-        listings = await self._gather_provider_listings(
+        listings, failed = await self._gather_provider_listings(
             ref_item,
             feature,
             [
@@ -1234,11 +1234,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 for mapping in self._provider_mappings_for_feature(ref_item, feature, allowed)
             ],
         )
-        if any(listings):
+        if any(listings) or failed:
+            # a music provider that failed (e.g. rate limited) must not turn into more
+            # requests against the same services through a metadata provider
             return listings
         # metadata providers such as Last.fm resolve every item through music-service searches,
         # so they are a fallback rather than a parallel source
-        return await self._gather_provider_listings(
+        listings, _failed = await self._gather_provider_listings(
             ref_item,
             feature,
             [
@@ -1249,16 +1251,26 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if allowed is None or prov.instance_id in allowed
             ],
         )
+        return listings
 
     async def _gather_provider_listings[T](
         self, ref_item: Artist, feature: ProviderFeature, fetches: list[Awaitable[list[T]]]
-    ) -> list[list[T]]:
-        """Await the provider listings in parallel, leaving out (and logging) failed ones."""
+    ) -> tuple[list[list[T]], bool]:
+        """
+        Await the provider listings in parallel, leaving out (and logging) failed ones.
+
+        :param ref_item: The in-library artist.
+        :param feature: The feature the listings are for.
+        :param fetches: The pending listing of every provider to query.
+        :returns: The listings of the providers that answered, and whether any provider failed.
+        """
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[T]] = []
+        failed = False
         for listing in per_provider:
             if isinstance(listing, BaseException):
+                failed = True
                 self.logger.warning(
                     "Error fetching %s for artist %s from a provider",
                     feature,
@@ -1267,7 +1279,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
                 continue
             listings.append(listing)
-        return listings
+        return listings, failed
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
