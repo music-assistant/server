@@ -443,7 +443,7 @@ def verify_app_secrets(version: str, directory: Path) -> None:
         except ValueError:
             bundle = None
     # a download GitHub declines to serve raw comes back as its JSON metadata envelope instead
-    if not isinstance(bundle, dict) or not {"salt", "secrets"} <= bundle.keys():
+    if not isinstance(bundle, dict) or not bundle.get("salt") or not bundle.get("secrets"):
         raise ReleaseWorkflowError(f"{APP_SECRETS_PATH} in {wheel_name} is not a secrets bundle")
     with tarfile.open(directory / sdist_name) as sdist:
         if any(name.endswith(f"/{APP_SECRETS_PATH}") for name in sdist.getnames()):

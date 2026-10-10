@@ -37,7 +37,7 @@ from scripts.release_workflow import (
 )
 
 ROOT = Path(__file__).parents[2]
-SECRETS_BUNDLE = '{"salt": "c2FsdA==", "secrets": {}}'
+SECRETS_BUNDLE = '{"salt": "c2FsdA==", "secrets": {"spotify_client_id": "dG9rZW4="}}'
 DEPENDENCY_AUTO_MERGE_WORKFLOW = (
     ROOT / ".github" / "workflows" / "auto-merge-dependency-updates.yml"
 )
@@ -372,6 +372,7 @@ def test_release_assets_reject_duplicate_api_entries(tmp_path: Path) -> None:
         # the JSON metadata envelope GitHub returns when it declines a raw download
         ('{"name": "app_secrets.json", "content": ""}', False, "not a secrets bundle"),
         ("", False, "not a secrets bundle"),
+        ('{"salt": "", "secrets": {}}', False, "not a secrets bundle"),
     ],
 )
 def test_app_secrets_ship_in_the_wheel_only(
