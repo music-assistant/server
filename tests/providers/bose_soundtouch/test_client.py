@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from aiohttp import ClientError, WSMsgType
 from defusedxml import ElementTree as DefusedET
 
 from music_assistant.providers.bose_soundtouch.client import SoundtouchDevice
@@ -223,6 +225,44 @@ async def test_get_malformed_xml_raises_api_error(body: bytes) -> None:
         mock_get.return_value.__aenter__.return_value = response
         with pytest.raises(ApiError, match="malformed xml"):
             await client.get_now_playing()
+
+
+def _ws_connection(*messages: tuple[WSMsgType, str | bytes | None]) -> MagicMock:
+    connection = MagicMock()
+    connection.__aenter__.return_value.__aiter__.return_value = [
+        Mock(type=msg_type, data=data) for msg_type, data in messages
+    ]
+    return connection
+
+
+async def test_websocket_notification_loop_reconnects() -> None:
+    """Notifications keep arriving after the speaker closes the channel or a connect fails."""
+    client = _get_client()
+    on_connect = Mock()
+    connections = [
+        _ws_connection(
+            (WSMsgType.TEXT, "a"),
+            (WSMsgType.BINARY, "é".encode("latin-1")),
+            (WSMsgType.CLOSE, None),
+        ),
+        ClientError(),
+        _ws_connection((WSMsgType.TEXT, "c")),
+    ]
+    messages: list[str] = []
+    with (
+        patch.object(client.session_config.session, "ws_connect", side_effect=connections),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+    ):
+        async with contextlib.aclosing(
+            client.websocket_notification_loop(on_connect=on_connect)
+        ) as notifications:
+            async for message in notifications:
+                messages.append(message)
+                if len(messages) == 3:
+                    break
+
+    assert messages == ["a", "é", "c"]
+    assert on_connect.call_count == 2
 
 
 async def test_build_zone_xml() -> None:
