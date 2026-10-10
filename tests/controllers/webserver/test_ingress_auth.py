@@ -734,12 +734,18 @@ async def test_starting_a_ha_login_drops_expired_ones(mass_minimal: MusicAssista
 
 
 async def test_pending_ha_logins_are_capped(mass_minimal: MusicAssistant) -> None:
-    """Starting a HA login beyond the limit drops the oldest pending one."""
+    """Starting a HA login beyond the limit is refused and keeps the pending ones valid."""
     provider = _oauth_provider(mass_minimal)
-    states = [await _start_ha_login(provider) for _ in range(MAX_OAUTH_STATES + 1)]
+    states = [await _start_ha_login(provider) for _ in range(MAX_OAUTH_STATES)]
 
-    assert len(provider._oauth_sessions) == MAX_OAUTH_STATES
-    assert list(provider._oauth_sessions) == states[1:]
+    assert await provider.get_authorization_url("http://ma.local:8095/auth/callback") is None
+    assert list(provider._oauth_sessions) == states
+
+    get_token = AsyncMock(return_value={})
+    with patch.object(auth_providers, "get_token", get_token):
+        result = await provider.handle_oauth_callback("ha_code", states[0])
+    assert result == AuthResult(success=False, error="No access token received from HA")
+    get_token.assert_awaited_once()
 
 
 async def _start_ha_login(provider: HomeAssistantOAuthProvider) -> str:
