@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
 from music_assistant.mass import MusicAssistant
@@ -99,6 +100,67 @@ async def test_unsupported_extension_is_skipped() -> None:
 
     for controller in controllers.values():
         controller.get_library_item_by_prov_id.assert_not_called()
+
+
+async def test_an_album_emptied_by_a_deletion_is_removed(mass: MusicAssistant) -> None:
+    """The album check sees the live tracks, however recently the album was listed."""
+    provider, _ = _create_provider()
+    provider.mass = mass
+    file_path = "Artist/Album/01 - Track.flac"
+    db_album = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="Artist/Album",
+            provider="filesystem_local--test",
+            name="Album",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="Artist/Album",
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                    in_library=True,
+                )
+            },
+        )
+    )
+    await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id=file_path,
+            provider="filesystem_local--test",
+            name="Track",
+            album=db_album,
+            artists=UniqueList(
+                [
+                    Artist(
+                        item_id="Artist",
+                        provider="filesystem_local--test",
+                        name="Artist",
+                        provider_mappings={
+                            ProviderMapping(
+                                item_id="Artist",
+                                provider_domain="filesystem_local",
+                                provider_instance="filesystem_local--test",
+                            )
+                        },
+                    )
+                ]
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_path,
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                    in_library=True,
+                )
+            },
+        )
+    )
+    # listing the album keeps its tracks in the listing cache
+    assert await mass.music.albums.tracks(db_album.item_id, "library")
+
+    await provider._process_deletions({file_path})
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.albums.get_library_item(db_album.item_id)
 
 
 @pytest.mark.parametrize("other_in_library", [True, False])

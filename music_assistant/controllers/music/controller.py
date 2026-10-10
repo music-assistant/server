@@ -101,6 +101,7 @@ from music_assistant.controllers.music.helpers import (
     sibling_instance_mappings,
     sort_search_result,
 )
+from music_assistant.controllers.music.listing_cache import invalidate_listings
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
@@ -936,11 +937,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the sort options a listing offers, the listing's default first.
 
         :param listing: The listing to get the sort options of.
-        :raises InvalidDataError: When the listing does not sort on the server.
         """
-        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
-            raise InvalidDataError(f"Listing {listing.value} has no sort options")
-        return list(options)
+        return list(LISTING_SORT_OPTIONS[listing])
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
@@ -1693,6 +1691,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if library_id is None:
+            # the item's listings (album tracks, ...) are assembled anew from here on
+            await invalidate_listings(self.mass, media_item)
             return media_item
         # restore in_library state from before the refresh
         for prov_mapping in media_item.provider_mappings:
@@ -1706,7 +1706,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
             for album_track in await self.albums.tracks(
-                library_item.item_id, library_item.provider, True
+                library_item.item_id, library_item.provider, True, limit=None
             ):
                 for prov_mapping in album_track.provider_mappings:
                     if not (prov := self._visible_provider_for(prov_mapping)):
@@ -1722,6 +1722,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        # the item's listings (album tracks, ...) are assembled anew from here on, after
+        # every change the refresh made
+        await invalidate_listings(self.mass, library_item)
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
