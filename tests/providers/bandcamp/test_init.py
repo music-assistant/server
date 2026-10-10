@@ -17,7 +17,7 @@ from tests.common import wait_for_sync_completion
 async def bandcamp_provider(  # noqa: PLR0915
     mass: MusicAssistant,
 ) -> AsyncGenerator[BandcampProvider]:
-    """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
+    """Add a Bandcamp provider with a mocked API client to mass and yield it."""
     # Mock the BandcampAPIClient to avoid real API calls
     with (
         mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class,
@@ -81,12 +81,10 @@ async def bandcamp_provider(  # noqa: PLR0915
         mock_track.artist = mock_artist
         mock_track.url = "https://test.bandcamp.com/track/test-track"
         mock_track.duration = 300
+        mock_track.streaming_url = {"mp3-320": "https://example.com/track.mp3"}
         mock_track.track_number = 1
         mock_track.lyrics = "Test lyrics"
         mock_track.tralbum_artist = None
-
-        # Configure the streaming_url to behave like a dictionary
-        mock_track.configure_mock(streaming_url={"mp3-320": "https://example.com/track.mp3"})
 
         mock_album.tracks = [mock_track]
         mock_client.get_album.return_value = mock_album
