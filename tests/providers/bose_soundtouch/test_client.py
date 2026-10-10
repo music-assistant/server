@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -12,10 +13,13 @@ from music_assistant.providers.bose_soundtouch.client.client import (
     create_notification_xml,
     create_zone_xml,
 )
-from music_assistant.providers.bose_soundtouch.client.exceptions import ApiError
+from music_assistant.providers.bose_soundtouch.client.exceptions import ApiError, NotFoundError
 from music_assistant.providers.bose_soundtouch.client.schema.enums import PlayStatus, SourceStatus
 from music_assistant.providers.bose_soundtouch.client.schema.models import Zone, ZoneMember
 from music_assistant.providers.bose_soundtouch.helpers import extract_preset_id
+
+if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
 
 INFO_XML = """
 <info deviceID="ABC123">
@@ -24,6 +28,10 @@ INFO_XML = """
   <networkInfo type="SCM">
     <macAddress>001122334455</macAddress>
     <ipAddress>192.168.1.50</ipAddress>
+  </networkInfo>
+  <networkInfo type="SMSC">
+    <macAddress>66778899AABB</macAddress>
+    <ipAddress>10.0.0.9</ipAddress>
   </networkInfo>
   <components>
     <component>
@@ -65,7 +73,8 @@ async def test_parse_info() -> None:
     assert info.device_id == "ABC123"
     assert info.name == "Living Room"
     assert info.model == "SoundTouch 20"
-    assert info.mac_addresses == ["001122334455"]
+    # the interface we are connected on (10.0.0.9) comes first, even though listed last
+    assert info.mac_addresses == ["66778899AABB", "001122334455"]
     assert info.ip_addresses == ["10.0.0.9", "192.168.1.50"]
     assert info.software_version == "27.0.6.46330"
 
@@ -112,6 +121,27 @@ async def test_parse_now_playing_standby() -> None:
     assert now_playing.content_item is None
     assert now_playing.source == "STANDBY"
     assert now_playing.track is None
+
+
+async def test_now_playing_endpoint_probed_once() -> None:
+    """Firmware serving only now_playing is detected once, then queried directly."""
+    client = _get_client()
+    element: Element[str] = DefusedET.fromstring(NOW_PLAYING_XML)
+
+    async def get(endpoint: str) -> Element[str]:
+        if endpoint == "nowPlaying":
+            raise NotFoundError
+        return element
+
+    with patch.object(client, "_get", side_effect=get) as mock_get:
+        await client.get_now_playing()
+        await client.get_now_playing()
+
+    assert [c.args[0] for c in mock_get.call_args_list] == [
+        "nowPlaying",
+        "now_playing",
+        "now_playing",
+    ]
 
 
 async def test_parse_volume() -> None:
