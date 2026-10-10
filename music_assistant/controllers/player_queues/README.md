@@ -161,6 +161,8 @@ up to 120 seconds per lock, and then fails with a busy error rather than run alo
 controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
 provider call). The next-track handover takes the same strict lock and only checks the queue once it
 holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
+the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
 subscribers.
 
