@@ -1383,7 +1383,8 @@ class YandexMusicClient:
         # same (track, quality, transport) but different codec lists must not
         # share a cache slot.
         cache_key = (track_id, quality, codecs, transport)
-        if current_priority() is not RequestPriority.HIGH or reuse_refreshed:
+        is_playback = current_priority() is RequestPriority.HIGH
+        if not is_playback:
             # Check the file_info circuit-breaker BEFORE the cache lookup —
             # otherwise a cooldown-period caller could be served a stale URL
             # from before the block was engaged. Fail fast (return None) so
@@ -1397,6 +1398,7 @@ class YandexMusicClient:
                     err,
                 )
                 return None
+        if not is_playback or reuse_refreshed:
             cached = self._file_info_cache_get(cache_key)
             if cached is not None:
                 LOGGER.debug(

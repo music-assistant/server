@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -253,6 +254,65 @@ async def test_concurrent_playback_refreshes_share_new_url_but_later_refresh_aga
         assert later is not None
         assert later["url"] == "https://cdn.example/url-3"
     assert request.await_count == 3
+
+
+@pytest.mark.parametrize("block_during_refresh", [False, True])
+async def test_joined_playback_refresh_bypasses_captcha_cooldown(
+    block_during_refresh: bool,
+) -> None:
+    """Playback shares a refreshed URL during quarantine; ordinary callers stay blocked."""
+    raw = ClientAsync()
+    client = YandexMusicClient(SecretStr("fake_token"))
+    client._client = raw
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def respond(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            started.set()
+            await release.wait()
+        return {
+            "downloadInfo": {
+                "trackId": "42",
+                "quality": "lossless",
+                "codec": "flac",
+                "bitrate": 0,
+                "transport": "raw",
+                "url": f"https://cdn.example/url-{calls}",
+                "urls": [],
+            }
+        }
+
+    request = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "get", request):
+        old = await client.get_track_file_info("42")
+        assert old is not None
+        assert old["url"] == "https://cdn.example/url-1"
+        if not block_during_refresh:
+            client._block_until["file_info"] = time.monotonic() + 300
+        with request_priority(RequestPriority.HIGH):
+            active = asyncio.create_task(client.get_track_file_info("42"))
+            await started.wait()
+            waiters = [asyncio.create_task(client.get_track_file_info("42")) for _ in range(2)]
+        if block_during_refresh:
+            client._block_until["file_info"] = time.monotonic() + 300
+        ordinary = asyncio.create_task(client.get_track_file_info("42"))
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(active, *waiters)
+        assert all(r and r["url"] == "https://cdn.example/url-2" for r in results)
+        assert await ordinary is None
+        assert request.await_count == 2
+        with request_priority(RequestPriority.HIGH):
+            later = await client.get_track_file_info("42")
+        assert later is not None
+        assert later["url"] == "https://cdn.example/url-3"
+        assert await client.get_track_file_info("42") is None
+    assert request.await_count == 3
+    assert not client._file_info_locks
 
 
 @pytest.mark.parametrize("cancel_active", [False, True])
