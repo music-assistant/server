@@ -151,6 +151,28 @@ class TestDressedScenarios:
         # the 4-bar filter out keeps the 4 bars the quick fade had
         assert plan.crossfade_duration >= _plan_undressed(monkeypatch, out, inc).crossfade_duration
 
+    def test_a_four_bar_cut_that_stacks_two_kicks_gives_way_to_a_filter_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """11.7% apart the 4-bar cut clashes past the drum limit; a 4-bar filter out replaces it."""
+        out, inc = _track(120.0), _track(134.0)
+
+        scored, winner = _main_pass(monkeypatch, out, inc)
+
+        four_bar_cut = next(
+            e
+            for e in scored
+            if e.candidate.plan.style is TransitionStyle.CUT and e.candidate.spec.bars == 4
+        )
+        assert four_bar_cut.candidate.plan.crossfade_duration == pytest.approx(8.0)
+        assert four_bar_cut.rejected
+        assert any(v.reason == "kick clash exceeds the guard limit" for v in four_bar_cut.verdicts)
+        assert winner is not None
+        assert winner.candidate.plan.style is TransitionStyle.FILTER_OUT
+        assert winner.candidate.plan.crossfade_duration == pytest.approx(8.0)
+        # without the dressed transitions a shorter cut would ship
+        assert _plan_undressed(monkeypatch, out, inc).crossfade_duration == pytest.approx(4.0)
+
     def test_a_clean_dressed_transition_beats_every_clean_cut(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -92,16 +92,15 @@ class VocalCollisionPolicy(Policy):
 
 
 class RhythmClashPolicy(Policy):
-    """Reject or penalize a segue that plays both decks' kicks on top of each other."""
+    """Reject or penalize an unsynced transition that plays both decks' kicks together."""
 
     clash_bars_limit: float = 2.0
     penalty_scale: float = 20.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
-        # only a segue is judged: a blend beatmatches its kicks, and a cut keeps the
-        # quick fade length it always had
-        if candidate.plan.style is not TransitionStyle.SEGUE:
+        # a blend beatmatches its kicks
+        if candidate.plan.style is TransitionStyle.BLEND:
             return Verdict.ok()
         if ctx.kick_out is None or ctx.kick_in is None:
             return Verdict.ok()
