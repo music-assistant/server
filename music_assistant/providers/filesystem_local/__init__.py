@@ -654,7 +654,10 @@ class LocalFileSystemProvider(MusicProvider):
             ]
             if self.media_content_type == "podcasts":
                 items_to_process = self._changed_podcast_folders(
-                    [item for item, _ in items_to_process], file_checksums, cur_filenames
+                    [item for item, _ in items_to_process],
+                    metadata_files,
+                    file_checksums,
+                    cur_filenames,
                 )
             # register synthetic track IDs for unchanged CUE files so the
             # deletion pass does not treat them as removed
@@ -1425,25 +1428,31 @@ class LocalFileSystemProvider(MusicProvider):
     def _changed_podcast_folders(
         self,
         episodes: list[FileSystemItem],
+        metadata_files: list[FileSystemItem],
         file_checksums: dict[str, str],
         cur_filenames: set[str],
     ) -> list[tuple[FileSystemItem, str | None]]:
         """
-        Return one item per podcast folder whose episode files changed since the last sync.
+        Return one item per podcast folder whose episodes or artwork changed since the last sync.
 
         Each returned item is the folder itself, with its new signature as checksum, paired
         with the signature stored by the previous sync (None for a new podcast).
 
         :param episodes: The episode files found by the scan.
+        :param metadata_files: The local metadata files (NFO/images) found by the scan.
         :param file_checksums: Previously stored checksum per provider item id.
         :param cur_filenames: Receives the unchanged podcast folders.
         """
-        episodes_by_folder: dict[str, list[FileSystemItem]] = {}
+        files_by_folder: dict[str, list[FileSystemItem]] = {}
         for episode in episodes:
-            episodes_by_folder.setdefault(episode.relative_parent_path, []).append(episode)
+            files_by_folder.setdefault(episode.relative_parent_path, []).append(episode)
+        # the podcast takes its artwork from the folder, so a cover change is a change too
+        for item in metadata_files:
+            if is_image_file(item) and item.relative_parent_path in files_by_folder:
+                files_by_folder[item.relative_parent_path].append(item)
         changed: list[tuple[FileSystemItem, str | None]] = []
-        for folder, folder_episodes in episodes_by_folder.items():
-            signature = get_folder_signature(folder_episodes)
+        for folder, folder_files in files_by_folder.items():
+            signature = get_folder_signature(folder_files)
             prev_signature = file_checksums.get(folder)
             if signature == prev_signature:
                 cur_filenames.add(folder)
@@ -1451,7 +1460,7 @@ class LocalFileSystemProvider(MusicProvider):
             folder_item = FileSystemItem(
                 filename=Path(folder).name,
                 relative_path=folder,
-                absolute_path=os.path.dirname(folder_episodes[0].absolute_path),
+                absolute_path=os.path.dirname(folder_files[0].absolute_path),
                 is_dir=True,
                 checksum=signature,
             )

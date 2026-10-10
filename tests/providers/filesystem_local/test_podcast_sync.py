@@ -76,19 +76,29 @@ async def _load_provider(mass: MusicAssistant, folder: Path) -> LocalFileSystemP
     return cast("LocalFileSystemProvider", mass.get_provider(INSTANCE_ID))
 
 
-async def _sync(provider: LocalFileSystemProvider) -> AsyncMock:
+async def _sync(provider: LocalFileSystemProvider) -> tuple[AsyncMock, list[str]]:
     """
-    Run a library sync and return the parse spy it ran with.
+    Run a library sync and return its tag-parse spy and the podcasts it wrote to the library.
 
     :param provider: The source to sync.
     """
-    with patch(PARSE_TAGS_TARGET, new=_parse_tags_spy()) as parse_tags:
+    podcasts = provider.mass.music.podcasts
+    with (
+        patch(PARSE_TAGS_TARGET, new=_parse_tags_spy()) as parse_tags,
+        patch.object(
+            podcasts, "add_item_to_library", wraps=podcasts.add_item_to_library
+        ) as add_item_to_library,
+    ):
         await provider.sync_library(MediaType.PODCAST)
-    return parse_tags
+    return parse_tags, sorted(call.args[0].item_id for call in add_item_to_library.await_args_list)
 
 
 async def _library_podcasts(mass: MusicAssistant) -> list[str]:
-    """Return the names of the podcasts in the library."""
+    """
+    Return the names of the podcasts in the library.
+
+    :param mass: The server that holds the library.
+    """
     return sorted(podcast.name for podcast in await mass.music.podcasts.library_items())
 
 
@@ -96,6 +106,7 @@ async def _stored_signature(mass: MusicAssistant, folder: str) -> str | None:
     """
     Return the signature the last sync stored for a podcast folder.
 
+    :param mass: The server that holds the library.
     :param folder: The relative path of the podcast folder.
     """
     rows = await mass.music.database.get_rows_from_query(
@@ -106,24 +117,25 @@ async def _stored_signature(mass: MusicAssistant, folder: str) -> str | None:
     return rows[0]["details"] if rows else None
 
 
-async def test_a_second_sync_reads_no_episodes(mass: MusicAssistant, tmp_path: Path) -> None:
-    """A sync without changes on disk reads no episode file at all."""
+async def test_a_second_sync_skips_unchanged_podcasts(mass: MusicAssistant, tmp_path: Path) -> None:
+    """A sync without changes on disk reads no episode and writes no podcast."""
     folder = tmp_path / "podcasts"
     _write_episodes(folder / "Show A", "ep1.mp3", "ep2.mp3")
     _write_episodes(folder / "Show B", "ep1.mp3")
     provider = await _load_provider(mass, folder)
 
-    parse_tags = await _sync(provider)
+    parse_tags, added = await _sync(provider)
     assert parse_tags.await_count == 3
-    assert await _library_podcasts(mass) == ["Show A", "Show B"]
+    assert added == ["Show A", "Show B"]
 
-    parse_tags = await _sync(provider)
+    parse_tags, added = await _sync(provider)
     parse_tags.assert_not_awaited()
+    assert added == []
     assert await _library_podcasts(mass) == ["Show A", "Show B"]
 
 
 async def test_a_new_episode_resyncs_only_its_podcast(mass: MusicAssistant, tmp_path: Path) -> None:
-    """A new episode makes the next sync read the episodes of its own podcast only."""
+    """A new episode makes the next sync refresh its own podcast only."""
     folder = tmp_path / "podcasts"
     _write_episodes(folder / "Show A", "ep1.mp3")
     _write_episodes(folder / "Show B", "ep1.mp3")
@@ -132,12 +144,51 @@ async def test_a_new_episode_resyncs_only_its_podcast(mass: MusicAssistant, tmp_
     signature = await _stored_signature(mass, "Show A")
 
     _write_episodes(folder / "Show A", "ep2.mp3")
-    parse_tags = await _sync(provider)
+    parse_tags, added = await _sync(provider)
 
     parsed = sorted(Path(call.args[0]).relative_to(folder) for call in parse_tags.await_args_list)
     assert parsed == [Path("Show A/ep1.mp3"), Path("Show A/ep2.mp3")]
+    assert added == ["Show A"]
     assert await _stored_signature(mass, "Show A") not in (None, signature)
-    assert await _library_podcasts(mass) == ["Show A", "Show B"]
+
+
+async def test_new_artwork_resyncs_its_podcast(mass: MusicAssistant, tmp_path: Path) -> None:
+    """Artwork added to a podcast folder reaches the library podcast on the next sync."""
+    folder = tmp_path / "podcasts"
+    _write_episodes(folder / "Show A", "ep1.mp3")
+    provider = await _load_provider(mass, folder)
+    await _sync(provider)
+
+    (folder / "Show A" / "folder.jpg").write_bytes(b"dummy image")
+    _, added = await _sync(provider)
+
+    assert added == ["Show A"]
+    podcast = await mass.music.podcasts.get_library_item_by_prov_id("Show A", INSTANCE_ID)
+    assert podcast is not None
+    assert podcast.image is not None
+    assert podcast.image.path == "Show A/folder.jpg"
+
+
+async def test_a_podcast_without_a_stored_signature_resyncs_once(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """A podcast stored without a folder signature is refreshed once, then skipped."""
+    folder = tmp_path / "podcasts"
+    _write_episodes(folder / "Show A", "ep1.mp3")
+    provider = await _load_provider(mass, folder)
+    await _sync(provider)
+    # what an install that synced before folder signatures existed has stored
+    await mass.music.database.update(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"provider_instance": INSTANCE_ID, "provider_item_id": "Show A"},
+        {"details": None},
+    )
+
+    _, added = await _sync(provider)
+    assert added == ["Show A"]
+
+    _, added = await _sync(provider)
+    assert added == []
 
 
 async def test_a_deleted_podcast_folder_leaves_the_library(
@@ -146,11 +197,12 @@ async def test_a_deleted_podcast_folder_leaves_the_library(
     """A podcast whose folder is gone is removed from the library."""
     folder = tmp_path / "podcasts"
     _write_episodes(folder / "Show A", "ep1.mp3")
-    _write_episodes(folder / "Show B", "ep1.mp3")
+    # a dot in the folder name must not be taken for a file extension
+    _write_episodes(folder / "Mr. Robot", "ep1.mp3")
     provider = await _load_provider(mass, folder)
     await _sync(provider)
 
-    shutil.rmtree(folder / "Show B")
+    shutil.rmtree(folder / "Mr. Robot")
     await _sync(provider)
 
     assert await _library_podcasts(mass) == ["Show A"]
