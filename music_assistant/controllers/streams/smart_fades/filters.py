@@ -9,6 +9,11 @@ import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
 
+# Gain taken off the incoming track while the voice talks over it (0.6 is about -8 dB).
+VOICE_OVER_DUCK_DEPTH = 0.6
+# Ceiling of the voice over mix: a full-scale voice over full-scale music would clip.
+VOICE_OVER_MIX_CEILING_DB = -0.5
+
 
 class Filter(ABC):
     """Abstract base class for audio filters."""
@@ -316,12 +321,6 @@ class StreamingCrossfadeFilter(Filter):
                 f"StreamingCrossfade(pre={self.pre_crossfade_samples}, ns={self.crossfade_samples})"
             )
         return f"StreamingCrossfade(ns={self.crossfade_samples})"
-
-
-# Gain taken off the incoming track while the voice talks over it (0.6 is about -8 dB).
-VOICE_OVER_DUCK_DEPTH = 0.6
-# Ceiling of the voice over mix: a full-scale voice over full-scale music would clip.
-VOICE_OVER_MIX_CEILING_DB = -0.5
 
 
 class VoiceOverMixFilter(Filter):

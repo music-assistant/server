@@ -550,7 +550,7 @@ class VoiceOverFade(SmartFade):
         Apply the voice over, yielding PCM audio chunks.
 
         The tail before the overlap plays alone; the incoming track joins for the overlap
-        and the ramp after it, and plays on untouched from there.
+        and the ramp after it, and the rest of the incoming part plays on untouched.
         """
         if not self.filters:
             raise RuntimeError("SmartFade not built — call Mixer.build() first")
@@ -559,14 +559,47 @@ class VoiceOverFade(SmartFade):
         split = len(fade_out_part) - self.overlap_size
         for pcm_slice in iter_pcm_slices(fade_out_part[:split], pcm_format, 1000):
             yield pcm_slice
-        blend_in: bytes | AsyncGenerator[bytes] = (
-            fade_in_part[: self.blend_in_size] if isinstance(fade_in_part, bytes) else fade_in_part
-        )
+        blend_in_size = self.blend_in_size
+
+        if isinstance(fade_in_part, bytes):
+            # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer,
+            # when the consumer aborts mid-blend
+            async with aclosing(
+                super().apply(fade_out_part[split:], fade_in_part[:blend_in_size], pcm_format)
+            ) as blend:
+                async for chunk in blend:
+                    yield chunk
+            for pcm_slice in iter_pcm_slices(fade_in_part[blend_in_size:], pcm_format, 1000):
+                yield pcm_slice
+            return
+
+        # Generator fade-in: hand exactly the blend's share to the mixer as it arrives;
+        # whatever the last chunk carried beyond it opens the plain part
+        overshoot = bytearray()
+
+        async def _blend_in_stream() -> AsyncGenerator[bytes]:
+            taken = 0
+            async for chunk in fade_in_part:
+                remaining = blend_in_size - taken
+                if len(chunk) >= remaining:
+                    taken += remaining
+                    overshoot.extend(chunk[remaining:])
+                    yield chunk[:remaining]
+                    return
+                taken += len(chunk)
+                yield chunk
+
         # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer, when
-        # the consumer aborts mid-blend
-        async with aclosing(super().apply(fade_out_part[split:], blend_in, pcm_format)) as blend:
+        # the consumer aborts mid-blend (closing this generator while _blend_in_stream
+        # is still being read by the mixer's stdin feeder)
+        async with aclosing(
+            super().apply(fade_out_part[split:], _blend_in_stream(), pcm_format)
+        ) as blend:
             async for chunk in blend:
                 yield chunk
-        if isinstance(fade_in_part, bytes):
-            for pcm_slice in iter_pcm_slices(fade_in_part[self.blend_in_size :], pcm_format, 1000):
+        if overshoot:
+            for pcm_slice in iter_pcm_slices(bytes(overshoot), pcm_format, 1000):
+                yield pcm_slice
+        async for remaining_chunk in fade_in_part:
+            for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
                 yield pcm_slice

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 
 import numpy as np
 from music_assistant_models.enums import ContentType
@@ -85,3 +86,27 @@ async def test_voice_over_stays_under_the_ceiling() -> None:
     blend = mix[int(fade.timing_info.pre_crossfade_duration * SR) * 2 :]
     peak_db = 20 * np.log10(float(np.max(np.abs(blend))))
     assert peak_db <= VOICE_OVER_MIX_CEILING_DB + 0.05
+
+
+async def test_a_streamed_incoming_part_blends_only_the_overlap_and_ramp() -> None:
+    """A streamed incoming part renders like the same bytes: the rest passes through as is."""
+    fade_out = _constant(0.3, TAIL_SECONDS)
+    blend_part = _constant(0.2, OVERLAP_SECONDS + VOICE_OVER_RAMP)
+    remainder = _constant(0.5, 1.5)
+    fade_in = blend_part + remainder
+
+    async def _chunks() -> AsyncGenerator[bytes]:
+        # chunk edges that never meet the blend's end, so the split falls inside a chunk
+        step = 4000 * 8 + 8
+        for start in range(0, len(fade_in), step):
+            yield fade_in[start : start + step]
+
+    from_bytes = VoiceOverFade(logging.getLogger())
+    from_bytes.build(len(fade_out), len(blend_part), PCM)
+    expected = b"".join([chunk async for chunk in from_bytes.apply(fade_out, fade_in, PCM)])
+    streamed = VoiceOverFade(logging.getLogger())
+    streamed.build(len(fade_out), len(blend_part), PCM)
+    output = b"".join([chunk async for chunk in streamed.apply(fade_out, _chunks(), PCM)])
+
+    assert output == expected
+    assert output.endswith(fade_in[streamed.blend_in_size :])
