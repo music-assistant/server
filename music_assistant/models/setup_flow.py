@@ -134,7 +134,8 @@ class SetupFlowContext:
     # manages_all_sources: whether the caller manages every music source (the server itself
     # or such a user); false for a user who adds a music source of its own
     manages_all_sources: bool = True
-    # user: the user who started a provider flow; None when the server started it
+    # user: the user who started a provider flow; None when the server started it, and in a
+    # player flow
     user: User | None = None
 
 
