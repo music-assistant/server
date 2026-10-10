@@ -185,7 +185,8 @@ def visible_provider(
 
     An unavailable account of a streaming service resolves to another loaded account of that
     service (see `mass.get_provider`), so the account actually serving is the one checked; one
-    hidden from the user gives way to a visible account of the same service, if there is one.
+    hidden from the user gives way to a visible account of the same service, if there is one,
+    the user's own account before a shared one.
     Only music sources are narrowed; None for the user means no narrowing at all.
 
     :param mass: The MusicAssistant instance.
@@ -200,10 +201,11 @@ def visible_provider(
     if provider is None or user is None or provider.type != ProviderType.MUSIC:
         return provider
     hidden = hidden_music_sources(mass, user)
-    if provider.instance_id not in hidden:
-        return provider
     if strict or not getattr(provider, "is_streaming_provider", False):
-        return None
+        return None if provider.instance_id in hidden else provider
+    if provider.instance_id == instance_id_or_domain and provider.instance_id not in hidden:
+        return provider
+    # another account of the service serves the request: choose among the visible ones
     candidates = [
         other
         for other in mass.get_provider_instances(provider.domain)

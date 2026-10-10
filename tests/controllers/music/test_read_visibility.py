@@ -172,6 +172,10 @@ async def test_resolve_visible_provider(music: MusicController) -> None:
         # ...unless exactly the hidden account is required
         with pytest.raises(InsufficientPermissions):
             music.resolve_visible_provider(THEIRS, strict=True)
+    # an unavailable hidden account is replaced the same way, own account first
+    _mock(music, THEIRS).available = False
+    with _as_user(MEMBER):
+        assert music.resolve_visible_provider(THEIRS).instance_id == MY_SPOTIFY
     # a visible source that is not loaded is unavailable, not forbidden
     _mock(music, MINE).available = False
     with _as_user(MEMBER), pytest.raises(ProviderUnavailableError):
