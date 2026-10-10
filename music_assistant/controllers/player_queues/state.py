@@ -85,6 +85,9 @@ class PlayerQueueData:
     next_item_id_enqueued: str | None = None
     # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
     next_item_id_preparing: str | None = None
+    # queue_item_id of the last upcoming item placed by Smart Fades ordering; playback orders the
+    # next batch behind it
+    fade_ordered_until: str | None = None
     # queue_item_id whose audio the player last started fetching. Unlike index_in_buffer,
     # which the crossfade preload raises to a track the player was never given, this only
     # moves when audio actually goes out
