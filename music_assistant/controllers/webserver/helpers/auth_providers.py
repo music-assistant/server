@@ -720,7 +720,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     ha_url,
                 )
                 raise AuthenticationFailed(
-                    f"Failed to exchange OAuth code: {token_error}"
+                    "Home Assistant did not accept the sign-in"
                 ) from token_error
 
             access_token = token_details.get("access_token")
@@ -746,7 +746,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
             raise
         except Exception as err:
             self.logger.exception("Error during Home Assistant OAuth callback")
-            raise AuthenticationFailed(str(err)) from err
+            raise AuthenticationFailed("The Home Assistant sign-in could not be completed") from err
 
         if not user:
             raise AuthenticationFailed(

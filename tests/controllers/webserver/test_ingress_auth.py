@@ -765,6 +765,28 @@ async def test_ha_login_callback_refuses_a_sign_in_that_returns_to_the_app(
     get_token.assert_not_awaited()
 
 
+async def test_ha_login_callback_refuses_a_malformed_code(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A HA login callback with a code that is not URL safe never reaches Home Assistant."""
+    _register_oauth_provider(auth_manager)
+    pending = auth_manager.pending_logins.start(
+        "homeassistant",
+        AuthTransport.DIRECT,
+        "http://ma.local:8095/auth/callback?provider_id=homeassistant",
+        idp_code_verifier="login_verifier",
+    )
+
+    get_token = AsyncMock(return_value={"access_token": "ha_token"})
+    with patch.object(auth_providers, "get_token", get_token):
+        result = await auth_manager.handle_oauth_callback(
+            "homeassistant", "ha_code&client_id=x", pending.state
+        )
+
+    assert result == AuthResult(success=False, error="Invalid authorization code")
+    get_token.assert_not_awaited()
+
+
 async def test_starting_a_ha_login_drops_expired_ones(auth_manager: AuthenticationManager) -> None:
     """Abandoned HA logins are dropped once they expired and a new one starts."""
     abandoned = [await _start_ha_login(auth_manager) for _ in range(3)]

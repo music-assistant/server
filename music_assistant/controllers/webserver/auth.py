@@ -1248,6 +1248,8 @@ class AuthenticationManager:
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
         if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
             return AuthResult(success=False, error="Invalid or expired state parameter")
+        if not AUTH_CODE_RE.fullmatch(code):
+            return AuthResult(success=False, error="Invalid authorization code")
         try:
             user = await provider.complete_authorization(pending, {"code": code})
         except AuthenticationFailed as err:
