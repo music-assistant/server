@@ -507,7 +507,7 @@ class NugsProvider(MusicProvider):
 
     async def _request_stream_link(self, params: dict[str, Any]) -> str | None:
         """
-        Request a stream link from the nugs.net stream API.
+        Request a stream link from the nugs.net stream API, returning None when there is none.
 
         :param params: The query parameters for the subPlayer request.
         """

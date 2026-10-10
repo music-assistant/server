@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 
 from music_assistant.providers.nugs import CONF_QUALITY, NugsProvider
 
@@ -47,6 +47,15 @@ def _stub_http_session(provider: NugsProvider, *bodies: str) -> MagicMock:
     return session_get
 
 
+def _set_quality(provider: NugsProvider, quality: str) -> None:
+    """Configure the stream quality setting on the provider."""
+    config: Any = provider.config
+    config.get_value.side_effect = lambda key, default=None: {
+        "log_level": "GLOBAL",
+        CONF_QUALITY: quality,
+    }.get(key, default)
+
+
 @pytest.mark.asyncio
 async def test_stream_url_uses_regular_plan(provider: NugsProvider) -> None:
     """A regular subscription passes its own plan id as the cost plan access list."""
@@ -79,15 +88,6 @@ async def test_stream_url_without_any_plan_raises(provider: NugsProvider) -> Non
         await provider._get_stream_url("123")
 
 
-def _set_quality(provider: NugsProvider, quality: str) -> None:
-    """Configure the stream quality setting on the provider."""
-    config: Any = provider.config
-    config.get_value.side_effect = lambda key, default=None: {
-        "log_level": "GLOBAL",
-        CONF_QUALITY: quality,
-    }.get(key, default)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("quality", "platform_id"), [("lossless", 2), ("lossy", -1)])
 async def test_stream_url_uses_quality_on_high_quality_plan(
@@ -105,6 +105,7 @@ async def test_stream_url_uses_quality_on_high_quality_plan(
 @pytest.mark.asyncio
 async def test_stream_url_caps_quality_to_plan(provider: NugsProvider) -> None:
     """A plan without high quality streaming only requests the lossy stream."""
+    _set_quality(provider, "lossless")
     _stub_get_data(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": False}})
     session_get = _stub_http_session(provider)
 
@@ -123,3 +124,13 @@ async def test_stream_url_falls_back_to_lossy(provider: NugsProvider) -> None:
 
     assert await provider._get_stream_url("123") == "https://stream.test/lossy.m3u8"
     assert [c.kwargs["params"]["platformID"] for c in session_get.call_args_list] == [2, -1]
+
+
+@pytest.mark.asyncio
+async def test_stream_url_without_any_stream_raises(provider: NugsProvider) -> None:
+    """A track without a stream in any quality raises a media not found error."""
+    _stub_get_data(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
+    _stub_http_session(provider, '{"streamLink": ""}', '{"streamLink": ""}')
+
+    with pytest.raises(MediaNotFoundError):
+        await provider._get_stream_url("123")
