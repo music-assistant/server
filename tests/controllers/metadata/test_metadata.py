@@ -184,20 +184,19 @@ async def test_lyrics_of_a_library_track_refresh_the_stored_item(
         stored = await mass_minimal.music.tracks.add_item_to_library(
             create_track("spotify_theirs", "t1")
         )
-    refresh = AsyncMock()
+    refreshing_users: list[User | None] = []
+
+    async def _refresh(*_: object, **__: object) -> None:
+        refreshing_users.append(get_current_user())
+
+    refresh = AsyncMock(side_effect=_refresh)
     metadata_controller._update_track_metadata = refresh  # type: ignore[method-assign]
     crafted = create_track("spotify_theirs", "t1", name="Crafted")
     crafted.item_id, crafted.provider = stored.item_id, "library"
 
     for user in (member, owner):
-        with (
-            patch(
-                "music_assistant.controllers.music.controller.get_current_user", return_value=user
-            ),
-            patch(
-                "music_assistant.controllers.music.media.base.get_current_user", return_value=user
-            ),
-        ):
+        user_token = current_user.set(user)
+        try:
             if user is member:
                 # the only source of the track is hidden from the member
                 with pytest.raises(MediaNotFoundError):
@@ -205,6 +204,11 @@ async def test_lyrics_of_a_library_track_refresh_the_stored_item(
                 refresh.assert_not_awaited()
             else:
                 assert await metadata_controller.get_track_lyrics(crafted) == (None, None)
+        finally:
+            current_user.reset(user_token)
     assert refresh.await_args is not None
     refreshed = refresh.await_args.args[0]
     assert (refreshed.item_id, refreshed.name) == (stored.item_id, "Test Track")
+    # the refresh fills the household's item, so it runs as the server, not as the caller
+    assert refreshing_users == [None]
+    assert get_current_user() is None

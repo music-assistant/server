@@ -429,11 +429,13 @@ class MetaDataController(
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         if track.provider == "library":
-            # the stored item is refreshed, never the caller's copy of it
+            # the stored item is refreshed, never the caller's copy of it; the refresh fills
+            # the household's library item from all its sources, so it runs as the server
             track = await self.mass.music.tracks.get(
                 track.item_id, "library", allow_update_metadata=False
             )
-            await self._update_track_metadata(track, force_refresh=False)
+            with system_auth_context():
+                await self._update_track_metadata(track, force_refresh=False)
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         # prefer lyrics from the track's own provider
