@@ -56,6 +56,12 @@ class _TrackSpec(NamedTuple):
     mbid: str | None = None
 
 
+@pytest.fixture
+def mass(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: reconciliation only touches the library database."""
+    return music_mass
+
+
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
     """Create a provider mapping for a library fixture item."""
     return ProviderMapping(
