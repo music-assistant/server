@@ -21,6 +21,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -113,6 +114,7 @@ from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
 )
+from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress,
@@ -160,6 +162,7 @@ from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE,
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.api import SortOptionInfo
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, AudioSource
@@ -926,6 +929,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # limit -1 to account for the prepended items
         prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
+
+    @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
+    def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
+        """
+        Return the sort options a listing offers, the listing's default first.
+
+        :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When the listing does not sort on the server.
+        """
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} has no sort options")
+        return list(options)
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(

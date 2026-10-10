@@ -115,15 +115,10 @@ LEGACY_SORT_KEYS: Final[dict[str, tuple[SortField, SortDirection | None]]] = {
     "album_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
     "track_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
     "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "favorite_timestamp": (SortField.FAVORITE_TIMESTAMP, SortDirection.ASC),
+    "favorite_timestamp_desc": (SortField.FAVORITE_TIMESTAMP, SortDirection.DESC),
     "random": (SortField.RANDOM, None),
     "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
-}
-
-# the deprecated order_by keys for a sort on the moment the calling user liked the item, kept
-# apart until music-assistant-models offers SortField.FAVORITE_TIMESTAMP
-FAVORITE_TIMESTAMP_SORT_KEYS: Final[dict[str, SortDirection]] = {
-    "favorite_timestamp": SortDirection.ASC,
-    "favorite_timestamp_desc": SortDirection.DESC,
 }
 
 # max number of library rows that may share one normalized title before the duplicate track

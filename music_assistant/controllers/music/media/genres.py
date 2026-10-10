@@ -347,7 +347,7 @@ class GenreController(MediaControllerBase[Genre]):
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
-        field, direction, favorite_sort = self.resolve_sort(sort_field, sort_direction, order_by)
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
             raise ValueError(msg)
@@ -390,7 +390,6 @@ class GenreController(MediaControllerBase[Genre]):
             offset=offset,
             sort_field=field,
             sort_direction=direction,
-            favorite_sort=favorite_sort,
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
             played_only=played_only,
@@ -1235,8 +1234,8 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str | None = None,
     ) -> list[ItemCls]:
         """Return the library items of one media type that are mapped to a genre."""
-        sort_field, sort_direction, favorite_sort = controller.resolve_sort(
-            sort_field, sort_direction, order_by, default=None
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, order_by, default=False
         )
         query = (
             f"EXISTS(SELECT 1 FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
@@ -1250,7 +1249,6 @@ class GenreController(MediaControllerBase[Genre]):
             offset=offset,
             sort_field=sort_field,
             sort_direction=sort_direction,
-            favorite_sort=favorite_sort,
         )
 
     @staticmethod

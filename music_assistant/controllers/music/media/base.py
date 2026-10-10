@@ -66,7 +66,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
-    FAVORITE_TIMESTAMP_SORT_KEYS,
     LEGACY_SORT_KEYS,
     RANDOM_SORT_FIELDS,
 )
@@ -80,7 +79,6 @@ from music_assistant.controllers.music.sorting import (
     MEDIA_TYPE_SORT_FIELDS,
     SORT_FIELD_DEFINITIONS,
     get_default_direction,
-    get_sort_options_for_media_type,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import (
@@ -107,8 +105,6 @@ from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
-
-    from music_assistant_models.api import SortOptionInfo
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MediaCatalogMixin
@@ -274,11 +270,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.library_items,
             required_scope=Scope.LIBRARY_READ,
             allow_impersonation=True,
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/get_sort_options",
-            self.get_sort_options,
-            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
@@ -514,15 +505,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sql_query = f"SELECT item_id FROM {self.db_table} WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
-    async def get_sort_options(self) -> list[SortOptionInfo]:
-        """
-        Get available sort options for this media type.
-
-        Returns list of sort options with field, direction support, and defaults.
-        Used by clients to build sorting UI.
-        """
-        return get_sort_options_for_media_type(self.media_type)
-
     if TYPE_CHECKING:
 
         @overload
@@ -628,7 +610,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             be in-library. None applies no filter; an explicit empty list, or a list
             with no currently loaded/allowed instance, returns no items.
         """
-        field, direction, favorite_sort = self.resolve_sort(sort_field, sort_direction, order_by)
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -640,7 +622,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             sort_field=field,
             sort_direction=direction,
-            favorite_sort=favorite_sort,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=self.listing_filter(listing_params) or None,
             extra_query_params=listing_params,
@@ -690,36 +671,34 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_direction: SortDirection | None = None,
         order_by: str | None = None,
         *,
-        default: SortField | None = SortField.SORT_NAME,
-    ) -> tuple[SortField | None, SortDirection | None, SortDirection | None]:
+        default: bool = True,
+    ) -> tuple[SortField | None, SortDirection | None]:
         """
         Resolve the sort requested for a listing of this media type into its typed form.
 
         The deprecated ``order_by`` key only counts when no ``sort_field`` is given. Returns
-        the sort field, its direction (None for the field's default) and, for the legacy
-        favorite_timestamp keys, the direction of a sort on the moment the calling user liked
-        the item instead (the field is None then).
+        the sort field and its direction, None for the field's default direction.
 
         :param sort_field: The requested sort field.
         :param sort_direction: The requested sort direction.
         :param order_by: The deprecated sort key an outdated client sends.
-        :param default: The sort field when none is requested; None keeps the database order.
+        :param default: Sort on the listing's default field when none is requested; False
+            keeps the database order.
         :raises InvalidDataError: When the field is not offered for this media type or the key
             is unknown.
         """
         if sort_field is None and order_by:
-            if (favorite_sort := FAVORITE_TIMESTAMP_SORT_KEYS.get(order_by)) is not None:
-                return None, None, favorite_sort
             if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
                 raise InvalidDataError(f"Unknown sort key: {order_by}")
             sort_field, sort_direction = legacy_sort
-        if (sort_field := sort_field or default) is None:
-            return None, None, None
-        if sort_field not in MEDIA_TYPE_SORT_FIELDS[self.media_type]:
+        offered_fields = MEDIA_TYPE_SORT_FIELDS[self.media_type]
+        if sort_field is None:
+            return (offered_fields[0], sort_direction) if default else (None, None)
+        if sort_field not in offered_fields:
             raise InvalidDataError(
                 f"Sort field {sort_field.value} is not supported for {self.media_type.value}"
             )
-        return sort_field, sort_direction, None
+        return sort_field, sort_direction
 
     async def iter_library_items(
         self,
@@ -1755,7 +1734,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
-            favorite_sort: SortDirection | None = None,
         ) -> list[ItemCls | MediaCollection[ItemCls]]: ...
 
         @overload
@@ -1778,7 +1756,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
-            favorite_sort: SortDirection | None = None,
         ) -> list[ItemCls]: ...
 
         @overload
@@ -1801,7 +1778,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
-            favorite_sort: SortDirection | None = None,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
     @final
@@ -1824,7 +1800,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
-        favorite_sort: SortDirection | None = None,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
         Fetch MediaItem records from database by building the query.
@@ -1850,8 +1825,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             instead of individually.
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids, see ``library_items``.
-        :param favorite_sort: Sort on the moment the calling user liked the item instead, in
-            this direction (the legacy favorite_timestamp keys, until SortField offers it).
         """
         query_params = dict(extra_query_params) if extra_query_params else {}
         query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
@@ -1894,7 +1867,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             join_parts,
             sort_field,
             sort_direction,
-            favorite_sort=favorite_sort,
             summary=summary,
         )
         # base query params act as defaults: callers may override them via extra_query_params
@@ -1904,13 +1876,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if collapse_collections:
             if search:
                 query_params["search"] = f"%{search}%"
-            if favorite_sort:
-                # a collection has no favorite moment of its own, fall back like the other
-                # unsupported sort fields do
-                self.logger.warning(
-                    "favorite_timestamp is not supported as sort field for collections"
-                )
-                sort_field = SortField.NAME
             sql_query = await self._adapt_query_for_collections(
                 sql_query,
                 query_params,
@@ -2140,7 +2105,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     @final
-    def _favorite_sort_sql(self, direction: SortDirection) -> str:
+    def _favorite_sort_sql(self, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort on the calling user's favorite moment."""
         timestamp = (
             f"(SELECT {DB_TABLE_FAVORITES}.timestamp FROM {DB_TABLE_FAVORITES} "
@@ -2148,6 +2113,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"AND {DB_TABLE_FAVORITES}.media_type = '{self.media_type.value}' "
             f"AND {DB_TABLE_FAVORITES}.item_id = {self.db_table}.item_id)"
         )
+        direction = direction or get_default_direction(SortField.FAVORITE_TIMESTAMP)
         return f"{timestamp} {direction.value.upper()}"
 
     @final
@@ -2466,6 +2432,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param field: The sort field.
         :param direction: The sort direction, the field's default when None.
         """
+        if field == SortField.FAVORITE_TIMESTAMP:
+            return self._favorite_sort_sql(direction)
         if field not in BASE_SORT_FIELD_SQL:
             raise InvalidDataError(
                 f"Sort field {field.value} is not supported for {self.media_type.value}"
@@ -2491,7 +2459,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
         *,
-        favorite_sort: SortDirection | None = None,
         summary: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Build the final SQL query string and its (base) bound query params."""
@@ -2514,9 +2481,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if join_parts:
             sql_query += f" GROUP BY {self.db_table}.item_id"
 
-        if favorite_sort:
-            sql_query += f" ORDER BY {self._favorite_sort_sql(favorite_sort)}"
-        elif sort_field:
+        if sort_field:
             sql_query += f" ORDER BY {self._get_sort_sql(sort_field, sort_direction)}"
 
         return sql_query, base_query_params

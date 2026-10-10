@@ -11,7 +11,14 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.api import SortOptionInfo
-from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import (
+    AlbumType,
+    ListingType,
+    MediaType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -23,15 +30,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.music.constants import (
-    FAVORITE_TIMESTAMP_SORT_KEYS,
-    LEGACY_SORT_KEYS,
-)
+from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.sorting import (
+    LIBRARY_LISTINGS,
+    LISTING_SORT_OPTIONS,
     MEDIA_TYPE_SORT_FIELDS,
     SORT_FIELD_DEFINITIONS,
     get_default_direction,
-    get_sort_options_for_media_type,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -134,11 +139,10 @@ async def artist_sorted_mass(music_mass_module: MusicAssistant) -> MusicAssistan
     return mass
 
 
-def test_every_media_type_sort_field_has_a_definition() -> None:
-    """Every field listed per media type must have a definition."""
-    for media_type, fields in MEDIA_TYPE_SORT_FIELDS.items():
-        for field in fields:
-            assert field in SORT_FIELD_DEFINITIONS, f"{field} for {media_type} has no definition"
+def test_every_sort_field_has_a_definition() -> None:
+    """Every sort field of the models package must have a definition."""
+    for field in SortField:
+        assert field in SORT_FIELD_DEFINITIONS, f"{field} has no definition"
 
 
 def test_every_legacy_key_maps_to_a_defined_field() -> None:
@@ -159,12 +163,11 @@ def test_legacy_keys_cover_every_offered_field(mass: MusicAssistant) -> None:
                 if field == SortField.ARTIST_NAME
                 else field.value
             )
-            assert controller.resolve_sort(order_by=key) == (field, LEGACY_SORT_KEYS[key][1], None)
+            assert controller.resolve_sort(order_by=key) == (field, LEGACY_SORT_KEYS[key][1])
             if SORT_FIELD_DEFINITIONS[field].supports_direction:
                 assert controller.resolve_sort(order_by=f"{key}_desc") == (
                     field,
                     SortDirection.DESC,
-                    None,
                 )
 
 
@@ -180,75 +183,78 @@ def test_get_default_direction_falls_back_to_asc_for_random_fields() -> None:
     assert get_default_direction(SortField.RANDOM_PLAY_COUNT) == SortDirection.ASC
 
 
-def test_get_sort_options_for_album_includes_artist_name_and_random() -> None:
-    """Album sort options are the shared definitions, including the album-specific fields."""
-    options = get_sort_options_for_media_type(MediaType.ALBUM)
-    assert all(isinstance(option, SortOptionInfo) for option in options)
-    fields = {option.field for option in options}
-    assert SortField.ARTIST_NAME in fields
-    assert SortField.YEAR in fields
-    assert SortField.RANDOM in fields
-    assert SortField.RANDOM_PLAY_COUNT in fields
+def test_sort_options_command_serves_every_library_listing(mass: MusicAssistant) -> None:
+    """Every library listing has its row, the default SORT_NAME first, matching its media type."""
+    for media_type, listing in LIBRARY_LISTINGS.items():
+        options = mass.music.sort_options(listing)
+        assert options == list(LISTING_SORT_OPTIONS[listing])
+        assert all(isinstance(option, SortOptionInfo) for option in options)
+        assert options[0].field == SortField.SORT_NAME
+        assert [option.field for option in options] == list(MEDIA_TYPE_SORT_FIELDS[media_type])
 
 
-def test_get_sort_options_for_genre_includes_supported_fields() -> None:
-    """Genre sort options include timestamp and play-count fields."""
-    options = get_sort_options_for_media_type(MediaType.GENRE)
-    fields = {option.field for option in options}
-    assert SortField.TIMESTAMP_ADDED in fields
-    assert SortField.TIMESTAMP_MODIFIED in fields
-    assert SortField.LAST_PLAYED in fields
-    assert SortField.PLAY_COUNT in fields
-    assert SortField.RANDOM_PLAY_COUNT in fields
+def test_sort_options_command_rejects_listing_without_options(mass: MusicAssistant) -> None:
+    """A listing that does not sort on the server is rejected."""
+    with pytest.raises(InvalidDataError):
+        mass.music.sort_options(ListingType.ALBUM_TRACKS)
 
 
-def test_get_sort_options_random_field_does_not_support_direction() -> None:
-    """RANDOM sort options must be marked as not supporting a direction."""
-    options = get_sort_options_for_media_type(MediaType.TRACK)
-    random_option = next(o for o in options if o.field == SortField.RANDOM)
-    assert random_option.supports_direction is False
-    assert random_option.default_direction is None
-
-
-@pytest.mark.asyncio
-async def test_get_sort_options_api_matches_media_type(mass: MusicAssistant) -> None:
-    """The get_sort_options() API on a controller should match its own media type's options."""
-    result = await mass.music.albums.get_sort_options()
-    expected = get_sort_options_for_media_type(MediaType.ALBUM)
-    assert [o.field for o in result] == [o.field for o in expected]
+def test_library_sort_options_hold_the_listing_specific_fields() -> None:
+    """Albums, tracks and audiobooks add their own fields; the random options carry no direction."""
+    fields = {
+        listing: [option.field for option in options]
+        for listing, options in LISTING_SORT_OPTIONS.items()
+    }
+    assert SortField.YEAR in fields[ListingType.LIBRARY_ALBUMS]
+    assert SortField.ARTIST_NAME in fields[ListingType.LIBRARY_ALBUMS]
+    assert SortField.DURATION in fields[ListingType.LIBRARY_TRACKS]
+    assert SortField.ARTIST_NAME in fields[ListingType.LIBRARY_TRACKS]
+    assert SortField.DURATION in fields[ListingType.LIBRARY_AUDIOBOOKS]
+    own_fields = {SortField.YEAR, SortField.ARTIST_NAME, SortField.DURATION}
+    assert own_fields.isdisjoint(fields[ListingType.LIBRARY_ARTISTS])
+    for options in LISTING_SORT_OPTIONS.values():
+        random_options = options[-2:]
+        assert [o.field for o in random_options] == [SortField.RANDOM, SortField.RANDOM_PLAY_COUNT]
+        assert all(not o.supports_direction and o.default_direction is None for o in random_options)
+        favorite = next(o for o in options if o.field == SortField.FAVORITE_TIMESTAMP)
+        assert favorite.default_direction == SortDirection.DESC
 
 
 def test_resolve_sort_defaults_and_precedence(mass: MusicAssistant) -> None:
     """Nothing requested means the listing default; typed parameters win over the legacy key."""
     controller = mass.music.albums
-    assert controller.resolve_sort() == (SortField.SORT_NAME, None, None)
-    assert controller.resolve_sort(default=None) == (None, None, None)
+    assert controller.resolve_sort() == (SortField.SORT_NAME, None)
+    assert controller.resolve_sort(default=False) == (None, None)
     assert controller.resolve_sort(sort_direction=SortDirection.DESC) == (
         SortField.SORT_NAME,
         SortDirection.DESC,
-        None,
     )
-    assert controller.resolve_sort(SortField.YEAR) == (SortField.YEAR, None, None)
-    assert controller.resolve_sort(order_by="year_desc") == (
-        SortField.YEAR,
-        SortDirection.DESC,
-        None,
-    )
+    assert controller.resolve_sort(SortField.YEAR) == (SortField.YEAR, None)
+    assert controller.resolve_sort(order_by="year_desc") == (SortField.YEAR, SortDirection.DESC)
     assert controller.resolve_sort(SortField.NAME, SortDirection.DESC, "year_desc") == (
         SortField.NAME,
         SortDirection.DESC,
-        None,
     )
 
 
-def test_resolve_sort_favorite_timestamp_keys(mass: MusicAssistant) -> None:
-    """The legacy favorite_timestamp keys resolve to a sort on the user's favorite moment."""
+def test_favorite_timestamp_sort(mass: MusicAssistant) -> None:
+    """The legacy favorite keys map to FAVORITE_TIMESTAMP, rendered as the per-user subquery."""
     controller = mass.music.tracks
-    for key, direction in FAVORITE_TIMESTAMP_SORT_KEYS.items():
-        assert controller.resolve_sort(order_by=key) == (None, None, direction)
-    query, _ = controller._build_final_query([], [], favorite_sort=SortDirection.DESC)
-    assert query.endswith("tracks.item_id) DESC")
-    assert "SELECT favorites.timestamp FROM favorites" in query
+    assert controller.resolve_sort(order_by="favorite_timestamp") == (
+        SortField.FAVORITE_TIMESTAMP,
+        SortDirection.ASC,
+    )
+    assert controller.resolve_sort(order_by="favorite_timestamp_desc") == (
+        SortField.FAVORITE_TIMESTAMP,
+        SortDirection.DESC,
+    )
+    sort_sql = controller._get_sort_sql(SortField.FAVORITE_TIMESTAMP, None)
+    assert sort_sql.startswith("(SELECT favorites.timestamp FROM favorites")
+    assert sort_sql.endswith("tracks.item_id) DESC")
+    query, _ = controller._build_final_query(
+        [], [], SortField.FAVORITE_TIMESTAMP, SortDirection.ASC
+    )
+    assert query.endswith("tracks.item_id) ASC")
 
 
 @pytest.mark.asyncio
@@ -285,6 +291,7 @@ async def test_resolve_sort_accepts_supported_field_for_media_type(
     await mass.music.genres.library_items(sort_field=SortField.PLAY_COUNT)
     await mass.music.genres.library_items(sort_field=SortField.RANDOM_PLAY_COUNT)
     await mass.music.tracks.library_items(favorite=True, order_by="favorite_timestamp_desc")
+    await mass.music.tracks.library_items(sort_field=SortField.FAVORITE_TIMESTAMP)
 
 
 def test_sort_sql_qualifies_columns_and_applies_default_direction(mass: MusicAssistant) -> None:
@@ -349,7 +356,7 @@ async def test_collapsed_collections_fall_back_for_the_favorite_sort(
         ) as get_rows,
     ):
         await controller.get_library_items_by_query(
-            favorite_sort=SortDirection.DESC, collapse_collections=True, summary=True
+            sort_field=SortField.FAVORITE_TIMESTAMP, collapse_collections=True, summary=True
         )
 
     assert get_rows.await_args is not None
@@ -573,3 +580,30 @@ def test_random_subquery_deduplicates_items_before_limit(mass: MusicAssistant) -
     query = query_parts[0]
     assert "SELECT DISTINCT tracks.item_id FROM tracks JOIN track_artists" in query
     assert "LIMIT 7" in query
+
+
+@pytest.mark.asyncio
+async def test_library_items_sort_by_favorite_timestamp(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """FAVORITE_TIMESTAMP orders the calling user's likes by the moment they were liked."""
+    mass = artist_sorted_mass
+    user = User(user_id="sort-user", username="sort-user", role=UserRole.USER)
+    first_liked, last_liked = (await mass.music.tracks.library_items(search="Sort Track"))[:2]
+    with patch("music_assistant.controllers.music.favorites.time") as time_mock:
+        for moment, track in ((1000, first_liked), (2000, last_liked)):
+            time_mock.time.return_value = moment
+            await mass.music.favorites.set(
+                MediaType.TRACK, int(track.item_id), True, [user.user_id]
+            )
+
+    with patch("music_assistant.controllers.music.media.base.get_current_user", return_value=user):
+        newest_first = await mass.music.tracks.library_items(
+            favorite=True, sort_field=SortField.FAVORITE_TIMESTAMP
+        )
+        oldest_first = await mass.music.tracks.library_items(
+            favorite=True, order_by="favorite_timestamp"
+        )
+
+    assert [item.item_id for item in newest_first] == [last_liked.item_id, first_liked.item_id]
+    assert [item.item_id for item in oldest_first] == [first_liked.item_id, last_liked.item_id]

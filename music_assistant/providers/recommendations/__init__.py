@@ -280,11 +280,11 @@ class LibraryRecommendationsProvider(PluginProvider):
                     limit=10, sort_field=SortField.RANDOM_PLAY_COUNT, reachable_via=providers
                 )
             case LibraryRowID.RECENT_FAVORITE_TRACKS:
-                # the legacy key stays until SortField offers FAVORITE_TIMESTAMP
                 items = await self.mass.music.tracks.library_items(
                     favorite=True,
                     limit=10,
-                    order_by="favorite_timestamp_desc",
+                    sort_field=SortField.FAVORITE_TIMESTAMP,
+                    sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:

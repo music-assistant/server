@@ -124,7 +124,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
-        field, direction, favorite_sort = self.resolve_sort(sort_field, sort_direction, order_by)
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -136,7 +136,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
             offset=offset,
             sort_field=field,
             sort_direction=direction,
-            favorite_sort=favorite_sort,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             played_only=played_only,
             in_library_only=True,
@@ -158,7 +157,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 limit=limit,
                 sort_field=field,
                 sort_direction=direction,
-                favorite_sort=favorite_sort,
                 provider_filter=self._provider_filter_considering_reachability(
                     provider, reachable_via
                 ),
