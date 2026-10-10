@@ -12,6 +12,8 @@ from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -51,6 +53,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
+from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
@@ -973,6 +976,83 @@ async def test_get_authorization_url_picks_callback_base(
         ),
     ):
         await auth_manager.get_authorization_url("oauth", return_url)
+
+    oauth_provider.get_authorization_url.assert_awaited_once_with(
+        f"{expected_callback_base}/auth/callback?provider_id=oauth", return_url
+    )
+
+
+@pytest.mark.parametrize(
+    ("external_url", "path", "headers", "expected_callback_base"),
+    [
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "192.168.1.10:8095"},
+            "http://192.168.1.10:8095",
+        ),
+        ("https://ma.example.com", "/ws", {"Host": "ma.example.com"}, "https://ma.example.com"),
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "127.0.0.1:8095", "X-Forwarded-Host": "MA.example.com"},
+            "https://ma.example.com",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws?webrtc_session_id=abc",
+            {"Host": "127.0.0.1:8095"},
+            "https://ma.example.com",
+        ),
+        (None, "/ws?webrtc_session_id=abc", {"Host": "127.0.0.1:8095"}, "http://192.168.1.10:8095"),
+    ],
+    ids=[
+        "local",
+        "external_url",
+        "external_url_forwarded_host",
+        "remote_access",
+        "remote_access_without_external_url",
+    ],
+)
+async def test_get_authorization_url_picks_callback_base_for_app(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    external_url: str | None,
+    path: str,
+    headers: dict[str, str],
+    expected_callback_base: str,
+) -> None:
+    """
+    Test that an app sign-in gets its callback on the External URL when it connected through it.
+
+    :param external_url: The configured External URL.
+    :param path: The websocket request path the app connected on.
+    :param headers: The websocket request headers.
+    :param expected_callback_base: The server URL the callback is expected on.
+    """
+    return_url = "musicassistant://auth/callback"
+    request = make_mocked_request("GET", path, headers=headers, app=web.Application())
+    client = WebsocketClientHandler(auth_manager.webserver, request)
+    auth_manager.webserver.register_websocket_client(client)
+    set_current_client_id(client.client_id)
+    try:
+        with (
+            patch.object(
+                WebserverController,
+                "base_url",
+                new_callable=PropertyMock,
+                return_value="http://192.168.1.10:8095",
+            ),
+            patch.object(
+                WebserverController,
+                "external_url",
+                new_callable=PropertyMock,
+                return_value=external_url,
+            ),
+        ):
+            await auth_manager.get_authorization_url("oauth", return_url)
+    finally:
+        set_current_client_id(None)
 
     oauth_provider.get_authorization_url.assert_awaited_once_with(
         f"{expected_callback_base}/auth/callback?provider_id=oauth", return_url
