@@ -55,8 +55,13 @@ _SECRET_KEY_SUFFIXES = (
 # the secure entries of a config values map can have any key
 _CONFIG_VALUES_KEY = "values"
 _RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
-# every redaction needs one of these in the (lowercased) message text
-_SECRET_HINTS = (*_SECRET_KEY_SUFFIXES, f'"{_CONFIG_VALUES_KEY}"', "eyj")
+# every redaction needs one of these in the (lowercased) message text: the end of a
+# secret key, a config values map or a JWT
+_SECRET_HINTS = (
+    *(f'{suffix}"' for suffix in _SECRET_KEY_SUFFIXES),
+    f'"{_CONFIG_VALUES_KEY}"',
+    "eyj",
+)
 
 
 @dataclass

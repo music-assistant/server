@@ -92,8 +92,8 @@ def test_json_message_is_redacted() -> None:
 
 
 def test_json_message_without_secrets_is_unchanged() -> None:
-    """A message that holds no secret is returned as it is."""
-    message = '{"message_id": "1", "command": "players/all", "args": {}}'
+    """A message that holds no secret is returned as it is, also with look-alike keys."""
+    message = '{"message_id": "1", "result": {"author": "Someone", "token_id": "abc"}}'
     assert redact_json_secrets(message) == message
 
 
