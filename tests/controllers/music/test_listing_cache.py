@@ -43,6 +43,19 @@ async def _album_tracks(
     )
 
 
+async def _concurrent_requests(
+    mass: MusicAssistant, uri: str, assemble: AsyncMock, assembling: asyncio.Event
+) -> tuple[asyncio.Task[list[Track]], asyncio.Task[list[Track]]]:
+    """Start two requests for a listing, the second one waiting on the first one's assembly."""
+    # the reads skip the cache store, so the second request reaches the fill in its first step
+    # instead of racing the first request's completion through the store's thread
+    with patch.object(mass.cache, "get", AsyncMock(return_value=None)):
+        first = asyncio.create_task(_album_tracks(mass, uri, assemble))
+        second = asyncio.create_task(_album_tracks(mass, uri, assemble))
+        await assembling.wait()
+    return first, second
+
+
 async def test_a_listing_is_assembled_once(mass: MusicAssistant) -> None:
     """The second call is served from the cache, with items rebuilt from it."""
     tracks = [create_track("spotify_1", "t1", name="One"), create_track("spotify_1", "t2")]
@@ -154,9 +167,7 @@ async def test_concurrent_misses_assemble_once(mass: MusicAssistant) -> None:
         return Listing([create_track("spotify_1", "t1")])
 
     assemble = AsyncMock(side_effect=_assemble)
-    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    await assembling.wait()
+    first, second = await _concurrent_requests(mass, uri, assemble, assembling)
     release.set()
     first_items, second_items = await asyncio.gather(first, second)
 
@@ -179,9 +190,7 @@ async def test_a_waiting_request_assembles_itself_when_the_first_one_is_cancelle
         return Listing([create_track("spotify_1", "t1")])
 
     assemble = AsyncMock(side_effect=_assemble)
-    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    await assembling.wait()
+    first, second = await _concurrent_requests(mass, uri, assemble, assembling)
     first.cancel()
     release.set()
 
@@ -204,9 +213,7 @@ async def test_a_waiting_request_assembles_itself_when_nothing_was_kept(
         return Listing([create_track("spotify_1", "t1")], complete=False)
 
     assemble = AsyncMock(side_effect=_assemble)
-    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    await assembling.wait()
+    first, second = await _concurrent_requests(mass, uri, assemble, assembling)
     release.set()
     first_items, second_items = await asyncio.gather(first, second)
 
@@ -226,9 +233,7 @@ async def test_a_waiting_request_shares_the_failure_of_the_assembly(mass: MusicA
         raise MediaNotFoundError("album withdrawn")
 
     assemble = AsyncMock(side_effect=_assemble)
-    first = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    second = asyncio.create_task(_album_tracks(mass, uri, assemble))
-    await assembling.wait()
+    first, second = await _concurrent_requests(mass, uri, assemble, assembling)
     release.set()
 
     for request in (first, second):
