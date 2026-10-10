@@ -67,6 +67,6 @@
     }
   },
   "manifest": {
-    "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in a Spotify, Music Assistant, Apple Music or custom style."
+    "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in a Music Assistant, Spotify, Apple Music or custom style."
   }
 }

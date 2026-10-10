@@ -53,7 +53,7 @@ DESCRIPTION = "Melodic house for the hours after midnight. RÜFÜS DU SOL, Lane 
 DEFAULT_CONFIG: dict[str, Any] = {
     CONF_LOG_LEVEL: "GLOBAL",
     CONF_IMAGE_ENGINE: ENGINE_UID,
-    CONF_STYLE: "spotify",
+    CONF_STYLE: "music_assistant",
     CONF_CUSTOM_PROMPT: "",
     CONF_TITLE_OVERLAY: False,
     CONF_PLAYLISTS: PLAYLISTS_SMART,
@@ -127,6 +127,7 @@ async def test_spotify_prompt_matches_the_cronicle_script(provider: AIArtworkPro
     _mass(provider).get_provider("smart_playlist").get_smart_playlist_rules = AsyncMock(
         return_value=rules
     )
+    _set_config(provider, **{CONF_STYLE: "spotify"})
 
     await provider.get_playlist_metadata(playlist)
 

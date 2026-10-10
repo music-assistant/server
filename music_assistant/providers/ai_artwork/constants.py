@@ -64,8 +64,8 @@ ORPHAN_GRACE_SECONDS: Final = 300
 class Style(StrEnum):
     """The artwork style presets."""
 
-    SPOTIFY = "spotify"
     MUSIC_ASSISTANT = "music_assistant"
+    SPOTIFY = "spotify"
     APPLE_MUSIC = "apple_music"
     CUSTOM = "custom"
 

@@ -164,7 +164,7 @@ class AIArtworkProvider(MetadataProvider):
                 key=CONF_STYLE,
                 type=ConfigEntryType.STRING,
                 required=True,
-                default_value=Style.SPOTIFY.value,
+                default_value=Style.MUSIC_ASSISTANT.value,
                 options=[ConfigValueOption(value=style.value) for style in Style],
             ),
             ConfigEntry(
@@ -666,7 +666,7 @@ class AIArtworkProvider(MetadataProvider):
         try:
             return Style(str(self.config.get_value(CONF_STYLE)))
         except ValueError:
-            return Style.SPOTIFY
+            return Style.MUSIC_ASSISTANT
 
     def _overlay_layout(self) -> TitleLayout | None:
         """Return how to draw the title over the image, None when the image carries it."""
