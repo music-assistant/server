@@ -567,8 +567,8 @@ class TestPlanSummaryLog:
         )
 
         assert line == (
-            "planned transition: tier=full_blend strategy=energy_aligned source=energy-ladder "
-            "bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%)"
+            "planned transition: style=blend tier=full_blend strategy=energy_aligned "
+            "source=energy-ladder bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%)"
         )
 
     def test_quick_fade_names_its_trigger_and_signed_tempo_gap(
@@ -577,7 +577,7 @@ class TestPlanSummaryLog:
         """A tempo-gap quick fade logs the tempo trigger and a negative gap for a slower B."""
         line = _summary_line(caplog, _analysis(150.0), _analysis(120.0))
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=tempo ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=tempo ")
         assert line.endswith(" bpm=150.0->120.0 (-20.0%)")
 
     def test_cross_meter_quick_fade_names_the_meter_trigger(
@@ -589,7 +589,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, _analysis(120.0), inc)
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=meter ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=meter ")
 
     def test_re_anchored_quick_fade_names_the_beat_grid(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
@@ -605,7 +605,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, out, inc)
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=beat_grid ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=beat_grid ")
 
     def test_rescue_pass_winner_is_marked(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch

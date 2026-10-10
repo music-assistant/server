@@ -8,9 +8,11 @@ import logging
 import numpy as np
 import pytest
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
     QuickFadeTrigger,
     SmartFadeNotApplicable,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
@@ -235,17 +237,28 @@ def test_context_mix_out_anchor_is_downbeat_snapped() -> None:
     assert float(np.min(np.abs(context.outgoing.downbeats - anchor))) < 0.05
 
 
-def test_context_quiet_audible_outro_reports_an_early_mix_out() -> None:
-    """An outro that stays audible but under the mix-out floor is not reported as silent."""
+def test_context_quiet_audible_outro_anchors_at_its_audible_end(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An outro that stays audible but under the mix-out floor is a quiet outro, not an error."""
     bins = np.full(1800, 0.5, dtype=np.float32)
     t = np.linspace(0, 240.0, 1800)
     bins[t >= 190.0] = 0.2  # audible but below 0.7*sustained for the whole buffered tail
 
-    with pytest.raises(
-        SmartFadeNotApplicable,
-        match=r"^outgoing tail mixes out too early \(energy mix-out at 0\.0s of 45\.0s audible\)$",
-    ):
-        _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
+    with caplog.at_level(VERBOSE_LOG_LEVEL, logger=LOGGER.name):
+        context = _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
+
+    assert context.audio_end == pytest.approx(45.0)
+    assert context.default_anchor == pytest.approx(context.audio_end)
+    assert any(r.getMessage().startswith("quiet outro: ") for r in caplog.records)
+
+
+def test_context_ordinary_outro_is_no_quiet_outro(caplog: pytest.LogCaptureFixture) -> None:
+    """A tail at its sustained level up to the end anchors as usual."""
+    with caplog.at_level(VERBOSE_LOG_LEVEL, logger=LOGGER.name):
+        _context(_analysis(120.0), _analysis(120.0))
+
+    assert not any(r.getMessage().startswith("quiet outro: ") for r in caplog.records)
 
 
 def test_context_silent_tail_reports_mostly_silent() -> None:
@@ -304,3 +317,140 @@ def test_context_tier_folds_kick_anchor_like_the_old_planner() -> None:
     assert plan.tier is TransitionTier.FULL_BLEND
     assert plan.fade_out_window == pytest.approx(context.audio_end, abs=0.1)
     assert plan.metrics.audible_outgoing_trim <= plan.crossfade_duration
+
+
+def _quiet_from(start: float, duration: float = 240.0) -> np.ndarray:
+    """Build a 1800-bin rms array that is loud before media ``start`` and quiet after."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    bins[np.arange(1800) * (duration / 1800) >= start] = 0.1
+    return bins
+
+
+def _quiet_until(end: float, duration: float = 240.0) -> np.ndarray:
+    """Build a 1800-bin rms array that is quiet before media ``end`` and loud after."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    bins[np.arange(1800) * (duration / 1800) < end] = 0.05
+    return bins
+
+
+class TestSegueFacts:
+    """The context measures where the outgoing tail and the incoming head are quiet."""
+
+    def test_quiet_tail_and_head_add_up_to_the_overlap(self) -> None:
+        """A 10s quiet tail on a downbeat and a 4s quiet head give a 14s overlap."""
+        out = _analysis(120.0, rms_energy=_quiet_from(230.0))
+        inc = _analysis(130.0, rms_energy=_quiet_until(4.0))
+
+        segue = _context(out, inc).segue
+
+        assert segue is not None
+        assert segue.snapped_out
+        assert segue.quiet_tail == pytest.approx(10.0, abs=0.15)
+        # fewer than 4 incoming downbeats precede the rise, so it stays where it was measured
+        # instead of moving back to the downbeat at 3.7s
+        assert segue.quiet_head == pytest.approx(4.0, abs=0.15)
+        assert segue.overlap == pytest.approx(14.0, abs=0.3)
+
+    def test_points_snap_into_their_quiet_side(self) -> None:
+        """Off-grid points move to the next downbeat inside the quiet tail or head."""
+        out = _analysis(120.0, rms_energy=_quiet_from(230.6))
+        inc = _analysis(120.0, rms_energy=_quiet_until(9.4))
+
+        segue = _context(out, inc).segue
+
+        assert segue is not None
+        # buffer-local downbeats sit on odd seconds: 35.6 snaps on to 37, not back to 35
+        assert segue.snapped_out
+        assert segue.quiet_tail == pytest.approx(8.0)
+        # the rise at 9.4 snaps back to 8, not on to 10
+        assert segue.quiet_head == pytest.approx(8.0)
+
+    def test_a_loud_end_never_snaps_back_into_loud_bars(self) -> None:
+        """A loud tail keeps no quiet tail, whether or not a downbeat sits a bar earlier."""
+        # buffer-local downbeats sit on even seconds here: the last one is at 44 of 45
+        segue = _context(_analysis(120.0, duration=241.0), _analysis(150.0)).segue
+
+        assert segue is not None
+        assert not segue.snapped_out
+        assert segue.quiet_tail == pytest.approx(0.0, abs=0.15)
+
+    def test_an_irregular_grid_leaves_the_point_where_it_was_measured(self) -> None:
+        """Rubato downbeats give no grid to snap to."""
+        out = _with_irregular_downbeats(_analysis(120.0, rms_energy=_quiet_from(230.6)))
+
+        segue = _context(out, _analysis(120.0)).segue
+
+        assert segue is not None
+        assert not segue.snapped_out
+        assert segue.quiet_tail == pytest.approx(9.4, abs=0.15)
+
+    def test_a_grid_that_ends_early_leaves_the_point_unsnapped(self) -> None:
+        """Only detected downbeats count: an extrapolated grid past the real one is no snap."""
+        out = _with_downbeats_before(_analysis(120.0, rms_energy=_quiet_from(230.6)), 210.0)
+
+        context = _context(out, _analysis(150.0))
+
+        assert context.segue is not None
+        # the protective grid runs on, regular, past the 15s where the real grid ends
+        assert max(context.protective_downbeats) > 36.0
+        assert not context.segue.snapped_out
+        assert context.segue.quiet_tail == pytest.approx(9.4, abs=0.15)
+
+    def test_a_long_tail_caps_the_overlap(self) -> None:
+        """A 30s quiet tail caps the overlap at 15s."""
+        segue = _context(_analysis(120.0, rms_energy=_quiet_from(210.0)), _analysis(120.0)).segue
+
+        assert segue is not None
+        assert segue.quiet_tail == pytest.approx(30.0, abs=0.15)
+        assert segue.overlap == 15.0
+
+    def test_loud_ends_have_no_quiet_material(self) -> None:
+        """Two decks loud up to their edges leave nothing to overlap."""
+        segue = _context(_analysis(120.0), _analysis(150.0)).segue
+
+        assert segue is not None
+        assert segue.quiet_tail == 0.0
+        assert segue.quiet_head == 0.0
+        assert segue.overlap == 0.0
+
+    def test_missing_energy_has_no_segue_facts(self) -> None:
+        """Without RMS energy on a deck the segue cannot be measured."""
+        inc = _analysis(120.0)
+        inc.rms_energy = None
+
+        assert _context(_analysis(120.0), inc).segue is None
+
+
+class TestKickFacts:
+    """The context reads each deck's kick bars from its band profile."""
+
+    def test_kick_runs_are_buffer_local_and_head_local(self) -> None:
+        """The outgoing kick dies at media 220s; the incoming kick plays from the start."""
+        low = np.full(1800, 0.5, dtype=np.float32)
+        low[np.arange(1800) * (240.0 / 1800) >= 220.0] = 0.01
+        out = _analysis_with_bands(low, 0.3, 0.3, 0.3)
+        inc = _analysis_with_bands(0.5, 0.3, 0.3, 0.3)
+
+        context = _context(out, inc)
+
+        assert context.kick_out is not None
+        assert context.kick_in is not None
+        assert list(context.kick_out) == [pytest.approx((0.0, 25.0))]
+        assert list(context.kick_in) == [pytest.approx((0.0, 45.0))]
+        assert context.out_kickless
+        assert not context.in_kickless
+
+    def test_no_band_profile_leaves_the_kick_unknown(self) -> None:
+        """Without band envelopes the kick facts stay unknown, never kickless."""
+        context = _context(_analysis(120.0), _analysis(120.0))
+
+        assert context.kick_out is None
+        assert context.kick_in is None
+        assert not context.out_kickless
+        assert not context.in_kickless
+
+
+def test_preferred_style_follows_the_tier() -> None:
+    """A beatmatchable tier prefers the blend, a quick fade tier the segue."""
+    assert _context(_analysis(120.0), _analysis(120.0)).preferred_style is TransitionStyle.BLEND
+    assert _context(_analysis(120.0), _analysis(150.0)).preferred_style is TransitionStyle.SEGUE
