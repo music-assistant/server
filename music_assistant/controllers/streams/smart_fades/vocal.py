@@ -242,6 +242,8 @@ def first_vocal_onset(analysis: AudioAnalysisData) -> float | None:
         0.0,
         analysis.duration,
         beat_duration=60.0 / analysis.bpm if analysis.bpm and analysis.bpm > 0.0 else None,
+        # a weak run counts: a voice placed over singing costs more than one cut short
+        config=PROTECTIVE_VOCAL_CONFIG,
     )
     return mask.windows[0][0] if mask.windows else None
 

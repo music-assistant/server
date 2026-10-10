@@ -32,6 +32,18 @@ def test_first_vocal_onset_returns_the_padded_start_of_the_first_vocal_run() -> 
     assert onset == pytest.approx(30.0 - VOCAL_LEFT_PADDING)
 
 
+def test_first_vocal_onset_keeps_a_weak_vocal_run() -> None:
+    """A run too faint for the smart fade gate still marks where the singing starts."""
+    timeline = [0.0] * VOCAL_ACTIVITY_BINS
+    # a quiet lead-in at 20 s, below the confidence gate, then the first loud phrase at 30 s
+    timeline[200:230] = [0.62] * 30
+    timeline[300:400] = [0.9] * 100
+
+    onset = first_vocal_onset(_analysis(timeline))
+
+    assert onset == pytest.approx(20.0 - VOCAL_LEFT_PADDING)
+
+
 def test_first_vocal_onset_is_none_without_a_timeline() -> None:
     """A track analysed without vocal activity has no known onset."""
     assert first_vocal_onset(_analysis(None)) is None
