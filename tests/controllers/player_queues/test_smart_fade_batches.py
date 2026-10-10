@@ -201,12 +201,16 @@ def _remove_queue(ctrl: PlayerQueuesController, _queue_data: PlayerQueueData) ->
     ctrl._queue_data.pop(QUEUE_ID)
 
 
-@pytest.mark.parametrize("meanwhile", [_edit_queue, _move_on, _remove_queue])
+def _turn_ordering_off(_ctrl: PlayerQueuesController, queue_data: PlayerQueueData) -> None:
+    queue_data.queue.smart_fades_active = False
+
+
+@pytest.mark.parametrize("meanwhile", [_edit_queue, _move_on, _remove_queue, _turn_ordering_off])
 async def test_the_next_batch_is_dropped_when_the_queue_changed_meanwhile(
     monkeypatch: pytest.MonkeyPatch,
     meanwhile: Callable[[PlayerQueuesController, PlayerQueueData], None],
 ) -> None:
-    """An edit, a track change or a removal while the batch is ordered wins over the batch."""
+    """An edit, a track change, a removal or turning the ordering off wins over the batch."""
     ctrl, queue_data = _controller(current_index=20)
     queue_data.fade_ordered_until = "t24"
     original = _ids(queue_data.items)

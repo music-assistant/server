@@ -190,8 +190,9 @@ class SmartShuffle:
             self.queues.queue_data_or_none(queue_id) is not queue_data
             or queue_data.items is not items
             or committed_index(queue) != boundary
+            or not self._orders_batches(queue)
         ):
-            # the queue was edited or moved on meanwhile; its next playing item tries again
+            # the queue was edited, moved on or had the ordering turned off meanwhile
             return
         queue_data.fade_ordered_until = ordered[-1].queue_item_id
         self.queues.update_items(queue_id, [*items[:start], *ordered, *items[start + len(batch) :]])
