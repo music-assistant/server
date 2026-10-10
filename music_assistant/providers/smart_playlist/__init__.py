@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     ProviderFeature,
+    SortField,
 )
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -1320,7 +1321,7 @@ class SmartPlaylistProvider(PluginProvider):
             genre=genre_ids,
             explicit=explicit,
             limit=limit,
-            order_by="random",
+            sort_field=SortField.RANDOM,
             provider=user_provider_filter,
             summary=False,
         )
