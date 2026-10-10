@@ -1077,7 +1077,9 @@ class WebserverController(CoreController):
                 # unknown external URL, so checking is_valid alone would still leak the JWT.
                 # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
                 # the token immediately with no consent step, so "external" must be rejected.
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1193,7 +1195,9 @@ class WebserverController(CoreController):
 
             # Validate return_url if provided
             if return_url:
-                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                is_valid, _ = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1218,10 +1222,7 @@ class WebserverController(CoreController):
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
-            redirect_uri = f"{self.base_url}/auth/callback?provider_id={provider_id}"
-            auth_result = await self.auth.handle_oauth_callback(
-                provider_id, code, state, redirect_uri
-            )
+            auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
 
             if not auth_result.success or not auth_result.user:
                 # Return error page
@@ -1247,7 +1248,7 @@ class WebserverController(CoreController):
             # Validate redirect URL for security
             if auth_result.return_url:
                 is_valid, category = is_allowed_redirect_url(
-                    auth_result.return_url, request, self.base_url
+                    auth_result.return_url, request, self.base_url, self.external_url
                 )
                 if not is_valid:
                     self.logger.warning("Invalid return_url blocked: %s", auth_result.return_url)
@@ -1290,7 +1291,9 @@ class WebserverController(CoreController):
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            _, category = is_allowed_redirect_url(
+                return_url, request, self.base_url, self.external_url
+            )
             if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
 
@@ -1366,7 +1369,9 @@ class WebserverController(CoreController):
             # Only forward the token to a trusted destination (no consent step here).
             return_url = body.get("return_url")
             if return_url and isinstance(return_url, str):
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
                         return_url, token, {"onboard": "true"}
