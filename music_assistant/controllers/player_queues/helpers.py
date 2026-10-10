@@ -7,8 +7,14 @@ import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemMetadata,
+    Playlist,
+    Radio,
+    Track,
+)
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
 
@@ -143,7 +149,9 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     return any(is_dynamic_source(item) for item in source_items)
 
 
-def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+def build_queue_item(
+    queue_id: str, media_item: PlayableMediaItemType, origin: QueueItemOrigin | None = None
+) -> QueueItem:
     """
     Build a QueueItem for enqueueing, keeping its media item slim.
 
@@ -154,13 +162,38 @@ def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueI
 
     :param queue_id: The id of the queue the item is created for.
     :param media_item: The source media item to enqueue.
+    :param origin: Where the item was played from, when it was played from a container.
     """
     queue_item = QueueItem.from_media_item(queue_id, media_item)
+    queue_item.origin = origin
     if isinstance(queue_item.media_item, Track):
         # the list-row artwork is already captured on QueueItem.image, so dropping the
         # track's metadata here does not lose anything the queue listing still needs
         queue_item.media_item.metadata = MediaItemMetadata()
     return queue_item
+
+
+def origin_for(
+    container: MediaItemType, item: MediaItemType, *, pin: bool = True
+) -> QueueItemOrigin:
+    """
+    Return the origin of an item that was played from the given container.
+
+    The container is always recorded. The item is pinned to the copy the container listed
+    when asked to, except for a library item, whose listing names no copy, and for an entry
+    of a Music Assistant (builtin) playlist, which carries an arbitrary provider identity.
+
+    :param container: The album, playlist, artist, genre, podcast or station the item was
+        played from.
+    :param item: The item as the container listed it.
+    :param pin: Whether to pin the item to the listed copy.
+    """
+    pinned = pin and item.provider != "library" and not _is_builtin_playlist(container)
+    return QueueItemOrigin(
+        container=ItemMapping.from_item(container),
+        provider_instance=item.provider if pinned else None,
+        item_id=item.item_id if pinned else None,
+    )
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
@@ -283,3 +316,11 @@ def space_by_artist(artist_sets: list[set[str]], *, preceding: set[str] | None =
         if not changed:
             break
     return order
+
+
+def _is_builtin_playlist(item: MediaItemType) -> bool:
+    """Return True if the item is a playlist Music Assistant keeps itself."""
+    return isinstance(item, Playlist) and (
+        item.provider == "builtin"
+        or any(mapping.provider_domain == "builtin" for mapping in item.provider_mappings)
+    )

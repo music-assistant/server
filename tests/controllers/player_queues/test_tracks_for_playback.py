@@ -15,7 +15,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -163,6 +163,6 @@ async def test_audiobook_collection_resolves_existing_items() -> None:
 
     result = await resolver._resolve_media_items(collection, userid="user")
 
-    assert result == [second]
-    assert result[0] is second
+    assert result == [ResolvedItem(second)]
+    assert result[0].item is second
     assert second.resume_position_ms == 12_000

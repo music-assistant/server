@@ -1143,3 +1143,24 @@ def _provider_mapping(item_id: str) -> ProviderMapping:
         provider_domain=GUARDED_PROVIDER_ID,
         provider_instance=GUARDED_PROVIDER_ID,
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Disc 1", True),
+        ("disc1", True),
+        ("CD2", True),
+        ("cd 03", True),
+        ("Disk 1", True),
+        ("DVD1", True),
+        ("Volume 2", True),
+        ("Vol. 2", True),
+        ("Album", False),
+        ("weird-disc-name", False),
+        ("", False),
+    ],
+)
+def test_is_disc_dir(name: str, expected: bool) -> None:
+    """Only a recognized disc/volume naming pattern is treated as a disc subfolder."""
+    assert util.is_disc_dir(name) is expected

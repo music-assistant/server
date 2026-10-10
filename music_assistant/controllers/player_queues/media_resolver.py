@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from dataclasses import dataclass
 from types import NoneType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,6 +33,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.constants import PlaylistPlayableItem
 from music_assistant.controllers.player_queues.constants import (
@@ -40,21 +42,30 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
-from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.player_queues.helpers import origin_for, sort_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
+from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
 _START_ITEM_SUBSTRING_MIN_LEN = 3
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedItem:
+    """A playable item a media item resolved to, and where it was played from."""
+
+    item: MediaItemType
+    origin: QueueItemOrigin | None = None
 
 
 def _start_item_matches(start_item: str, item: Any) -> bool:
@@ -719,9 +730,13 @@ class MediaResolver:
         sort_by: str | None = None,
         start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
-    ) -> list[MediaItemType]:
+    ) -> list[ResolvedItem]:
         """
-        Resolve/unwrap media items to enqueue.
+        Resolve/unwrap media items to enqueue, each with the origin it was played from.
+
+        An item played from a container records that container; one listed by a playlist,
+        podcast or folder is also pinned to the copy that listing had for it. A single item
+        played on its own has no origin.
 
         :param media_item: The media item to resolve into playable items.
         :param start_item: Optional item to start a playlist/album/genre from, or the chapter
@@ -748,7 +763,7 @@ class MediaResolver:
                 keep_preceding_items=keep_preceding_items,
             )
             self._mark_container_played(media_item, playlist_tracks, userid, queue_id)
-            return list(playlist_tracks)
+            return self._played_from(media_item, playlist_tracks)
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             artist_items: list[Audiobook] | list[Track]
@@ -757,29 +772,31 @@ class MediaResolver:
             else:
                 artist_items = await self.get_artist_tracks(media_item)
             self._mark_container_played(media_item, artist_items, userid, queue_id)
-            return list(artist_items)
+            return self._played_from(media_item, artist_items, pin=False)
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            return list(
+            return self._played_from(
+                media_item,
                 await self.get_album_tracks(
                     media_item,
                     start_item,
                     sort_by=sort_by,
                     keep_preceding_items=keep_preceding_items,
-                )
+                ),
+                pin=False,
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
             genre_tracks = await self.get_genre_tracks(media_item, start_item)
             self._mark_container_played(media_item, genre_tracks, userid, queue_id)
-            return list(genre_tracks)
+            return self._played_from(media_item, genre_tracks, pin=False)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
                 media_item, start_item, userid=userid
             )
-            return [media_item]
+            return [ResolvedItem(media_item)]
         if media_item.media_type == MediaType.COLLECTION:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
                 media_item.item_id
@@ -803,9 +820,9 @@ class MediaResolver:
                     break
             if book is None:
                 if len(media_item.items) > 0:
-                    return [media_item.items[0]]
+                    return [ResolvedItem(media_item.items[0])]
                 return []
-            return [book]
+            return [ResolvedItem(book)]
 
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
@@ -813,19 +830,20 @@ class MediaResolver:
                 media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
             )
             self._mark_container_played(media_item, episodes, userid, queue_id)
-            return list(episodes)
+            return self._played_from(media_item, episodes)
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
-            return list(
-                await self.get_next_podcast_episodes(
+            return [
+                ResolvedItem(episode)
+                for episode in await self.get_next_podcast_episodes(
                     None, media_item, userid=userid, start_from_beginning=start_from_beginning
                 )
-            )
+            ]
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return await self._get_folder_items(media_item, userid, queue_id, start_from_beginning)
         # all other: single track or radio item
-        return [cast("MediaItemType", media_item)]
+        return [ResolvedItem(cast("MediaItemType", media_item))]
 
     async def _get_folder_items(
         self,
@@ -833,8 +851,8 @@ class MediaResolver:
         userid: str | None = None,
         queue_id: str | None = None,
         start_from_beginning: bool = False,
-    ) -> list[MediaItemType]:
-        """Fetch the playable items for the given browse folder."""
+    ) -> list[ResolvedItem]:
+        """Fetch the playable items for the given browse folder, each played from that folder."""
         self.logger.info(
             "Fetching items to play for folder %s",
             folder.name,
@@ -844,7 +862,8 @@ class MediaResolver:
         except OSError as err:
             # e.g. the (top-level) folder URI points at a path that no longer exists
             raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err
-        items: list[MediaItemType] = []
+        container = await self._folder_container(folder)
+        items: list[ResolvedItem] = []
         for item in folder_items:
             if not item.is_playable:
                 continue
@@ -861,10 +880,19 @@ class MediaResolver:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
                 continue
-            # a dynamic station supplies its tracks on demand through the managed pool;
-            # queued as a plain item it cannot be streamed, so leave it out here. This is
-            # checked after resolving, as an ItemMapping child only reveals it once resolved.
-            items += [x for x in resolved if not (isinstance(x, Radio) and x.is_dynamic)]
+            for entry in resolved:
+                # a dynamic station supplies its tracks on demand through the managed pool;
+                # queued as a plain item it cannot be streamed, so leave it out here. This is
+                # checked after resolving, as an ItemMapping child only reveals it once resolved.
+                if isinstance(entry.item, Radio) and entry.item.is_dynamic:
+                    continue
+                # a subfolder or a playlist in the folder already recorded itself as the origin
+                # of its own entries; the folder's direct entries are played from the folder
+                items.append(
+                    entry
+                    if entry.origin is not None
+                    else ResolvedItem(entry.item, self._folder_origin(folder, container, item))
+                )
         return items
 
     def _mark_container_played(
@@ -891,4 +919,93 @@ class MediaResolver:
             self.mass.music.mark_item_played(
                 container, userid=userid, queue_id=queue_id, user_initiated=True
             )
+        )
+
+    def _played_from(
+        self, container: MediaItemType, items: Iterable[MediaItemType], *, pin: bool = True
+    ) -> list[ResolvedItem]:
+        """
+        Wrap the items a container resolved to with the origin that records it.
+
+        :param container: The album, playlist, artist, genre or podcast that listed the items.
+        :param items: The playable items the container resolved to.
+        :param pin: Whether to pin each item to the copy the container listed for it.
+        """
+        return [ResolvedItem(item, origin_for(container, item, pin=pin)) for item in items]
+
+    async def _folder_container(self, folder: BrowseFolder) -> ItemMapping:
+        """
+        Return the container a folder play is recorded under.
+
+        An album folder, or a disc subfolder of one, is recorded as the library album it holds,
+        so its tracks play as that album's. Any other folder is recorded as itself.
+
+        :param folder: The browse folder being played.
+        """
+        if album := await self._folder_album(folder):
+            return ItemMapping.from_item(album)
+        # a browse folder carries no metadata to build a mapping from
+        return ItemMapping(
+            media_type=MediaType.FOLDER,
+            item_id=folder.item_id,
+            provider=folder.provider,
+            name=folder.name,
+        )
+
+    async def _folder_album(self, folder: BrowseFolder) -> Album | None:
+        """
+        Return the library album of an album folder or of a disc subfolder, if the folder is one.
+
+        :param folder: The browse folder being played.
+        """
+        if not folder.item_id:
+            # a provider's root folder
+            return None
+        albums = self.mass.music.albums
+        # a filesystem album is mapped on its folder path
+        if album := await albums.get_library_item_by_prov_id(folder.item_id, folder.provider):
+            return album
+        parent_path, _, folder_name = folder.item_id.rpartition("/")
+        # the path's last segment, as a folder played by URI is named after its whole path
+        if parent_path and is_disc_dir(folder_name):
+            return await albums.get_library_item_by_prov_id(parent_path, folder.provider)
+        return None
+
+    @staticmethod
+    def _folder_origin(
+        folder: BrowseFolder,
+        container: ItemMapping,
+        entry: MediaItemType | ItemMapping | BrowseFolder,
+    ) -> QueueItemOrigin:
+        """
+        Return the origin of a folder's direct entry, pinned to the entry's own file.
+
+        A library item stands in for its file in the listing, so it is pinned to its copy under
+        the folder on the folder's provider, or to its first copy on that provider.
+
+        :param folder: The browse folder being played.
+        :param container: The container the folder play is recorded under.
+        :param entry: The entry as the folder listed it.
+        """
+        if entry.provider != "library":
+            return QueueItemOrigin(
+                container=container, provider_instance=entry.provider, item_id=entry.item_id
+            )
+        copies = sorted(
+            (
+                mapping
+                for mapping in getattr(entry, "provider_mappings", ())
+                if mapping.provider_instance == folder.provider
+            ),
+            key=lambda mapping: (
+                not mapping.item_id.startswith(f"{folder.item_id}/"),
+                mapping.item_id,
+            ),
+        )
+        if not copies:
+            return QueueItemOrigin(container=container)
+        return QueueItemOrigin(
+            container=container,
+            provider_instance=copies[0].provider_instance,
+            item_id=copies[0].item_id,
         )
