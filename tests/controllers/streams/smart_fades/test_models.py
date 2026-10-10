@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    EchoOut,
     EqPlan,
+    HighPassSweep,
     TempoPlan,
     TransitionPlan,
     TransitionTier,
@@ -60,3 +64,30 @@ def test_eq_plan_neutral_factory() -> None:
     assert all(
         s is None for s in (eq.low_out, eq.low_in, eq.high_out, eq.high_in, eq.mid_out, eq.mid_in)
     )
+
+
+class TestHighPassSweep:
+    """The sweep's cutoff rises log-spaced, as the filter steps it."""
+
+    def test_time_at_is_log_spaced_over_the_window(self) -> None:
+        """The geometric mean of the end frequencies is reached halfway through the window."""
+        sweep = HighPassSweep(start_s=10.0, end_s=18.0, start_hz=20.0, end_hz=600.0)
+        assert sweep.time_at(math.sqrt(20.0 * 600.0)) == pytest.approx(14.0)
+        assert sweep.time_at(120.0) == pytest.approx(10.0 + 8.0 * math.log(6) / math.log(30))
+
+    def test_time_at_clamps_to_the_window(self) -> None:
+        """A cutoff outside the sweep's range maps to the window's edges."""
+        sweep = HighPassSweep(start_s=10.0, end_s=18.0, start_hz=20.0, end_hz=600.0)
+        assert sweep.time_at(10.0) == 10.0
+        assert sweep.time_at(2000.0) == 18.0
+        assert HighPassSweep(5.0, 5.0, 20.0, 600.0).time_at(120.0) == 5.0
+
+
+def test_outgoing_end_is_the_echo_cut() -> None:
+    """The outgoing track's own signal ends at the anchor, or at an echo's cut."""
+    plan = TransitionPlan(
+        tier=TransitionTier.QUICK_FADE, fade_out_window=40.0, crossfade_duration=2.0
+    )
+    assert plan.outgoing_end == 40.0
+    plan.echo = EchoOut(cut_s=38.0, beat_s=0.5)
+    assert plan.outgoing_end == 38.0

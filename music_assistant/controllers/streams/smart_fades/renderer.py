@@ -15,10 +15,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     Filter,
     GradualTimeStretchFilter,
+    HighPassSweepFilter,
     PeakFilter,
     ShelfFilter,
     ShelfType,
@@ -95,10 +97,23 @@ class TransitionRenderer:
                     trimmed_seconds=plan.fadeout_trim.trimmed_seconds,
                 )
             )
-        # outgoing shelves before the stretch keep their schedules in musical input time
+        # outgoing shelves and effects before the stretch keep their schedules in
+        # musical input time
         self._append_shelf(filters, plan.eq_plan.low_out, "fadeout")
         self._append_shelf(filters, plan.eq_plan.high_out, "fadeout")
         self._append_shelf(filters, plan.eq_plan.mid_out, "fadeout")
+        if plan.highpass is not None:
+            filters.append(
+                HighPassSweepFilter(
+                    self.logger,
+                    plan.highpass.start_s,
+                    plan.highpass.end_s,
+                    start_hz=plan.highpass.start_hz,
+                    end_hz=plan.highpass.end_hz,
+                )
+            )
+        if plan.echo is not None:
+            filters.append(EchoOutFilter(self.logger, plan.echo.cut_s, plan.echo.beat_s))
         if plan.tempo_plan:
             filters.append(GradualTimeStretchFilter(self.logger, plan.tempo_plan.steps))
         if plan.fadein_trim_start is not None:

@@ -9,17 +9,21 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
+    HighPassSweepFilter,
     PeakFilter,
     ShelfFilter,
     ShelfType,
     StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    EchoOut,
     EqPlan,
     FadeOutTrim,
+    HighPassSweep,
     ShelfSchedule,
     TempoPlan,
     TransitionPlan,
@@ -183,6 +187,52 @@ class TestTransitionRenderer:
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             expected_fade_out
         )
+
+
+class TestDressedRendering:
+    """A dressed plan's outgoing effect renders between the tail trim and the blend."""
+
+    def test_highpass_sweep_renders_on_the_outgoing_side(self) -> None:
+        """The sweep follows the tail trim and runs before the incoming trim and the blend."""
+        plan = _plan(
+            tier=TransitionTier.QUICK_FADE,
+            eq_plan=EqPlan.neutral(),
+            fadeout_trim=FadeOutTrim(end_pos=40.0, trimmed_seconds=5.0),
+            fadein_trim_start=0.5,
+            highpass=HighPassSweep(start_s=32.0, end_s=40.0, start_hz=20.0, end_hz=600.0),
+        )
+        filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        assert [type(f) for f in filters] == [
+            FadeOutTrimFilter,
+            HighPassSweepFilter,
+            FadeInTrimFilter,
+            StreamingCrossfadeFilter,
+        ]
+        sweep = filters[1]
+        assert isinstance(sweep, HighPassSweepFilter)
+        assert (sweep.start_s, sweep.end_s, sweep.start_hz, sweep.end_hz) == (
+            32.0,
+            40.0,
+            20.0,
+            600.0,
+        )
+        assert timing.pre_crossfade_duration == pytest.approx(30.0)
+
+    def test_echo_out_renders_on_the_outgoing_side(self) -> None:
+        """The echo cuts the outgoing stream at its cut, ahead of the blend that starts there."""
+        plan = _plan(
+            tier=TransitionTier.QUICK_FADE,
+            eq_plan=EqPlan.neutral(),
+            fade_out_window=40.0,
+            crossfade_duration=2.0,
+            echo=EchoOut(cut_s=38.0, beat_s=0.5),
+        )
+        filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        assert [type(f) for f in filters] == [EchoOutFilter, StreamingCrossfadeFilter]
+        echo = filters[0]
+        assert isinstance(echo, EchoOutFilter)
+        assert (echo.cut_s, echo.beat_s) == (38.0, 0.5)
+        assert timing.pre_crossfade_duration == pytest.approx(38.0)
 
 
 class TestMidSwapRendering:
