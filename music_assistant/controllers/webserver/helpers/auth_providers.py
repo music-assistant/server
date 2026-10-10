@@ -17,7 +17,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, InvalidDataError
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -38,6 +38,7 @@ DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 PRUNE_THRESHOLD: Final = 128
 # Salt for the password hash of a login with an unknown username
 UNKNOWN_USER_ID: Final = "unknown-user"
+PASSWORD_MIN_LENGTH: Final = 12
 
 
 def normalize_username(username: str) -> str:
@@ -48,6 +49,17 @@ def normalize_username(username: str) -> str:
     :return: Normalized username (lowercase, stripped).
     """
     return username.strip().lower()
+
+
+def validate_password(password: str | None) -> None:
+    """
+    Validate a new password for a built-in user against the password policy.
+
+    :param password: The password to validate.
+    :raises InvalidDataError: If the password does not meet the policy.
+    """
+    if not password or len(password) < PASSWORD_MIN_LENGTH:
+        raise InvalidDataError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
 
 
 async def get_ha_user_details(
