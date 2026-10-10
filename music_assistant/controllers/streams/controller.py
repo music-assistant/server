@@ -1334,8 +1334,10 @@ class StreamsController(CoreController):
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade
+            # a declared tail overlap is mixed like a crossfade, and a queue held in flow
+            # mode by a plugin is about to carry such items
             crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
+            or self.flow_mode_required(queue_id)
             or (
                 start_queue_item.streamdetails is not None
                 and start_queue_item.streamdetails.tail_overlap is not None

@@ -2301,6 +2301,7 @@ def _flow_handler(
     controller._update_audio_processing_context = MagicMock()
     controller._open_item_streams = {}
     controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.DISABLED)
 
     seen: dict[str, Any] = {}
@@ -2395,6 +2396,7 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     """The response is already sent, so a failed item ends it instead of raising."""
     controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
     controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
 
     async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
         yield b"\x01" * 64

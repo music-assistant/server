@@ -179,16 +179,3 @@ def test_voice_over_mix_ducks_the_incoming_track_under_the_voice() -> None:
         "[fadeout][voice_over_in]amix=inputs=2:normalize=0,"
         "alimiter=limit=-0.5dB:level=false:latency=true",
     ]
-
-
-def test_voice_over_mix_delays_the_incoming_track_by_the_pre_part() -> None:
-    """With a pre part, the ducked track starts that many samples into the voice."""
-    voice_over = VoiceOverMixFilter(
-        logger=LOGGER, overlap_seconds=2.5, ramp_seconds=0.4, pre_overlap_samples=22050
-    )
-    filter_strings = voice_over.apply("[fadein]", "[fadeout]")
-    assert filter_strings[0] == (
-        "[fadein]volume=eval=frame:volume="
-        "'1-0.6*max(0\\,min(1\\,(2.500+0.400-t)/0.400))',adelay=22050S:all=1[voice_over_in]"
-    )
-    assert repr(voice_over) == "VoiceOverMix(pre=22050, overlap=2.50s)"

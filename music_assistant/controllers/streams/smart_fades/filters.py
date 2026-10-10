@@ -330,8 +330,7 @@ class VoiceOverMixFilter(Filter):
 
     The outgoing stream plays untouched. The incoming stream is held at the ducked level
     for the overlap and ramps back to full level after it; the sum is limited to stay
-    clear of clipping. With ``pre_overlap_samples`` the incoming stream starts that far
-    into the outgoing one.
+    clear of clipping.
     """
 
     output_fadeout_label: str = "voice_over"
@@ -342,8 +341,6 @@ class VoiceOverMixFilter(Filter):
         logger: logging.Logger,
         overlap_seconds: float,
         ramp_seconds: float,
-        *,
-        pre_overlap_samples: int = 0,
     ) -> None:
         """
         Initialize the voice over mix filter.
@@ -351,12 +348,9 @@ class VoiceOverMixFilter(Filter):
         :param overlap_seconds: How long the voice plays over the incoming track.
         :param ramp_seconds: How long the incoming track takes to return to full level
             once the overlap has ended.
-        :param pre_overlap_samples: Samples of the outgoing stream played alone before
-            the incoming track starts.
         """
         self.overlap_seconds = overlap_seconds
         self.ramp_seconds = ramp_seconds
-        self.pre_overlap_samples = pre_overlap_samples
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -368,8 +362,6 @@ class VoiceOverMixFilter(Filter):
             f"1-{VOICE_OVER_DUCK_DEPTH}*max(0\\,min(1\\,({overlap:.3f}+{ramp:.3f}-t)/{ramp:.3f}))"
         )
         fadein_chain = f"volume=eval=frame:volume='{envelope}'"
-        if self.pre_overlap_samples:
-            fadein_chain += f",adelay={self.pre_overlap_samples}S:all=1"
         # the final output stays unlabeled: this filter ends the chain
         return [
             f"{input_fadein_label}{fadein_chain}[voice_over_in]",
@@ -379,8 +371,4 @@ class VoiceOverMixFilter(Filter):
 
     def __repr__(self) -> str:
         """Return string representation of VoiceOverMixFilter."""
-        if self.pre_overlap_samples:
-            return (
-                f"VoiceOverMix(pre={self.pre_overlap_samples}, overlap={self.overlap_seconds:.2f}s)"
-            )
         return f"VoiceOverMix(overlap={self.overlap_seconds:.2f}s)"

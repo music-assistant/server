@@ -2108,6 +2108,7 @@ def _native_stream_handler_context(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
 
     response = MagicMock()
     response.prepare = AsyncMock()
