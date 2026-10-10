@@ -25,15 +25,6 @@ def clean_text(value: Any, fallback: str = "") -> str:
     return text or fallback
 
 
-def extract_first_text(data: dict[str, Any], keys: tuple[str, ...], fallback: str = "") -> str:
-    """Extract first non-empty text by key candidates."""
-    for key in keys:
-        val = data.get(key)
-        if isinstance(val, str) and clean_text(val):
-            return clean_text(val)
-    return fallback
-
-
 def normalize_image_url(raw: Any) -> str:
     """Normalize QQ image URL (supports protocol-relative URLs)."""
     url = clean_text(raw)
@@ -44,51 +35,6 @@ def normalize_image_url(raw: Any) -> str:
     if url.startswith(("http://", "https://")):
         return url
     return ""
-
-
-def extract_artist_mid(artist_obj: dict[str, Any]) -> str:
-    """Extract QQ singer mid from common field variants."""
-    return str(
-        artist_obj.get("mid")
-        or artist_obj.get("MID")
-        or artist_obj.get("singerMid")
-        or artist_obj.get("singerMID")
-        or artist_obj.get("SingerMid")
-        or artist_obj.get("singer_mid")
-        or ""
-    )
-
-
-def extract_album_mid(album_obj: dict[str, Any]) -> str:
-    """Extract QQ album mid from common field variants."""
-    return str(
-        album_obj.get("mid")
-        or album_obj.get("albumMid")
-        or album_obj.get("albumMID")
-        or album_obj.get("album_mid")
-        or album_obj.get("albummid")
-        or album_obj.get("id")
-        or album_obj.get("albumID")
-        or ""
-    )
-
-
-def extract_track_mid(track_obj: dict[str, Any]) -> str:
-    """Extract QQ song mid from common field variants."""
-    return str(
-        track_obj.get("mid")
-        or track_obj.get("songMid")
-        or track_obj.get("songmid")
-        or track_obj.get("id")
-        or ""
-    )
-
-
-def extract_playlist_ids(playlist_obj: dict[str, Any]) -> tuple[Any, Any]:
-    """Extract the QQ (dissid, dirid) pair from common field variants."""
-    dissid = playlist_obj.get("tid") or playlist_obj.get("dissid") or playlist_obj.get("id") or 0
-    dirid = playlist_obj.get("dirid") or playlist_obj.get("dirId") or 0
-    return (dissid, dirid)
 
 
 def normalize_qq_lyric_text(raw_text: str) -> str:

@@ -20,7 +20,9 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
 from functools import partial
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import urlsplit
 
 import aiofiles
 from aiohttp import web
@@ -32,11 +34,14 @@ from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
+    ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    PlayerUnavailableError,
+    RateLimited,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -60,7 +65,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments
+from music_assistant.helpers.api import parse_arguments, redact_json_secrets
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -81,7 +86,7 @@ from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
     resolve_command_impersonation,
     set_current_peer_address,
     set_current_token,
@@ -232,7 +237,7 @@ class WebserverController(CoreController):
 
     @property
     def external_url(self) -> str | None:
-        """Return the external URL for the webserver (if configured)."""
+        """Return the configured URL that reaches this server from the internet, if any."""
         config = getattr(self, "config", None)
         if config is None:
             return None
@@ -438,6 +443,18 @@ class WebserverController(CoreController):
                 base_url,
             )
 
+        raw_external_url = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_EXTERNAL_URL
+        )
+        if not _is_valid_external_url(raw_external_url):
+            # config parsing already dropped the invalid stored value; clear the stored
+            # value too, so the setting reads back as empty and this warns only once
+            self.logger.warning(
+                "External URL %r in the webserver settings is not a public http(s) URL, "
+                "clearing it",
+                raw_external_url,
+            )
+            self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
         # Setup remote access after webserver is running
         await self.remote_access.setup()
         # signal fresh server info so a reload (e.g. changed bind/ssl config)
@@ -664,6 +681,7 @@ class WebserverController(CoreController):
                 required=False,
                 advanced=True,
                 requires_reload=False,
+                validate=_is_valid_external_url,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -768,11 +786,14 @@ class WebserverController(CoreController):
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
-        self.logger.log(VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", cmd_data)
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", redact_json_secrets(cmd_data)
+            )
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data.decode()}"
+            error = "Invalid JSON"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
@@ -821,6 +842,8 @@ class WebserverController(CoreController):
             return web.Response(status=403, text=str(e))
         except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
+        except PlayerUnavailableError as e:
+            return web.Response(status=404, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -949,7 +972,7 @@ class WebserverController(CoreController):
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
-        is_ingress_request = is_request_from_ingress(request)
+        is_ingress_request = is_request_from_ingress_proxy(request)
 
         if (not self.auth.has_users or not self.mass.config.onboard_done) and is_ingress_request:
             # a non-admin user tries to access the index via HA ingress
@@ -1064,7 +1087,9 @@ class WebserverController(CoreController):
                 # unknown external URL, so checking is_valid alone would still leak the JWT.
                 # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
                 # the token immediately with no consent step, so "external" must be rejected.
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1150,7 +1175,9 @@ class WebserverController(CoreController):
 
             # Validate return_url if provided
             if return_url:
-                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                is_valid, _ = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1161,6 +1188,8 @@ class WebserverController(CoreController):
                 )
 
             return web.json_response({"authorization_url": auth_url})
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
@@ -1175,10 +1204,7 @@ class WebserverController(CoreController):
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
-            redirect_uri = f"{self.base_url}/auth/callback?provider_id={provider_id}"
-            auth_result = await self.auth.handle_oauth_callback(
-                provider_id, code, state, redirect_uri
-            )
+            auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
 
             if not auth_result.success or not auth_result.user:
                 # Return error page
@@ -1204,7 +1230,7 @@ class WebserverController(CoreController):
             # Validate redirect URL for security
             if auth_result.return_url:
                 is_valid, category = is_allowed_redirect_url(
-                    auth_result.return_url, request, self.base_url
+                    auth_result.return_url, request, self.base_url, self.external_url
                 )
                 if not is_valid:
                     self.logger.warning("Invalid return_url blocked: %s", auth_result.return_url)
@@ -1247,7 +1273,9 @@ class WebserverController(CoreController):
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            _, category = is_allowed_redirect_url(
+                return_url, request, self.base_url, self.external_url
+            )
             if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
 
@@ -1342,7 +1370,9 @@ class WebserverController(CoreController):
             # Only forward the token to a trusted destination (no consent step here).
             return_url = body.get("return_url")
             if return_url and isinstance(return_url, str):
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
                         return_url, token, {"onboard": "true"}
@@ -1423,3 +1453,27 @@ def _serialize_script_value(value: str) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+def _is_valid_external_url(value: ConfigValueType) -> bool:
+    """Return whether a configured external URL is empty or an http(s) URL on a public host."""
+    if not value:
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+        # reading the port raises on a malformed one (e.g. :notaport)
+        _ = parts.port
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    # query or fragment (e.g. a copied frontend route like /#/home) breaks appended links
+    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        pass
+    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
+    return "." in host and not host.endswith(".local")

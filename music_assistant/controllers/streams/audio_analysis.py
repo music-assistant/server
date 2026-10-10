@@ -45,6 +45,7 @@ from music_assistant.controllers.streams.constants import (
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
 )
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
@@ -644,13 +645,13 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
 
-        Provider mappings are tried best-quality first; per field the Smart Fades AA
-        provider is preferred over other AA providers.
+        Provider mappings are tried in the order playback would pick them; per field the
+        Smart Fades AA provider is preferred over other AA providers.
 
         :param track: The track to look up stored analysis data for.
         """
         priority = TRACK_EXPORT_AA_PRIORITY
-        for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
+        for mapping in rank_provider_mappings(track.provider_mappings):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
@@ -1589,8 +1590,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         Reads at its own pace from the buffer's retained window. On clean end-of-stream the
         providers are finalized, unless the source ended far short of the expected duration.
-        If the reader falls a full window behind playback (the chunk it needs has been
-        evicted) or the buffer is torn down first, the session is dropped.
+        If the reader falls behind the played audio the buffer keeps (the chunk it needs has
+        been evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.

@@ -1,11 +1,18 @@
 """Tests for the tracks controller."""
 
+import pathlib
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    ContentType,
+    ExternalID,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
@@ -19,12 +26,14 @@ from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
     ItemMapping,
+    MediaItemImage,
     ProviderMapping,
     SearchResults,
     Track,
     UniqueList,
 )
 
+from music_assistant.constants import DB_TABLE_TRACKS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.tracks import (
     TrackProviderMatch,
@@ -32,10 +41,41 @@ from music_assistant.controllers.music.media.tracks import (
     TracksController,
 )
 from music_assistant.helpers.compare import TrackMatchConfidence
+from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
+from music_assistant.providers.builtin.constants import CONF_KEY_TRACKS, StoredItem
+from tests.conftest import full_mass_context
 
 from .helpers import ISRC, create_album, create_track
+
+ALBUM_THUMB = MediaItemImage(
+    type=ImageType.THUMB, path="http://images/album1.jpg", provider="spotify_1"
+)
+TRACK_THUMB = MediaItemImage(
+    type=ImageType.THUMB, path="http://images/track1.jpg", provider="spotify_1"
+)
+NEW_THUMB = MediaItemImage(type=ImageType.THUMB, path="http://images/new.jpg", provider="tidal_1")
+CUSTOM_THUMB = MediaItemImage(
+    type=ImageType.THUMB,
+    path="http://images/custom.jpg",
+    provider="builtin",
+    remotely_accessible=True,
+)
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
+@pytest.fixture
+async def booted_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """Run on a fully booted instance, for tests that need the builtin provider."""
+    async with full_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
 
 
 @pytest.fixture
@@ -3101,3 +3141,125 @@ async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
 
     refreshed = await mass.music.tracks.get_library_item(db_track.item_id)
     assert [artist.name for artist in refreshed.artists] == ["Other Artist"]
+
+
+async def _add_track_on_album_with_thumb(
+    mass: MusicAssistant, track_thumb: MediaItemImage
+) -> Track:
+    """Add a library track, holding the given thumb, on a library album with a thumb."""
+    album = create_album("spotify_1", "album1")
+    album.metadata.images = UniqueList([ALBUM_THUMB])
+    await mass.music.albums.add_item_to_library(album)
+    track = create_track("spotify_1", "track1")
+    track.metadata.images = UniqueList([track_thumb])
+    track.album = create_album("spotify_1", "album1")
+    return await mass.music.tracks.add_item_to_library(track)
+
+
+async def _stored_image_paths(mass: MusicAssistant, item_id: str) -> list[str]:
+    """Return the image paths stored in the track's own (raw) metadata."""
+    db_row = await mass.music.database.get_row(DB_TABLE_TRACKS, {"item_id": int(item_id)})
+    assert db_row is not None
+    return [image["path"] for image in json_loads(db_row["metadata"])["images"]]
+
+
+@pytest.mark.parametrize("from_library", [False, True])
+async def test_update_does_not_store_the_album_thumb(
+    mass: MusicAssistant, from_library: bool
+) -> None:
+    """A track update does not store the album thumb shown for the track."""
+    db_track = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+    assert db_track.image == ALBUM_THUMB
+    assert db_track.metadata.images == [TRACK_THUMB]
+
+    # a provider sync, or a caller writing back the library track it read (as a metadata refresh)
+    update = db_track if from_library else create_track("spotify_1", "track1")
+    update.metadata.add_image(NEW_THUMB)
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update)
+
+    assert await _stored_image_paths(mass, db_track.item_id) == [TRACK_THUMB.path, NEW_THUMB.path]
+
+
+async def test_stale_library_read_does_not_store_the_former_album_thumb(
+    mass: MusicAssistant,
+) -> None:
+    """A track read before its album thumb changed does not store the former album thumb."""
+    db_track = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+    assert db_track.album is not None
+    album = await mass.music.albums.get_library_item(db_track.album.item_id)
+    album.metadata.images = UniqueList([NEW_THUMB])
+    await mass.music.albums.update_item_in_library(album.item_id, album, overwrite=True)
+
+    # a background metadata refresh writes back the track it read earlier
+    await mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+
+    assert await _stored_image_paths(mass, db_track.item_id) == [TRACK_THUMB.path]
+
+
+async def test_edit_stores_the_image_of_a_url_track_on_an_album(
+    booted_mass: MusicAssistant,
+) -> None:
+    """Editing a URL track that is on an album keeps the image picked for it, not the album's."""
+    db_track = await _add_track_on_album_with_thumb(booted_mass, TRACK_THUMB)
+    builtin = cast("BuiltinProvider", booted_mass.get_provider("builtin"))
+    url = "http://example.com/track1.mp3"
+    await booted_mass.music.tracks.add_provider_mappings(
+        db_track.item_id,
+        [
+            ProviderMapping(
+                item_id=url, provider_domain="builtin", provider_instance=builtin.instance_id
+            )
+        ],
+    )
+    booted_mass.config.set(CONF_KEY_TRACKS, [StoredItem(item_id=url, name=db_track.name)])
+
+    # the edit dialog sends the library track with the image picked for it
+    edited = await booted_mass.music.tracks.get_library_item(db_track.item_id)
+    edited.metadata.images = UniqueList([CUSTOM_THUMB])
+    await booted_mass.music.tracks.update_item_in_library(edited.item_id, edited, overwrite=True)
+
+    assert booted_mass.config.get(CONF_KEY_TRACKS) == [
+        StoredItem(item_id=url, name=db_track.name, image_url=CUSTOM_THUMB.path)
+    ]
+
+
+async def test_summary_shows_the_album_thumb_through_its_album(mass: MusicAssistant) -> None:
+    """A track summary shows its album thumb without carrying it among its own images."""
+    db_track = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+
+    (summary,) = await mass.music.tracks.get_library_items_by_query(
+        in_library_only=False, summary=True
+    )
+
+    assert summary.image == ALBUM_THUMB
+    assert summary.metadata.images == [TRACK_THUMB]
+    # a client writing back the summary it listed
+    await mass.music.tracks.update_item_in_library(db_track.item_id, summary)
+    assert await _stored_image_paths(mass, db_track.item_id) == [TRACK_THUMB.path]
+
+
+async def test_library_overwrite_keeps_an_album_thumb_the_track_stores(
+    mass: MusicAssistant,
+) -> None:
+    """A track that stores its album's thumb as its own artwork keeps it."""
+    db_track = await _add_track_on_album_with_thumb(mass, ALBUM_THUMB)
+
+    await mass.music.tracks.update_item_in_library(db_track.item_id, db_track, overwrite=True)
+
+    assert await _stored_image_paths(mass, db_track.item_id) == [ALBUM_THUMB.path]
+
+
+async def test_merge_keeps_an_album_thumb_the_source_track_stores(mass: MusicAssistant) -> None:
+    """A merged duplicate's own artwork is kept, also when it is its album's thumb."""
+    target = await _add_track_on_album_with_thumb(mass, TRACK_THUMB)
+    source_album = create_album("tidal_1", "album2", name="Other Album")
+    source_album.metadata.images = UniqueList([NEW_THUMB])
+    await mass.music.albums.add_item_to_library(source_album)
+    track = create_track("tidal_1", "track2", name="Other Track", isrc="USRC17607840")
+    track.metadata.images = UniqueList([NEW_THUMB])
+    track.album = create_album("tidal_1", "album2", name="Other Album")
+    source = await mass.music.tracks.add_item_to_library(track)
+
+    await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    assert await _stored_image_paths(mass, target.item_id) == [TRACK_THUMB.path, NEW_THUMB.path]

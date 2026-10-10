@@ -26,3 +26,4 @@ This package contains the long-running task manager used for user-visible backgr
 - Scheduled tasks are retained in memory permanently; completed ad hoc tasks are retained only in a bounded history.
 - Progress/log churn is throttled before being mirrored onto the event bus, while lifecycle changes stay responsive.
 - Scheduled-task runtime state is persisted in the `tasks` core config under a dedicated raw value so restarts preserve `last_run`, failure state, and the enabled/disabled schedule flag.
+- Pending tasks run in FIFO order, except priority work which goes to the front of the queue: tasks created with `priority=True` and user-triggered runs (`tasks/run`, `tasks/retry`). Running tasks are never preempted, so a prioritised task starts as soon as a concurrency slot frees up.

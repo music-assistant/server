@@ -75,7 +75,9 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 
     Acquires the playback lock for the queue's player, preceded by that of the group
     holding the player (both re-entrant), and sets ATTR_PLAY_ACTION_IN_PROGRESS on the
-    queue while the action runs.
+    queue while the action runs. The locks are taken strictly: the action waits for a
+    running one to finish and fails with ResourceBusyError when that takes too long,
+    rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
     :param func: The function to wrap.
@@ -93,7 +95,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         # a play action on the queue of a player captured by a (sync)group releases the
         # player from it first, which takes the group's lock - so that one is taken before
         # the player's own (see PlayerController.get_group_and_player_lock)
-        async with self.mass.players.get_group_and_player_lock(queue_id):
+        async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
                 queue_data.play_action_refcount += 1

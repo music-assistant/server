@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.playlog_update import PlaylogUpdate
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
@@ -171,6 +172,8 @@ async def test_mark_unplayed_signals_playlog_updated(mass: MusicAssistant) -> No
 
 async def test_mark_played_without_user_applies_to_all_users(mass: MusicAssistant) -> None:
     """Without a determinable user the playlog changes for everyone, so userid is None."""
+    user_a = await mass.webserver.auth.create_user("playlogshared_a")
+    user_b = await mass.webserver.auth.create_user("playlogshared_b")
     track = Track(
         item_id="track-003",
         provider="test_prov",
@@ -185,6 +188,10 @@ async def test_mark_played_without_user_applies_to_all_users(mass: MusicAssistan
     updates = await _updates(events)
     assert len(updates) == 1
     assert updates[0].userid is None
+    rows = await mass.music.database.get_rows(
+        DB_TABLE_PLAYLOG, {"item_id": track.item_id, "provider": track.provider}
+    )
+    assert {user_a.user_id, user_b.user_id} <= {row["userid"] for row in rows}
 
 
 async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> None:

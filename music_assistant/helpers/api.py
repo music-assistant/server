@@ -6,6 +6,7 @@ import importlib
 import inspect
 import logging
 import pkgutil
+import re
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get
 from mashumaro.exceptions import MissingField
 from music_assistant_models.media_items.media_item import MediaItem
 
+from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.helpers.util import try_parse_bool
 
 if TYPE_CHECKING:
@@ -30,6 +32,36 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
 _MODEL_TYPE_CACHE: dict[str, Any] = {}
 _MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
+
+_REDACTED = "<redacted>"
+_SECRET_KEY_SUFFIXES = (
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "auth",
+    "authorization",
+    "credential",
+    "credentials",
+    "cookie",
+    "apikey",
+    "api_key",
+    "app_key",
+    "client_key",
+    "access_key",
+    "private_key",
+)
+# a config values map (its secure entries can have any key) and a guest join code
+_SECRET_KEYS = ("values", "code")
+_RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
+# without \u escapes, every redaction needs one of these in the (lowercased) message text:
+# the end of a secret key, a whole secret key or a JWT
+_SECRET_HINTS = (
+    *(f'{suffix}"' for suffix in _SECRET_KEY_SUFFIXES),
+    *(f'"{key}"' for key in _SECRET_KEYS),
+    "eyj",
+)
 
 
 @dataclass
@@ -287,11 +319,42 @@ def parse_value(
     if not isinstance(value, value_type):
         # all options failed, raise exception
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
     return value
+
+
+def redact_secrets(data: Any) -> Any:
+    """
+    Return a copy of API message data with its secrets replaced by a placeholder, for logging.
+
+    Hides every string under a secret-looking key (passwords, tokens, keys, join codes) or a
+    config ``values`` map, and every JWT. The keys and all other values stay readable.
+
+    :param data: Decoded API message data (dicts, lists and scalars).
+    """
+    return _redact_secrets(data, secret=False)
+
+
+def redact_json_secrets(message: str | bytes) -> str:
+    """
+    Return a JSON API message with its secrets replaced by a placeholder, for logging.
+
+    Hides the same values as redact_secrets; a message that is not valid JSON but could hold
+    a secret is replaced as a whole.
+
+    :param message: The message in JSON, as sent over the API.
+    """
+    text = message.decode(errors="replace") if isinstance(message, bytes) else message
+    lowered = text.lower()
+    if "\\u" not in text and not any(hint in lowered for hint in _SECRET_HINTS):
+        return text
+    try:
+        return json_dumps(_redact_secrets(json_loads(text), secret=False))
+    except JSON_DECODE_EXCEPTIONS:
+        return _REDACTED
 
 
 def _resolve_string_type(type_str: str) -> Any:
@@ -569,7 +632,7 @@ def _parse_fixed_length_tuple(
     # parsed against its own type and kept, including the members that are None
     if len(value) != len(subtypes):
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
@@ -661,10 +724,7 @@ def _parse_union(
             pass
     # if we get to this point, all possibilities failed
     # find out if we should raise or log this
-    err = (
-        f"Value {value} of type {type(value)} is invalid for {name}, "
-        f"expected value of type {value_type}"
-    )
+    err = f"Value of type {type(value)} is invalid for {name}, expected value of type {value_type}"
     if NoneType not in sub_value_types:
         # raise exception, we have no idea how to handle this value
         raise TypeError(err)
@@ -691,3 +751,34 @@ def _convert_common_value(value: Any, value_type: Any) -> Any:
     if value_type is bool and isinstance(value, str | int):
         return try_parse_bool(value)
     return value
+
+
+def _redact_secrets(data: Any, secret: bool) -> Any:
+    """
+    Return decoded API message data with its secrets replaced by the placeholder.
+
+    :param data: Decoded API message data (dicts, lists and scalars).
+    :param secret: Whether every string in the data is a secret.
+    """
+    if isinstance(data, str):
+        if secret and data:
+            return _REDACTED
+        return _RE_JWT.sub(_REDACTED, data) if "eyJ" in data else data
+    if isinstance(data, list):
+        return [_redact_secrets(item, secret) for item in data]
+    if isinstance(data, dict):
+        return {
+            key: _redact_secrets(value, secret or _is_secret_key(key))
+            for key, value in data.items()
+        }
+    return data
+
+
+def _is_secret_key(key: str) -> bool:
+    """
+    Return whether every string under the given key of API message data is a secret.
+
+    :param key: A key of decoded API message data.
+    """
+    lowered = key.lower()
+    return lowered in _SECRET_KEYS or lowered.endswith(_SECRET_KEY_SUFFIXES)

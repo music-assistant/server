@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -38,6 +39,9 @@ DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 PRUNE_THRESHOLD: Final = 128
 # Salt for the password hash of a login with an unknown username
 UNKNOWN_USER_ID: Final = "unknown-user"
+# Seconds a Home Assistant sign-in may take, and how many may be pending at once
+OAUTH_STATE_TTL: Final = 600
+MAX_OAUTH_STATES: Final = 100
 
 
 def normalize_username(username: str) -> str:
@@ -426,13 +430,12 @@ class LoginProvider(ABC):
         """
         return None
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def handle_oauth_callback(self, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback if applicable.
 
         :param code: OAuth authorization code.
         :param state: OAuth state parameter for CSRF protection.
-        :param redirect_uri: The callback URL.
         """
         return AuthResult(success=False, error="OAuth not supported by this provider")
 
@@ -619,8 +622,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # Store OAuth state -> return_url mapping to support concurrent sessions
-        self._oauth_sessions: dict[str, str | None] = {}
+        # OAuth state -> (return_url, redirect_uri, expires) to support concurrent sessions
+        self._oauth_sessions: dict[str, tuple[str | None, str, float]] = {}
 
     @property
     def allow_self_registration(self) -> bool:
@@ -651,8 +654,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         Get Home Assistant OAuth authorization URL using hass_client.
 
+        Returns None when Home Assistant is not reachable.
+
         :param redirect_uri: The callback URL.
         :param return_url: Optional URL to redirect to after successful login.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         # Get the correct HA URL (external URL if running as add-on)
         ha_url = await self._get_external_ha_url()
@@ -660,10 +666,10 @@ class HomeAssistantOAuthProvider(LoginProvider):
             return None
 
         # If HA URL is still the internal supervisor URL (no external_url in HA config),
-        # infer from redirect_uri (the URL user is accessing MA from)
+        # infer from MA's base URL (the add-on runs on the HA host)
         if "supervisor" in ha_url.lower():
-            # Extract scheme and host from redirect_uri to build external HA URL
-            parsed = urlparse(redirect_uri)
+            # Extract scheme and host from the base URL to build external HA URL
+            parsed = urlparse(self.mass.webserver.base_url)
             # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
             if parsed.scheme == "https":
                 # HTTPS - use default port 443 (no port in URL)
@@ -673,15 +679,24 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
 
             self.logger.debug(
-                "HA external_url not configured, inferring from callback URL: %s",
+                "HA external_url not configured, inferring from base URL: %s",
                 inferred_ha_url,
             )
             ha_url = inferred_ha_url
 
+        now = time.monotonic()
+        # anyone can start a sign-in without logging in, so abandoned ones expire and new
+        # ones are refused while the limit is reached, keeping the pending ones valid; no await
+        # between this check and the insert below, so concurrent starts cannot exceed the limit
+        for expired in [key for key, entry in self._oauth_sessions.items() if entry[2] <= now]:
+            del self._oauth_sessions[expired]
+        if len(self._oauth_sessions) >= MAX_OAUTH_STATES:
+            raise RateLimited("Too many Home Assistant sign-ins are pending")
+
         state = secrets.token_urlsafe(32)
-        # Store return_url keyed by state to support concurrent OAuth sessions
+        # Store return_url and redirect_uri keyed by state to support concurrent OAuth sessions
         # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = return_url
+        self._oauth_sessions[state] = (return_url, redirect_uri, now + OAUTH_STATE_TTL)
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -697,20 +712,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ),
         )
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def handle_oauth_callback(self, code: str, state: str) -> AuthResult:
         """
         Handle Home Assistant OAuth callback using hass_client.
 
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
+        # Retrieve and remove the return_url and redirect_uri for this session (cleanup)
+        session = self._oauth_sessions.pop(state, None)
         # Verify state and retrieve return_url from session
-        if state not in self._oauth_sessions:
+        if session is None or session[2] <= time.monotonic():
             return AuthResult(success=False, error="Invalid or expired state parameter")
-
-        # Retrieve and remove the return_url for this session (cleanup)
-        return_url = self._oauth_sessions.pop(state)
+        return_url, redirect_uri, _ = session
 
         # Get the correct HA URL (external URL if running as add-on)
         # This must be the same URL used in get_authorization_url

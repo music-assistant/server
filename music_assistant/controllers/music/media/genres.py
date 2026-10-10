@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
-from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
+from music_assistant_models.enums import (
+    EventType,
+    ImageType,
+    MediaType,
+    SortDirection,
+    SortField,
+    TaskStatus,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -21,6 +28,7 @@ from music_assistant_models.media_items import (
     GenreSummary,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     RecommendationFolder,
     Track,
 )
@@ -313,7 +321,7 @@ class GenreController(MediaControllerBase[Genre]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
@@ -321,12 +329,15 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType | None = None,
         content_type: str | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """
         Get genres in the library.
 
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
         :param hide_empty: Only applies when media_type is not set.
             True: only return genres that have at least one media mapping.
@@ -338,9 +349,12 @@ class GenreController(MediaControllerBase[Genre]):
             general/music taxonomy, stored as NULL), "podcast" or "audiobook". Composes with
             hide_empty, so e.g. content_type="podcast" + hide_empty=None returns only the
             default podcast genres.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
             raise ValueError(msg)
@@ -381,7 +395,8 @@ class GenreController(MediaControllerBase[Genre]):
             search=search,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            sort_field=field,
+            sort_direction=direction,
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
             played_only=played_only,
@@ -395,6 +410,8 @@ class GenreController(MediaControllerBase[Genre]):
                 limit=limit,
                 offset=offset,
                 favorite=favorite,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
                 order_by=order_by,
                 played_only=played_only,
                 hide_empty=hide_empty,
@@ -410,6 +427,9 @@ class GenreController(MediaControllerBase[Genre]):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> list[Track]:
         """
         Return the tracks mapped to a genre.
@@ -417,20 +437,21 @@ class GenreController(MediaControllerBase[Genre]):
         :param item_id: The genre's library item ID.
         :param limit: Maximum number of tracks to return (0 = unlimited).
         :param offset: Offset for pagination.
-        :param order_by: Sort order (e.g. "random").
+        :param order_by: Deprecated legacy sort key.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = tracks.item_id "
-            "AND gm.media_type = 'track' AND gm.genre_id = :genre_id)"
+        controller = self.mass.music.tracks
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, order_by, default=False
         )
-        return await self.mass.music.tracks.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"genre_id": int(item_id)},
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
+        return await self._mapped_items(
+            controller,
+            int(item_id),
+            limit,
+            offset,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
         )
 
     async def albums(
@@ -439,6 +460,9 @@ class GenreController(MediaControllerBase[Genre]):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> list[Album]:
         """
         Return the albums mapped to a genre.
@@ -446,20 +470,21 @@ class GenreController(MediaControllerBase[Genre]):
         :param item_id: The genre's library item ID.
         :param limit: Maximum number of albums to return (0 = unlimited).
         :param offset: Offset for pagination.
-        :param order_by: Sort order (e.g. "random").
+        :param order_by: Deprecated legacy sort key.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = albums.item_id "
-            "AND gm.media_type = 'album' AND gm.genre_id = :genre_id)"
+        controller = self.mass.music.albums
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, order_by, default=False
         )
-        return await self.mass.music.albums.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"genre_id": int(item_id)},
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
+        return await self._mapped_items(
+            controller,
+            int(item_id),
+            limit,
+            offset,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
         )
 
     async def mapped_media(
@@ -470,7 +495,9 @@ class GenreController(MediaControllerBase[Genre]):
         track_limit: int | None = None,
         album_limit: int | None = None,
         artist_limit: int | None = None,
-        order_by: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> tuple[list[Track], list[Album], list[Artist]]:
         """
         Return tracks, albums, and artists mapped to a genre.
@@ -481,28 +508,37 @@ class GenreController(MediaControllerBase[Genre]):
         :param track_limit: Override limit for tracks (defaults to limit).
         :param album_limit: Override limit for albums (defaults to limit).
         :param artist_limit: Override limit for artists (defaults to limit).
-        :param order_by: Sort order for all queries (e.g. "random").
+        :param sort_field: Sort field for all queries; None keeps the database order.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
         db_id = int(item.item_id)
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         t_limit = track_limit if track_limit is not None else limit
         a_limit = album_limit if album_limit is not None else limit
         ar_limit = artist_limit if artist_limit is not None else limit
-        artist_query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = artists.item_id "
-            "AND gm.media_type = 'artist' AND gm.genre_id = :genre_id)"
-        )
-
         tracks, albums, artists = await asyncio.gather(
-            self.tracks(db_id, limit=t_limit, offset=offset, order_by=order_by),
-            self.albums(db_id, limit=a_limit, offset=offset, order_by=order_by),
-            self.mass.music.artists.get_library_items_by_query(
-                extra_query_parts=[artist_query],
-                extra_query_params={"genre_id": db_id},
-                limit=ar_limit,
-                offset=offset,
-                order_by=order_by,
+            self._mapped_items(
+                self.mass.music.tracks,
+                db_id,
+                t_limit,
+                offset,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+            ),
+            self._mapped_items(
+                self.mass.music.albums,
+                db_id,
+                a_limit,
+                offset,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+            ),
+            self._mapped_items(
+                self.mass.music.artists,
+                db_id,
+                ar_limit,
+                offset,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
             ),
         )
         return tracks, albums, artists
@@ -1247,6 +1283,53 @@ class GenreController(MediaControllerBase[Genre]):
         if metadata := self._get_genre_icon_metadata(item.translation_key, item.content_type):
             return metadata.images
         return None
+
+    @staticmethod
+    async def _mapped_items[ItemCls: MediaItemType](
+        controller: MediaControllerBase[ItemCls],
+        genre_id: int,
+        limit: int,
+        offset: int,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+    ) -> list[ItemCls]:
+        """Return the library items of one media type that are mapped to a genre."""
+        if controller.media_type == MediaType.ARTIST and sort_field == SortField.ARTIST_NAME:
+            sort_field = SortField.NAME
+        sort_field, sort_direction = controller.resolve_sort(
+            sort_field, sort_direction, default=False
+        )
+        extra_join_parts: list[str] = []
+        if sort_field == SortField.ARTIST_NAME:
+            if controller.media_type == MediaType.TRACK:
+                extra_join_parts.extend(
+                    (
+                        "JOIN track_artists ON track_artists.track_id = tracks.item_id",
+                        "JOIN artists ON artists.item_id = track_artists.artist_id",
+                    )
+                )
+            elif controller.media_type == MediaType.ALBUM:
+                extra_join_parts.extend(
+                    (
+                        "JOIN album_artists ON album_artists.album_id = albums.item_id",
+                        "JOIN artists ON artists.item_id = album_artists.artist_id",
+                    )
+                )
+        query = (
+            f"EXISTS(SELECT 1 FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
+            f"WHERE gm.media_id = {controller.db_table}.item_id "
+            f"AND gm.media_type = '{controller.media_type.value}' AND gm.genre_id = :genre_id)"
+        )
+        return await controller.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"genre_id": genre_id},
+            extra_join_parts=extra_join_parts,
+            limit=limit,
+            offset=offset,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+        )
 
     @staticmethod
     def _get_genre_icon_metadata(

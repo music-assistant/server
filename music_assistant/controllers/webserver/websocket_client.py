@@ -36,13 +36,19 @@ from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api import (
+    APICommandHandler,
+    parse_arguments,
+    redact_json_secrets,
+    redact_secrets,
+)
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
+    is_request_from_ingress_proxy,
     player_access_filter,
     resolve_command_impersonation,
     resolve_ingress_user,
@@ -83,6 +89,7 @@ class WebsocketClientHandler:
         self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
+        self._is_ingress_proxy = is_request_from_ingress_proxy(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
@@ -109,6 +116,11 @@ class WebsocketClientHandler:
     def webrtc_session_id(self) -> str | None:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
+
+    @property
+    def request_host(self) -> str:
+        """Return the host (and any port) the client says it used to reach the server."""
+        return self.request.headers.get("X-Forwarded-Host") or self.request.host
 
     def matches_token(self, token: str) -> bool:
         """
@@ -176,7 +188,7 @@ class WebsocketClientHandler:
             # For Ingress connections, auto-create/link user and subscribe to events immediately
             # For regular connections (and Ingress without a signed-in user), events will be
             # subscribed after successful authentication
-            if self._is_ingress:
+            if self._is_ingress_proxy:
                 await self._handle_ingress_auth()
 
             while not wsock.closed:
@@ -188,12 +200,15 @@ class WebsocketClientHandler:
                 if msg.type != WSMsgType.TEXT:
                     continue
 
-                self._logger.log(VERBOSE_LOG_LEVEL, "Received: %s", msg.data)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL, "Received: %s", redact_json_secrets(msg.data)
+                    )
 
                 try:
                     command_msg = CommandMessage.from_json(msg.data)
                 except ValueError:
-                    disconnect_warn = f"Received invalid JSON: {msg.data}"
+                    disconnect_warn = "Received invalid JSON"
                     break
 
                 await self._handle_command(command_msg)
@@ -345,7 +360,9 @@ class WebsocketClientHandler:
             )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
-                self._logger.exception("Error handling message: %s", msg)
+                self._logger.exception(
+                    "Error handling message: %s", replace(msg, args=redact_secrets(msg.args))
+                )
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             err_msg = str(err) or err.__class__.__name__
@@ -365,7 +382,8 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
-                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", redact_json_secrets(message))
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:

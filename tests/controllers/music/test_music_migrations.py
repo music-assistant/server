@@ -14,6 +14,8 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_GENRES,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
@@ -884,3 +886,162 @@ async def test_migration_drops_images_without_a_path(
         "user1": None,
         "user2": serialize_to_json(tunein),
     }
+
+
+async def _create_genre_tables(database: DatabaseConnection) -> None:
+    """Replace the genres stand-in with the genre tables as they exist at schema 64."""
+    await database.execute(f"DROP TABLE {DB_TABLE_GENRES}")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_GENRES}([item_id] INTEGER PRIMARY KEY, "
+        "[translation_key] TEXT, [genre_aliases] json NOT NULL DEFAULT '[]', "
+        "[content_type] TEXT)"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}([genre_id] INTEGER NOT NULL, "
+        "[media_id] INTEGER NOT NULL, [media_type] TEXT NOT NULL, [alias] TEXT, "
+        "[is_derived] BOOLEAN NOT NULL DEFAULT 0, [is_manual] BOOLEAN NOT NULL DEFAULT 0, "
+        "UNIQUE(genre_id, media_id, media_type))"
+    )
+
+
+async def _genre_aliases(database: DatabaseConnection) -> dict[int, Any]:
+    rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    return {row["item_id"]: json.loads(row["genre_aliases"]) for row in rows}
+
+
+async def test_migration_moves_misplaced_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """
+    Aliases that are not classical leave the classical genre and its mappings.
+
+    Moved aliases land on their new genre, other genres and manual mappings stay untouched
+    and running the step twice changes nothing.
+    """
+    await _create_genre_tables(database)
+    genres = {
+        # music classical genre
+        1: (
+            "classical",
+            None,
+            ["classical", "Opera", "gamelan", "K-Pop", "Electronic", "Christian/Gospel"],
+        ),
+        2: ("asian_music", None, ["asian music", "K-Pop"]),
+        3: ("marching_band", None, ["marching band", "Brass Band"]),
+        # a classical genre in another taxonomy is left alone
+        4: ("classical", "audiobook", ["classical", "K-Pop"]),
+        5: ("pop", None, ["pop", "K-Pop"]),
+    }
+    for item_id, (translation_key, content_type, stored_aliases) in genres.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRES} VALUES "
+            "(:item_id, :translation_key, :genre_aliases, :content_type)",
+            {
+                "item_id": item_id,
+                "translation_key": translation_key,
+                "genre_aliases": serialize_to_json(stored_aliases),
+                "content_type": content_type,
+            },
+        )
+    mappings = [
+        (1, 10, "Opera", 0),
+        (1, 11, "Gamelan", 0),
+        (1, 12, "K-Pop", 0),
+        (1, 13, "electronic", 1),
+        # raw tag variants the scanner matched to a removed alias in normalized form
+        (1, 14, "Christian/Gospel", 0),
+        (1, 15, " k-pop ", 0),
+        (5, 12, "K-Pop", 0),
+    ]
+    for genre_id, media_id, alias, is_manual in mappings:
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_manual) "
+            "VALUES (:genre_id, :media_id, 'track', :alias, :is_manual)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias, "is_manual": is_manual},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock()
+        )
+
+    aliases = await _genre_aliases(database)
+    assert aliases[1] == ["classical", "Opera"]
+    assert aliases[2][:2] == ["asian music", "K-Pop"]
+    assert "Gamelan" in aliases[2]
+    assert "Thai Classical" in aliases[2]
+    assert aliases[2].count("Gamelan") == 1
+    assert aliases[3][:2] == ["marching band", "Brass Band"]
+    assert aliases[3].count("Brass Band") == 1
+    assert "Circus March" in aliases[3]
+    assert aliases[4] == ["classical", "K-Pop"]
+    assert aliases[5] == ["pop", "K-Pop"]
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT genre_id, media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert {(row["genre_id"], row["media_id"]) for row in mapping_rows} == {
+        (1, 10),
+        (1, 13),
+        (5, 12),
+    }
+
+
+async def test_migration_survives_unparsable_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """A classical genre with broken alias data is skipped instead of failing the migration."""
+    await _create_genre_tables(database)
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', 'not json', NULL)"
+    )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock())
+
+    rows = await database.get_rows_from_query(f"SELECT genre_aliases FROM {DB_TABLE_GENRES}")
+    assert rows[0]["genre_aliases"] == "not json"
+
+
+async def test_migration_drops_stale_mappings_of_a_clean_classical_genre(
+    database: DatabaseConnection,
+) -> None:
+    """Mappings made through a removed alias go, even when the alias list is already clean."""
+    await _create_genre_tables(database)
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', :aliases, NULL)",
+        {"aliases": serialize_to_json(["classical", "Opera"])},
+    )
+    # a second classical genre whose alias data can not be read
+    await database.execute(f"INSERT INTO {DB_TABLE_GENRES} VALUES (2, 'classical', '42', NULL)")
+    for genre_id, media_id, alias in ((1, 10, "Opera"), (1, 11, "K-Pop"), (2, 12, "Gamelan")):
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias) "
+            "VALUES (:genre_id, :media_id, 'track', :alias)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock())
+
+    genre_rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
+        1: serialize_to_json(["classical", "Opera"]),
+        2: 42,
+    }
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert [row["media_id"] for row in mapping_rows] == [10]

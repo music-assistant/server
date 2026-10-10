@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import logging
 import pathlib
+import weakref
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
@@ -22,7 +23,8 @@ from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
+from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -259,9 +261,13 @@ async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
     """
     for provider in mass.providers:
         await provider.initialized.wait()
-    # twice the window: the debounce a registration already armed, plus the tail of the
-    # post-load work that runs after a provider marks itself initialized
-    await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
+        # the post-load task keeps working after it marks the provider initialized
+        if post_load := mass.get_task(f"post_load_provider_{provider.instance_id}"):
+            await asyncio.wait({post_load})
+    # emit the debounced task list now rather than waiting out its timer
+    if mass.tasks._scheduled_task_update_at is not None:
+        mass.cancel_timer(TASK_UPDATE_TIMER_ID)
+        mass.tasks._signal_task_update()
 
 
 @contextlib.contextmanager
@@ -323,6 +329,16 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
 
     # kept a mock so tests can still assert on the calls it received
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
+def bare_player_controller() -> PlayerController:
+    """Return a bare players controller, carrying just enough state for its real player locks."""
+    players = PlayerController.__new__(PlayerController)
+    players._player_command_locks = {}
+    players._players = {}
+    players._task_held_locks = weakref.WeakKeyDictionary()
+    players.logger = MagicMock()
+    return players
 
 
 def set_music_source_access(
