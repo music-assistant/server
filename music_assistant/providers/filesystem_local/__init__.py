@@ -749,8 +749,13 @@ class LocalFileSystemProvider(MusicProvider):
                     self.name,
                     ", ".join(unreachable),
                 )
+                # a podcast is tracked by its folder, which can be the unavailable folder itself
                 prefixes = tuple(f"{folder}/" for folder in unreachable)
-                deleted_files = {path for path in deleted_files if not path.startswith(prefixes)}
+                deleted_files = {
+                    path
+                    for path in deleted_files
+                    if path not in unreachable and not path.startswith(prefixes)
+                }
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
