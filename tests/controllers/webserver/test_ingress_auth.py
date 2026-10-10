@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -28,17 +28,24 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
-from music_assistant.controllers.webserver.helpers import auth_middleware, auth_providers
+from music_assistant.controllers.webserver.helpers import (
+    auth_middleware,
+    auth_providers,
+    login_flow,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
-    MAX_OAUTH_STATES,
-    OAUTH_STATE_TTL,
     AuthResult,
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
+)
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    MAX_PENDING_LOGINS,
+    PENDING_LOGIN_TTL,
+    AuthTransport,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
@@ -196,23 +203,25 @@ def _oauth_provider(mass: MusicAssistant) -> HomeAssistantOAuthProvider:
 
 
 async def _ha_login_callback(
-    mass: MusicAssistant,
+    auth_manager: AuthenticationManager,
     ha_user_id: str,
     details: tuple[str | None, str | None, str | None],
 ) -> AuthResult:
     """
     Complete a Home Assistant login for the given HA user and return its result.
 
-    :param mass: The server the user signs in to.
+    :param auth_manager: The authentication manager the user signs in with.
     :param ha_user_id: The Home Assistant user id the login resolves to.
     :param details: The (username, display_name, avatar_url) Home Assistant returns for the user.
     """
+    mass = auth_manager.mass
     provider = _oauth_provider(mass)
-    provider._oauth_sessions["login_state"] = (
-        None,
+    auth_manager.login_providers["homeassistant"] = provider
+    pending = auth_manager.pending_logins.start(
+        "homeassistant",
+        AuthTransport.DIRECT,
         "http://ma.local:8095/auth/callback",
-        time.monotonic() + OAUTH_STATE_TTL,
-        "login_verifier",
+        idp_code_verifier="login_verifier",
     )
     hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
     with (
@@ -224,7 +233,7 @@ async def _ha_login_callback(
             provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value=ha_user_id)
         ),
     ):
-        return await provider.handle_oauth_callback("ha_code", "login_state")
+        return await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
 
 
 @pytest.mark.parametrize(
@@ -648,7 +657,7 @@ async def test_ha_login_callback_refuses_a_disabled_user(
     """
     await _create_user(auth_manager, "alice", ha_user_id="ha_alice", disabled=True)
 
-    result = await _ha_login_callback(auth_manager.mass, "ha_alice", ("alice", display_name, None))
+    result = await _ha_login_callback(auth_manager, "ha_alice", ("alice", display_name, None))
 
     assert result == AuthResult(success=False, error="User account is disabled")
 
@@ -659,9 +668,7 @@ async def test_ha_login_callback_signs_in_an_enabled_linked_user(
     """The HA login callback signs in the linked user and refreshes its display name."""
     linked = await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
 
-    result = await _ha_login_callback(
-        auth_manager.mass, "ha_alice", ("alice", "Alice from HA", None)
-    )
+    result = await _ha_login_callback(auth_manager, "ha_alice", ("alice", "Alice from HA", None))
 
     assert result.success
     assert result.user is not None
@@ -676,9 +683,7 @@ async def test_ha_login_callback_refuses_a_new_user_with_self_registration_off(
     auth_manager.webserver.config.update({CONF_AUTH_ALLOW_SELF_REGISTRATION: False})
     user_count = len(await auth_manager.list_users())
 
-    result = await _ha_login_callback(
-        auth_manager.mass, "ha_carol", ("carol", "Carol from HA", None)
-    )
+    result = await _ha_login_callback(auth_manager, "ha_carol", ("carol", "Carol from HA", None))
 
     assert result == AuthResult(
         success=False, error="Self-registration is disabled. Please contact an administrator."
@@ -688,21 +693,27 @@ async def test_ha_login_callback_refuses_a_new_user_with_self_registration_off(
 
 
 async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_issued_to(
-    mass_minimal: MusicAssistant,
+    auth_manager: AuthenticationManager,
 ) -> None:
     """The HA login exchanges its code with the client_id and PKCE pair it was started with."""
-    provider = _oauth_provider(mass_minimal)
-    redirect_uri = "https://example.com/ma/auth/callback?provider_id=homeassistant"
-    auth_url = await provider.get_authorization_url(redirect_uri, "https://example.com/ma/#/home")
-    assert auth_url is not None
-    query = parse_qs(urlparse(auth_url).query)
+    _register_oauth_provider(auth_manager)
+    with _webserver_urls("http://192.168.1.10:8095", "https://example.com/ma"):
+        started = await auth_manager.get_authorization_url(
+            "homeassistant", "https://example.com/ma/#/home"
+        )
+    assert started is not None
+    query = parse_qs(urlparse(started[0]).query)
     assert query["client_id"] == ["https://example.com"]
-    assert query["redirect_uri"] == [redirect_uri]
+    assert query["redirect_uri"] == [
+        "https://example.com/ma/auth/callback?provider_id=homeassistant"
+    ]
     assert query["code_challenge_method"] == ["S256"]
 
     get_token = AsyncMock(return_value={})
     with patch.object(auth_providers, "get_token", get_token):
-        result = await provider.handle_oauth_callback("ha_code", query["state"][0])
+        result = await auth_manager.handle_oauth_callback(
+            "homeassistant", "ha_code", query["state"][0]
+        )
 
     get_token.assert_awaited_once_with(
         "http://ha.local:8123", "ha_code", client_id="https://example.com", code_verifier=ANY
@@ -714,54 +725,77 @@ async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_iss
     assert result == AuthResult(success=False, error="No access token received from HA")
 
 
-async def test_ha_login_callback_refuses_an_expired_state(mass_minimal: MusicAssistant) -> None:
+async def test_ha_login_callback_refuses_an_expired_state(
+    auth_manager: AuthenticationManager,
+) -> None:
     """A HA login that completes after its sign-in expired is refused without a token exchange."""
-    provider = _oauth_provider(mass_minimal)
-    state = await _start_ha_login(provider)
+    state = await _start_ha_login(auth_manager)
 
     get_token = AsyncMock(return_value={"access_token": "ha_token"})
     with (
-        _monotonic_after(OAUTH_STATE_TTL),
+        _monotonic_after(PENDING_LOGIN_TTL),
         patch.object(auth_providers, "get_token", get_token),
     ):
-        result = await provider.handle_oauth_callback("ha_code", state)
+        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", state)
 
     assert result == AuthResult(success=False, error="Invalid or expired state parameter")
     get_token.assert_not_awaited()
-    assert state not in provider._oauth_sessions
+    assert state not in auth_manager.pending_logins._pending
 
 
-async def test_starting_a_ha_login_drops_expired_ones(mass_minimal: MusicAssistant) -> None:
+async def test_ha_login_callback_refuses_a_sign_in_that_returns_to_the_app(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A HA login started for the remote app can not be completed on the server's callback."""
+    _register_oauth_provider(auth_manager)
+    pending = auth_manager.pending_logins.start(
+        "homeassistant",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        redirect_target="app",
+        client_code_challenge="x" * 43,
+        idp_code_verifier="login_verifier",
+    )
+
+    get_token = AsyncMock(return_value={"access_token": "ha_token"})
+    with patch.object(auth_providers, "get_token", get_token):
+        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
+
+    assert result == AuthResult(success=False, error="Invalid or expired state parameter")
+    get_token.assert_not_awaited()
+
+
+async def test_starting_a_ha_login_drops_expired_ones(auth_manager: AuthenticationManager) -> None:
     """Abandoned HA logins are dropped once they expired and a new one starts."""
-    provider = _oauth_provider(mass_minimal)
-    abandoned = [await _start_ha_login(provider) for _ in range(3)]
+    abandoned = [await _start_ha_login(auth_manager) for _ in range(3)]
 
-    with _monotonic_after(OAUTH_STATE_TTL):
-        state = await _start_ha_login(provider)
+    with _monotonic_after(PENDING_LOGIN_TTL):
+        state = await _start_ha_login(auth_manager)
 
-    assert list(provider._oauth_sessions) == [state]
-    assert not set(abandoned) & set(provider._oauth_sessions)
+    assert list(auth_manager.pending_logins._pending) == [state]
+    assert not set(abandoned) & set(auth_manager.pending_logins._pending)
 
 
-async def test_pending_ha_logins_are_capped(mass_minimal: MusicAssistant) -> None:
+async def test_pending_ha_logins_are_capped(auth_manager: AuthenticationManager) -> None:
     """Starting a HA login beyond the limit is refused and keeps the pending ones valid."""
-    provider = _oauth_provider(mass_minimal)
-    states = [await _start_ha_login(provider) for _ in range(MAX_OAUTH_STATES)]
+    states = [await _start_ha_login(auth_manager) for _ in range(MAX_PENDING_LOGINS)]
 
     with pytest.raises(RateLimited):
-        await provider.get_authorization_url("http://ma.local:8095/auth/callback")
-    assert list(provider._oauth_sessions) == states
+        await auth_manager.get_authorization_url("homeassistant")
+    assert list(auth_manager.pending_logins._pending) == states
 
     get_token = AsyncMock(return_value={})
     with patch.object(auth_providers, "get_token", get_token):
-        result = await provider.handle_oauth_callback("ha_code", states[0])
+        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", states[0])
     assert result == AuthResult(success=False, error="No access token received from HA")
     get_token.assert_awaited_once()
 
 
-async def test_concurrent_ha_logins_stay_within_the_limit(mass_minimal: MusicAssistant) -> None:
+async def test_concurrent_ha_logins_stay_within_the_limit(
+    auth_manager: AuthenticationManager,
+) -> None:
     """HA logins that start together while Home Assistant is slow to answer stay within the limit."""
-    provider = _oauth_provider(mass_minimal)
+    provider = _register_oauth_provider(auth_manager)
     ha_answers = asyncio.Event()
 
     async def slow_ha_url() -> str:
@@ -770,17 +804,174 @@ async def test_concurrent_ha_logins_stay_within_the_limit(mass_minimal: MusicAss
 
     with patch.object(provider, "_get_external_ha_url", slow_ha_url):
         starts = [
-            asyncio.create_task(
-                provider.get_authorization_url("http://ma.local:8095/auth/callback")
-            )
-            for _ in range(MAX_OAUTH_STATES + 10)
+            asyncio.create_task(auth_manager.get_authorization_url("homeassistant"))
+            for _ in range(MAX_PENDING_LOGINS + 10)
         ]
         await asyncio.sleep(0)
         ha_answers.set()
         results = await asyncio.gather(*starts, return_exceptions=True)
 
-    assert len(provider._oauth_sessions) == MAX_OAUTH_STATES
+    assert len(auth_manager.pending_logins._pending) == MAX_PENDING_LOGINS
     assert sum(isinstance(result, RateLimited) for result in results) == 10
+
+
+@pytest.mark.parametrize(
+    ("configured_url", "network_urls", "expected_ha_url"),
+    [
+        (
+            "http://supervisor/core/api",
+            {"external": "https://ha.example.com", "cloud": None, "internal": None},
+            "https://ha.example.com",
+        ),
+        (
+            "http://supervisor/core/api",
+            {
+                "external": None,
+                "cloud": "https://abc.ui.nabu.casa",
+                "internal": "http://192.168.1.5:8123",
+            },
+            "https://abc.ui.nabu.casa",
+        ),
+        ("https://ha.example.org", None, "https://ha.example.org"),
+        (
+            "http://supervisor/core/api",
+            {"external": None, "cloud": None, "internal": "http://192.168.1.5:8123"},
+            None,
+        ),
+        (
+            "http://supervisor/core/api",
+            {"external": "http://homeassistant.local:8123", "cloud": None, "internal": None},
+            None,
+        ),
+        ("http://192.168.1.5:8123", {"external": "http://10.0.0.5:8123"}, None),
+        ("http://supervisor/core/api", None, None),
+    ],
+    ids=[
+        "external_url",
+        "cloud_url",
+        "public_configured_url",
+        "internal_url_only",
+        "mdns_external_url",
+        "private_urls",
+        "home_assistant_unreachable",
+    ],
+)
+async def test_ha_login_for_the_remote_app_needs_a_public_home_assistant_url(
+    auth_manager: AuthenticationManager,
+    configured_url: str,
+    network_urls: dict[str, str | None] | None,
+    expected_ha_url: str | None,
+) -> None:
+    """
+    A HA login returns to the remote app only through a Home Assistant URL that is public.
+
+    :param configured_url: The Home Assistant URL the hass provider is configured with.
+    :param network_urls: What Home Assistant reports as its URLs, None when not connected.
+    :param expected_ha_url: The Home Assistant URL the browser is sent to, if any.
+    """
+    mass = auth_manager.mass
+    ha_config: HomeAssistantProviderConfig = {"ha_url": configured_url}
+    provider = HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
+    pending = auth_manager.pending_logins.start(
+        "homeassistant",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        redirect_target="app",
+        client_code_challenge="c" * 43,
+        idp_code_verifier="ha_verifier",
+    )
+
+    with patch.object(mass, "get_provider", return_value=_connected_hass_provider(network_urls)):
+        supported = await provider.supports_remote_app()
+        auth_url = await provider.build_authorization_url(pending)
+
+    assert supported is (expected_ha_url is not None)
+    if expected_ha_url is None:
+        assert auth_url is None
+        return
+    assert auth_url is not None
+    assert auth_url.startswith(f"{expected_ha_url}/auth/authorize?")
+    query = parse_qs(urlparse(auth_url).query)
+    assert query["client_id"] == ["https://app.music-assistant.io"]
+    assert query["redirect_uri"] == ["https://app.music-assistant.io/auth/callback/"]
+    assert query["state"] == [pending.state]
+    digest = hashlib.sha256(b"ha_verifier").digest()
+    assert query["code_challenge"] == [base64.urlsafe_b64encode(digest).rstrip(b"=").decode()]
+    assert query["code_challenge_method"] == ["S256"]
+
+
+async def test_ha_network_urls_are_reused_between_sign_in_listings(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Listing the sign-in methods again does not ask Home Assistant for its URLs again."""
+    mass = auth_manager.mass
+    ha_config: HomeAssistantProviderConfig = {"ha_url": "http://supervisor/core/api"}
+    provider = HomeAssistantOAuthProvider(mass, "homeassistant", ha_config)
+    hass_provider = _connected_hass_provider({"external": "https://ha.example.com"})
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        assert await provider.supports_remote_app()
+        assert await provider.supports_remote_app()
+
+    hass_provider.hass.send_command.assert_awaited_once_with("network/url")
+
+
+@pytest.mark.parametrize(
+    ("disabled", "self_registration", "translation_key"),
+    [(True, True, "user_account_disabled"), (False, False, "self_registration_disabled")],
+    ids=["disabled_user", "self_registration_off"],
+)
+async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
+    auth_manager: AuthenticationManager,
+    disabled: bool,
+    self_registration: bool,
+    translation_key: str,
+) -> None:
+    """
+    The remote app exchange refuses a disabled user and an unknown one without self-registration.
+
+    :param disabled: Whether the linked user exists and is disabled (else no user exists).
+    :param self_registration: Whether self-registration is allowed.
+    :param translation_key: The expected translation key of the error.
+    """
+    mass = auth_manager.mass
+    auth_manager.webserver.config.update({CONF_AUTH_ALLOW_SELF_REGISTRATION: self_registration})
+    if disabled:
+        await _create_user(auth_manager, "alice", ha_user_id="ha_alice", disabled=True)
+    user_count = len(await auth_manager.list_users())
+    provider = _register_oauth_provider(auth_manager)
+    verifier = "client-verifier-" + "v" * 40
+    pending = auth_manager.pending_logins.start(
+        "homeassistant",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        redirect_target="app",
+        client_code_challenge=login_flow.pkce_challenge(verifier),
+        idp_code_verifier="ha_verifier",
+    )
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=False, details=("alice", None, None)
+    )
+    get_token = AsyncMock(return_value={"access_token": "ha_token"})
+
+    with (
+        patch.object(mass, "get_provider", return_value=hass_provider),
+        patch.object(auth_providers, "get_token", get_token),
+        patch.object(
+            provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value="ha_alice")
+        ),
+    ):
+        result = await auth_manager.exchange_authorization_code(pending.state, "ha_code", verifier)
+
+    assert result["success"] is False
+    assert result["translation_key"] == translation_key
+    get_token.assert_awaited_once_with(
+        "http://ha.local:8123",
+        "ha_code",
+        client_id="https://app.music-assistant.io",
+        code_verifier="ha_verifier",
+    )
+    assert len(await auth_manager.list_users()) == user_count
 
 
 async def test_a_refused_ha_login_start_returns_429(auth_manager: AuthenticationManager) -> None:
@@ -795,27 +986,72 @@ async def test_a_refused_ha_login_start_returns_429(auth_manager: Authentication
     assert response.status == 429
 
 
-async def _start_ha_login(provider: HomeAssistantOAuthProvider) -> str:
+def _connected_hass_provider(network_urls: dict[str, str | None] | None) -> MagicMock:
     """
-    Start a HA login on the given provider and return its OAuth state.
+    Return a mock hass provider whose Home Assistant reports the given URLs.
 
-    :param provider: The Home Assistant login provider to start the login on.
+    :param network_urls: The URLs Home Assistant reports, None when it is not connected.
     """
-    auth_url = await provider.get_authorization_url(
-        "http://ma.local:8095/auth/callback?provider_id=homeassistant"
-    )
-    assert auth_url is not None
-    return parse_qs(urlparse(auth_url).query)["state"][0]
+    hass_provider = MagicMock()
+    hass_provider.hass.connected = network_urls is not None
+    hass_provider.hass.send_command = AsyncMock(return_value=network_urls)
+    return hass_provider
+
+
+def _register_oauth_provider(auth_manager: AuthenticationManager) -> HomeAssistantOAuthProvider:
+    """
+    Register a Home Assistant OAuth login provider on the auth manager and return it.
+
+    :param auth_manager: The authentication manager to register the login provider on.
+    """
+    provider = _oauth_provider(auth_manager.mass)
+    auth_manager.login_providers["homeassistant"] = provider
+    return provider
+
+
+async def _start_ha_login(auth_manager: AuthenticationManager) -> str:
+    """
+    Start a HA login and return its OAuth state.
+
+    :param auth_manager: The authentication manager to start the login with.
+    """
+    if "homeassistant" not in auth_manager.login_providers:
+        _register_oauth_provider(auth_manager)
+    started = await auth_manager.get_authorization_url("homeassistant")
+    assert started is not None
+    return parse_qs(urlparse(started[0]).query)["state"][0]
+
+
+@contextmanager
+def _webserver_urls(base_url: str, external_url: str | None) -> Iterator[None]:
+    """
+    Make the webserver report the given base URL and External URL.
+
+    :param base_url: The base URL the webserver reports.
+    :param external_url: The External URL the webserver reports.
+    """
+    with (
+        patch.object(
+            WebserverController, "base_url", new_callable=PropertyMock, return_value=base_url
+        ),
+        patch.object(
+            WebserverController,
+            "external_url",
+            new_callable=PropertyMock,
+            return_value=external_url,
+        ),
+    ):
+        yield
 
 
 @contextmanager
 def _monotonic_after(seconds: float) -> Iterator[None]:
     """
-    Make the login provider see a clock the given number of seconds ahead.
+    Make the pending sign-ins see a clock the given number of seconds ahead.
 
-    :param seconds: How far ahead of the real clock the login provider's clock runs.
+    :param seconds: How far ahead of the real clock the pending sign-ins' clock runs.
     """
     now = time.monotonic()
     clock = MagicMock(monotonic=MagicMock(return_value=now + seconds))
-    with patch.object(auth_providers, "time", clock):
+    with patch.object(login_flow, "time", clock):
         yield

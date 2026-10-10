@@ -38,7 +38,7 @@ from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
@@ -1306,6 +1306,31 @@ def format_ip_for_url(ip_address: str) -> str:
     if ":" in ip_address:
         return f"[{ip_address}]"
     return ip_address
+
+
+def is_public_url(url: str) -> bool:
+    """
+    Return whether a URL is an http(s) URL on a host that is reachable from the internet.
+
+    A URL with a query or fragment is refused, so paths can be appended to it.
+
+    :param url: The URL to check.
+    """
+    try:
+        parts = urlsplit(url)
+        # reading the port raises on a malformed one (e.g. :notaport)
+        _ = parts.port
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        pass
+    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
+    return "." in host and not host.endswith(".local")
 
 
 async def get_folder_size(folderpath: str, exclude: Iterable[str] = ()) -> float:
