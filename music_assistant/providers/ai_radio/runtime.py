@@ -109,6 +109,7 @@ class AIRadioRuntimeMixin:
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
+        _flow_mode_queues: dict[str, str]
 
         def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
             """Return a value collected by this provider's setup flow."""
@@ -285,18 +286,31 @@ class AIRadioRuntimeMixin:
             keep_played=False,
             shuffle=False,
         )
-        await self.mass.player_queues.play_index(queue_id, 0)
-        self._set_session_progress(
-            session,
-            "running",
-            total_tracks=len(tracks),
-            queue_entries=len(queue_items),
-            queue_id=queue_id,
-        )
-        has_clips = any(ATTR_SESSION_ID in item.extra_attributes for item in queue_items)
-        ended_reason = await self._await_show_end(
-            session, queue_id, len(queue_items) - 1, has_clips=has_clips
-        )
+        # the server carries a break over the next track only on a flow stream, so a show
+        # that posts holds its queue in flow mode. The queue DJ does not: its breaks post
+        # only on a player that streams in flow mode anyway
+        if any(section.allow_post for section in planned_sections):
+            self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, True)
+            self._flow_mode_queues[queue_id] = session.session_id
+        try:
+            await self.mass.player_queues.play_index(queue_id, 0)
+            self._set_session_progress(
+                session,
+                "running",
+                total_tracks=len(tracks),
+                queue_entries=len(queue_items),
+                queue_id=queue_id,
+            )
+            has_clips = any(ATTR_SESSION_ID in item.extra_attributes for item in queue_items)
+            ended_reason = await self._await_show_end(
+                session, queue_id, len(queue_items) - 1, has_clips=has_clips
+            )
+        finally:
+            # a show that took the queue over holds the requirement now, so only the
+            # session that set it releases it
+            if self._flow_mode_queues.get(queue_id) == session.session_id:
+                del self._flow_mode_queues[queue_id]
+                self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, False)
         return {
             "ended_reason": ended_reason,
             "source_playlist_name": playlist_name,
