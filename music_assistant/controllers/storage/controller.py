@@ -609,6 +609,24 @@ class StorageController(CoreController):
             self._request_remount(location)
         return False
 
+    async def get_unavailable_locations(self, path: str) -> list[str]:
+        """
+        Return the paths of the media locations below a folder that can not be used right now.
+
+        A folder reads the files of the locations below it, which look empty while they are gone.
+
+        :param path: An absolute path.
+        """
+        path = os.path.normpath(path)
+        return [
+            location.path
+            for location in self._locations
+            if location.usage == StorageUsage.MEDIA
+            and location.path != path
+            and is_within(location.path, path)
+            and not await self.is_available(location.path)
+        ]
+
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
         Return the names of the subfolders of a folder in a media location, sorted.
