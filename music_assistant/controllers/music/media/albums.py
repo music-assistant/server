@@ -411,6 +411,8 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
+            if provider_instance_id_or_domain == "library":
+                raise MediaNotFoundError(f"Album {item_id} not found in library")
             # resolved once and then pinned, so the tracks and the album they are backfilled
             # from come from the same (visible) account even if it drops mid-request
             provider = self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)

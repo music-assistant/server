@@ -482,6 +482,22 @@ async def test_album_tracks_of_a_hidden_library_album_come_from_the_users_accoun
     assert [track.item_id for track in tracks] == ["t1"]
 
 
+async def test_library_album_tracks_of_a_hidden_album_are_not_found(
+    music: MusicController,
+) -> None:
+    """Reading the tracks of a library album held only by a hidden source is a miss."""
+    library_album = await music.albums.add_item_to_library(create_album(THEIRS, "a1"))
+    track = create_track(THEIRS, "t1")
+    track.album = library_album
+    library_track = await music.tracks.add_item_to_library(track)
+
+    with _as_user(OWNER):
+        tracks = await music.albums.tracks(library_album.item_id, "library", in_library_only=True)
+    assert [item.item_id for item in tracks] == [library_track.item_id]
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music.albums.tracks(library_album.item_id, "library")
+
+
 @pytest.mark.parametrize(
     "listing",
     [
