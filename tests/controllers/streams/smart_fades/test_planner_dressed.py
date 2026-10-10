@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Sequence
 
@@ -17,8 +18,15 @@ from music_assistant.controllers.streams.smart_fades.planner import (
     SmartCrossFadePlanner,
     planner,
 )
-from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
-from music_assistant.controllers.streams.smart_fades.planner.context import TransitionContext
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    Candidate,
+    CandidateFactory,
+    CandidateSpec,
+)
+from music_assistant.controllers.streams.smart_fades.planner.context import (
+    TransitionContext,
+    build_transition_context,
+)
 from music_assistant.controllers.streams.smart_fades.planner.policies import (
     Policy,
     Verdict,
@@ -172,6 +180,28 @@ class TestDressedScenarios:
         assert plan.style is TransitionStyle.FILTER_OUT
         assert plan.fade_out_window == pytest.approx(today.fade_out_window)
         assert plan.crossfade_duration == pytest.approx(today.crossfade_duration)
+
+    def test_an_echo_out_needs_a_beat_before_its_cut(self) -> None:
+        """A downbeat at the very start of the buffer has no beat to echo, a later one does."""
+        out, inc = _track(120.0), _track(150.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=2.0,
+            entry_s=None,
+            source="echo-out",
+            ideal_bars=1,
+            style=TransitionStyle.ECHO_OUT,
+        )
+        at_start = dataclasses.replace(ctx, protective_downbeats=(0.0,))
+        a_beat_in = dataclasses.replace(ctx, protective_downbeats=(0.0, 0.5))
+
+        assert CandidateFactory(at_start, LOGGER).build(spec) is None
+        echo = CandidateFactory(a_beat_in, LOGGER).build(spec)
+        assert echo is not None
+        assert echo.plan.echo is not None
+        assert echo.plan.echo.cut_s == pytest.approx(0.5)
 
     def test_kick_against_kick_25_percent_apart_echoes_out(
         self, monkeypatch: pytest.MonkeyPatch

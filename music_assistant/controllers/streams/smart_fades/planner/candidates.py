@@ -1064,7 +1064,8 @@ class CandidateFactory:
         beat = 60.0 / ctx.outgoing.bpm
         echo_length = len(ECHO_DECAYS) * beat
         downbeats = np.asarray(ctx.protective_downbeats, dtype=np.float64)
-        fitting = downbeats[downbeats + echo_length <= ctx.buffer_duration]
+        # the echo repeats the beat before the cut, so the cut needs a beat of buffer before it
+        fitting = downbeats[(downbeats >= beat) & (downbeats + echo_length <= ctx.buffer_duration)]
         if not len(fitting):
             return None
         cut = float(fitting[np.argmin(np.abs(fitting - (spec.anchor_s - echo_length)))])
