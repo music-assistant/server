@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 from music_assistant_models.enums import ExternalID, MediaType
@@ -32,6 +32,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     GENRE_ARTISTS_LIMIT,
     GENRE_ARTISTS_PERIOD,
     LIBRARY_MATCH_SCAN_LIMIT,
+    MISS_CACHE_EXPIRATION_SECONDS,
     RECENT_PLAYS_SCAN_LIMIT,
     RECENT_PLAYS_WINDOW_DAYS,
     RESOLUTION_BUFFER_LARGE,
@@ -48,6 +49,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     TOP_TRACKS_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.parsers import (
+    SearchIncomplete,
     parse_album,
     parse_artist,
     parse_track,
@@ -285,36 +287,11 @@ class LastFMRecommendationManager:
         :param lastfm_artist: Raw Last.fm artist dict.
         """
         cache_key = lastfm_artist.get("mbid") or lastfm_artist.get("name", "")
-        if not cache_key:
-            return None
-
-        if cache_key in self._resolved_cache:
-            cached = self._resolved_cache[cache_key]
-            if isinstance(cached, Artist):
-                return cached
-
-        persistent_cache_key = f"artist_{cache_key}"
-        cached_artist = await self.mass.cache.get(
-            key=persistent_cache_key,
-            category=CACHE_CATEGORY_RESOLVED_ITEMS,
-            provider=self.provider.instance_id,
-            base_class=Artist,
+        return await self._get_or_resolve(
+            f"artist_{cache_key}" if cache_key else "",
+            Artist,
+            lambda: parse_artist(lastfm_artist, self.mass, self.provider.instance_id),
         )
-        if isinstance(cached_artist, Artist):
-            self._resolved_cache[cache_key] = cached_artist
-            return cached_artist
-
-        artist = await parse_artist(lastfm_artist, self.mass, self.provider.instance_id)
-        if artist:
-            self._resolved_cache[cache_key] = artist
-            await self.mass.cache.set(
-                persistent_cache_key,
-                artist.to_dict(),
-                category=CACHE_CATEGORY_RESOLVED_ITEMS,
-                provider=self.provider.instance_id,
-                expiration=CACHE_EXPIRATION_SECONDS,
-            )
-        return artist
 
     async def get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
         """
@@ -322,45 +299,12 @@ class LastFMRecommendationManager:
 
         :param lastfm_track: Raw Last.fm track dict.
         """
-        cache_key = lastfm_track.get("mbid")
-        if not cache_key:
-            artist_data = lastfm_track.get("artist", {})
-            artist_name = (
-                artist_data if isinstance(artist_data, str) else artist_data.get("name", "")
-            )
-            track_name = lastfm_track.get("name", "")
-            cache_key = f"{artist_name}_{track_name}" if artist_name and track_name else ""
-
-        if not cache_key:
-            return None
-
-        if cache_key in self._resolved_cache:
-            cached = self._resolved_cache[cache_key]
-            if isinstance(cached, Track):
-                return cached
-
-        persistent_cache_key = f"track_{cache_key}"
-        cached_track = await self.mass.cache.get(
-            key=persistent_cache_key,
-            category=CACHE_CATEGORY_RESOLVED_ITEMS,
-            provider=self.provider.instance_id,
-            base_class=Track,
+        cache_key = lastfm_track.get("mbid") or _artist_and_name_key(lastfm_track)
+        return await self._get_or_resolve(
+            f"track_{cache_key}" if cache_key else "",
+            Track,
+            lambda: parse_track(lastfm_track, self.mass, self.provider.instance_id),
         )
-        if isinstance(cached_track, Track):
-            self._resolved_cache[cache_key] = cached_track
-            return cached_track
-
-        track = await parse_track(lastfm_track, self.mass, self.provider.instance_id)
-        if track:
-            self._resolved_cache[cache_key] = track
-            await self.mass.cache.set(
-                persistent_cache_key,
-                track.to_dict(),
-                category=CACHE_CATEGORY_RESOLVED_ITEMS,
-                provider=self.provider.instance_id,
-                expiration=CACHE_EXPIRATION_SECONDS,
-            )
-        return track
 
     async def _get_or_resolve_album(self, lastfm_album: dict[str, Any]) -> Album | None:
         """
@@ -368,45 +312,73 @@ class LastFMRecommendationManager:
 
         :param lastfm_album: Raw Last.fm album dict.
         """
-        cache_key = lastfm_album.get("mbid")
-        if not cache_key:
-            artist_data = lastfm_album.get("artist", {})
-            artist_name = (
-                artist_data if isinstance(artist_data, str) else artist_data.get("name", "")
-            )
-            album_name = lastfm_album.get("name", "")
-            cache_key = f"{artist_name}_{album_name}" if artist_name and album_name else ""
+        cache_key = lastfm_album.get("mbid") or _artist_and_name_key(lastfm_album)
+        return await self._get_or_resolve(
+            f"album_{cache_key}" if cache_key else "",
+            Album,
+            lambda: parse_album(lastfm_album, self.mass, self.provider.instance_id),
+        )
 
+    async def _get_or_resolve(
+        self,
+        cache_key: str,
+        base_class: type[_MediaItemT],
+        resolve: Callable[[], Awaitable[_MediaItemT | None]],
+    ) -> _MediaItemT | None:
+        """
+        Return a resolved item from cache, or resolve it and cache the outcome.
+
+        An item no provider has is remembered as a miss for a while, so it is not searched
+        for again on every refresh; a search that could not complete is retried next time.
+
+        :param cache_key: Persistent cache key of the item, empty when it cannot be keyed.
+        :param base_class: The media item class the item resolves to.
+        :param resolve: Resolves the item, raising SearchIncomplete when that was inconclusive.
+        """
         if not cache_key:
             return None
-
-        if cache_key in self._resolved_cache:
-            cached = self._resolved_cache[cache_key]
-            if isinstance(cached, Album):
-                return cached
-
-        persistent_cache_key = f"album_{cache_key}"
-        cached_album = await self.mass.cache.get(
-            key=persistent_cache_key,
+        cached = self._resolved_cache.get(cache_key)
+        if isinstance(cached, base_class):
+            return cached
+        cached_item = await self.mass.cache.get(
+            key=cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
             provider=self.provider.instance_id,
-            base_class=Album,
+            base_class=base_class,
         )
-        if isinstance(cached_album, Album):
-            self._resolved_cache[cache_key] = cached_album
-            return cached_album
-
-        album = await parse_album(lastfm_album, self.mass, self.provider.instance_id)
-        if album:
-            self._resolved_cache[cache_key] = album
+        if isinstance(cached_item, base_class):
+            self._resolved_cache[cache_key] = cached_item
+            return cached_item
+        miss_key = f"miss_{cache_key}"
+        if await self.mass.cache.get(
+            key=miss_key,
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
+        ):
+            # misses are only kept in the persistent cache, so they expire and get retried
+            return None
+        try:
+            item = await resolve()
+        except SearchIncomplete:
+            return None
+        if item is None:
             await self.mass.cache.set(
-                persistent_cache_key,
-                album.to_dict(),
+                miss_key,
+                True,
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
                 provider=self.provider.instance_id,
-                expiration=CACHE_EXPIRATION_SECONDS,
+                expiration=MISS_CACHE_EXPIRATION_SECONDS,
             )
-        return album
+            return None
+        self._resolved_cache[cache_key] = item
+        await self.mass.cache.set(
+            cache_key,
+            item.to_dict(),
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
+            expiration=CACHE_EXPIRATION_SECONDS,
+        )
+        return item
 
     async def _get_personalized_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield personalized recommendation folders based on the user's listening history."""
@@ -915,3 +887,11 @@ class LastFMRecommendationManager:
             *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
         return self._exclude_owned([track for track in resolved_tracks if track is not None])
+
+
+def _artist_and_name_key(lastfm_item: dict[str, Any]) -> str:
+    """Return an "artist_name" cache key for a Last.fm album or track, empty if incomplete."""
+    artist_data = lastfm_item.get("artist", {})
+    artist_name = artist_data if isinstance(artist_data, str) else artist_data.get("name", "")
+    name = lastfm_item.get("name", "")
+    return f"{artist_name}_{name}" if artist_name and name else ""

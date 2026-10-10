@@ -6,7 +6,13 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderStatus,
+    ProviderType,
+)
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 
@@ -27,6 +33,10 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.lastfm_recommendations")
 
 # Limit concurrent provider searches to avoid overwhelming their APIs.
 _SEARCH_SEMAPHORE = asyncio.Semaphore(SEARCH_CONCURRENCY_LIMIT)
+
+
+class SearchIncomplete(Exception):
+    """Raised when an item could not be resolved because not every provider could be searched."""
 
 
 def _is_matching_result(
@@ -97,15 +107,21 @@ async def _search_provider(
     ctrl: ArtistsController | AlbumsController | TracksController,
     item_mapping: ItemMapping,
     provider: Any,
-) -> Artist | Album | Track | None:
+) -> list[Artist | Album | Track] | None:
     """
-    Search a single provider for a matching item.
+    Search a single provider for candidates of an item.
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
     :param provider: Provider instance to search.
+    :returns: The candidates, or None when the provider could not be searched (e.g. it is
+        rate limited or unavailable).
     """
     async with _SEARCH_SEMAPHORE:
+        # the controller answers an unavailable provider with no results, which would read
+        # as the provider not having the item; it can unload while waiting here or searching
+        if not provider.available:
+            return None
         try:
             LOGGER.debug(
                 "Searching %s on %s for: %s",
@@ -117,10 +133,9 @@ async def _search_provider(
             search_results = await ctrl.search(
                 item_mapping.name, provider.instance_id, limit=PROVIDER_SEARCH_LIMIT
             )
-            if not search_results:
+            if not provider.available:
                 return None
-
-            return search_results[0]
+            return list(search_results)
         except MusicAssistantError as err:
             LOGGER.debug("Provider %s search failed: %s", provider.name, type(err).__name__)
             return None
@@ -139,18 +154,28 @@ async def _search_providers_concurrent(
     :param item_mapping: ItemMapping to search for.
     :param providers: List of providers to search.
     :param artist_name: Artist name to verify candidate matches against, if known.
+    :raises SearchIncomplete: When nothing matched and at least one provider search failed.
     """
     tasks = [
         asyncio.create_task(_search_provider(ctrl, item_mapping, provider))
         for provider in providers
     ]
 
+    search_failed = False
     for task in asyncio.as_completed(tasks):
-        result = await task
-        if result is None:
+        candidates = await task
+        if candidates is None:
+            search_failed = True
             continue
-
-        if _is_matching_result(item_mapping, result, artist_name):
+        for result in candidates:
+            if not _is_matching_result(item_mapping, result, artist_name):
+                LOGGER.debug(
+                    "Rejecting %s from %s: name mismatch (searched: %s)",
+                    result.name,
+                    result.provider,
+                    item_mapping.name,
+                )
+                continue
             LOGGER.debug(
                 "Match on %s: %s (searched: %s)",
                 result.provider,
@@ -163,13 +188,8 @@ async def _search_providers_concurrent(
             await asyncio.gather(*tasks, return_exceptions=True)
             return result
 
-        LOGGER.debug(
-            "Rejecting %s from %s: name mismatch (searched: %s)",
-            result.name,
-            result.provider,
-            item_mapping.name,
-        )
-
+    if search_failed:
+        raise SearchIncomplete(item_mapping.name)
     return None
 
 
@@ -186,6 +206,7 @@ async def _resolve_item(
     :param mass: MusicAssistant instance.
     :param provider_instance_to_skip: Provider instance to skip (ourselves).
     :param artist_name: Artist name to verify candidate matches against, if known.
+    :raises SearchIncomplete: When the item may exist but not every provider could be searched.
     """
     ctrl: ArtistsController | AlbumsController | TracksController
     if item_mapping.media_type == MediaType.ARTIST:
@@ -208,15 +229,22 @@ async def _resolve_item(
         LOGGER.debug("Found %s in library: %s", item_mapping.media_type.value, library_item.name)
         return library_item
 
+    # taken before the providers to search are picked: one that finishes loading during the
+    # searches was not searched, so its finishing must not turn a no-match into a miss
+    providers_loading = await _music_providers_loading(mass)
     streaming_providers = _get_streaming_providers(mass, item_mapping, provider_instance_to_skip)
     if not streaming_providers:
+        # providers may still be loading, so this says nothing about the item itself
         LOGGER.debug("No streaming providers available for resolution")
-        return None
+        raise SearchIncomplete(item_mapping.name)
 
     result = await _search_providers_concurrent(
         ctrl, item_mapping, streaming_providers, artist_name
     )
     if result is None:
+        if providers_loading:
+            # a provider that had not finished loading may still have it
+            raise SearchIncomplete(item_mapping.name)
         LOGGER.debug("Could not resolve %s: %s", item_mapping.media_type.value, item_mapping.name)
         return None
 
@@ -244,6 +272,7 @@ async def parse_artist(
     :param lastfm_artist: Raw Last.fm artist dict with 'name' and 'mbid' fields.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the artist may exist but not every provider could be searched.
     """
     name = lastfm_artist.get("name", "Unknown Artist")
     mbid = lastfm_artist.get("mbid")
@@ -274,6 +303,7 @@ async def parse_track(
     :param lastfm_track: Raw Last.fm track dict with 'name', 'artist', 'mbid', 'duration'.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the track may exist but not every provider could be searched.
     """
     name = lastfm_track.get("name", "Unknown Track")
     mbid = lastfm_track.get("mbid")
@@ -310,6 +340,7 @@ async def parse_album(
     :param lastfm_album: Raw Last.fm album dict with 'name', 'artist', 'mbid'.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
+    :raises SearchIncomplete: When the album may exist but not every provider could be searched.
     """
     name = lastfm_album.get("name", "Unknown Album")
     mbid = lastfm_album.get("mbid")
@@ -334,4 +365,16 @@ async def parse_album(
 
     return cast(
         "Album | None", await _resolve_item(item_mapping, mass, provider_instance, artist_name)
+    )
+
+
+async def _music_providers_loading(mass: MusicAssistant) -> bool:
+    """
+    Return True while an enabled music provider has not finished loading.
+
+    :param mass: MusicAssistant instance.
+    """
+    return any(
+        conf.status == ProviderStatus.LOADING
+        for conf in await mass.config.get_provider_configs(provider_type=ProviderType.MUSIC)
     )
