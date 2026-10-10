@@ -490,10 +490,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 own_instance is not None
                 and own_instance.instance_id == provider_mapping.provider_instance
             )
-            listing = (
-                own_instance.instance_id if own_instance else provider_mapping.provider_instance,
-                provider_mapping.item_id,
+            served_by = (
+                own_instance.instance_id if own_instance else provider_mapping.provider_instance
             )
+            listing = (served_by, provider_mapping.item_id)
             if listing in fetched:
                 continue
             fetched.add(listing)
@@ -503,8 +503,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing provider must not take the whole album down: the tracks
-                # from the library and the other providers are still playable
-                lookup_errors[provider_mapping.provider_instance] = err
+                # from the library and the other providers are still playable. the failure
+                # belongs to the instance that served the lookup, which may be another
+                # account of the service standing in for the mapped one
+                lookup_errors[served_by] = err
                 if own_lookup and isinstance(err, MediaNotFoundError):
                     await self.mass.music.mark_provider_mapping_unavailable(
                         library_album, provider_mapping
