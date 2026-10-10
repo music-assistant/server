@@ -1,0 +1,72 @@
+{
+  "config_entries": {
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The engine that draws the covers, for example a Home Assistant AI Task entity that supports images or an image model of the OpenAI Compatible plugin (such as OpenRouter)."
+    },
+    "style": {
+      "label": "Style",
+      "description": "The look of the generated covers.",
+      "options": {
+        "spotify": "Spotify",
+        "music_assistant": "Music Assistant",
+        "apple_music": "Apple Music",
+        "custom": "Custom"
+      },
+      "option_descriptions": {
+        "spotify": "One striking full-bleed image with a vivid duotone or saturated color wash and a large, bold title.",
+        "music_assistant": "Abstract sound waves in Music Assistant blues on a dark background, with a centered title.",
+        "apple_music": "A soft, blurred, vivid mesh gradient with a small white title in the bottom-left corner.",
+        "custom": "Your own prompt."
+      }
+    },
+    "custom_prompt": {
+      "label": "Custom prompt",
+      "description": "The prompt sent to the image engine. You can use {name} or {title} (the playlist name), {context} (the seeds, era, artists and genres as sentences), {concept} (the visual concept), {artists}, {genres} and {era}."
+    },
+    "title_overlay": {
+      "label": "Draw the title myself",
+      "description": "Ask the image engine for artwork without any text and draw the playlist name over it afterwards. Use this when the engine misspells titles; leave it off to let the engine design the title as part of the artwork."
+    },
+    "playlists": {
+      "label": "Playlists",
+      "description": "Which playlists get a generated cover.",
+      "options": {
+        "smart": "Smart playlists, plus the ones I pick",
+        "all": "All playlists"
+      }
+    },
+    "extra_playlists": {
+      "label": "Also generate covers for",
+      "description": "Regular playlists that get a generated cover as well. Smart playlists are always included."
+    },
+    "keep_existing_artwork": {
+      "label": "Keep existing artwork",
+      "description": "Leave playlists alone that already have a cover of their own, such as the artwork of a streaming service or an image you added. The automatic collage never counts as a cover of its own."
+    },
+    "generate_descriptions": {
+      "label": "Write descriptions",
+      "description": "Give the playlists a short, Spotify-style description written by the text engine, inspired by what you play most. It is written once per playlist and put back whenever it gets replaced."
+    },
+    "text_engine": {
+      "label": "Text engine",
+      "description": "The AI engine that writes the descriptions and, when enabled, the visual concept of the covers."
+    },
+    "use_prompt_engine": {
+      "label": "Let the text engine write the visual concept",
+      "description": "Have the text engine turn the playlist's name, seeds, artists and genres into a scene description before the image is drawn. This costs an extra AI request per cover."
+    },
+    "max_generations_per_hour": {
+      "label": "Maximum generations per hour",
+      "description": "The number of covers, and separately of descriptions, generated per hour. The rest follow in the next hour, to keep the cost of the AI engines under control."
+    },
+    "regenerate": {
+      "label": "Regenerate everything",
+      "description": "Generate new covers and descriptions for all playlists. The current ones stay in place until their replacement is ready.",
+      "action_label": "Regenerate covers and descriptions"
+    }
+  },
+  "manifest": {
+    "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in a Spotify, Music Assistant, Apple Music or custom style."
+  }
+}

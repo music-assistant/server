@@ -1,5 +1,6 @@
 """Tests for the OpenAI Compatible plugin provider."""
 
+import base64
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +24,7 @@ from music_assistant.providers.openai_compatible import (
     setup_flow,
 )
 from music_assistant.providers.openai_compatible.constants import (
+    CONF_IMAGE_MODELS,
     CONF_MODELS,
     SERVICE_BASE_URLS,
     SERVICE_CUSTOM,
@@ -600,6 +602,166 @@ async def test_get_config_entries_reaches_the_endpoint_without_async_init(
     assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/models"
     models_entry = next(entry for entry in entries if entry.key == CONF_MODELS)
     assert [option.value for option in models_entry.options] == ["fresh-model"]
+
+
+async def test_image_generation_decodes_an_openrouter_style_inline_image(mass: AsyncMock) -> None:
+    """OpenRouter returns the image as a data URL on the chat completion message."""
+    encoded = base64.b64encode(b"png-bytes").decode()
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "images": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, payload))
+    )
+
+    image, used_images_endpoint = await helpers.image_generation(
+        mass, BASE_URL, "key", model="google/gemini-2.5-flash-image", prompt="A cat", timeout=10
+    )
+
+    assert image == b"png-bytes"
+    assert used_images_endpoint is False
+    method, url = mass.http_session.request.call_args.args
+    assert (method, url) == ("post", f"{BASE_URL}/chat/completions")
+    assert mass.http_session.request.call_args.kwargs["json"]["modalities"] == ["image", "text"]
+
+
+async def test_image_generation_falls_back_to_the_images_endpoint(mass: AsyncMock) -> None:
+    """A service rejecting image output on chat completions is asked on /images/generations."""
+    encoded = base64.b64encode(b"jpeg-bytes").decode()
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(400, {"error": {"message": "bad modalities"}})),
+            _response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]})),
+        ]
+    )
+
+    image, used_images_endpoint = await helpers.image_generation(
+        mass, BASE_URL, "key", model="gpt-image-1", prompt="A cat", timeout=10
+    )
+
+    assert image == b"jpeg-bytes"
+    assert used_images_endpoint is True
+    method, url = mass.http_session.request.call_args.args
+    assert (method, url) == ("post", f"{BASE_URL}/images/generations")
+    assert mass.http_session.request.call_args.kwargs["json"]["prompt"] == "A cat"
+
+
+async def test_image_generation_goes_straight_to_a_known_images_endpoint(mass: AsyncMock) -> None:
+    """A model known to need the images endpoint skips the chat completion attempt."""
+    encoded = base64.b64encode(b"jpeg-bytes").decode()
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]}))
+    )
+
+    await helpers.image_generation(
+        mass,
+        BASE_URL,
+        "",
+        model="gpt-image-1",
+        prompt="A cat",
+        timeout=10,
+        use_images_endpoint=True,
+    )
+
+    assert mass.http_session.request.call_count == 1
+    assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/images/generations"
+
+
+async def test_image_generation_raises_when_neither_endpoint_returns_an_image(
+    mass: AsyncMock,
+) -> None:
+    """A text-only answer on both endpoints is an error naming both failures."""
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(200, _CHAT_PAYLOAD)),
+            _response_cm(response=_json_response(404, {"error": {"message": "no such route"}})),
+        ]
+    )
+
+    with pytest.raises(InvalidDataError, match="no such route"):
+        await helpers.image_generation(
+            mass, BASE_URL, "", model="text-model", prompt="A cat", timeout=10
+        )
+
+
+async def test_image_generation_does_not_retry_a_rejected_api_key(mass: AsyncMock) -> None:
+    """Bad credentials fail at once instead of trying the second endpoint."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(401, {}))
+    )
+
+    with pytest.raises(LoginFailed):
+        await helpers.image_generation(mass, BASE_URL, "bad", model="m", prompt="A cat", timeout=10)
+    assert mass.http_session.request.call_count == 1
+
+
+async def test_get_image_engines_returns_the_configured_image_models(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """Image models are configured apart from the text models."""
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: {
+            CONF_MODELS: ["text-model"],
+            CONF_IMAGE_MODELS: ["image-b", "image-a"],
+        }.get(key, default)
+    )
+
+    assert [engine.id for engine in await provider.get_image_engines()] == ["image-a", "image-b"]
+    assert [engine.id for engine in await provider.get_ai_engines()] == ["text-model"]
+
+
+async def test_ai_generate_image_remembers_a_model_that_needs_the_images_endpoint(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """After one fallback, later requests for that model go to the images endpoint directly."""
+    await provider.handle_async_init()
+    with patch(
+        "music_assistant.providers.openai_compatible.image_generation",
+        AsyncMock(return_value=(b"img", True)),
+    ) as generate:
+        assert await provider.ai_generate_image("A cat", engine_id="gpt-image-1") == b"img"
+        await provider.ai_generate_image("A dog", engine_id="gpt-image-1")
+
+    assert generate.call_args_list[0].kwargs["use_images_endpoint"] is False
+    assert generate.call_args_list[1].kwargs["use_images_endpoint"] is True
+
+
+async def test_ai_generate_image_raises_without_image_models(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """Refuse to generate when no image model is selected."""
+    await provider.handle_async_init()
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await provider.ai_generate_image("A cat")
+
+
+async def test_get_config_entries_offers_the_listing_for_image_models(
+    provider: OpenAICompatibleProvider, mass: AsyncMock
+) -> None:
+    """The image model picker is filled from the same listing as the text models."""
+    _configure_models(provider, [])
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"id": "flux"}]}))
+    )
+
+    entries = await provider.get_config_entries()
+
+    image_entry = next(entry for entry in entries if entry.key == CONF_IMAGE_MODELS)
+    assert image_entry.multi_value is True
+    assert [option.value for option in image_entry.options] == ["flux"]
 
 
 def _response_cm(*, response: MagicMock | None = None, exc: Exception | None = None) -> MagicMock:

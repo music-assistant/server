@@ -451,6 +451,13 @@
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    },
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The image generation engine used for this feature."
+    },
+    "image_engine_unavailable": {
+      "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
     }
   },
   "config_categories": {

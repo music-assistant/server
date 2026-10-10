@@ -1,4 +1,4 @@
-"""Helpers to discover, select and configure the AI/TTS engines exposed by plugins."""
+"""Helpers to discover, select and configure the AI/TTS/image engines exposed by plugins."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature, Provi
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.models.plugin import (
     AIEngine,
+    ImageEngine,
     PluginEngine,
     PluginProvider,
     TTSEngine,
@@ -49,6 +50,19 @@ async def get_tts_engines(mass: MusicAssistant) -> list[TTSEngine]:
     )
 
 
+async def get_image_engines(mass: MusicAssistant) -> list[ImageEngine]:
+    """
+    Return all image generation engines currently exposed by the loaded plugins, in a stable order.
+
+    :param mass: The Music Assistant instance to query.
+    """
+    # image generation has no ProviderFeature of its own (the enum lives in the models
+    # package), so it is offered by the AI plugins that expose any image engines
+    return await _collect_engines(
+        mass, ProviderFeature.AI_QUERY, lambda provider: provider.get_image_engines()
+    )
+
+
 def engine_display_name(engine: PluginEngine) -> str:
     """
     Return the name to show for an engine, naming the plugin it comes from.
@@ -79,6 +93,17 @@ async def resolve_tts_engine(mass: MusicAssistant, selected: str | None) -> TTSE
         an engine that no longer exists - another engine is never substituted for it.
     """
     return _resolve(await get_tts_engines(mass), selected)
+
+
+async def resolve_image_engine(mass: MusicAssistant, selected: str | None) -> ImageEngine | None:
+    """
+    Return the image generation engine for a configured selection.
+
+    :param mass: The Music Assistant instance to query.
+    :param selected: The configured engine uid. Returns None when it is empty/unset or names
+        an engine that no longer exists - another engine is never substituted for it.
+    """
+    return _resolve(await get_image_engines(mass), selected)
 
 
 async def select_ai_engine(
@@ -116,6 +141,25 @@ async def select_tts_engine(
     """
     return _select_provider_engine(
         provider, key, await get_tts_engines(provider.mass), in_setup_data=in_setup_data
+    )
+
+
+async def select_image_engine(
+    provider: Provider, key: str, *, in_setup_data: bool = False
+) -> ImageEngine | None:
+    """
+    Return the provider's image engine, adopting the first available one when it has none yet.
+
+    A selection that was made explicitly is honoured or, when that engine no longer exists,
+    reported as missing - another engine is never substituted for it.
+
+    :param provider: The provider whose selection to read and, if unset, persist.
+    :param key: The config key holding the selected engine uid.
+    :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
+        regular config values.
+    """
+    return _select_provider_engine(
+        provider, key, await get_image_engines(provider.mass), in_setup_data=in_setup_data
     )
 
 
@@ -198,6 +242,35 @@ async def create_tts_engine_config_entries(
     )
 
 
+async def create_image_engine_config_entries(
+    mass: MusicAssistant,
+    key: str,
+    depends_on: str | None = None,
+    required: bool = False,
+    category: str = "features",
+) -> tuple[ConfigEntry, ...]:
+    """
+    Return the config entries letting the user pick an image generation engine.
+
+    Adds a second (alert) entry with key ``<key>_unavailable`` when no engine is available.
+
+    :param mass: The Music Assistant instance to query.
+    :param key: The config entry key holding the selected engine uid.
+    :param depends_on: Optional key of the entry this picker should be shown for.
+    :param required: Reject a submission that leaves the picker empty. Only for setup flows;
+        an options entry must stay optional so a provider with no selection still loads.
+    :param category: The settings category to show the entries under.
+    """
+    return _create_engine_config_entries(
+        await get_image_engines(mass),
+        key,
+        depends_on,
+        required,
+        category,
+        unavailable_translation_key="image_engine_unavailable",
+    )
+
+
 async def _collect_engines[EngineT: PluginEngine](
     mass: MusicAssistant,
     feature: ProviderFeature,
@@ -266,7 +339,7 @@ def _select_provider_engine[EngineT: PluginEngine](
 
 
 def _create_engine_config_entries(
-    engines: list[AIEngine] | list[TTSEngine],
+    engines: list[AIEngine] | list[TTSEngine] | list[ImageEngine],
     key: str,
     depends_on: str | None,
     required: bool = False,

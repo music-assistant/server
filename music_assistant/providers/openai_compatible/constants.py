@@ -8,6 +8,7 @@ CONF_SERVICE: Final = "service"
 CONF_BASE_URL: Final = "base_url"
 CONF_API_KEY: Final = "api_key"
 CONF_MODELS: Final = "models"
+CONF_IMAGE_MODELS: Final = "image_models"
 
 SERVICE_CUSTOM: Final = "custom"
 
@@ -29,6 +30,10 @@ DEFAULT_SERVICE: Final = "openai"
 # Generous enough for a local server on CPU, while still well short of the point
 # where a caller waiting on the answer has any use for it.
 CHAT_REQUEST_TIMEOUT: Final = 120
+
+# rendering an image takes considerably longer than answering a prompt, and its consumers
+# run in the background rather than waiting on the answer
+IMAGE_REQUEST_TIMEOUT: Final = 300
 
 # the model listing only fills a picker, so it gets a shorter deadline: a slow
 # endpoint must not hold up the settings page

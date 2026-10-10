@@ -659,6 +659,103 @@ async def test_ai_query_not_advertised_without_entity() -> None:
             await provider.ai_query("What is this song?")
 
 
+async def test_only_ai_tasks_that_generate_images_become_image_engines() -> None:
+    """Offer an AI Task entity for image generation only when it advertises that feature."""
+    states = [
+        _image_state("ai_task.images", "Images", supported_features=1 | 4),
+        _image_state("ai_task.text_only", "Text", supported_features=1),
+        _image_state("ai_task.broken", "Broken", supported_features="4"),
+        _state("ai_task.no_features", "None"),
+        _image_state("tts.piper", "Piper", supported_features=4),
+    ]
+
+    async with _start_provider(states) as (provider, _):
+        image_engines = await provider.get_image_engines()
+
+        assert [engine.id for engine in image_engines] == ["ai_task.images"]
+        assert image_engines[0].uid == "hass--test/ai_task.images"
+        # every ai_task entity stays a text engine, as before
+        assert len(await provider.get_ai_engines()) == 4
+
+
+async def test_an_image_only_ai_task_still_advertises_ai_query() -> None:
+    """Image engines are collected from AI_QUERY plugins, so they must declare it."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, _):
+        assert ProviderFeature.AI_QUERY in provider.supported_features
+
+
+async def test_ai_generate_image_downloads_the_returned_image() -> None:
+    """Generate via ai_task.generate_image and fetch the signed URL it answers with."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/api/ai_task/images/x.png?authSig=abc"}}
+        )
+        with patch.object(
+            provider, "resolve_image", AsyncMock(return_value=b"png")
+        ) as resolve_image:
+            assert await provider.ai_generate_image("A sunset") == b"png"
+
+        hass.send_command.assert_awaited_once_with(
+            "call_service",
+            domain="ai_task",
+            service="generate_image",
+            service_data={
+                "task_name": "music_assistant",
+                "instructions": "A sunset",
+                "entity_id": "ai_task.images",
+            },
+            return_response=True,
+        )
+        resolve_image.assert_awaited_once_with("/api/ai_task/images/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_fetches_an_absolute_url_from_the_connected_instance() -> None:
+    """An image URL prefixed with Home Assistant's own URL is fetched by its signed path."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={
+                "response": {"url": "https://ha.example.com/api/ai_task/images/x.png?authSig=abc"}
+            }
+        )
+        with patch.object(
+            provider, "resolve_image", AsyncMock(return_value=b"png")
+        ) as resolve_image:
+            await provider.ai_generate_image("A sunset")
+
+        resolve_image.assert_awaited_once_with("/api/ai_task/images/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_raises_without_an_image() -> None:
+    """A response without an image URL is an error, not empty image data."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(return_value={"response": {}})
+
+        with pytest.raises(MusicAssistantError):
+            await provider.ai_generate_image("A sunset")
+
+
+async def test_ai_generate_image_raises_without_an_image_engine() -> None:
+    """Refuse to generate images when no AI Task entity supports it."""
+    async with _start_provider([_state("ai_task.text", "Text")]) as (provider, _):
+        with pytest.raises(UnsupportedFeaturedException):
+            await provider.ai_generate_image("A sunset")
+
+
+def _image_state(entity_id: str, friendly_name: str, *, supported_features: Any) -> dict[str, Any]:
+    """Return a Home Assistant entity state that reports the given supported_features."""
+    state = _state(entity_id, friendly_name)
+    state["attributes"]["supported_features"] = supported_features
+    return state
+
+
 def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     """Let the Home Assistant tts_get_url endpoint return a URL and return the post mock."""
     response = AsyncMock()
