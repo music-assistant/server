@@ -88,6 +88,20 @@ async def test_share_of_home_assistant_counts_until_removed_there(
     assert await storage.get_unavailable_locations(str(supervisor.media)) == []
 
 
+async def test_supervisor_that_did_not_answer_at_the_start_is_asked_again(
+    storage: StorageController, mount_table: MountTable, supervisor: FakeSupervisor
+) -> None:
+    """A Supervisor that was not reachable when the server started is asked for its shares."""
+    supervisor.add_mount("nas_music", state="inactive", type="cifs", server="nas.local")
+    nas = supervisor.path("nas_music")
+    mount_table.unmount(nas)
+    supervisor.refuse_access = True
+    await storage._probe_backends()
+    supervisor.refuse_access = False
+
+    assert await storage.get_unavailable_locations(str(supervisor.media)) == [nas]
+
+
 async def test_supervisor_that_does_not_answer_leaves_it_unknown(
     storage: StorageController,
     mount_table: MountTable,

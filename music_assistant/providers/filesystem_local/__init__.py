@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -2466,7 +2467,7 @@ class LocalFileSystemProvider(MusicProvider):
             return deleted_files
         try:
             unreachable = await self._unreachable_folders()
-        except MusicAssistantError as err:
+        except ActionUnavailable as err:
             self.logger.warning("Skipping deletions for %s: %s", self.name, err)
             report_current_task_failure(f"Deletions skipped: {err}")
             return set()

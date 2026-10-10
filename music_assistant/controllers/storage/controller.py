@@ -1289,6 +1289,9 @@ class StorageController(CoreController):
 
         :raises ActionUnavailable: When a mount backend does not list its shares in time.
         """
+        if self.mass.running_as_hass_addon:
+            # the Supervisor may not have answered yet when the server started
+            await self._get_mounter(MountBackend.SUPERVISOR)
         paths: set[str] = set()
         for backend, mounter in self._mounters.items():
             try:
