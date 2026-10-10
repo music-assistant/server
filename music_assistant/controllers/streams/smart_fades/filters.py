@@ -9,6 +9,11 @@ import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
 
+# Gain taken off the incoming track while the voice talks over it (0.6 is about -8 dB).
+VOICE_OVER_DUCK_DEPTH = 0.6
+# Ceiling of the voice over mix: a full-scale voice over full-scale music would clip.
+VOICE_OVER_MIX_CEILING_DB = -0.5
+
 
 class Filter(ABC):
     """Abstract base class for audio filters."""
@@ -316,3 +321,53 @@ class StreamingCrossfadeFilter(Filter):
                 f"StreamingCrossfade(pre={self.pre_crossfade_samples}, ns={self.crossfade_samples})"
             )
         return f"StreamingCrossfade(ns={self.crossfade_samples})"
+
+
+class VoiceOverMixFilter(Filter):
+    """
+    Mix the outgoing voice over the start of the incoming track, ducking the track under it.
+
+    The outgoing stream plays untouched. The incoming stream is held at the ducked level
+    for the overlap and ramps back to full level after it; the sum is limited to stay
+    clear of clipping.
+    """
+
+    output_fadeout_label: str = "voice_over"
+    output_fadein_label: str = "voice_over"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        overlap_seconds: float,
+        ramp_seconds: float,
+    ) -> None:
+        """
+        Initialize the voice over mix filter.
+
+        :param overlap_seconds: How long the voice plays over the incoming track.
+        :param ramp_seconds: How long the incoming track takes to return to full level
+            once the overlap has ended.
+        """
+        self.overlap_seconds = overlap_seconds
+        self.ramp_seconds = ramp_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the duck envelope, mix and limiter chain."""
+        overlap = self.overlap_seconds
+        ramp = self.ramp_seconds
+        # 1 - depth while the voice talks, a linear ramp back to 1 after it
+        envelope = (
+            f"1-{VOICE_OVER_DUCK_DEPTH}*max(0\\,min(1\\,({overlap:.3f}+{ramp:.3f}-t)/{ramp:.3f}))"
+        )
+        fadein_chain = f"volume=eval=frame:volume='{envelope}'"
+        # the final output stays unlabeled: this filter ends the chain
+        return [
+            f"{input_fadein_label}{fadein_chain}[voice_over_in]",
+            f"{input_fadeout_label}[voice_over_in]amix=inputs=2:normalize=0,"
+            f"alimiter=limit={VOICE_OVER_MIX_CEILING_DB}dB:level=false:latency=true",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of VoiceOverMixFilter."""
+        return f"VoiceOverMix(overlap={self.overlap_seconds:.2f}s)"

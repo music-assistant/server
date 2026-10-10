@@ -742,6 +742,20 @@ class LocalFileSystemProvider(MusicProvider):
             report_current_task_failure(f"Deletions skipped: {summary}")
         else:
             deleted_files = prev_filenames - cur_filenames
+            if unreachable := await self._unreachable_folders():
+                # a folder whose storage is gone reads as empty, its files are still there
+                self.logger.warning(
+                    "Skipping deletions for %s below unavailable folder(s): %s",
+                    self.name,
+                    ", ".join(unreachable),
+                )
+                # a podcast is tracked by its folder, which can be the unavailable folder itself
+                prefixes = tuple(f"{folder}/" for folder in unreachable)
+                deleted_files = {
+                    path
+                    for path in deleted_files
+                    if path not in unreachable and not path.startswith(prefixes)
+                }
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
@@ -2243,6 +2257,11 @@ class LocalFileSystemProvider(MusicProvider):
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
         return await self.mass.storage.is_available(self.base_path)
+
+    async def _unreachable_folders(self) -> list[str]:
+        """Return the folders below the root, relative to it, whose storage can not be read."""
+        locations = await self.mass.storage.get_unavailable_locations(self.base_path)
+        return [os.path.relpath(path, self.base_path) for path in locations]
 
     @property
     def _availability_probe_id(self) -> str:

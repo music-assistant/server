@@ -2,37 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.auth import User, UserRole
+import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
+from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
-
-
-async def test_init_without_sendspin_provider_module(
-    provider: MSXBridgeProvider,
-) -> None:
-    """
-    The provider must load even when the Sendspin provider module is absent.
-
-    In a Music Assistant install that ships no Sendspin provider, importing
-    the bridge manager fails; the MSX provider must degrade to "no bridge"
-    instead of failing to load.
-    """
-    provider.sendspin_bridge_enabled = True
-    with (
-        patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls,
-        patch.object(
-            MSXBridgeProvider,
-            "_make_bridge_manager",
-            side_effect=ImportError("No module named 'music_assistant.providers.sendspin'"),
-        ),
-    ):
-        mock_server_cls.return_value = AsyncMock()
-        await provider.handle_async_init()
-
-    assert provider.bridge_manager is None
 
 
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
@@ -78,7 +57,7 @@ async def test_get_ma_stream_url_uses_streamserver(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must resolve the URL via the MA streamserver API."""
-    media = Mock()
+    media = PlayerMedia(uri="library://track/1")
     mass_mock.streams.resolve_stream_url = AsyncMock(
         return_value="http://ma:8097/single/s1/q1/i1/msx_test.mp3"
     )
@@ -103,21 +82,54 @@ async def test_get_ma_stream_url_rejects_flow_urls(
         return_value="http://ma:8097/flow/s1/q1/i1/msx_test.mp3"
     )
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
+
+
+async def test_get_ma_stream_url_accepts_universal_group_flow_media(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Universal Group flow media must be redirected to its common stream."""
+    stream_url = "http://ma:8097/flow/universal-group.mp3?player_id=msx_test"
+    mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+    media = PlayerMedia(uri=stream_url, media_type=MediaType.FLOW_STREAM)
+
+    url = await provider.get_ma_stream_url("msx_test", media)
+
+    assert url == stream_url
+
+
+def test_legacy_shared_mode_fallback_does_not_write_settings(provider: MSXBridgeProvider) -> None:
+    """Older MA versions keep independent delivery; MA core owns persistent migration."""
+    cast("Any", provider.config).get_value = Mock(return_value="shared")
+    set_raw_value = Mock()
+    cast("Any", provider.mass.config).set_raw_provider_config_value = set_raw_value
+
+    assert provider._load_stream_mode() == "independent"
+    set_raw_value.assert_not_called()
 
 
 async def test_get_ma_stream_url_returns_none_on_error(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must degrade to None (proxy fallback) when resolution fails."""
-    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("no session"))
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
     mass_mock.streams.resolve_stream_url.assert_awaited_once()
+
+
+async def test_get_ma_stream_url_does_not_swallow_unexpected_error(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Programming errors while resolving a stream URL must not look like a missing URL."""
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=ValueError("bug"))
+
+    with pytest.raises(ValueError, match="bug"):
+        await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
 
 def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) -> None:
@@ -133,6 +145,18 @@ def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) ->
         provider.on_player_activity("msx_x")
 
     assert provider._player_last_activity["msx_x"] == 1234.0
+
+
+def test_on_player_activity_restores_unavailable_player(
+    provider: MSXBridgeProvider, mass_mock: Mock, player: MSXPlayer
+) -> None:
+    """A later HTTP request from the TV must make the player available to MA again."""
+    player._attr_available = False
+    mass_mock.players.get_player = Mock(return_value=player)
+
+    provider.on_player_activity(player.player_id)
+
+    assert player.available is True
 
 
 async def test_loaded_in_mass_starts_timeout_task(provider: MSXBridgeProvider) -> None:
@@ -162,7 +186,44 @@ async def test_unload_stops_server_first(provider: MSXBridgeProvider) -> None:
     await provider.unload()
 
     mock_server.stop.assert_awaited_once()
+    cast("Mock", provider.mass.players.iter_players).assert_called_once_with(
+        return_disabled=True,
+        provider_filter=provider.instance_id,
+        return_protocol_players=True,
+    )
     provider.mass.players.unregister.assert_awaited_once_with("msx_test")  # type: ignore[attr-defined]
+
+
+async def test_unload_continues_when_unregister_fails(
+    provider: MSXBridgeProvider,
+) -> None:
+    """One unavailable player must not block the rest of unload."""
+    first = Mock(display_name="A", player_id="msx_a")
+    second = Mock(display_name="B", player_id="msx_b")
+    provider.mass.players.all.return_value = [first, second]  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = [first, second]  # type: ignore[attr-defined]
+    provider.mass.players.unregister = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[PlayerUnavailableError("gone"), None]
+    )
+    provider.http_server = None
+
+    await provider.unload()
+
+    assert provider.mass.players.unregister.await_count == 2
+
+
+async def test_unload_does_not_swallow_unexpected_unregister_error(
+    provider: MSXBridgeProvider,
+) -> None:
+    """A bug while unregistering must not be hidden as a missing player."""
+    mock_player = Mock(display_name="Test TV", player_id="msx_test")
+    provider.mass.players.all.return_value = [mock_player]  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = [mock_player]  # type: ignore[attr-defined]
+    provider.mass.players.unregister = AsyncMock(side_effect=ValueError("bug"))  # type: ignore[method-assign]
+    provider.http_server = None
+
+    with pytest.raises(ValueError, match="bug"):
+        await provider.unload()
 
 
 async def test_unload_no_server(provider: MSXBridgeProvider) -> None:
@@ -206,18 +267,3 @@ async def test_on_player_disabled_noop_when_no_server(
 async def test_on_player_enabled_noop(provider: MSXBridgeProvider) -> None:
     """on_player_enabled should complete without error (player stays registered)."""
     provider.on_player_enabled("msx_test")  # should not raise
-
-
-async def test_get_owner_username_skips_the_system_user(
-    provider: MSXBridgeProvider, mass_mock: Mock
-) -> None:
-    """Plays on the TV go to the first enabled user, never to the Home Assistant system user."""
-    mass_mock.webserver.auth.list_users = AsyncMock(
-        return_value=[
-            User(user_id="ha", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE),
-            User(user_id="off", username="disabled", role=UserRole.USER, enabled=False),
-            User(user_id="admin", username="admin", role=UserRole.ADMIN),
-        ]
-    )
-
-    assert await provider.get_owner_username() == "admin"

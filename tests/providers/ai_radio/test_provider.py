@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.auth import Scope
@@ -577,6 +577,7 @@ def _make_engine_provider(
     provider.mass = cast("Any", mass)
     provider.logger = logging.getLogger("test.ai_radio")
     provider._dj_queues = {}
+    provider._flow_mode_queues = {}
     provider._unloading = False
     provider._engine_recheck_task = None
     provider._unregister_handles = []
@@ -885,6 +886,21 @@ async def test_unload_cancels_an_in_flight_queue_dj_replan() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(replan_task, timeout=5)
+
+
+async def test_unload_releases_the_flow_mode_its_shows_still_hold() -> None:
+    """Unloading lets go of every queue a show still holds in flow mode."""
+    provider, _, _ = _make_engine_provider([])
+    provider._flow_mode_queues = {"queue-1": "sess1", "queue-2": "sess2"}
+
+    await provider.unload()
+
+    set_flow_mode_required = cast("Any", provider.mass).streams.set_flow_mode_required
+    assert set_flow_mode_required.call_args_list == [
+        call("queue-1", "ai_radio", False),
+        call("queue-2", "ai_radio", False),
+    ]
+    assert provider._flow_mode_queues == {}
 
 
 async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_wait(

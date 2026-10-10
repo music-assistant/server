@@ -278,6 +278,8 @@ class StreamsController(CoreController):
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
         # queue stream is live. Announcements are a separate path that never runs analysis.
         self._active_output_streams = 0
+        # owners (e.g. a plugin) that require flow mode for a queue, by queue id
+        self._flow_mode_owners: dict[str, set[str]] = {}
 
     @property
     def audio_analysis(self) -> AudioAnalysisController:
@@ -419,6 +421,35 @@ class StreamsController(CoreController):
     def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
         """Return whether the queue's effective crossfade mode is smart crossfade."""
         return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
+
+    def set_flow_mode_required(self, queue_id: str, owner: str, required: bool) -> None:
+        """
+        Require (or release) flow mode for a queue on behalf of an owner.
+
+        A queue is streamed in flow mode while any owner requires it. Like the audio
+        overlay, this takes effect at the next play start: a running player is never
+        switched over.
+
+        :param queue_id: Queue to require flow mode for.
+        :param owner: Identifier of the requester, e.g. a provider instance id.
+        :param required: True to require flow mode, False to release this owner's claim.
+        """
+        if required:
+            self._flow_mode_owners.setdefault(queue_id, set()).add(owner)
+            return
+        if (owners := self._flow_mode_owners.get(queue_id)) is None:
+            return
+        owners.discard(owner)
+        if not owners:
+            del self._flow_mode_owners[queue_id]
+
+    def flow_mode_required(self, queue_id: str) -> bool:
+        """
+        Return whether any owner requires flow mode for the queue.
+
+        :param queue_id: Queue to check.
+        """
+        return queue_id in self._flow_mode_owners
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -681,7 +712,12 @@ class StreamsController(CoreController):
         # This is done here (just-in-time) because the player's protocol determines this
         flow_mode = (
             protocol_player is not None
-            and (protocol_player.flow_mode or crossfade_needs_flow_mode or overlay_needs_flow_mode)
+            and (
+                protocol_player.flow_mode
+                or crossfade_needs_flow_mode
+                or overlay_needs_flow_mode
+                or (queue_id is not None and self.flow_mode_required(queue_id))
+            )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
@@ -850,6 +886,10 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
+            if queue_item.streamdetails.tail_overlap is not None:
+                self.logger.debug(
+                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
+                )
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
@@ -1294,7 +1334,14 @@ class StreamsController(CoreController):
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+            # a declared tail overlap is mixed like a crossfade, and a queue held in flow
+            # mode by a plugin is about to carry such items
+            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
+            or self.flow_mode_required(queue_id)
+            or (
+                start_queue_item.streamdetails is not None
+                and start_queue_item.streamdetails.tail_overlap is not None
+            ),
             overlay_active=overlay_active(queue),
         )
 
@@ -1683,6 +1730,7 @@ class StreamsController(CoreController):
                 or (protocol_player is not None and protocol_player.flow_mode)
                 or crossfade_needs_flow_mode
                 or overlay_needs_flow_mode
+                or self.flow_mode_required(queue_id)
             )
             if media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
                 # flow_mode for live/infinite streams is pointless
@@ -1714,6 +1762,10 @@ class StreamsController(CoreController):
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
+            if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
+                self.logger.debug(
+                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
+                )
             if queue is not None:
                 self._update_audio_processing_context(
                     queue=queue,
