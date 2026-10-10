@@ -31,7 +31,6 @@ from music_assistant_models.media_items import (
     AlbumSummary,
     Artist,
     ItemMapping,
-    MediaItemImage,
     ProviderMapping,
     Track,
     UniqueList,
@@ -506,10 +505,6 @@ class AlbumsController(MediaControllerBase[Album]):
         result: list[Track] = list(db_items)
         for provider_track in select_album_tracks(db_items, listings):
             provider_track.album = library_album
-            # always prefer album image
-            album_images = [library_album.image] if library_album.image else []
-            track_images: list[MediaItemImage] = provider_track.metadata.images or []
-            provider_track.metadata.images = UniqueList(album_images + track_images)
             result.append(provider_track)
         if lookup_error is not None and not any(track.available for track in result):
             # nothing could be played at all, so surface the reason instead of an empty list
