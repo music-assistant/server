@@ -312,6 +312,22 @@ async def test_existing_artwork_is_kept(provider: AIArtworkProvider) -> None:
     assert list(playlist.metadata.images or []) == [own_cover]
 
 
+async def test_artwork_that_can_not_be_shown_is_not_kept(provider: AIArtworkProvider) -> None:
+    """A local file the built-in provider refuses to serve counts as no artwork at all."""
+    _mass(provider).get_provider("builtin").resolve_image = AsyncMock(
+        side_effect=FileNotFoundError("Invalid image reference")
+    )
+    broken_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
+    playlist = _smart_playlist(images=[broken_cover])
+
+    await provider.get_playlist_metadata(playlist)
+
+    assert _engine_calls(provider) == 1
+    images = list(playlist.metadata.images or [])
+    assert images[0].provider == INSTANCE_ID
+    assert images[1] == broken_cover
+
+
 async def test_existing_artwork_is_replaced_when_not_kept(provider: AIArtworkProvider) -> None:
     """With keeping turned off, the generated cover goes in front of the existing one."""
     _set_config(provider, **{CONF_KEEP_EXISTING_ARTWORK: False})
@@ -788,6 +804,7 @@ def _make_provider(tmp_path: Path) -> AIArtworkProvider:
     collage_provider.domain = "playlist_metadata"
     builtin_provider = MagicMock()
     builtin_provider.domain = "builtin"
+    builtin_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
     providers = {
         "smart_playlist": smart_playlist_provider,
         "playlist_metadata": collage_provider,
