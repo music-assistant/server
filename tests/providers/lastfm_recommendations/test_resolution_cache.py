@@ -176,3 +176,30 @@ async def test_provider_finishing_loading_during_the_search_is_no_miss() -> None
     mass.music.tracks.search = AsyncMock(side_effect=_search_while_provider_finishes)
     with pytest.raises(parsers.SearchIncomplete):
         await parsers.parse_track(LASTFM_TRACK, mass, INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_a_match_in_second_place_is_found() -> None:
+    """Every candidate a provider returns is checked, not only the first."""
+    mapping = ItemMapping(
+        media_type=Track.media_type, item_id="temp", provider="x", name="Chasing Cars"
+    )
+    other = Track(item_id="2", provider="p", name="Run", provider_mappings=set())
+    ctrl = Mock()
+    ctrl.search = AsyncMock(return_value=[other, _track()])
+    result = await parsers._search_providers_concurrent(ctrl, mapping, [Mock(name="p")], None)
+    assert result is not None
+    assert result.name == "Chasing Cars"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_provider_makes_resolution_incomplete() -> None:
+    """A provider that is unavailable was not searched, so finding nothing is no miss."""
+    mapping = ItemMapping(media_type=Track.media_type, item_id="temp", provider="x", name="a")
+    ctrl = Mock()
+    ctrl.search = AsyncMock(return_value=[])
+    with pytest.raises(parsers.SearchIncomplete):
+        await parsers._search_providers_concurrent(
+            ctrl, mapping, [Mock(name="p", available=False)], None
+        )
+    ctrl.search.assert_not_awaited()

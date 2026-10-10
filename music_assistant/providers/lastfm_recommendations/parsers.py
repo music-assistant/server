@@ -110,16 +110,21 @@ async def _search_provider(
     ctrl: ArtistsController | AlbumsController | TracksController,
     item_mapping: ItemMapping,
     provider: Any,
-) -> Artist | Album | Track | object | None:
+) -> list[Artist | Album | Track] | object:
     """
-    Search a single provider for a matching item.
+    Search a single provider for candidates of an item.
 
-    Returns _SEARCH_FAILED when the search itself failed (e.g. the provider is rate limited).
+    Returns _SEARCH_FAILED when the provider could not be searched (e.g. it is rate limited
+    or unavailable).
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
     :param provider: Provider instance to search.
     """
+    if not provider.available:
+        # the controller answers an unavailable provider with no results, which would read
+        # as the provider not having the item
+        return _SEARCH_FAILED
     async with _SEARCH_SEMAPHORE:
         try:
             LOGGER.debug(
@@ -132,10 +137,7 @@ async def _search_provider(
             search_results = await ctrl.search(
                 item_mapping.name, provider.instance_id, limit=PROVIDER_SEARCH_LIMIT
             )
-            if not search_results:
-                return None
-
-            return search_results[0]
+            return list(search_results)
         except MusicAssistantError as err:
             LOGGER.debug("Provider %s search failed: %s", provider.name, type(err).__name__)
             return _SEARCH_FAILED
@@ -163,14 +165,19 @@ async def _search_providers_concurrent(
 
     search_failed = False
     for task in asyncio.as_completed(tasks):
-        result = await task
-        if result is _SEARCH_FAILED:
+        candidates = await task
+        if candidates is _SEARCH_FAILED:
             search_failed = True
             continue
-        if not isinstance(result, Artist | Album | Track):
-            continue
-
-        if _is_matching_result(item_mapping, result, artist_name):
+        for result in cast("list[Artist | Album | Track]", candidates):
+            if not _is_matching_result(item_mapping, result, artist_name):
+                LOGGER.debug(
+                    "Rejecting %s from %s: name mismatch (searched: %s)",
+                    result.name,
+                    result.provider,
+                    item_mapping.name,
+                )
+                continue
             LOGGER.debug(
                 "Match on %s: %s (searched: %s)",
                 result.provider,
@@ -182,13 +189,6 @@ async def _search_providers_concurrent(
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             return result
-
-        LOGGER.debug(
-            "Rejecting %s from %s: name mismatch (searched: %s)",
-            result.name,
-            result.provider,
-            item_mapping.name,
-        )
 
     if search_failed:
         raise SearchIncomplete(item_mapping.name)
