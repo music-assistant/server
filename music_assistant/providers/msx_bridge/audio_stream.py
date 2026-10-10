@@ -175,14 +175,17 @@ class AudioPipeline:
 
         async def producer() -> None:
             try:
-                async for chunk in get_ffmpeg_stream(
-                    audio_input=audio_source,
-                    input_format=pcm_format,
-                    output_format=out_format,
-                    filter_params=filter_params,
-                    extra_input_args=output_pacing_args(pacing_profile),
-                ):
-                    await chunk_queue.put(chunk)
+                async with contextlib.aclosing(
+                    get_ffmpeg_stream(
+                        audio_input=audio_source,
+                        input_format=pcm_format,
+                        output_format=out_format,
+                        filter_params=filter_params,
+                        extra_input_args=output_pacing_args(pacing_profile),
+                    )
+                ) as ffmpeg_stream:
+                    async for chunk in ffmpeg_stream:
+                        await chunk_queue.put(chunk)
             finally:
                 producer_done.set()
                 _signal_eof(chunk_queue)
