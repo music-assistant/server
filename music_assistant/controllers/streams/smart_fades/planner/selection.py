@@ -42,20 +42,19 @@ class CandidateSelector:
         policies: Sequence[Policy],
         logger: logging.Logger,
         *,
-        segue_replaces_cuts_only: bool = False,
+        lone_segue_wins: bool = True,
     ) -> None:
         """
         Initialize the selector with the policy set to score every candidate against.
 
         :param policies: The policies every candidate is judged by, in evaluation order.
         :param logger: Logger for the scoreboard and the selection.
-        :param segue_replaces_cuts_only: Let a segue win only in place of a cut, never in
-            place of a blend or on its own; for a pass that a rescue pass follows, which
-            then weighs a segue that had no cut to replace.
+        :param lone_segue_wins: Let a segue win when no other candidate survives; False
+            for a pass that a rescue pass follows, which then weighs it.
         """
         self._policies = tuple(policies)
         self._logger = logger
-        self._segue_replaces_cuts_only = segue_replaces_cuts_only
+        self._lone_segue_wins = lone_segue_wins
 
     def select(
         self, candidates: Sequence[Candidate], ctx: TransitionContext
@@ -64,9 +63,9 @@ class CandidateSelector:
         Score every candidate; return the lowest-penalty survivor, or None when none may ship.
 
         None means every candidate was rejected, or only segues survived a selector
-        that lets a segue replace a cut only. A segue competes only when it lasts
-        at least as long as the best other survivor, so it never shortens the
-        transition that would ship without it.
+        that doesn't let a lone segue win. A segue never replaces a surviving blend,
+        and replaces a cut only when it lasts at least as long, so it never shortens
+        the transition that would ship without it.
         Ties resolve to whichever candidate appears earlier in ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
@@ -88,18 +87,18 @@ class CandidateSelector:
             return None
         others = [e for e in survivors if e.candidate.plan.style is not TransitionStyle.SEGUE]
         replaced = min(others, key=lambda entry: entry.total_penalty) if others else None
-        if self._segue_replaces_cuts_only and (
-            replaced is None or replaced.candidate.plan.style is not TransitionStyle.CUT
-        ):
-            if not others:
+        if replaced is None:
+            if not self._lone_segue_wins:
                 self._logger.debug(
                     "only segues survive (%d of %d candidates); none wins on its own",
                     len(survivors),
                     len(scored),
                 )
                 return None
+        elif replaced.candidate.plan.style is TransitionStyle.BLEND:
+            # a beatmatchable pair keeps its blend
             survivors = others
-        elif replaced is not None:
+        else:
             survivors = [
                 entry
                 for entry in survivors

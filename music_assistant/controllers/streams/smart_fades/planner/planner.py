@@ -113,9 +113,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
             )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
-        # a beatmatchable pair keeps its blend, so here a segue may only replace a cut;
-        # when every other candidate is rejected, the rescue pass weighs it
-        selector = CandidateSelector(default_policies(), self.logger, segue_replaces_cuts_only=True)
+        # a segue never replaces a blend and here never wins on its own: when every
+        # other candidate is rejected, the rescue pass weighs it
+        selector = CandidateSelector(default_policies(), self.logger, lone_segue_wins=False)
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:

@@ -6,6 +6,7 @@ import dataclasses
 import logging
 
 import numpy as np
+import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
@@ -213,13 +214,13 @@ class TestCandidateSelector:
         assert result is not None
         assert result.candidate is short_segue
 
-    def test_a_lone_segue_waits_when_it_may_only_replace_a_cut(self) -> None:
-        """A selector told so ships no segue without a cut to replace."""
+    def test_a_lone_segue_waits_when_it_may_not_win_alone(self) -> None:
+        """A selector told so ships no segue without another survivor to replace."""
         segue = _named("segue", style=TransitionStyle.SEGUE, duration=8.0)
         policies = [_FixedPenaltyPolicy()]
         logger = logging.getLogger(__name__)
 
-        strict = CandidateSelector(policies, logger, segue_replaces_cuts_only=True)
+        strict = CandidateSelector(policies, logger, lone_segue_wins=False)
         waiting = strict.select([segue], _ctx())
         alone = CandidateSelector(policies, logger).select([segue], _ctx())
 
@@ -227,15 +228,16 @@ class TestCandidateSelector:
         assert alone is not None
         assert alone.candidate is segue
 
-    def test_a_segue_never_replaces_a_blend_when_it_may_only_replace_a_cut(self) -> None:
-        """A longer, cheaper segue leaves a winning blend in place, but replaces a winning cut."""
+    @pytest.mark.parametrize("lone_segue_wins", [False, True])
+    def test_a_segue_never_replaces_a_blend(self, lone_segue_wins: bool) -> None:
+        """A longer, cheaper segue leaves a surviving blend in place, but replaces a cut."""
         segue = _named("segue", style=TransitionStyle.SEGUE, duration=15.0)
         blend = _named("blend", style=TransitionStyle.BLEND, duration=8.0)
         cut = _named("cut", style=TransitionStyle.CUT, duration=8.0)
         selector = CandidateSelector(
             policies=[_BySourcePenaltyPolicy({"segue": 0.0, "blend": 15.0, "cut": 15.0})],
             logger=logging.getLogger(__name__),
-            segue_replaces_cuts_only=True,
+            lone_segue_wins=lone_segue_wins,
         )
 
         over_blend = selector.select([blend, segue], _ctx())
