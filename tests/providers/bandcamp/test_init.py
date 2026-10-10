@@ -24,8 +24,8 @@ async def bandcamp_provider(  # noqa: PLR0915
     # Mock the BandcampAPIClient to avoid real API calls
     with (
         mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class,
-        # the real throttler paces background requests 0.4s apart, which would make every
-        # test wait out its own sync
+        # the real throttler spreads background requests over its rate limit period, which
+        # would make every test wait out its own sync
         mock.patch.object(BandcampProvider.throttler.throttler, "acquire", return_value=0.0),
     ):
         mock_client = mock.AsyncMock()
@@ -122,6 +122,7 @@ async def test_search_functionality(mass: MusicAssistant) -> None:
     bandcamp_provider = next(prov for prov in mass.music.providers if prov.domain == "bandcamp")
     assert isinstance(bandcamp_provider, BandcampProvider)
     search_results = [
+        # the band row resolves the track's artist without a performer lookup search
         SearchResultArtist(id=321, name="Search Test Artist", url="https://search.bandcamp.com"),
         SearchResultTrack(
             id=987,
