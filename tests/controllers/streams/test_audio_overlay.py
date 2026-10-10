@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat, ItemMapping
 
-from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
+from music_assistant.controllers.streams.audio import (
+    StreamsAudio,
+    overlay_active,
+    overlay_mixed_in,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -37,6 +41,13 @@ def _make_queue(
     return queue
 
 
+def _make_queue_item(media_type: MediaType) -> MagicMock:
+    """Build a QueueItem double carrying just the media type."""
+    queue_item = MagicMock()
+    queue_item.media_type = media_type
+    return queue_item
+
+
 def _make_source_mapping() -> ItemMapping:
     return ItemMapping(
         media_type=MediaType.SOUND_EFFECT,
@@ -59,6 +70,18 @@ def test_overlay_active() -> None:
     assert overlay_active(_make_queue(enabled=True, source=_make_source_mapping()))
     assert not overlay_active(_make_queue(enabled=True, source=None))
     assert not overlay_active(_make_queue(enabled=False, source=_make_source_mapping()))
+
+
+def test_overlay_mixed_in() -> None:
+    """The flow stream always carries an active overlay, a per-item stream only for radio."""
+    active = _make_queue(enabled=True, source=_make_source_mapping())
+    radio, track = _make_queue_item(MediaType.RADIO), _make_queue_item(MediaType.TRACK)
+    assert overlay_mixed_in(active, track, flow_mode=True)
+    assert overlay_mixed_in(active, radio, flow_mode=False)
+    assert not overlay_mixed_in(active, track, flow_mode=False)
+    inactive = _make_queue(enabled=False, source=_make_source_mapping())
+    assert not overlay_mixed_in(inactive, track, flow_mode=True)
+    assert not overlay_mixed_in(inactive, radio, flow_mode=False)
 
 
 # --- get_overlay_mixed_stream ---
