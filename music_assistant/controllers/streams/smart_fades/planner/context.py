@@ -183,6 +183,9 @@ class TransitionContext:
     in_kickless: bool = False
     # None without RMS energy on both decks
     segue: SegueFacts | None = None
+    # the outgoing tail mixes out too early to anchor there, so default_anchor
+    # sits at its audible end
+    quiet_outro: bool = False
 
     @property
     def preferred_style(self) -> TransitionStyle:
@@ -202,8 +205,7 @@ def build_transition_context(
     Build the immutable per-transition context from the two tracks' analysis.
 
     Raises ``SmartFadeNotApplicable`` when the outgoing tail is too short
-    (mostly silent, mixed out too early, or too short once anchored) for any
-    candidate to be built.
+    (mostly silent, or too short once anchored) for any candidate to be built.
 
     :param fade_out_analysis: Analysis data for the outgoing track.
     :param fade_in_analysis: Analysis data for the incoming track.
@@ -261,6 +263,7 @@ def build_transition_context(
         kick_anchor,
         grid_beats,
         grid_downbeats,
+        quiet_outro,
     ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration)
     outgoing = replace(outgoing, beats=grid_beats, downbeats=grid_downbeats)
 
@@ -354,7 +357,7 @@ def build_transition_context(
         VERBOSE_LOG_LEVEL,
         "transition context: tier=%s bpm=%.1f->%.1f (diff=%.1f%%) cross_meter=%s buffer=%.1fs "
         "offset=%.1fs audio_end=%.1fs anchor=%.2f mix_out=%.2f kick=%s fade_onset=%s coda=%s "
-        "natural_entry=%.2f vocals=%s kickless=%s/%s quiet_tail=%s quiet_head=%s",
+        "natural_entry=%.2f vocals=%s kickless=%s/%s quiet_outro=%s quiet_tail=%s quiet_head=%s",
         tier,
         outgoing.bpm,
         incoming.bpm,
@@ -372,6 +375,7 @@ def build_transition_context(
         vocal_coverage,
         out_kickless,
         in_kickless,
+        quiet_outro,
         f"{segue.quiet_tail:.2f}" if segue is not None else None,
         f"{segue.quiet_head:.2f}" if segue is not None else None,
     )
@@ -405,19 +409,27 @@ def build_transition_context(
         out_kickless=out_kickless,
         in_kickless=in_kickless,
         segue=segue,
+        quiet_outro=quiet_outro,
     )
 
 
 def _cue_outgoing_tail(
     outgoing: Deck, outgoing_profile: BandProfile | None, buffer_duration: float
 ) -> tuple[
-    float, float, float, float, float | None, npt.NDArray[np.float32], npt.NDArray[np.float32]
+    float,
+    float,
+    float,
+    float,
+    float | None,
+    npt.NDArray[np.float32],
+    npt.NDArray[np.float32],
+    bool,
 ]:
     """
     Anchor the outgoing tail at its energy mix-out point, snapped to a downbeat.
 
     Returns ``(buffer_offset, audio_end, tier_anchor, mix_out_anchor,
-    kick_anchor, grid_beats, grid_downbeats)``. ``tier_anchor`` is the
+    kick_anchor, grid_beats, grid_downbeats, quiet_outro)``. ``tier_anchor`` is the
     kick-FOLDED anchor the old planner called ``effective_end``: applicability
     and the tier decision key on it, so a kick-timed track keeps its original
     (shorter) blendability window. ``mix_out_anchor`` (pure full-band) and
@@ -425,7 +437,8 @@ def _cue_outgoing_tail(
     which one a candidate should start from is a candidate-factory decision.
     ``grid_beats``/``grid_downbeats`` are the unmasked (only dropping
     pre-buffer beats) buffer-local grids, for a later candidate to mask to
-    whichever anchor it picks.
+    whichever anchor it picks. ``quiet_outro`` is True when the tail mixes out
+    too early to anchor there; it is then anchored at its audible end.
     """
     # ACTUAL buffer length, not the constant 45s: the holdback yield loop leaves
     # up to ~1s less depending on chunk boundaries, and every buffer-local
@@ -449,12 +462,10 @@ def _cue_outgoing_tail(
     folded_mix_out = kick_anchor if kick_anchor is not None else raw_mix_out
     if silence_end < MIN_EFFECTIVE_FADE_BUFFER:
         raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({silence_end:.1f}s audible)")
-    if folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER:
-        raise SmartFadeNotApplicable(
-            "outgoing tail mixes out too early "
-            f"(energy mix-out at {folded_mix_out:.1f}s of {silence_end:.1f}s audible)"
-        )
-    tier_anchor = min(silence_end, folded_mix_out)
+    # a tail that mixes out this early is a quiet but audible musical outro, which
+    # a segue overlaps: anchor it at its audible end instead
+    quiet_outro = folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER
+    tier_anchor = silence_end if quiet_outro else min(silence_end, folded_mix_out)
 
     # Shift fade-out beats from full-track to buffer-local coordinates
     beats = outgoing.beats - buffer_offset
@@ -488,6 +499,7 @@ def _cue_outgoing_tail(
         kick_anchor,
         grid_beats,
         grid_downbeats,
+        quiet_outro,
     )
 
 

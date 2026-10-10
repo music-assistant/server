@@ -230,6 +230,29 @@ class TestSegueScenarios:
         assert plan.fade_out_window <= 20.0
         assert plan.crossfade_duration <= plan.fade_out_window
 
+    def test_a_quiet_musical_outro_segues_instead_of_giving_up(self) -> None:
+        """An outro under the mix-out floor for the whole buffer segues over its last 15s."""
+        out = _track(
+            120.0,
+            rms=_envelope(0.5, (190.0, DURATION, 0.15)),
+            low=_envelope(0.5, (190.0, DURATION, 0.01)),
+        )
+
+        plan = _plan(out, _track(150.0))
+
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.fade_out_window == pytest.approx(45.0)
+        assert plan.crossfade_duration == pytest.approx(15.0)
+        assert plan.fadeout_curve == "nofade"
+
+    def test_a_twelve_second_buffer_still_plans_within_its_room(self) -> None:
+        """With only 12s of outgoing room the quiet tail fills it and the plan fits."""
+        plan = _plan(_quiet_tail_out(), _track(150.0), buffer=12.0)
+
+        assert plan.style is TransitionStyle.SEGUE
+        assert plan.fade_out_window <= 12.0
+        assert plan.crossfade_duration <= plan.fade_out_window
+
     def test_a_segue_with_no_rival_in_the_main_pass_wins_the_rescue_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
