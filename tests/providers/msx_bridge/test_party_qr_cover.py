@@ -225,6 +225,17 @@ async def test_qr_cover_concurrent_misses_coalesce(
 
     monkeypatch.setattr(party_module, "stamp_qr_on_cover", _tracking_stamp)
     server = MSXHTTPServer(provider, 0)
+    all_joined = asyncio.Event()
+    joined: list[int] = []
+    qr_cover_task = server.party.qr_cover_task
+
+    def _counting_qr_cover_task(*args: Any) -> asyncio.Task[bytes]:
+        joined.append(1)
+        if len(joined) == 5:
+            all_joined.set()
+        return qr_cover_task(*args)
+
+    monkeypatch.setattr(server.party, "qr_cover_task", _counting_qr_cover_task)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
@@ -236,7 +247,7 @@ async def test_qr_cover_concurrent_misses_coalesce(
             )
             for _ in range(5)
         ]
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(all_joined.wait(), timeout=5)
         release.set()
         responses = await asyncio.gather(*requests)
         assert all(r.status == 200 for r in responses)

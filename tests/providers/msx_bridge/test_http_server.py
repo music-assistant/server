@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 from urllib.parse import parse_qs, quote, urlsplit
 
 import aiohttp
@@ -32,8 +32,6 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
@@ -47,6 +45,7 @@ from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.providers.msx_bridge.factories import album as make_album
 from tests.providers.msx_bridge.factories import artist as make_artist
+from tests.providers.msx_bridge.factories import player_queue
 from tests.providers.msx_bridge.factories import playlist as make_playlist
 from tests.providers.msx_bridge.factories import track as make_track
 
@@ -264,17 +263,10 @@ async def test_stream_not_msx_player(provider: MSXBridgeProvider, mass_mock: Moc
         await client.close()
 
 
-@pytest.mark.skip(reason="stream test hangs with TestClient/streaming on some platforms")
 async def test_stream_success(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """GET /stream/{id} should stream audio via internal API."""
-    mock_player = Mock(spec=MSXPlayer)
-    mock_media = PlayerMedia(uri="library://track/1", duration=180)
-    mock_player.current_media = mock_media
-    mock_player.output_format = "mp3"
+    """GET /stream/{id} should stream the player's current media."""
+    _make_audio_player(mass_mock, provider)
     token = provider.get_stream_token("msx_test")
-    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
-
-    # Mock get_stream to return an async generator
     mass_mock.streams = Mock()
     mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm-data"]))
     mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
@@ -291,9 +283,7 @@ async def test_stream_success(provider: MSXBridgeProvider, mass_mock: Mock) -> N
             resp = await client.get(f"/stream/msx_test?token={token}")
             assert resp.status == 200
             assert resp.headers["Content-Type"] == "audio/mpeg"
-            body = await resp.read()
-            assert b"encoded-chunk-1" in body
-            assert b"encoded-chunk-2" in body
+            assert await resp.read() == b"encoded-chunk-1encoded-chunk-2"
     finally:
         await client.close()
 
@@ -467,6 +457,7 @@ async def test_msx_library_pages_fail_soft_for_expected_errors(
 def _register_msx_player(mass_mock: Mock, provider: MSXBridgeProvider, player_id: str) -> MSXPlayer:
     """Create an MSXPlayer and register it with the mass_mock so _get_msx_player passes."""
     player = MSXPlayer(provider=provider, player_id=player_id)
+    player.update_state = Mock()  # type: ignore[misc,method-assign]
     mass_mock.players.get_player = Mock(
         side_effect=lambda pid, **_kwargs: player if pid == player_id else None
     )
@@ -492,73 +483,40 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         await client.close()
 
 
-@pytest.mark.parametrize("default_option", [QueueOption.ADD, QueueOption.NEXT])
 @pytest.mark.parametrize("container_type", ["album", "playlist"])
-async def test_play_context_replaces_queue_with_non_replace_default(
-    provider: MSXBridgeProvider, mass_mock: Mock, default_option: QueueOption, container_type: str
+async def test_play_context_replaces_queue_and_selects_exact_occurrence(
+    provider: MSXBridgeProvider, mass_mock: Mock, container_type: str
 ) -> None:
-    """Selecting a container replaces old items and selects the exact duplicate occurrence."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
-    old_items = [_make_queue_item("library://track/11", queue_item_id="old")]
+    """Selecting a container replaces the queue and plays the clicked duplicate occurrence."""
+    _register_msx_player(mass_mock, provider, "msx_test")
+    queue_items = [_make_queue_item("library://track/11", queue_item_id="old")]
     new_items = [
         _make_queue_item("library://track/11", queue_item_id="a"),
         _make_queue_item("library://track/12", queue_item_id="b"),
         _make_queue_item("library://track/11", queue_item_id="c"),
     ]
-    queue = _wire_queue(mass_mock, old_items)
-    queue.state = PlaybackState.PLAYING
-    queue.current_item = old_items[0]
-    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
-    ctrl.mass = MagicMock()
-    ctrl.logger = Mock()
-    ctrl.signal_update = Mock()  # type: ignore[method-assign]
-    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
-    ctrl._queue_data = {"msx_test": PlayerQueueData(queue=queue, items=old_items)}
+    queue = _wire_queue(mass_mock, queue_items)
 
-    async def play_index(
-        queue_id: str, index: int | str, *_args: object, **_kwargs: object
-    ) -> None:
-        index = (
-            index
-            if isinstance(index, int)
-            else next(
-                i
-                for i, item in enumerate(ctrl._queue_data[queue_id].items)
-                if item.queue_item_id == index
-            )
-        )
-        queue.current_index = index
-        item = ctrl._queue_data[queue_id].items[index]
-        await player.play_media(PlayerMedia(uri=item.uri, queue_item_id=item.queue_item_id))
+    async def _load_container(*_args: object, **_kwargs: object) -> None:
+        queue_items[:] = new_items
+        queue.items = len(new_items)
 
-    ctrl.play_index = play_index  # type: ignore[method-assign]
-
-    async def play_media(queue_id: str, _uri: str, *, option: QueueOption | None = None) -> None:
-        await ctrl._enqueue_with_option(queue_id, new_items, option or default_option)
-
-    mass_mock.player_queues.play_media = play_media
-    mass_mock.player_queues.play_index = play_index
-    mass_mock.player_queues.items = ctrl.items
+    mass_mock.player_queues.play_media = AsyncMock(side_effect=_load_container)
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock()) as wait:
-            response = await client.get(
-                f"/api/play-context/msx_test?uri=library://{container_type}/9"
-                "&start=2&track=library://track/11"
-            )
+        uri = f"library://{container_type}/9"
+        response = await client.get(
+            f"/api/play-context/msx_test?uri={uri}&start=2&track=library://track/11"
+        )
         assert response.status == 200
-        assert [item.queue_item_id for item in ctrl._queue_data["msx_test"].items] == [
-            "a",
-            "b",
-            "c",
-        ]
-        assert queue.current_index == 2
-        assert player.current_media is not None
-        assert player.current_media.queue_item_id == "c"
-        wait.assert_not_awaited()
+        mass_mock.player_queues.play_media.assert_awaited_once_with(
+            "msx_test", uri, option=QueueOption.REPLACE
+        )
+        mass_mock.player_queues.play_index.assert_awaited_once_with("msx_test", "c")
+        action = (await response.json())["response"]["data"]["action"]
+        assert "/msx/queue-playlist/msx_test.json?start=2&" in action
     finally:
         await client.close()
 
@@ -567,7 +525,7 @@ async def test_play_context_enqueues_container_then_index(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """GET /api/play-context plays the container, then jumps to start index."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
+    _register_msx_player(mass_mock, provider, "msx_test")
     items = [
         _make_queue_item("library://track/11", queue_item_id="a"),
         _make_queue_item("library://track/12", queue_item_id="b"),
@@ -579,8 +537,7 @@ async def test_play_context_enqueues_container_then_index(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock(return_value=player.current_media)):
-            resp = await client.get("/api/play-context/msx_test?uri=library://album/9&start=2")
+        resp = await client.get("/api/play-context/msx_test?uri=library://album/9&start=2")
         assert resp.status == 200
         mass_mock.player_queues.play_media.assert_awaited_once_with(
             "msx_test", "library://album/9", option=QueueOption.REPLACE
@@ -589,8 +546,7 @@ async def test_play_context_enqueues_container_then_index(
         data = await resp.json()
         action = data["response"]["data"]["action"]
         assert action.startswith("playlist:")
-        assert "/msx/queue-playlist/msx_test.json" in action
-        assert "start=" in action
+        assert "/msx/queue-playlist/msx_test.json?start=2&" in action
     finally:
         await client.close()
 
@@ -599,7 +555,7 @@ async def test_play_context_preserves_index_above_ten_thousand(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """Container playback must not clamp a valid long-queue index."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
+    _register_msx_player(mass_mock, provider, "msx_test")
     items = [
         _make_queue_item(f"library://track/{index}", queue_item_id=str(index))
         for index in range(12002)
@@ -609,10 +565,7 @@ async def test_play_context_preserves_index_above_ten_thousand(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock(return_value=player.current_media)):
-            response = await client.get(
-                "/api/play-context/msx_test?uri=library://album/9&start=12001"
-            )
+        response = await client.get("/api/play-context/msx_test?uri=library://album/9&start=12001")
         assert response.status == 200
         mass_mock.player_queues.play_index.assert_awaited_once_with("msx_test", "12001")
     finally:
@@ -623,7 +576,7 @@ async def test_play_context_starts_at_track_uri(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """GET /api/play-context prefers the selected track over the numeric index."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
+    _register_msx_player(mass_mock, provider, "msx_test")
     items = [
         _make_queue_item("library://track/11", queue_item_id="a"),
         _make_queue_item("library://track/12", queue_item_id="b"),
@@ -635,10 +588,9 @@ async def test_play_context_starts_at_track_uri(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock(return_value=player.current_media)):
-            resp = await client.get(
-                "/api/play-context/msx_test?uri=library://album/9&start=0&track=library://track/13"
-            )
+        resp = await client.get(
+            "/api/play-context/msx_test?uri=library://album/9&start=0&track=library://track/13"
+        )
         assert resp.status == 200
         mass_mock.player_queues.play_index.assert_awaited_once_with("msx_test", "c")
     finally:
@@ -649,7 +601,7 @@ async def test_play_context_prefers_start_index_for_duplicate_uri(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """The clicked index wins when the same track URI appears twice."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
+    _register_msx_player(mass_mock, provider, "msx_test")
     items = [
         _make_queue_item("library://track/11", queue_item_id="a"),
         _make_queue_item("library://track/12", queue_item_id="b"),
@@ -661,10 +613,9 @@ async def test_play_context_prefers_start_index_for_duplicate_uri(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock(return_value=player.current_media)):
-            resp = await client.get(
-                "/api/play-context/msx_test?uri=library://album/9&start=2&track=library://track/11"
-            )
+        resp = await client.get(
+            "/api/play-context/msx_test?uri=library://album/9&start=2&track=library://track/11"
+        )
         assert resp.status == 200
         mass_mock.player_queues.play_index.assert_awaited_once_with("msx_test", "c")
     finally:
@@ -684,10 +635,9 @@ async def test_play_context_skips_index_when_already_current(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        with patch.object(player, "wait_for_media", AsyncMock(return_value=player.current_media)):
-            resp = await client.get(
-                "/api/play-context/msx_test?uri=library://track/11&start=0&track=library://track/11"
-            )
+        resp = await client.get(
+            "/api/play-context/msx_test?uri=library://track/11&start=0&track=library://track/11"
+        )
         assert resp.status == 200
         mass_mock.player_queues.play_index.assert_not_awaited()
     finally:
@@ -699,7 +649,6 @@ async def test_play_context_recovers_when_player_was_marked_unavailable(
 ) -> None:
     """A TV that still sends play-context is online even if its last WebSocket dropped."""
     player = _register_msx_player(mass_mock, provider, "msx_test")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
     player._attr_available = False
     player._attr_playback_state = PlaybackState.PLAYING
 
@@ -854,9 +803,7 @@ async def test_next_at_queue_end_does_not_reload_playlist(
 ) -> None:
     """Complete/next at the last item must not restart that track."""
     _register_msx_player(mass_mock, provider, "msx_test")
-    mass_mock.player_queues.get_active_queue = Mock(
-        return_value=Mock(current_index=4, repeat_mode=RepeatMode.OFF)
-    )
+    mass_mock.player_queues.get_active_queue.return_value = player_queue(items=5, current_index=4)
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -865,6 +812,7 @@ async def test_next_at_queue_end_does_not_reload_playlist(
         assert resp.status == 200
         data = await resp.json()
         assert data["response"]["data"]["action"] == "[]"
+        mass_mock.players.cmd_next_track.assert_awaited_once_with("msx_test")
     finally:
         await client.close()
 
@@ -874,15 +822,13 @@ async def test_next_reloads_playlist_when_queue_advances(
 ) -> None:
     """Next that moves the queue must return a rotated playlist action."""
     _register_msx_player(mass_mock, provider, "msx_test")
-    indexes = [0]
+    queue = player_queue(items=2, current_index=0)
+    mass_mock.player_queues.get_active_queue.return_value = queue
 
-    def _queue(*_a: object, **_k: object) -> Mock:
-        idx = indexes[0]
-        if idx == 0:
-            indexes[0] = 1
-        return Mock(current_index=idx, repeat_mode=RepeatMode.OFF, queue_id="msx_test", items=2)
+    async def _advance(_player_id: str) -> None:
+        queue.current_index = 1
 
-    mass_mock.player_queues.get_active_queue = Mock(side_effect=_queue)
+    mass_mock.players.cmd_next_track.side_effect = _advance
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -890,7 +836,9 @@ async def test_next_reloads_playlist_when_queue_advances(
         resp = await client.get("/api/next/msx_test")
         assert resp.status == 200
         data = await resp.json()
-        assert "/msx/queue-playlist/msx_test.json" in data["response"]["data"]["action"]
+        action = data["response"]["data"]["action"]
+        assert action.startswith("playlist:")
+        assert "/msx/queue-playlist/msx_test.json?start=1&queue_id=msx_test" in action
     finally:
         await client.close()
 
@@ -1031,11 +979,12 @@ def _make_playlist(item_id: int = 1, name: str = "Test Playlist") -> Playlist:
     return make_playlist(str(item_id), name)
 
 
-def _make_audio_player(mass_mock: Mock) -> tuple[MSXPlayer, PlayerMedia]:
-    """Wire a real MSX player with queue-backed media into the controller mock."""
-    provider = Mock()
-    provider.mass = mass_mock
+def _make_audio_player(
+    mass_mock: Mock, provider: MSXBridgeProvider
+) -> tuple[MSXPlayer, PlayerMedia]:
+    """Wire a real MSX player with current media into the controller mock."""
     player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
+    player.update_state = Mock()  # type: ignore[misc,method-assign]
     media = PlayerMedia(
         uri="library://track/1",
         title=None,
@@ -1045,7 +994,6 @@ def _make_audio_player(mass_mock: Mock) -> tuple[MSXPlayer, PlayerMedia]:
         duration=180,
     )
     player._attr_current_media = media
-    cast("Any", player).wait_for_media = AsyncMock(return_value=media)
     mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
     return player, media
 
@@ -1222,25 +1170,22 @@ async def test_broadcast_play_path_carries_token(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """The pushed stream path must carry the token the /stream route now requires."""
-    token = provider.get_stream_token("msx_test")
-
+    _register_msx_player(mass_mock, provider, "msx_test")
+    mass_mock.create_task = Mock(side_effect=asyncio.ensure_future)
     server = MSXHTTPServer(provider, 0)
-    ws = AsyncMock()
-    ws.closed = False
-    server._ws_clients["msx_test"] = {ws}
-    coros: list[Any] = []
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws?device_id=test")
+        assert (await ws.receive_json())["type"] == "state_sync"
 
-    def _capture_task(coro: Any) -> Mock:
-        coros.append(coro)
-        return Mock()
+        server.broadcast_play("msx_test", title="T")
 
-    mass_mock.create_task = Mock(side_effect=_capture_task)
-
-    server.broadcast_play("msx_test", title="T")
-
-    await coros[0]
-    payload = json.loads(ws.send_str.call_args[0][0])
-    assert payload["path"] == f"/stream/msx_test?token={token}"
+        payload = await ws.receive_json(timeout=5)
+        assert payload["path"] == f"/stream/msx_test?token={provider.get_stream_token('msx_test')}"
+        await ws.close()
+    finally:
+        await client.close()
 
 
 # --- Stream and WebSocket error boundaries ---
@@ -1361,7 +1306,7 @@ async def test_msx_audio_rejects_raw_stream_url(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         resp = await client.get(f"/msx/audio/msx_test?uri={quote(uri, safe='')}&token={token}")
         assert resp.status == 400
@@ -1378,7 +1323,7 @@ async def test_msx_audio_rejects_unqueued_library_item(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         mass_mock.player_queues.get_active_queue = Mock(return_value=None)
         token = provider.get_stream_token("msx_test")
         resp = await client.get(f"/msx/audio/msx_test?uri=library://track/1&token={token}")
@@ -1397,7 +1342,7 @@ async def test_msx_audio_returns_gateway_timeout_when_media_is_not_prepared(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        player, _ = _make_audio_player(mass_mock)
+        player, _ = _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         cast("Any", player).wait_for_media = AsyncMock(return_value=None)
         token = provider.get_stream_token("msx_test")
@@ -1418,7 +1363,7 @@ async def test_msx_audio_returns_service_error_when_queue_loading_fails(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         mass_mock.player_queues.play_index = AsyncMock(
             side_effect=MusicAssistantError("source authentication expired")
@@ -1437,7 +1382,7 @@ async def test_msx_audio_does_not_hide_programming_errors(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """Unexpected handshake defects must surface as HTTP 500."""
-    _make_audio_player(mass_mock)
+    _make_audio_player(mass_mock, provider)
     token = provider.get_stream_token("msx_test")
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -1466,7 +1411,7 @@ async def test_independent_audio_startup_failure_returns_503(
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
-    _make_audio_player(mass_mock)
+    _make_audio_player(mass_mock, provider)
     _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
     mass_mock.streams = Mock()
     mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -1499,7 +1444,7 @@ async def test_independent_audio_failure_after_headers_aborts_response(
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
-    player, _media = _make_audio_player(mass_mock)
+    player, _media = _make_audio_player(mass_mock, provider)
     _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
     mass_mock.streams = Mock()
     mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -1534,7 +1479,7 @@ async def test_api_play_rejects_non_string_body_values(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         for body in (
             {"track_uri": 123, "player_id": "msx_test"},
             {"track_uri": True, "player_id": "msx_test"},
@@ -1555,7 +1500,7 @@ async def test_api_play_rejects_raw_stream_url(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         for track_uri in (
             "http://evil.example/payload.mp3",
             "builtin://track/http://evil.example/payload.mp3",
@@ -1578,7 +1523,7 @@ async def test_msx_audio_rejects_missing_token(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         resp = await client.get("/msx/audio/msx_test?uri=library://track/1")
         assert resp.status == 403
         resp = await client.get("/msx/audio/msx_test?uri=library://track/1&token=wrong")
@@ -1635,7 +1580,25 @@ def _wire_queue(
             None,
         )
     )
-    mass_mock.player_queues.play_index = AsyncMock()
+
+    async def _play_index(qid: str, item_id: str) -> None:
+        # Like the real controller: select the item and hand it to the queue's player.
+        index, item = next(
+            (i, item) for i, item in enumerate(queue_items) if item.queue_item_id == item_id
+        )
+        active_queue.current_index = index
+        active_queue.current_item = item
+        if (player := mass_mock.players.get_player(qid)) is not None:
+            await player.play_media(
+                PlayerMedia(
+                    uri=item.uri,
+                    source_id=qid,
+                    queue_item_id=item.queue_item_id,
+                    duration=item.duration,
+                )
+            )
+
+    mass_mock.player_queues.play_index = AsyncMock(side_effect=_play_index)
     return active_queue
 
 
@@ -1660,7 +1623,7 @@ async def test_msx_audio_preserves_two_queued_builtin_items(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -1707,7 +1670,7 @@ async def test_msx_audio_preserves_queued_library_items(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -1725,9 +1688,9 @@ async def test_msx_audio_preserves_queued_library_items(
 
         assert [item.queue_item_id for item in queue_items] == ["lib-11", "lib-12"]
         mass_mock.player_queues.play_media.assert_not_awaited()
+        # the repeated request for the item that is already playing reuses its media
         assert mass_mock.player_queues.play_index.await_args_list == [
             call(active_queue.queue_id, "lib-11"),
-            call(active_queue.queue_id, "lib-12"),
             call(active_queue.queue_id, "lib-12"),
         ]
     finally:
@@ -1749,7 +1712,7 @@ async def test_queue_playlist_without_start_rotates_to_current(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         resp = await client.get("/msx/queue-playlist/msx_test.json")
         assert resp.status == 200
         body = await resp.json()
@@ -1774,7 +1737,7 @@ async def test_queue_playlist_builtin_item_stays_playable(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         resp = await client.get("/msx/queue-playlist/msx_test.json")
         assert resp.status == 200
         action = (await resp.json())["items"][0]["action"]
@@ -1821,16 +1784,14 @@ async def test_queue_playlist_duplicate_uri_selects_exact_item(
             ["radio-2"],
         ]
 
-        player, media = _make_audio_player(mass_mock)
-        player._playing_from_queue = True
+        player, _media = _make_audio_player(mass_mock, provider)
+        player.mark_queue_playback("msx_test")
         player._attr_current_media = PlayerMedia(
             uri=radio_uri,
             source_id="msx_test",
             queue_item_id="radio-1",
             duration=180,
         )
-        cast("Any", player).wait_for_media = AsyncMock(return_value=media)
-        mass_mock.player_queues.get_item = Mock(return_value=queue_items[0])
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
         mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
@@ -1866,7 +1827,7 @@ async def test_msx_audio_rejects_mismatched_queue_item_id(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         uri = quote(first_uri, safe="")
         response = await client.get(
@@ -1890,7 +1851,7 @@ async def test_msx_audio_rejects_builtin_uri_absent_from_the_queue(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         uri = quote("builtin://track/http://evil.example/payload.mp3", safe="")
         resp = await client.get(f"/msx/audio/msx_test?uri={uri}&token={token}")
@@ -1911,7 +1872,7 @@ async def test_msx_audio_queue_fallback_runs_after_the_token_check(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         resp = await client.get(f"/msx/audio/msx_test?uri={quote(radio_uri, safe='')}&token=wrong")
         assert resp.status == 403
         mass_mock.player_queues.get_active_queue.assert_not_called()
@@ -1930,7 +1891,7 @@ async def test_api_play_has_no_queue_fallback(provider: MSXBridgeProvider, mass_
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         resp = await client.post(
             "/api/play", json={"track_uri": radio_uri, "player_id": "msx_test"}
         )
@@ -1956,7 +1917,7 @@ async def test_msx_audio_accepts_uri_from_the_group_leaders_queue(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -1989,7 +1950,7 @@ async def test_msx_audio_finds_a_uri_at_the_end_of_a_long_queue(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -2025,7 +1986,7 @@ async def test_msx_audio_accepts_queue_item_identity_without_media_item(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -2062,7 +2023,7 @@ async def test_msx_audio_queue_scan_skips_items_without_a_media_item(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -2111,7 +2072,7 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2142,7 +2103,7 @@ async def test_msx_audio_plays_queued_library_item_without_play_media(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
@@ -2185,7 +2146,7 @@ async def test_msx_audio_proxy_paces_output(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _player, media = _make_audio_player(mass_mock)
+        player, media = _make_audio_player(mass_mock, provider)
         media.media_type = media_type
         item = _make_queue_item("library://track/1")
         media.source_id = item.queue_id
@@ -2198,6 +2159,11 @@ async def test_msx_audio_proxy_paces_output(
             is_realtime=is_realtime,
         )
         _wire_queue(mass_mock, [item])
+
+        async def _play_index(*_args: object) -> None:
+            await player.play_media(media)
+
+        mass_mock.player_queues.play_index.side_effect = _play_index
         token = provider.get_stream_token("msx_test")
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -2217,15 +2183,16 @@ async def test_msx_audio_proxy_paces_output(
         await client.close()
 
 
+@pytest.mark.parametrize("from_playlist", [True, False])
 async def test_msx_audio_from_playlist_skips_ws(
-    provider: MSXBridgeProvider, mass_mock: Mock
+    provider: MSXBridgeProvider, mass_mock: Mock, from_playlist: bool
 ) -> None:
-    """GET /msx/audio with from_playlist=1 should set _skip_ws_notify on the player."""
+    """A playlist-driven request only resets the TV clock; others push the queue playlist."""
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        player, _media = _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2233,27 +2200,22 @@ async def test_msx_audio_from_playlist_skips_ws(
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
         mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
 
-        notify_states: list[bool] = []
-
-        async def _capture_play_index(*_a: object, **_k: object) -> None:
-            notify_states.append(player._skip_ws_notify)
-
-        mass_mock.player_queues.play_index = _capture_play_index
-
-        chunks = [b"encoded-chunk-1"]
-        with patch(
-            "music_assistant.providers.msx_bridge.audio_stream.get_ffmpeg_stream",
-            return_value=_async_iter(chunks),
+        flag = "&from_playlist=1" if from_playlist else ""
+        with (
+            patch(
+                "music_assistant.providers.msx_bridge.audio_stream.get_ffmpeg_stream",
+                return_value=_async_iter([b"encoded-chunk-1"]),
+            ),
+            patch.object(provider, "notify_native_track_started") as clock_reset,
+            patch.object(provider, "notify_play_playlist") as push_playlist,
         ):
             resp = await client.get(
-                f"/msx/audio/msx_test?uri=library://track/1&from_playlist=1&token={token}"
+                f"/msx/audio/msx_test?uri=library://track/1{flag}&token={token}"
             )
             assert resp.status == 200
 
-        assert notify_states == [True]
-        # And reset to False after
-        assert player._skip_ws_notify is False
-
+        assert clock_reset.called is from_playlist
+        assert push_playlist.called is not from_playlist
     finally:
         await client.close()
 
@@ -2266,7 +2228,7 @@ async def test_msx_audio_arms_wait_before_enqueue(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        player, _media = _make_audio_player(mass_mock)
+        player, _media = _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2275,12 +2237,19 @@ async def test_msx_audio_arms_wait_before_enqueue(
         mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
 
         call_order: list[str] = []
-        cast("Any", player).expect_new_media = Mock(side_effect=lambda: call_order.append("arm"))
+        arm = player.expect_new_media
+        enqueue = mass_mock.player_queues.play_index.side_effect
 
-        async def _record_enqueue(*_a: object, **_k: object) -> None:
+        def _record_arm() -> None:
+            call_order.append("arm")
+            arm()
+
+        async def _record_enqueue(*args: object) -> None:
             call_order.append("enqueue")
+            await enqueue(*args)
 
-        mass_mock.player_queues.play_index = _record_enqueue
+        cast("Any", player).expect_new_media = _record_arm
+        mass_mock.player_queues.play_index.side_effect = _record_enqueue
 
         with patch(
             "music_assistant.providers.msx_bridge.audio_stream.get_ffmpeg_stream",
@@ -2592,19 +2561,29 @@ async def test_msx_queue_playlist_empty_queue(provider: MSXBridgeProvider, mass_
 # --- WebSocket inbound message handling ---
 
 
+async def _send_ws_messages(server: MSXHTTPServer, *messages: str) -> None:
+    """Send messages from the TV `msx_test` over the real WebSocket route."""
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws?device_id=test")
+        assert (await ws.receive_json())["type"] == "state_sync"
+        for message in messages:
+            await ws.send_str(message)
+        # the server handles queued messages before it answers the close handshake
+        await ws.close()
+    finally:
+        await client.close()
+
+
 async def test_ws_position_message(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """WS position message should update player's elapsed time."""
-    player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
+    player = _register_msx_player(mass_mock, provider, "msx_test")
     player._attr_playback_state = PlaybackState.PLAYING
-    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
-    provider.http_server = MSXHTTPServer(provider, 0)
 
-    server_obj = provider.http_server
-    server_obj._handle_ws_message("msx_test", '{"type": "position", "position": 42.5}')
+    await _send_ws_messages(MSXHTTPServer(provider, 0), '{"type": "position", "position": 42.5}')
 
-    assert player._attr_elapsed_time == 42.5
-    assert player._last_ws_position is not None
+    assert player.elapsed_time == 42.5
 
 
 async def test_ws_position_message_unknown_player(
@@ -2649,33 +2628,31 @@ def test_ws_invalid_position_is_ignored(
 
 
 async def test_ws_pause_message(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """WS pause message should update position and call cmd_pause."""
-    player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
+    """WS pause message should update position and pause the player."""
+    player = _register_msx_player(mass_mock, provider, "msx_test")
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 10.0
-    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
-    provider.http_server = MSXHTTPServer(provider, 0)
+    tasks: list[asyncio.Future[Any]] = []
+    mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
 
-    provider.http_server._handle_ws_message("msx_test", '{"type": "pause", "position": 30.5}')
+    await _send_ws_messages(MSXHTTPServer(provider, 0), '{"type": "pause", "position": 30.5}')
+    await asyncio.gather(*tasks)
 
-    assert player._attr_elapsed_time == 30.5
-    # Flag is now managed inside _cmd_pause_no_echo; verify the task was scheduled
-    mass_mock.create_task.assert_called_once()
+    assert player.elapsed_time == 30.5
+    mass_mock.players.cmd_pause.assert_awaited_once_with("msx_test")
 
 
 async def test_ws_resume_message(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """WS resume message should call cmd_play."""
-    player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
+    """WS resume message should resume the player."""
+    player = _register_msx_player(mass_mock, provider, "msx_test")
     player._attr_playback_state = PlaybackState.PAUSED
-    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
-    provider.http_server = MSXHTTPServer(provider, 0)
+    tasks: list[asyncio.Future[Any]] = []
+    mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
 
-    provider.http_server._handle_ws_message("msx_test", '{"type": "resume"}')
+    await _send_ws_messages(MSXHTTPServer(provider, 0), '{"type": "resume"}')
+    await asyncio.gather(*tasks)
 
-    # Flag is now managed inside _cmd_play_no_echo; verify the task was scheduled
-    mass_mock.create_task.assert_called_once()
+    mass_mock.players.cmd_play.assert_awaited_once_with("msx_test")
 
 
 async def test_ws_unknown_message_type(provider: MSXBridgeProvider) -> None:
@@ -2775,7 +2752,7 @@ async def test_msx_audio_redirect_mode(provider: MSXBridgeProvider, mass_mock: M
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2808,7 +2785,7 @@ async def test_msx_audio_redirect_rewrites_host_for_client(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2851,7 +2828,7 @@ async def test_msx_audio_redirect_mode_falls_back_to_proxy(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        _make_audio_player(mass_mock)
+        _make_audio_player(mass_mock, provider)
         _wire_queue(mass_mock, [_make_queue_item("library://track/1")])
         token = provider.get_stream_token("msx_test")
 
@@ -2952,27 +2929,12 @@ async def test_native_queue_advances_without_authentication(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """Two native audio requests must serve their queued tracks without a user session."""
-    player = _register_msx_player(mass_mock, provider, "msx_test")
-    player.update_state = Mock()  # type: ignore[misc,method-assign]
+    _register_msx_player(mass_mock, provider, "msx_test")
     items = [
         _make_queue_item("library://track/1", queue_item_id="first"),
         _make_queue_item("library://track/2", queue_item_id="second"),
     ]
-    queue = _wire_queue(mass_mock, items)
-
-    async def select_item(_queue_id: str, item_id: str) -> None:
-        index = next(i for i, item in enumerate(items) if item.queue_item_id == item_id)
-        queue.current_index = index
-        await player.play_media(
-            PlayerMedia(
-                uri=items[index].uri,
-                source_id=queue.queue_id,
-                queue_item_id=item_id,
-                media_type=MediaType.TRACK,
-            )
-        )
-
-    mass_mock.player_queues.play_index.side_effect = select_item
+    _wire_queue(mass_mock, items)
     mass_mock.streams.get_stream = Mock(side_effect=lambda *_args, **_kwargs: _async_iter([b"pcm"]))
     mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
     provider.group_stream_mode = "independent"
@@ -2994,10 +2956,10 @@ async def test_native_queue_advances_without_authentication(
                 )
                 assert response.status == 200
                 assert await response.read() == item.queue_item_id.encode()
-            assert player.current_media is not None
-            assert player.current_media.queue_item_id == item.queue_item_id
-        assert queue.current_index == 1
-        assert queue.items == 2
+        assert mass_mock.player_queues.play_index.await_args_list == [
+            call("msx_test", "first"),
+            call("msx_test", "second"),
+        ]
         mass_mock.player_queues.play_media.assert_not_awaited()
         mass_mock.webserver.auth.list_users.assert_not_awaited()
     finally:
@@ -3106,11 +3068,6 @@ async def test_old_playlist_generation_cannot_rebind_a_repeat_decoder(
     assert old is not None
     await player.play_media(media)
     mass_mock.players.get_player.return_value = player
-    item = Mock(uri="library://track/1", queue_item_id="same", streamdetails=None, duration=180)
-    mass_mock.player_queues.get_active_queue.return_value = Mock(queue_id=player.player_id, items=1)
-    mass_mock.player_queues.items.return_value = [item]
-    mass_mock.player_queues.get_item.return_value = item
-    provider.get_ma_stream_url = AsyncMock(return_value="http://ma/encoded")  # type: ignore[method-assign]
     token = provider.get_stream_token(player.player_id)
     response = await http_client.get(
         "/msx/audio/msx_test",
@@ -3125,5 +3082,6 @@ async def test_old_playlist_generation_cannot_rebind_a_repeat_decoder(
         allow_redirects=False,
     )
     assert response.status == 400
+    assert await response.text() == "Playback generation is no longer current"
     mass_mock.player_queues.play_index.assert_not_awaited()
     assert not player.claim_native_completion("old-decoder")

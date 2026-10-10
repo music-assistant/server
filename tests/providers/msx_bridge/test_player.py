@@ -399,8 +399,7 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
     player: MSXPlayer, mass_mock: Mock
 ) -> None:
     """Same-queue play reloads a rotated playlist so MSX index 0 is the current item."""
-    player._playing_from_queue = True
-    player._queue_source_id = "msx_test"
+    player.mark_queue_playback("msx_test")
 
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
@@ -435,7 +434,7 @@ async def test_play_media_reloads_playlist_when_playing_from_queue(
 
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
     """Native transitions suppress playback commands while allowing a clock reset."""
-    player._playing_from_queue = True
+    player.mark_queue_playback("msx_test")
 
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
@@ -488,7 +487,7 @@ async def test_play_media_non_queue_sends_broadcast_play(
 
 async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
     """stop() should reset _playing_from_queue flag."""
-    player._playing_from_queue = True
+    player.mark_queue_playback("msx_test")
     await player.stop()
     assert player._playing_from_queue is False
 
