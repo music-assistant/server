@@ -3054,9 +3054,10 @@ class Player(ABC):
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
+                    # a podcast episode has no artists, the podcast name takes the artist line
                     artist=getattr(media_item, "artist_str", None)
                     or (podcast.name if podcast else None),
-                    album=album.name if album else podcast.name if podcast else description,
+                    album=album.name if album else None if podcast else description,
                     album_artist=getattr(album, "artist_str", None),
                     image_url=image_url,
                     palette=self._resolved_palette(image_url),

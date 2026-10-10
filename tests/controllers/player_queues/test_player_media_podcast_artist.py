@@ -46,8 +46,8 @@ def _mappings(item_id: str) -> set[ProviderMapping]:
     return {ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")}
 
 
-async def test_podcast_episode_uses_podcast_name_as_artist_and_album() -> None:
-    """A podcast episode has no artists, so the podcast name fills artist and album."""
+async def test_podcast_episode_uses_podcast_name_as_artist() -> None:
+    """A podcast episode has no artists, so the podcast name fills the artist only."""
     episode = PodcastEpisode(
         item_id="ep1",
         provider="test",
@@ -64,7 +64,7 @@ async def test_podcast_episode_uses_podcast_name_as_artist_and_album() -> None:
 
     assert media.title == "Episode 1"
     assert media.artist == "My Podcast"
-    assert media.album == "My Podcast"
+    assert media.album == ""
 
 
 async def test_track_keeps_its_own_artist_and_album() -> None:
