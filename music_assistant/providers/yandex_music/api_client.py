@@ -436,14 +436,14 @@ class YandexMusicClient:
         Supports the Yandex rotor event types: radioStarted, trackStarted,
         trackFinished, skip, like, dislike. For radioStarted the track_id goes
         into the top-level `from`; all other types use `event.trackId`. Only
-        trackFinished and skip carry `totalPlayedSeconds`.
+        trackFinished, skip and dislike carry `totalPlayedSeconds`.
 
         :param session_id: radioSessionId.
         :param event_type: rotor event type string.
         :param track_id: Yandex track ID the event refers to (required for
             everything except radioStarted without a seed).
         :param total_played_seconds: seconds of the track that were played
-            (only meaningful for trackFinished / skip).
+            (only meaningful for trackFinished / skip / dislike).
         :param batch_id: batchId from the most recent rotor_session_{new,tracks}
             response; anchors the event to a specific batch.
         :return: True if the POST succeeded.
@@ -456,7 +456,8 @@ class YandexMusicClient:
             else None,
             total_played_seconds=(
                 int(total_played_seconds)
-                if event_type in ("trackFinished", "skip") and total_played_seconds is not None
+                if event_type in ("trackFinished", "skip", "dislike")
+                and total_played_seconds is not None
                 else None
             ),
         )

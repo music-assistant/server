@@ -137,7 +137,7 @@ async def test_rotor_feedback_wire_fields(
     else:
         assert event["trackId"] == "100"
         assert body.get("from") is None
-    if event_type in ("trackFinished", "skip"):
+    if event_type in ("trackFinished", "skip", "dislike"):
         assert event["totalPlayedSeconds"] == 12
     else:
         assert event.get("totalPlayedSeconds") is None

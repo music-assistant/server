@@ -436,7 +436,7 @@ async def test_rotor_session_feedback_skip_includes_seconds() -> None:
 
 
 async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> None:
-    """like/dislike events use trackId but do NOT include totalPlayedSeconds."""
+    """Like events use trackId without totalPlayedSeconds."""
     client, underlying = _make_client()
     del underlying
     req_mock = _patch_rotor_transport(client, {"result": "ok"})

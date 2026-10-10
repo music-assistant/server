@@ -3345,6 +3345,8 @@ class YandexMusicProvider(MusicProvider):
         # state with this lock. Concurrent calls without the lock would
         # interleave cursor updates and leave the session inconsistent.
         async with wave.lock:
+            if wave.ended:
+                wave.reset_session()
             for _ in range(batch_size_config):
                 if len(seen_track_ids) >= max_tracks_config:
                     break

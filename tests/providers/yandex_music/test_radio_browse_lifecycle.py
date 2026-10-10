@@ -56,6 +56,62 @@ def radio_provider() -> tuple[YandexMusicProvider, ClientAsync]:
     return provider, raw
 
 
+@pytest.mark.parametrize("ended", [False, True])
+async def test_recommendations_restart_only_ended_wave(
+    radio_provider: tuple[YandexMusicProvider, ClientAsync], ended: bool
+) -> None:
+    """Refreshing discovery restarts ended sessions and preserves active playback."""
+    provider, raw = radio_provider
+    cache = attach_real_cache(provider)
+    wave = provider._get_wave_state("user:onyourwave")
+    wave.session_id = "old"
+    wave.batch_id = "old-batch"
+    wave.last_track_id = "42"
+    wave.radio_started_sent = True
+    wave.settings = {"language": "russian"}
+    wave.ended = ended
+    responses = iter(
+        [
+            {
+                "radioSessionId": "fresh" if ended else "old",
+                "batchId": "fresh-batch",
+                "terminated": not ended,
+                "sequence": [{"type": "track", "track": {"id": 43}, "liked": False}],
+            },
+            [{"id": 43}],
+            {"terminated": True},
+        ]
+    )
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "feedback" in url:
+            return {}
+        return next(responses)
+
+    post = AsyncMock(side_effect=respond)
+    with (
+        patch.object(raw.request, "post", post),
+        patch.object(provider.mass.translations, "get_translation", Mock(return_value=None)),
+    ):
+        async with cache.handle_refresh(True):
+            folder = await provider._get_my_wave_recommendations()
+        assert folder is not None
+        assert [item.item_id.split("@", 1)[0] for item in folder.items] == ["43"]
+        assert wave.session_id == ("fresh" if ended else "old")
+        assert wave.settings == {"language": "russian"}
+        assert wave.radio_started_sent is not ended
+        assert wave.ended
+        calls_before_continuation = post.await_count
+        assert await provider._fetch_rotor_session_batch(wave, "user:onyourwave") == ([], None)
+        assert post.await_count == calls_before_continuation
+    creations = [call for call in post.await_args_list if "/rotor/session/new" in call.args[0]]
+    assert len(creations) == int(ended)
+    if ended:
+        assert "settingLanguage:russian" in creations[0].kwargs["json"]["seeds"]
+    feedback = [call for call in post.await_args_list if "feedback" in call.args[0]]
+    assert not feedback
+
+
 @pytest.mark.parametrize(
     ("suffix", "station"),
     [
