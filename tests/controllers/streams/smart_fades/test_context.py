@@ -380,6 +380,18 @@ class TestSegueFacts:
         assert not segue.snapped_out
         assert segue.point == pytest.approx(35.6, abs=0.15)
 
+    def test_a_grid_that_ends_early_leaves_the_point_unsnapped(self) -> None:
+        """Only detected downbeats count: an extrapolated grid past the real one is no snap."""
+        out = _with_downbeats_before(_analysis(120.0, rms_energy=_quiet_from(230.6)), 210.0)
+
+        context = _context(out, _analysis(150.0))
+
+        assert context.segue is not None
+        # the protective grid runs on, regular, past the 15s where the real grid ends
+        assert max(context.protective_downbeats) > 36.0
+        assert not context.segue.snapped_out
+        assert context.segue.point == pytest.approx(35.6, abs=0.15)
+
     def test_a_long_tail_caps_the_overlap(self) -> None:
         """A 30s quiet tail caps the overlap at 15s."""
         segue = _context(_analysis(120.0, rms_energy=_quiet_from(210.0)), _analysis(120.0)).segue

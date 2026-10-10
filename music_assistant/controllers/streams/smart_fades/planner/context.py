@@ -343,7 +343,7 @@ def build_transition_context(
     kick_out, kick_in, out_kickless, in_kickless = _kick_facts(
         outgoing_profile, incoming_profile, buffer_offset, audio_end
     )
-    segue = _segue_facts(outgoing, incoming, protective_downbeats, buffer_duration, audio_end)
+    segue = _segue_facts(outgoing, incoming, buffer_duration, audio_end)
 
     if vocal_out_scoring is not None and vocal_in_scoring is not None:
         vocal_coverage = "both"
@@ -614,18 +614,13 @@ def _kick_facts(
 
 
 def _segue_facts(
-    outgoing: Deck,
-    incoming: Deck,
-    protective_downbeats: npt.NDArray[np.float32],
-    buffer_duration: float,
-    audio_end: float,
+    outgoing: Deck, incoming: Deck, buffer_duration: float, audio_end: float
 ) -> SegueFacts | None:
     """
     Measure the outgoing quiet tail and the incoming quiet head, or None without RMS energy.
 
     :param outgoing: The outgoing deck, with buffer-local grids.
     :param incoming: The incoming deck, with head-local grids.
-    :param protective_downbeats: Buffer-local outgoing downbeats up to the audible end.
     :param buffer_duration: Length in seconds of the fade-out holdback.
     :param audio_end: Buffer-local RMS-audible boundary.
     """
@@ -647,10 +642,11 @@ def _segue_facts(
         SEGUE_ENERGY_FRACTION,
         beats_per_bar=incoming.beats_per_bar,
     )
-    # each point snaps into its own quiet side only, so no loud bar counts as quiet
+    # each point snaps into its own quiet side only, so no loud bar counts as quiet,
+    # and only to a detected downbeat: an extrapolated grid is regular by construction
     point, snapped_out = _snap_segue_point(
         min(raw_point, audio_end),
-        protective_downbeats[protective_downbeats <= audio_end],
+        outgoing.downbeats[outgoing.downbeats <= audio_end],
         outgoing.beats_per_bar * 60.0 / outgoing.bpm,
         later=True,
     )
