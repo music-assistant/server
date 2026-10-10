@@ -30,6 +30,12 @@ RELEASE_GROUP_MBID = "7d4d1f70-1c99-4c1b-b0f1-9f2c1b2a3d44"
 ALBUM_IMAGE = "http://images/album1.jpg"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 def _detailed_album(item_id: str = "album1") -> Album:
     """Return an album carrying the details only a full provider fetch delivers."""
     album = create_album("spotify_1", item_id)
