@@ -123,6 +123,19 @@ def test_get_ffmpeg_args_fastseek_keeps_provider_fflags() -> None:
     assert _input_fflags(args) == ["genpts", "nobuffer+fastseek"]
 
 
+def test_get_ffmpeg_args_fastseek_not_added_twice() -> None:
+    """Input args that already ask for fastseek keep a single +fastseek."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-fflags", "+fastseek", "-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["+fastseek"]
+
+
 @pytest.mark.parametrize(
     ("content_type", "input_path", "extra_input_args"),
     [
