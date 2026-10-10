@@ -628,17 +628,15 @@ class StorageController(CoreController):
         path = os.path.normpath(path)
         # a share of a mount backend counts also when it did not mount since the start
         backend_paths = await self._get_backend_mount_paths()
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
         # a discovered drive or share that went away is only remembered as a mountpoint
         candidates = sorted(
             candidate
-            for candidate in {
-                *(loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA),
-                *backend_paths,
-                *self._seen_mountpoints,
-            }
+            for candidate in media | backend_paths | self._seen_mountpoints
             if candidate != path and is_within(candidate, path)
         )
         await self._probe_outdated(candidates)
+        # the probes rebuilt the locations from the current mount table
         media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
         unavailable: list[str] = []
         for candidate in candidates:
@@ -1299,7 +1297,7 @@ class StorageController(CoreController):
                 async with asyncio.timeout(SHARE_STATES_TIMEOUT):
                     paths.update(await mounter.get_mount_paths())
             except (TimeoutError, MusicAssistantError) as err:
-                msg = f"{backend} did not list its network shares: {err or type(err).__name__}"
+                msg = f"{backend} did not list its network shares: {str(err) or type(err).__name__}"
                 raise self._error(ActionUnavailable, msg, "shares_not_listed") from err
         return paths
 

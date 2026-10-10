@@ -122,3 +122,4 @@ async def test_supervisor_that_does_not_answer_leaves_it_unknown(
         supervisor.list_released.set()
 
     assert exc_info.value.translation_key == "shares_not_listed"
+    assert str(exc_info.value).endswith("did not list its network shares: TimeoutError")
