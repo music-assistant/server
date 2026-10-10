@@ -147,30 +147,40 @@ async def test_folder_skips_dynamic_station_behind_item_mapping(mass: MusicAssis
     assert [x.item.media_type for x in resolved] == [MediaType.TRACK]
 
 
-async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: MusicAssistant) -> None:
-    """
-    A folder a library album was scanned from records that album as where its files play from.
+ALBUM_PATH = "Music/Kind of Blue"
 
-    The same goes for a disc subfolder of it, while any other subfolder is a plain folder.
-    """
+
+def _file(path: str) -> Track:
+    """Build the track the folder listing substitutes for the file at the given path."""
+    return Track(
+        item_id=path,
+        provider=PROVIDER,
+        name=path.rsplit("/", maxsplit=1)[-1],
+        provider_mappings={
+            ProviderMapping(item_id=path, provider_domain=PROVIDER, provider_instance=PROVIDER)
+        },
+    )
+
+
+async def _scanned_album(mass: MusicAssistant, name: str, album_path: str) -> Album:
+    """Add the library album the provider scanned from the given folder path."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
-            item_id="miles",
+            item_id=f"artist-{name}",
             provider=PROVIDER,
-            name="Miles Davis",
+            name=name,
             provider_mappings={
                 ProviderMapping(
-                    item_id="miles", provider_domain=PROVIDER, provider_instance=PROVIDER
+                    item_id=f"artist-{name}", provider_domain=PROVIDER, provider_instance=PROVIDER
                 )
             },
         )
     )
-    album_path = "Music/Kind of Blue"
-    album = await mass.music.albums.add_item_to_library(
+    return await mass.music.albums.add_item_to_library(
         Album(
             item_id=album_path,
             provider=PROVIDER,
-            name="Kind of Blue",
+            name=name,
             artists=UniqueList([artist]),
             provider_mappings={
                 ProviderMapping(
@@ -179,18 +189,17 @@ async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: Music
             },
         )
     )
-    track = Track(
-        item_id=f"{album_path}/Disc 1/01.flac",
-        provider=PROVIDER,
-        name="So What",
-        provider_mappings={
-            ProviderMapping(
-                item_id=f"{album_path}/Disc 1/01.flac",
-                provider_domain=PROVIDER,
-                provider_instance=PROVIDER,
-            )
-        },
-    )
+
+
+async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: MusicAssistant) -> None:
+    """
+    A folder a library album was scanned from records that album as where its files play from.
+
+    The same goes for a disc subfolder of it, while any other subfolder is a plain folder.
+    """
+    album_path = ALBUM_PATH
+    album = await _scanned_album(mass, "Kind of Blue", album_path)
+    track = _file(f"{album_path}/Disc 1/01.flac")
     album_folder = BrowseFolder(
         item_id=album_path, provider=PROVIDER, name="Kind of Blue", is_playable=True
     )
@@ -220,3 +229,36 @@ async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: Music
     assert bonus_origin.container is not None
     assert bonus_origin.container.media_type == MediaType.FOLDER
     assert bonus_origin.container.item_id == f"{album_path}/Bonus"
+
+
+async def test_a_disc_subfolder_played_by_uri_plays_as_the_album(mass: MusicAssistant) -> None:
+    """A folder played by its URI is named after its whole path, which must not hide the disc."""
+    album = await _scanned_album(mass, "Bitches Brew", "Music/Bitches Brew")
+    disc_folder = await mass.music.get_item_by_uri(f"{PROVIDER}://folder/Music/Bitches Brew/CD2")
+    track = _file("Music/Bitches Brew/CD2/01.flac")
+
+    with patch.object(mass.music, "browse", AsyncMock(return_value=[track])):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(disc_folder)
+
+    origin = resolved[0].origin
+    assert origin is not None
+    assert origin.container is not None
+    assert (origin.container.media_type, origin.container.item_id) == (
+        MediaType.ALBUM,
+        album.item_id,
+    )
+
+
+async def test_a_providers_root_folder_plays_its_files(mass: MusicAssistant) -> None:
+    """The root of a provider is a folder without a path, so there is no album to look up."""
+    root_folder = await mass.music.get_item_by_uri(f"{PROVIDER}://folder/")
+    track = _file("01.flac")
+
+    with patch.object(mass.music, "browse", AsyncMock(return_value=[track])):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(root_folder)
+
+    origin = resolved[0].origin
+    assert origin is not None
+    assert origin.container is not None
+    assert origin.container.media_type == MediaType.FOLDER
+    assert (origin.provider_instance, origin.item_id) == (PROVIDER, "01.flac")

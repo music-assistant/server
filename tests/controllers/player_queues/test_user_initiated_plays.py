@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
@@ -254,6 +255,34 @@ def _play_media_controller(
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
     return ctrl
+
+
+async def test_the_origin_of_a_resolved_item_lands_on_its_queue_item() -> None:
+    """Where the resolver says an item was played from is what its queue item records."""
+    playlist = Playlist(item_id="pl1", provider="spotify--abc", name="Mix", provider_mappings=set())
+    track = Track(
+        item_id="t1",
+        provider="spotify--abc",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="t1", provider_domain="spotify", provider_instance="spotify--abc"
+            )
+        },
+    )
+    origin = QueueItemOrigin(
+        container=ItemMapping.from_item(playlist), provider_instance="spotify--abc", item_id="t1"
+    )
+    ctrl = _play_media_controller(playlist, QueueOption.REPLACE.value)
+    ctrl._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=[ResolvedItem(track, origin)]
+    )
+
+    await ctrl._handle_play_media("q1", playlist)
+
+    enqueue = cast("AsyncMock", ctrl._enqueue_with_option).await_args
+    assert enqueue is not None
+    assert [item.origin for item in enqueue.args[1]] == [origin]
 
 
 async def test_configured_add_default_keeps_the_previously_enqueued_items() -> None:

@@ -958,12 +958,16 @@ class MediaResolver:
 
         :param folder: The browse folder being played.
         """
+        if not folder.item_id:
+            # a provider's root folder
+            return None
         albums = self.mass.music.albums
         # a filesystem album is mapped on its folder path
         if album := await albums.get_library_item_by_prov_id(folder.item_id, folder.provider):
             return album
-        parent_path = folder.item_id.rpartition("/")[0]
-        if parent_path and is_disc_dir(folder.name):
+        parent_path, _, folder_name = folder.item_id.rpartition("/")
+        # the path's last segment, as a folder played by URI is named after its whole path
+        if parent_path and is_disc_dir(folder_name):
             return await albums.get_library_item_by_prov_id(parent_path, folder.provider)
         return None
 
