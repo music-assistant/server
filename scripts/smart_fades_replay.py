@@ -7,9 +7,10 @@ triggers, vocal and drum overlap, music style) into ``--out``. To measure a plan
 it on both sides of the change with the same databases, seed and buffer; ``--code`` loads
 ``music_assistant`` from another checkout.
 
-Both databases are copied with their -wal file into a temporary directory and only those copies
-are read. The given paths are never written to and no other server data, such as the auth
-database, is opened.
+Both databases are copied into a temporary directory with SQLite's backup API, so the server may
+keep running, and only those copies are read. The given databases are opened read-only; SQLite
+may create or update their -shm reader index, which holds no data. No other server data, such as
+the auth database, is opened.
 
 Usage policy: this reads stored analysis data and library metadata only. It never opens, decodes
 or writes audio.
@@ -30,7 +31,6 @@ import json
 import logging
 import random
 import re
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -260,7 +260,8 @@ class Replayer:
         except self._not_applicable as err:
             return {**row, "outcome": "not_applicable", "reason": str(err)}
         except Exception as err:
-            return {**row, "outcome": "error", "reason": f"{type(err).__name__}: {err}"}
+            err.add_note(f"while planning {row['out_track']} -> {row['in_track']}")
+            raise
         if not self._passes:
             raise SystemExit(
                 "the loaded planner bypassed the candidate selection this script wraps"
@@ -501,15 +502,15 @@ def _import_music_assistant(code: Path) -> str:
 
 
 def _snapshot(source: Path, target_dir: Path) -> sqlite3.Connection:
-    """Copy a database and its -wal file into target_dir and open the copy."""
+    """Copy a database into target_dir and open the copy."""
     source = source.expanduser()
     if not source.is_file():
         raise SystemExit(f"no database at {source}")
     target_dir.mkdir(parents=True)
-    for suffix in ("", "-wal"):
-        if (side_file := source.with_name(source.name + suffix)).is_file():
-            shutil.copyfile(side_file, target_dir / side_file.name)
     conn = sqlite3.connect(target_dir / source.name)
+    # the backup API copies one consistent snapshot, WAL included, also while a server writes
+    with closing(sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)) as src:
+        src.backup(conn)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -890,16 +891,11 @@ def _style_line(label: str, rows: list[Row]) -> str:
 
 def _not_applicable_section(rows: list[Row]) -> list[str]:
     """Pairs without a plan, by reason."""
-    failed = [row for row in rows if row["outcome"] in ("not_applicable", "error")]
-    reasons = Counter(
-        f"error: {row['reason'].split(':')[0]}"
-        if row["outcome"] == "error"
-        else re.sub(r"\s*\(.*\)$", "", row["reason"])
-        for row in failed
-    )
+    failed = [row for row in rows if row["outcome"] == "not_applicable"]
+    reasons = Counter(re.sub(r"\s*\(.*\)$", "", row["reason"]) for row in failed)
     return [
         "",
-        f"== not applicable / error: {len(failed)} pairs",
+        f"== not applicable: {len(failed)} pairs",
         *(f"  {reason}: {count}" for reason, count in reasons.most_common()),
     ]
 

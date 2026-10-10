@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.selection import CandidateSelector
 from scripts.smart_fades_replay import (
     Replayer,
@@ -117,7 +118,7 @@ def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
 def test_snapshot_reads_the_wal_from_a_copy_and_leaves_the_source_alone(
     tmp_path: Path,
 ) -> None:
-    """The copy holds the WAL's rows while the source files stay byte for byte the same."""
+    """The copy holds the WAL's rows while the source data files stay byte for byte the same."""
     source = tmp_path / "source" / "library.db"
     source.parent.mkdir()
     writer = sqlite3.connect(source)
@@ -126,14 +127,57 @@ def test_snapshot_reads_the_wal_from_a_copy_and_leaves_the_source_alone(
     writer.execute("CREATE TABLE tracks (name TEXT)")
     writer.execute("INSERT INTO tracks VALUES ('in the wal')")
     writer.commit()
-    files = {path.name: path.read_bytes() for path in source.parent.iterdir()}
+    files = _data_files(source.parent)
     assert "library.db-wal" in files
 
     with closing(_snapshot(source, tmp_path / "copy")) as conn:
         assert [tuple(row) for row in conn.execute("SELECT name FROM tracks")] == [("in the wal",)]
 
-    assert {path.name: path.read_bytes() for path in source.parent.iterdir()} == files
+    assert _data_files(source.parent) == files
     writer.close()
+
+
+def test_snapshot_reads_an_offline_copy_with_only_a_wal_file(tmp_path: Path) -> None:
+    """A copy taken from a backup (database plus -wal, no -shm) still yields the WAL's rows."""
+    live = tmp_path / "live" / "library.db"
+    live.parent.mkdir()
+    writer = sqlite3.connect(live)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE tracks (name TEXT)")
+    writer.execute("INSERT INTO tracks VALUES ('in the wal')")
+    writer.commit()
+    offline = tmp_path / "offline"
+    offline.mkdir()
+    for suffix in ("", "-wal"):
+        name = f"library.db{suffix}"
+        (offline / name).write_bytes((live.parent / name).read_bytes())
+    writer.close()
+    files = _data_files(offline)
+
+    with closing(_snapshot(offline / "library.db", tmp_path / "copy")) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT name FROM tracks")] == [("in the wal",)]
+
+    assert _data_files(offline) == files
+
+
+def test_replayer_stops_on_an_unexpected_planner_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a not-applicable pair is a result; any other planner error ends the run, naming the pair."""
+    monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
+    monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
+
+    def _broken_plan(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("planner regression")
+
+    monkeypatch.setattr(SmartCrossFadePlanner, "plan", _broken_plan)
+    out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
+    analyses = {key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3) for key in (out_key, in_key)}
+    tracks = {key: TrackInfo(name=key[0]) for key in analyses}
+
+    with pytest.raises(RuntimeError, match="planner regression") as exc_info:
+        Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
+
+    assert exc_info.value.__notes__ == ["while planning out -> in"]
 
 
 def test_replayer_plans_a_pair_and_reports_its_facts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,6 +200,13 @@ def test_replayer_plans_a_pair_and_reports_its_facts(monkeypatch: pytest.MonkeyP
     assert row["vocal_class"] == "unknown"
     assert row["rhythm_safe"] is False
     assert row["cause"] == "blend: short top rung"
+
+
+def _data_files(folder: Path) -> dict[str, bytes]:
+    """Return the database files in folder by name, leaving out SQLite's -shm reader index."""
+    return {
+        path.name: path.read_bytes() for path in folder.iterdir() if not path.name.endswith("-shm")
+    }
 
 
 def _pair_row() -> dict[str, Any]:
