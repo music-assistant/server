@@ -67,6 +67,8 @@ HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 INGRESS_SERVER_PORT: Final[int] = 8094
 # Fixed address of the HA Supervisor on the hassio network, the only legitimate ingress peer
 HASSIO_SUPERVISOR_IP: Final[str] = "172.30.32.2"
+# Origin of the hosted Music Assistant web app, used for Remote Access
+APP_MA_HOST: Final[str] = "https://app.music-assistant.io"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"

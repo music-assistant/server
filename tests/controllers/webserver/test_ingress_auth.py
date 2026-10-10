@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from aiohttp import web
@@ -200,7 +201,7 @@ async def _ha_login_callback(
     :param details: The (username, display_name, avatar_url) Home Assistant returns for the user.
     """
     provider = _oauth_provider(mass)
-    provider._oauth_sessions["login_state"] = None
+    provider._oauth_sessions["login_state"] = (None, "http://ma.local:8095/auth/callback")
     hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
     with (
         patch.object(mass, "get_provider", return_value=hass_provider),
@@ -211,9 +212,7 @@ async def _ha_login_callback(
             provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value=ha_user_id)
         ),
     ):
-        return await provider.handle_oauth_callback(
-            "ha_code", "login_state", "http://ma.local:8095/auth/callback"
-        )
+        return await provider.handle_oauth_callback("ha_code", "login_state")
 
 
 @pytest.mark.parametrize(
@@ -674,3 +673,25 @@ async def test_ha_login_callback_refuses_a_new_user_with_self_registration_off(
     )
     assert len(await auth_manager.list_users()) == user_count
     assert await _get_ha_link(auth_manager, "ha_carol") is None
+
+
+async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_issued_to(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The HA login exchanges its code with the client_id and callback it was started with."""
+    provider = _oauth_provider(mass_minimal)
+    redirect_uri = "https://example.com/ma/auth/callback?provider_id=homeassistant"
+    auth_url = await provider.get_authorization_url(redirect_uri, "https://example.com/ma/#/home")
+    assert auth_url is not None
+    query = parse_qs(urlparse(auth_url).query)
+    assert query["client_id"] == ["https://example.com"]
+    assert query["redirect_uri"] == [redirect_uri]
+
+    get_token = AsyncMock(return_value={})
+    with patch.object(auth_providers, "get_token", get_token):
+        result = await provider.handle_oauth_callback("ha_code", query["state"][0])
+
+    get_token.assert_awaited_once_with(
+        "http://ha.local:8123", "ha_code", client_id="https://example.com"
+    )
+    assert result == AuthResult(success=False, error="No access token received from HA")
