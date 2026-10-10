@@ -1,45 +1,24 @@
 """
 Translate ratings embedded in file tags into Music Assistant's favorite state.
 
-Ratings live in file tags in several formats and scales, while Music Assistant's
-data model carries only the tri-state ``favorite`` flag. This module owns that
-translation so every provider that imports ratings maps them the same way, and
-so a threshold in a provider's settings always means the same thing.
-
-Every mapping here is monotonic: a higher value in the file can never produce a
-lower rating. That is why the values taggers write are not mixed into a single
-lookup -- taggers disagree about what a given byte means, and mixing them makes
-a higher byte mean fewer stars. The scale a library was tagged with is an
-explicit setting instead of a guess made per file.
-
-Normalization is deliberately separate from the flag mapping:
-
-* :func:`popm_to_rating` and :func:`tag_value_to_rating` turn a format's own
-  scale into a neutral rating,
-* :func:`favorite_from_rating` turns a neutral rating into the tri-state flag.
-
-Only the read direction exists today. A provider that lets the rating be changed
-from inside Music Assistant needs the inverse (a rating back into a tag value),
-and somewhere to persist a rating the file does not carry, so that counterpart
-belongs here beside the functions above.
+Taggers disagree about the scale a rating is written in, so the scale a library
+was tagged with is a provider setting and every mapping here is monotonic: a
+higher value in the file never produces a lower rating.
 """
 
 from __future__ import annotations
 
-# Ratings are normalized to 0.0-10.0, the same scale the Plex provider exposes in
-# its configuration, so a threshold means the same thing in every provider.
+# Ratings are normalized to 0.0-10.0, the scale the Plex provider exposes in its
+# configuration, so a threshold means the same thing in every provider.
 MAX_RATING: float = 10.0
 
 _MAX_STARS: float = 5.0
 
-# How the POPM byte is read. ID3's popularimeter is a single byte and taggers
-# disagree about what the values mean, so this is chosen once per library.
 POPM_SCALE_WINDOWS: str = "windows"
 POPM_SCALE_ITUNES: str = "itunes"
 
 # Windows Media Player and Explorer write 1/64/128/196/255 and read these bands,
-# which also covers MediaMonkey's 23/64/118/186/252 and the half star values in
-# between. See: https://en.wikipedia.org/wiki/ID3#ID3v2_star_rating_tag_issue
+# which also covers MediaMonkey's 23/64/118/186/252.
 _POPM_BANDS_WINDOWS: tuple[tuple[int, int, float], ...] = (
     (1, 31, 1.0),
     (32, 95, 2.0),
@@ -48,9 +27,8 @@ _POPM_BANDS_WINDOWS: tuple[tuple[int, int, float], ...] = (
     (224, 255, 5.0),
 )
 
-# iTunes squeezes five stars into 20/40/60/80/100, so its bands sit lower.
-# Reading those values with the bands above turns an iTunes four star rating (80)
-# into two stars, which is why the scale is a setting rather than a guess.
+# iTunes squeezes five stars into 20/40/60/80/100, so its bands sit lower. Read
+# with the bands above, an iTunes four star rating (80) would be two stars.
 _POPM_BANDS_ITUNES: tuple[tuple[int, int, float], ...] = (
     (1, 29, 1.0),
     (30, 49, 2.0),
@@ -64,8 +42,6 @@ _POPM_BANDS: dict[str, tuple[tuple[int, int, float], ...]] = {
     POPM_SCALE_ITUNES: _POPM_BANDS_ITUNES,
 }
 
-# How the Vorbis RATING field and the MP4 RATING tag are read: a 0-100 value
-# (foobar2000, MusicBee, MediaMonkey) or a 1-5 star value.
 TAG_SCALE_PERCENT: str = "percent"
 TAG_SCALE_STARS: str = "stars"
 
@@ -74,10 +50,10 @@ _PERCENTAGE_MAX: float = 100.0
 
 def popm_to_rating(popm_rating: int, scale: str = POPM_SCALE_WINDOWS) -> float | None:
     """
-    Convert an ID3 POPM byte to a normalized rating.
+    Return the normalized rating for an ID3 POPM value.
 
-    :param popm_rating: The POPM frame rating, 0-255 (0 means unrated/unknown).
-    :param scale: The POPM scale to read the byte with, see :data:`POPM_SCALE_WINDOWS`.
+    :param popm_rating: The POPM rating, 0-255. 0 means unrated and returns None.
+    :param scale: The scale to read the value with, see :data:`POPM_SCALE_WINDOWS`.
     """
     if popm_rating <= 0:
         return None
@@ -89,9 +65,9 @@ def popm_to_rating(popm_rating: int, scale: str = POPM_SCALE_WINDOWS) -> float |
 
 def tag_value_to_rating(value: float, scale: str = TAG_SCALE_PERCENT) -> float | None:
     """
-    Convert a Vorbis RATING or MP4 RATING value to a normalized rating.
+    Return the normalized rating for a Vorbis RATING or MP4 RATING value.
 
-    :param value: The rating as written in the file, 0-100 or 0-5.
+    :param value: The value as written in the file. 0 means unrated and returns None.
     :param scale: The scale to read the value with, see :data:`TAG_SCALE_PERCENT`.
     """
     if value <= 0:
@@ -108,14 +84,12 @@ def favorite_from_rating(
     dislike_threshold: float,
 ) -> bool | None:
     """
-    Derive the tri-state favorite flag from a normalized rating.
-
-    Returns None when the file carries no rating, or one that sits in the neutral
-    band between the two thresholds.
+    Return the favorite state for a normalized rating.
 
     :param rating: The normalized rating, 0.0-10.0, or None when unrated.
-    :param favorite_threshold: Minimum rating to consider the item a favorite.
-    :param dislike_threshold: Maximum rating to consider the item a dislike.
+    :param favorite_threshold: Minimum rating to return True.
+    :param dislike_threshold: Maximum rating to return False. A rating between the
+        two thresholds returns None, as does an unrated item.
     """
     if rating is None:
         return None
