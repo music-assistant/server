@@ -472,13 +472,7 @@ class TestRescueAnchorGenerator:
 def _segue(tail: float, head: float = 0.0, *, snapped: bool = False) -> SegueFacts:
     """Segue facts for a quiet tail and head, with the overlap capped at 15s."""
     return SegueFacts(
-        point=45.0 - tail,
-        rise=head,
-        quiet_tail=tail,
-        quiet_head=head,
-        snapped_out=snapped,
-        snapped_in=False,
-        overlap=min(tail + head, 15.0),
+        quiet_tail=tail, quiet_head=head, snapped_out=snapped, overlap=min(tail + head, 15.0)
     )
 
 

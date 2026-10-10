@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import pytest
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
     QuickFadeTrigger,
     SmartFadeNotApplicable,
@@ -236,22 +237,28 @@ def test_context_mix_out_anchor_is_downbeat_snapped() -> None:
     assert float(np.min(np.abs(context.outgoing.downbeats - anchor))) < 0.05
 
 
-def test_context_quiet_audible_outro_anchors_at_its_audible_end() -> None:
+def test_context_quiet_audible_outro_anchors_at_its_audible_end(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """An outro that stays audible but under the mix-out floor is a quiet outro, not an error."""
     bins = np.full(1800, 0.5, dtype=np.float32)
     t = np.linspace(0, 240.0, 1800)
     bins[t >= 190.0] = 0.2  # audible but below 0.7*sustained for the whole buffered tail
 
-    context = _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
+    with caplog.at_level(VERBOSE_LOG_LEVEL, logger=LOGGER.name):
+        context = _context(_analysis(120.0, rms_energy=bins), _analysis(120.0))
 
-    assert context.quiet_outro
     assert context.audio_end == pytest.approx(45.0)
     assert context.default_anchor == pytest.approx(context.audio_end)
+    assert any(r.getMessage().startswith("quiet outro: ") for r in caplog.records)
 
 
-def test_context_ordinary_outro_is_no_quiet_outro() -> None:
+def test_context_ordinary_outro_is_no_quiet_outro(caplog: pytest.LogCaptureFixture) -> None:
     """A tail at its sustained level up to the end anchors as usual."""
-    assert not _context(_analysis(120.0), _analysis(120.0)).quiet_outro
+    with caplog.at_level(VERBOSE_LOG_LEVEL, logger=LOGGER.name):
+        _context(_analysis(120.0), _analysis(120.0))
+
+    assert not any(r.getMessage().startswith("quiet outro: ") for r in caplog.records)
 
 
 def test_context_silent_tail_reports_mostly_silent() -> None:
@@ -337,11 +344,10 @@ class TestSegueFacts:
         segue = _context(out, inc).segue
 
         assert segue is not None
-        assert segue.point == pytest.approx(35.0, abs=0.15)
         assert segue.snapped_out
         assert segue.quiet_tail == pytest.approx(10.0, abs=0.15)
         # fewer than 4 incoming downbeats precede the rise, so it stays where it was measured
-        assert not segue.snapped_in
+        # instead of moving back to the downbeat at 3.7s
         assert segue.quiet_head == pytest.approx(4.0, abs=0.15)
         assert segue.overlap == pytest.approx(14.0, abs=0.3)
 
@@ -355,10 +361,9 @@ class TestSegueFacts:
         assert segue is not None
         # buffer-local downbeats sit on odd seconds: 35.6 snaps on to 37, not back to 35
         assert segue.snapped_out
-        assert segue.point == pytest.approx(37.0)
+        assert segue.quiet_tail == pytest.approx(8.0)
         # the rise at 9.4 snaps back to 8, not on to 10
-        assert segue.snapped_in
-        assert segue.rise == pytest.approx(8.0)
+        assert segue.quiet_head == pytest.approx(8.0)
 
     def test_a_loud_end_never_snaps_back_into_loud_bars(self) -> None:
         """A loud tail keeps no quiet tail, whether or not a downbeat sits a bar earlier."""
@@ -367,7 +372,6 @@ class TestSegueFacts:
 
         assert segue is not None
         assert not segue.snapped_out
-        assert segue.point == pytest.approx(45.0, abs=0.15)
         assert segue.quiet_tail == pytest.approx(0.0, abs=0.15)
 
     def test_an_irregular_grid_leaves_the_point_where_it_was_measured(self) -> None:
@@ -378,7 +382,7 @@ class TestSegueFacts:
 
         assert segue is not None
         assert not segue.snapped_out
-        assert segue.point == pytest.approx(35.6, abs=0.15)
+        assert segue.quiet_tail == pytest.approx(9.4, abs=0.15)
 
     def test_a_grid_that_ends_early_leaves_the_point_unsnapped(self) -> None:
         """Only detected downbeats count: an extrapolated grid past the real one is no snap."""
@@ -390,7 +394,7 @@ class TestSegueFacts:
         # the protective grid runs on, regular, past the 15s where the real grid ends
         assert max(context.protective_downbeats) > 36.0
         assert not context.segue.snapped_out
-        assert context.segue.point == pytest.approx(35.6, abs=0.15)
+        assert context.segue.quiet_tail == pytest.approx(9.4, abs=0.15)
 
     def test_a_long_tail_caps_the_overlap(self) -> None:
         """A 30s quiet tail caps the overlap at 15s."""

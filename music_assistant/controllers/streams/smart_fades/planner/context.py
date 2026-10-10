@@ -110,21 +110,15 @@ _SNAP_SLACK_S: float = 0.05
 
 @dataclass(frozen=True, slots=True)
 class SegueFacts:
-    """
-    Where the outgoing tail and the incoming head are quiet enough to overlap.
+    """Where the outgoing tail and the incoming head are quiet enough to overlap."""
 
-    ``point`` and ``quiet_tail`` are buffer-local; ``rise`` and ``quiet_head``
-    are head-local seconds of the incoming track.
-    """
-
-    # last moment the outgoing tail is at or above the segue level; 0.0 = quiet throughout
-    point: float
-    # first moment the incoming head reaches the segue level
-    rise: float
+    # seconds below the segue level before the audible end; the whole room when
+    # the buffer is quiet throughout
     quiet_tail: float
+    # seconds of the incoming head below the segue level
     quiet_head: float
+    # the quiet tail starts on a downbeat of a regular grid
     snapped_out: bool
-    snapped_in: bool
     # quiet tail plus quiet head, capped to the segue maximum and the room
     overlap: float
 
@@ -183,9 +177,6 @@ class TransitionContext:
     in_kickless: bool = False
     # None without RMS energy on both decks
     segue: SegueFacts | None = None
-    # the outgoing tail mixes out too early to anchor there, so default_anchor
-    # sits at its audible end
-    quiet_outro: bool = False
 
     @property
     def preferred_style(self) -> TransitionStyle:
@@ -263,8 +254,7 @@ def build_transition_context(
         kick_anchor,
         grid_beats,
         grid_downbeats,
-        quiet_outro,
-    ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration)
+    ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration, logger)
     outgoing = replace(outgoing, beats=grid_beats, downbeats=grid_downbeats)
 
     # Extrapolated up to the true RMS-audible boundary rather than the (possibly
@@ -357,7 +347,7 @@ def build_transition_context(
         VERBOSE_LOG_LEVEL,
         "transition context: tier=%s bpm=%.1f->%.1f (diff=%.1f%%) cross_meter=%s buffer=%.1fs "
         "offset=%.1fs audio_end=%.1fs anchor=%.2f mix_out=%.2f kick=%s fade_onset=%s coda=%s "
-        "natural_entry=%.2f vocals=%s kickless=%s/%s quiet_outro=%s quiet_tail=%s quiet_head=%s",
+        "natural_entry=%.2f vocals=%s kickless=%s/%s quiet_tail=%s quiet_head=%s",
         tier,
         outgoing.bpm,
         incoming.bpm,
@@ -375,7 +365,6 @@ def build_transition_context(
         vocal_coverage,
         out_kickless,
         in_kickless,
-        quiet_outro,
         f"{segue.quiet_tail:.2f}" if segue is not None else None,
         f"{segue.quiet_head:.2f}" if segue is not None else None,
     )
@@ -409,27 +398,22 @@ def build_transition_context(
         out_kickless=out_kickless,
         in_kickless=in_kickless,
         segue=segue,
-        quiet_outro=quiet_outro,
     )
 
 
 def _cue_outgoing_tail(
-    outgoing: Deck, outgoing_profile: BandProfile | None, buffer_duration: float
+    outgoing: Deck,
+    outgoing_profile: BandProfile | None,
+    buffer_duration: float,
+    logger: logging.Logger,
 ) -> tuple[
-    float,
-    float,
-    float,
-    float,
-    float | None,
-    npt.NDArray[np.float32],
-    npt.NDArray[np.float32],
-    bool,
+    float, float, float, float, float | None, npt.NDArray[np.float32], npt.NDArray[np.float32]
 ]:
     """
     Anchor the outgoing tail at its energy mix-out point, snapped to a downbeat.
 
     Returns ``(buffer_offset, audio_end, tier_anchor, mix_out_anchor,
-    kick_anchor, grid_beats, grid_downbeats, quiet_outro)``. ``tier_anchor`` is the
+    kick_anchor, grid_beats, grid_downbeats)``. ``tier_anchor`` is the
     kick-FOLDED anchor the old planner called ``effective_end``: applicability
     and the tier decision key on it, so a kick-timed track keeps its original
     (shorter) blendability window. ``mix_out_anchor`` (pure full-band) and
@@ -437,8 +421,8 @@ def _cue_outgoing_tail(
     which one a candidate should start from is a candidate-factory decision.
     ``grid_beats``/``grid_downbeats`` are the unmasked (only dropping
     pre-buffer beats) buffer-local grids, for a later candidate to mask to
-    whichever anchor it picks. ``quiet_outro`` is True when the tail mixes out
-    too early to anchor there; it is then anchored at its audible end.
+    whichever anchor it picks. A tail that mixes out too early to anchor there
+    is anchored at its audible end.
     """
     # ACTUAL buffer length, not the constant 45s: the holdback yield loop leaves
     # up to ~1s less depending on chunk boundaries, and every buffer-local
@@ -462,10 +446,18 @@ def _cue_outgoing_tail(
     folded_mix_out = kick_anchor if kick_anchor is not None else raw_mix_out
     if silence_end < MIN_EFFECTIVE_FADE_BUFFER:
         raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({silence_end:.1f}s audible)")
-    # a tail that mixes out this early is a quiet but audible musical outro: anchor it
-    # at its audible end and plan it like any other tail
-    quiet_outro = folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER
-    tier_anchor = silence_end if quiet_outro else min(silence_end, folded_mix_out)
+    if folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER:
+        # a quiet but audible musical outro: anchor it at its audible end and plan
+        # it like any other tail
+        logger.log(
+            VERBOSE_LOG_LEVEL,
+            "quiet outro: energy mix-out at %.1fs of %.1fs audible; anchoring at the audible end",
+            folded_mix_out,
+            silence_end,
+        )
+        tier_anchor = silence_end
+    else:
+        tier_anchor = min(silence_end, folded_mix_out)
 
     # Shift fade-out beats from full-track to buffer-local coordinates
     beats = outgoing.beats - buffer_offset
@@ -499,7 +491,6 @@ def _cue_outgoing_tail(
         kick_anchor,
         grid_beats,
         grid_downbeats,
-        quiet_outro,
     )
 
 
@@ -650,20 +641,15 @@ def _segue_facts(
         outgoing.beats_per_bar * 60.0 / outgoing.bpm,
         later=True,
     )
-    rise, snapped_in = _snap_segue_point(
+    quiet_head, _ = _snap_segue_point(
         raw_rise, incoming.downbeats, incoming.beats_per_bar * 60.0 / incoming.bpm, later=False
     )
     quiet_tail = audio_end - point
     return SegueFacts(
-        point=point,
-        rise=rise,
         quiet_tail=quiet_tail,
-        quiet_head=rise,
+        quiet_head=quiet_head,
         snapped_out=snapped_out,
-        snapped_in=snapped_in,
-        overlap=min(
-            quiet_tail + rise, SEGUE_MAX_SECONDS, audio_end, float(SMART_CROSSFADE_DURATION)
-        ),
+        overlap=min(quiet_tail + quiet_head, SEGUE_MAX_SECONDS, audio_end),
     )
 
 

@@ -405,7 +405,7 @@ class SegueGenerator(CandidateGenerator):
             ideal = ctx.segue.overlap
         elif _beatless_long_qualifies(ctx):
             # one side without a beat can ride a long fade over loud material too
-            ideal = min(SEGUE_MAX_SECONDS, ctx.audio_end, float(SMART_CROSSFADE_DURATION))
+            ideal = min(SEGUE_MAX_SECONDS, ctx.audio_end)
         else:
             return
         step = _SEGUE_STEP_BARS * bar_out if ctx.segue.snapped_out else _SEGUE_STEP_SECONDS
@@ -929,9 +929,7 @@ class CandidateFactory:
         plan = TransitionPlan(
             tier=spec.tier,
             fade_out_window=tail.effective_end,
-            crossfade_duration=min(
-                spec.overlap_s, tail.effective_end, float(SMART_CROSSFADE_DURATION)
-            ),
+            crossfade_duration=spec.overlap_s,
             style=TransitionStyle.SEGUE,
             fadeout_trim=tail.fadeout_trim,
         )
