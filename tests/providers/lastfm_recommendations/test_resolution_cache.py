@@ -122,7 +122,7 @@ async def test_failed_provider_search_makes_resolution_incomplete() -> None:
     ctrl = Mock()
     ctrl.search = AsyncMock(side_effect=RetriesExhausted("rate limited"))
     with pytest.raises(parsers.SearchIncomplete):
-        await parsers._search_providers_concurrent(ctrl, mapping, [Mock(name="p")], None)
+        await parsers._search_providers(ctrl, mapping, [Mock(name="p")], None)
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ async def test_empty_provider_searches_are_a_miss() -> None:
     mapping = ItemMapping(media_type=Track.media_type, item_id="temp", provider="x", name="a")
     ctrl = Mock()
     ctrl.search = AsyncMock(return_value=[])
-    assert await parsers._search_providers_concurrent(ctrl, mapping, [Mock(name="p")], None) is None
+    assert await parsers._search_providers(ctrl, mapping, [Mock(name="p")], None) is None
 
 
 def _mass(provider_status: ProviderStatus) -> Mock:
@@ -187,7 +187,7 @@ async def test_a_match_in_second_place_is_found() -> None:
     other = Track(item_id="2", provider="p", name="Run", provider_mappings=set())
     ctrl = Mock()
     ctrl.search = AsyncMock(return_value=[other, _track()])
-    result = await parsers._search_providers_concurrent(ctrl, mapping, [Mock(name="p")], None)
+    result = await parsers._search_providers(ctrl, mapping, [Mock(name="p")], None)
     assert result is not None
     assert result.name == "Chasing Cars"
 
@@ -199,9 +199,7 @@ async def test_unavailable_provider_makes_resolution_incomplete() -> None:
     ctrl = Mock()
     ctrl.search = AsyncMock(return_value=[])
     with pytest.raises(parsers.SearchIncomplete):
-        await parsers._search_providers_concurrent(
-            ctrl, mapping, [Mock(name="p", available=False)], None
-        )
+        await parsers._search_providers(ctrl, mapping, [Mock(name="p", available=False)], None)
     ctrl.search.assert_not_awaited()
 
 
@@ -218,4 +216,74 @@ async def test_provider_unloading_during_the_search_makes_resolution_incomplete(
     ctrl = Mock()
     ctrl.search = AsyncMock(side_effect=_search_while_unloading)
     with pytest.raises(parsers.SearchIncomplete):
-        await parsers._search_providers_concurrent(ctrl, mapping, [provider], None)
+        await parsers._search_providers(ctrl, mapping, [provider], None)
+
+
+def _provider(name: str) -> Mock:
+    """Return an available provider stand-in with the given instance id."""
+    provider = Mock(name=name, available=True)
+    provider.instance_id = name
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_match_on_first_provider_skips_the_rest() -> None:
+    """A match on the first provider means the next provider is never searched."""
+    mapping = ItemMapping(
+        media_type=Track.media_type, item_id="temp", provider="x", name="Chasing Cars"
+    )
+    ctrl = Mock()
+    ctrl.search = AsyncMock(side_effect=[[_track()], [_track()]])
+    result = await parsers._search_providers(
+        ctrl, mapping, [_provider("first"), _provider("second")], None
+    )
+    assert result is not None
+    assert result.name == "Chasing Cars"
+    assert ctrl.search.await_count == 1
+    assert ctrl.search.await_args_list[0].args[1] == "first"
+
+
+@pytest.mark.asyncio
+async def test_no_match_on_first_provider_searches_the_next() -> None:
+    """When the first provider has no match, the next provider is searched."""
+    mapping = ItemMapping(
+        media_type=Track.media_type, item_id="temp", provider="x", name="Chasing Cars"
+    )
+    other = Track(item_id="2", provider="first", name="Run", provider_mappings=set())
+    match = Track(item_id="3", provider="second", name="Chasing Cars", provider_mappings=set())
+    ctrl = Mock()
+    ctrl.search = AsyncMock(side_effect=[[other], [match]])
+    result = await parsers._search_providers(
+        ctrl, mapping, [_provider("first"), _provider("second")], None
+    )
+    assert result is match
+    assert [call.args[1] for call in ctrl.search.await_args_list] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_match_after_a_failed_provider_is_returned() -> None:
+    """A match on a later provider wins over an earlier provider that could not be searched."""
+    mapping = ItemMapping(
+        media_type=Track.media_type, item_id="temp", provider="x", name="Chasing Cars"
+    )
+    match = Track(item_id="3", provider="second", name="Chasing Cars", provider_mappings=set())
+    ctrl = Mock()
+    ctrl.search = AsyncMock(side_effect=[RetriesExhausted("rate limited"), [match]])
+    result = await parsers._search_providers(
+        ctrl, mapping, [_provider("first"), _provider("second")], None
+    )
+    assert result is match
+    assert ctrl.search.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_no_match_after_a_failed_provider_is_incomplete() -> None:
+    """A clean miss on a later provider does not make up for an earlier provider that failed."""
+    mapping = ItemMapping(media_type=Track.media_type, item_id="temp", provider="x", name="a")
+    ctrl = Mock()
+    ctrl.search = AsyncMock(side_effect=[RetriesExhausted("rate limited"), []])
+    with pytest.raises(parsers.SearchIncomplete):
+        await parsers._search_providers(
+            ctrl, mapping, [_provider("first"), _provider("second")], None
+        )
+    assert ctrl.search.await_count == 2
