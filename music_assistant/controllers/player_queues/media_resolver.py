@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import random
 from types import NoneType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from music_assistant_models.enums import ArtistType, MediaType, SortField
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
@@ -35,17 +35,23 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import PlaylistPlayableItem
 from music_assistant.controllers.player_queues.constants import (
+    CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    LIBRARY_ALBUM_SKIPPED_TYPES,
+    PROVIDER_ALBUM_SKIPPED_TYPES,
+    ArtistOrder,
 )
-from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.player_queues.helpers import order_albums, sort_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
+from music_assistant.helpers.compare import compare_album
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
@@ -55,6 +61,10 @@ if TYPE_CHECKING:
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
 _START_ITEM_SUBSTRING_MIN_LEN = 3
+# the artist selections that play only the library's albums
+_LIBRARY_SELECTIONS = frozenset({"library_tracks", "library_album_tracks", "prefer_library"})
+# caps the album track lookups in flight, so a large discography does not flood a provider
+ALBUM_LOOKUP_BATCH = 5
 
 
 def _start_item_matches(start_item: str, item: Any) -> bool:
@@ -71,6 +81,14 @@ def _start_item_matches(start_item: str, item: Any) -> bool:
         return False
     name = getattr(item, "name", None)
     return bool(name and start_item.lower() in name.lower())
+
+
+class ArtistTracks(NamedTuple):
+    """The tracks to play for an artist."""
+
+    tracks: list[Track]
+    # the tracks are the artist's albums one after the other, so they play in order
+    plays_albums: bool
 
 
 class MediaResolver:
@@ -112,51 +130,57 @@ class MediaResolver:
         return []
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
-        """Return the tracks to play for the given artist, based on user preference."""
-        artist_items_conf = self.mass.config.get_raw_core_config_value(
-            self.queues.domain,
-            CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-            ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+        """
+        Return the tracks to play for the given artist, based on user preference.
+
+        :param artist: The artist to play.
+        """
+        return (await self.resolve_artist_tracks(artist)).tracks
+
+    async def resolve_artist_tracks(self, artist: Artist) -> ArtistTracks:
+        """
+        Return the tracks to play for the given artist, and whether they are its albums.
+
+        With an album order, these are the artist's albums one after the other, each as it
+        plays on its own. An artist without albums to play gets the selected tracks shuffled.
+
+        :param artist: The artist to play.
+        """
+        artist_items_conf = str(
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+                ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+            )
         )
+        order = self.get_artist_order()
         self.logger.info(
-            "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
+            "Fetching tracks to play for artist %s (selection: %s, order: %s)",
+            artist.name,
+            artist_items_conf,
+            order,
         )
-        if artist_items_conf == "top_tracks":
-            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        # legacy "library_album_tracks" also resolves to the in-library tracks
-        if artist_items_conf in ("library_tracks", "library_album_tracks"):
-            tracks = await self._library_artist_tracks(artist)
-            random.shuffle(tracks)
-            return tracks
-        if artist_items_conf == "prefer_library":
-            tracks = await self._library_artist_tracks(artist)
-            if not tracks:
-                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        result: list[Track] = []
-        seen: set[str] = set()
-        sources = await asyncio.gather(
-            self._library_artist_tracks(artist),
-            self._provider_artist_tracks(artist),
-            return_exceptions=True,
+        if self._album_order_applies(artist, artist_items_conf) and (
+            albums := await self._artist_albums(artist, artist_items_conf)
+        ):
+            return ArtistTracks(
+                await self._album_tracks_in_turn(order_albums(albums, order)), plays_albums=True
+            )
+        return ArtistTracks(
+            await self._shuffled_artist_tracks(artist, artist_items_conf), plays_albums=False
         )
-        for source in sources:
-            if isinstance(source, BaseException):
-                self.logger.warning(
-                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
-                )
-                continue
-            for track in source:
-                unique_id = f"{track.name}.{track.version}"
-                if unique_id in seen:
-                    continue
-                seen.add(unique_id)
-                result.append(track)
-        random.shuffle(result)
-        return result
+
+    def get_artist_order(self) -> ArtistOrder:
+        """Return the configured order to play an artist's tracks in."""
+        raw = self.mass.config.get_raw_core_config_value(
+            self.queues.domain,
+            CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
+            ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
+        )
+        try:
+            return ArtistOrder(str(raw))
+        except ValueError:
+            return ArtistOrder(ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE)
 
     async def get_album_tracks(
         self,
@@ -174,24 +198,11 @@ class MediaResolver:
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
         """
-        album_items_conf = self.mass.config.get_raw_core_config_value(
-            self.queues.domain,
-            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-        )
-        result: list[Track] = []
         self.logger.info(
             "Fetching tracks to play for album %s",
             album.name,
         )
-        for album_track in await self.mass.music.albums.tracks(
-            item_id=album.item_id,
-            provider_instance_id_or_domain=album.provider,
-            in_library_only=album_items_conf == "library_tracks",
-        ):
-            if not album_track.available:
-                continue
-            result.append(album_track)
+        result = await self._album_tracks(album)
         if sort_by and sort_by != "track_number":
             result = sort_tracks(result, sort_by)
         if start_item is not None:
@@ -662,6 +673,154 @@ class MediaResolver:
             return candidate
         return None
 
+    def _album_order_applies(self, artist: Artist, selection: str) -> bool:
+        """
+        Return whether the artist order's album setting applies to the artist.
+
+        :param artist: The artist to play.
+        :param selection: The artist selection setting.
+        """
+        # top tracks are tracks, and an author or narrator plays audiobooks
+        return (
+            self.get_artist_order().plays_albums
+            and selection != "top_tracks"
+            and artist.artist_type not in (ArtistType.AUTHOR, ArtistType.NARRATOR)
+        )
+
+    async def _artist_albums(self, artist: Artist, selection: str) -> list[Album]:
+        """
+        Return the artist's albums that the selection setting covers.
+
+        :param artist: The artist to fetch the albums of.
+        :param selection: The artist selection setting.
+        """
+        library_albums: list[Album] = []
+        if (library_artist := await self._resolve_library_artist(artist)) is not None:
+            library_albums = await self.mass.music.artists.albums(library_artist.item_id, "library")
+        # singles are left out; library compilations stay, as a local collection may have no
+        # albums otherwise
+        albums = [
+            album for album in library_albums if album.album_type not in LIBRARY_ALBUM_SKIPPED_TYPES
+        ]
+        if selection not in _LIBRARY_SELECTIONS:
+            # add the albums found only on a provider, leaving out singles and compilations, as
+            # their songs are on the albums already; a skipped library single is still in the
+            # library, so its provider copy is skipped too, but it doesn't hide a provider album
+            # of the same name
+            in_library = {
+                (mapping.provider_instance, mapping.item_id)
+                for album in library_albums
+                for mapping in album.provider_mappings
+            }
+            provider_albums: list[Album] = []
+            for album in await self._provider_artist_albums(artist):
+                if album.album_type in PROVIDER_ALBUM_SKIPPED_TYPES or any(
+                    (mapping.provider_instance, mapping.item_id) in in_library
+                    for mapping in album.provider_mappings
+                ):
+                    continue
+                # an album plays once, even when the library or another provider has it unlinked
+                if not any(compare_album(album, other) for other in (*albums, *provider_albums)):
+                    provider_albums.append(album)
+            albums.extend(provider_albums)
+        return albums
+
+    async def _album_tracks(self, album: Album) -> list[Track]:
+        """
+        Return the available tracks of the given album, following the album selection setting.
+
+        :param album: The album to fetch the tracks for.
+        """
+        album_items_conf = self.mass.config.get_raw_core_config_value(
+            self.queues.domain,
+            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+        )
+        return [
+            album_track
+            for album_track in await self.mass.music.albums.tracks(
+                item_id=album.item_id,
+                provider_instance_id_or_domain=album.provider,
+                in_library_only=album_items_conf == "library_tracks",
+            )
+            if album_track.available
+        ]
+
+    async def _shuffled_artist_tracks(self, artist: Artist, artist_items_conf: str) -> list[Track]:
+        """
+        Return the artist's selected tracks, shuffled.
+
+        :param artist: The artist to play.
+        :param artist_items_conf: The artist selection setting.
+        """
+        if artist_items_conf == "top_tracks":
+            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        # legacy "library_album_tracks" also resolves to the in-library tracks
+        if artist_items_conf in ("library_tracks", "library_album_tracks"):
+            tracks = await self._library_artist_tracks(artist)
+            random.shuffle(tracks)
+            return tracks
+        if artist_items_conf == "prefer_library":
+            tracks = await self._library_artist_tracks(artist)
+            if not tracks:
+                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        result: list[Track] = []
+        seen: set[str] = set()
+        sources = await asyncio.gather(
+            self._library_artist_tracks(artist),
+            self._provider_artist_tracks(artist),
+            return_exceptions=True,
+        )
+        for source in sources:
+            if isinstance(source, BaseException):
+                self.logger.warning(
+                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
+                )
+                continue
+            for track in source:
+                unique_id = f"{track.name}.{track.version}"
+                if unique_id in seen:
+                    continue
+                seen.add(unique_id)
+                result.append(track)
+        random.shuffle(result)
+        return result
+
+    async def _album_tracks_in_turn(self, albums: list[Album]) -> list[Track]:
+        """
+        Return the tracks of the given albums, one album after the other.
+
+        Each album plays as it does on its own. An album whose tracks can't be fetched is
+        left out.
+
+        :param albums: The albums to play, in order.
+        """
+        tracks: list[Track] = []
+        for start in range(0, len(albums), ALBUM_LOOKUP_BATCH):
+            batch = albums[start : start + ALBUM_LOOKUP_BATCH]
+            results = await asyncio.gather(
+                *(self._album_tracks(album) for album in batch),
+                return_exceptions=True,
+            )
+            for album, result in zip(batch, results, strict=True):
+                if isinstance(result, PROVIDER_FETCH_ERRORS):
+                    self.logger.log(
+                        provider_fetch_log_level(result),
+                        "Unable to fetch the tracks of album %s: %s",
+                        album.name,
+                        result,
+                    )
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                self.logger.debug("Playing %s tracks of album %s", len(result), album.name)
+                tracks.extend(result)
+        return tracks
+
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
         Resolve the in-library artist for the given (possibly provider) artist item.
@@ -710,6 +869,32 @@ class MediaResolver:
                 )
         return tracks
 
+    async def _provider_artist_albums(self, artist: Artist) -> list[Album]:
+        """
+        Return all of the artist's albums across its (streaming) providers.
+
+        :param artist: The artist to resolve provider albums for.
+        """
+        unique_providers = self.mass.music.get_unique_providers()
+        albums: list[Album] = []
+        for mapping in artist.provider_mappings:
+            if mapping.provider_instance not in unique_providers:
+                continue
+            try:
+                albums.extend(
+                    await self.mass.music.artists.albums(mapping.item_id, mapping.provider_instance)
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not drop the albums of the artist's other providers
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch albums for artist %s from provider %s: %s",
+                    artist.name,
+                    mapping.provider_instance,
+                    err,
+                )
+        return albums
+
     async def _resolve_media_items(
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
@@ -719,6 +904,7 @@ class MediaResolver:
         sort_by: str | None = None,
         start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
+        artist_tracks: list[Track] | None = None,
     ) -> list[MediaItemType]:
         """
         Resolve/unwrap media items to enqueue.
@@ -733,6 +919,8 @@ class MediaResolver:
         :param keep_preceding_items: For a playlist/album, move the tracks before start_item
             behind the rest instead of dropping them, so the full item is returned with
             start_item first.
+        :param artist_tracks: The tracks already resolved for an artist, so they are not
+            fetched again.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -755,7 +943,11 @@ class MediaResolver:
             if media_item.artist_type in [ArtistType.AUTHOR, ArtistType.NARRATOR]:
                 artist_items = await self.get_author_narrator_audiobooks(media_item, userid)
             else:
-                artist_items = await self.get_artist_tracks(media_item)
+                artist_items = (
+                    artist_tracks
+                    if artist_tracks is not None
+                    else await self.get_artist_tracks(media_item)
+                )
             self._mark_container_played(media_item, artist_items, userid, queue_id)
             return list(artist_items)
         if media_item.media_type == MediaType.ALBUM:

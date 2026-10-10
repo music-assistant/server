@@ -35,6 +35,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_CLICK_ACTION_TRACK,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+    CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
     CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
@@ -71,6 +72,20 @@ def test_core_config_entries_enqueue_defaults() -> None:
     # the enqueue entries now live in their own dedicated categories
     assert by_key[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST].category == CATEGORY_ITEMS_TO_SELECT
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION
+
+
+def test_core_config_entries_artist_order() -> None:
+    """An artist plays as shuffled tracks by default, with whole albums as the alternatives."""
+    entry = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))[
+        CONF_DEFAULT_ENQUEUE_ORDER_ARTIST
+    ]
+    assert entry.default_value == "shuffled_tracks"
+    assert [option.value for option in entry.options] == [
+        "shuffled_tracks",
+        "random_albums",
+        "albums_by_release",
+    ]
+    assert entry.category == CATEGORY_ITEMS_TO_SELECT
 
 
 def test_core_config_entries_click_actions() -> None:

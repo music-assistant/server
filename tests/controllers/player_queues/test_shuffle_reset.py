@@ -4,23 +4,25 @@ Tests for the shuffle state a newly started media item ends up with.
 Shuffle is a queue setting the user owns: it survives everything they play, except media that
 carries an order of its own. Starting an album, podcast, episode, audiobook or audio source plays
 it in that order and switches shuffle off with it, while a playlist or artist keeps whatever the
-queue is set to. An explicit ``shuffle`` argument always wins, and the options that only stage
-items leave the state alone. These drive the real ``play_media`` path against a bare controller
-instance, mirroring ``test_user_initiated_plays`` and ``test_enqueue_options``: resolution and
-playback are stubbed, but the enqueue/load path runs for real so the resulting item order is
-verified end-to-end.
+queue is set to (unless the artist plays its albums under an album order). An explicit ``shuffle`` argument
+always wins, and the options that only stage items leave the state alone. These drive the real
+``play_media`` path against a bare controller instance, mirroring ``test_user_initiated_plays``
+and ``test_enqueue_options``: resolution and playback are stubbed, but the enqueue/load path
+runs for real so the resulting item order is verified end-to-end.
 """
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.enums import ArtistType, MediaType, QueueOption
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
+    Artist,
     Audiobook,
     AudioSource,
     ItemMapping,
@@ -36,7 +38,11 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.constants import ORDERED_MEDIA_TYPES
+from music_assistant.controllers.player_queues.constants import (
+    ORDERED_MEDIA_TYPES,
+    ArtistOrder,
+)
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 # the album the user starts, in its own track order
@@ -91,6 +97,19 @@ def _playlist() -> Playlist:
         name="Playlist pl1",
         provider_mappings={
             ProviderMapping(item_id="pl1", provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _artist(artist_type: ArtistType = ArtistType.SINGER) -> Artist:
+    """Build the Artist the user presses play on."""
+    return Artist(
+        item_id="ar1",
+        provider="test",
+        name="Artist ar1",
+        artist_type=artist_type,
+        provider_mappings={
+            ProviderMapping(item_id="ar1", provider_domain="test", provider_instance="test")
         },
     )
 
@@ -165,6 +184,21 @@ def _controller(**queue_kwargs: Any) -> Any:
         side_effect=lambda _queue, items, **_kw: list(items)[::-1]
     )
     ctrl._media_resolver = Mock()
+    # the real artist resolution, reading the stubbed order, selection and albums
+    ctrl._media_resolver.resolve_artist_tracks = partial(
+        MediaResolver.resolve_artist_tracks, ctrl._media_resolver
+    )
+    ctrl._media_resolver._album_order_applies = partial(
+        MediaResolver._album_order_applies, ctrl._media_resolver
+    )
+    ctrl._media_resolver._artist_albums = AsyncMock(return_value=[_album()])
+    ctrl._media_resolver._album_tracks_in_turn = AsyncMock(
+        side_effect=lambda *_args: [_track(item_id) for item_id in ALBUM_TRACKS]
+    )
+    ctrl._media_resolver._shuffled_artist_tracks = AsyncMock(
+        side_effect=lambda *_args: [_track(item_id) for item_id in ALBUM_TRACKS]
+    )
+    ctrl._media_resolver.mass.config.get_raw_core_config_value = Mock(return_value="all_tracks")
     ctrl._media_resolver._resolve_media_items = AsyncMock(
         side_effect=lambda *_args, **_kwargs: [_track(item_id) for item_id in ALBUM_TRACKS]
     )
@@ -304,6 +338,126 @@ async def test_an_unshuffled_queue_stays_unshuffled_for_a_playlist() -> None:
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+@pytest.mark.parametrize("order", [ArtistOrder.RANDOM_ALBUMS, ArtistOrder.ALBUMS_BY_RELEASE])
+@pytest.mark.parametrize("option", START_OPTIONS)
+async def test_an_artist_played_as_albums_switches_shuffle_off(
+    option: QueueOption, order: str
+) -> None:
+    """An artist that plays its albums is sequenced like an album, so shuffle goes off."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=order)
+
+    await ctrl.play_media("q1", _artist(), option)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _played_order(ctrl) == ALBUM_TRACKS
+
+
+async def test_an_artist_is_looked_up_once_per_play() -> None:
+    """
+    The shuffle decision and the queue use one lookup of the artist's albums.
+
+    Two lookups could disagree, for example when a provider fails the second time, and the queue
+    would then play shuffled tracks with the shuffle off.
+    """
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+
+    await ctrl.play_media("q1", _artist(), QueueOption.REPLACE)
+
+    assert ctrl._media_resolver._artist_albums.await_count == 1
+    resolve_call = ctrl._media_resolver._resolve_media_items.call_args
+    assert [track.item_id for track in resolve_call.kwargs["artist_tracks"]] == ALBUM_TRACKS
+
+
+async def test_an_artist_that_fails_to_load_leaves_the_shuffle_unsettled() -> None:
+    """
+    An artist whose albums can't be fetched is skipped like any item that can't be fetched.
+
+    Over a dynamic queue, the smart mix's shuffle must still go, as when nothing resolves.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+    ctrl._media_resolver._artist_albums = AsyncMock(side_effect=MediaNotFoundError("gone"))
+
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_media("q1", _artist(), QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).smart_shuffle_active is False
+
+
+async def test_an_artist_added_to_a_dynamic_queue_is_not_looked_up() -> None:
+    """An artist added to a dynamic queue only becomes a source, so its albums aren't loaded."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl._queue_data["q1"].source_items = [_dynamic_playlist()]
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+
+    await ctrl.play_media("q1", _artist(), QueueOption.ADD)
+
+    assert _queue(ctrl).is_dynamic is True
+
+    ctrl._media_resolver._artist_albums.assert_not_awaited()
+
+
+async def test_an_artist_without_albums_keeps_the_queue_shuffle() -> None:
+    """An artist with no albums to play gets shuffled tracks, so the queue's shuffle stays on."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+    ctrl._media_resolver._artist_albums = AsyncMock(return_value=[])
+
+    await ctrl.play_media("q1", _artist(), QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is True
+
+
+async def test_an_artist_played_as_shuffled_tracks_keeps_the_queue_shuffle() -> None:
+    """An artist set to shuffled tracks is a pool of tracks, so the queue's shuffle stays on."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.SHUFFLED_TRACKS)
+
+    await ctrl.play_media("q1", _artist(), QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is True
+
+
+async def test_an_artist_played_as_top_tracks_keeps_the_queue_shuffle() -> None:
+    """The top tracks selection plays shuffled tracks under an album order too."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+    ctrl._media_resolver.mass.config.get_raw_core_config_value = Mock(return_value="top_tracks")
+
+    await ctrl.play_media("q1", _artist(), QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is True
+
+
+@pytest.mark.parametrize("artist_type", [ArtistType.AUTHOR, ArtistType.NARRATOR])
+async def test_an_author_keeps_the_queue_shuffle_under_an_album_order(
+    artist_type: ArtistType,
+) -> None:
+    """An author or narrator plays audiobooks, which never follow the artist order."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.ALBUMS_BY_RELEASE)
+
+    await ctrl.play_media("q1", _artist(artist_type), QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is True
+
+
+async def test_explicit_shuffle_wins_over_an_artists_album_order() -> None:
+    """Asking for shuffle explicitly still shuffles an artist that plays its albums."""
+    ctrl = _controller(shuffle_enabled=False)
+    ctrl._media_resolver.get_artist_order = Mock(return_value=ArtistOrder.RANDOM_ALBUMS)
+
+    await ctrl.play_media("q1", _artist(), QueueOption.REPLACE, shuffle=True)
+
+    assert _queue(ctrl).shuffle_enabled is True
 
 
 @pytest.mark.parametrize(
