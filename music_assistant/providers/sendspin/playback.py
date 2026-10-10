@@ -309,6 +309,7 @@ class _MemberPipeline:
     config: _PipelineConfig
     processor: _BufferedFfmpegProcessor | None = None
     ready: bool = False
+    push_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SendspinPlaybackSession:
@@ -696,26 +697,28 @@ class SendspinPlaybackSession:
     ) -> None:
         """Promote join catchup processor to the member's live DSP processor."""
         old_processor: _BufferedFfmpegProcessor | None = None
-        async with self._state_lock:
-            state = self._join_catchup.pop(player_id, None)
-            if state is None:
-                return
-            old_processor = pipeline.processor
-            pipeline.processor = state.processor
-        if state.snapshot_task is not None:
-            state.snapshot_task.cancel()
+        # Hold live pushes until the writer has flushed the PCM queued ahead of them.
+        async with pipeline.push_lock:
+            async with self._state_lock:
+                state = self._join_catchup.pop(player_id, None)
+                if state is None:
+                    return
+                old_processor = pipeline.processor
+                pipeline.processor = state.processor
+            if state.snapshot_task is not None:
+                state.snapshot_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await state.snapshot_task
+            # Let writer flush queued PCM before handoff; cancel if queue is full.
+            try:
+                state.input_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                state.writer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await state.snapshot_task
-        # Let writer flush queued PCM before handoff; cancel if queue is full.
-        try:
-            state.input_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            state.writer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.writer_task
-        state.drainer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.drainer_task
+                await state.writer_task
+            state.drainer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await state.drainer_task
         if self._producer_eof_sent and pipeline.config.requires_transform:
             with suppress(Exception):
                 await pipeline.processor.write_eof()
@@ -1416,10 +1419,11 @@ class SendspinPlaybackSession:
 
     async def _transform_member_chunk(self, pipeline: _MemberPipeline, chunk: bytes) -> None:
         """Push one PCM chunk into a member DSP pipeline."""
-        processor = pipeline.processor
-        if processor is None:
-            return
-        await processor.push(chunk)
+        async with pipeline.push_lock:
+            processor = pipeline.processor
+            if processor is None:
+                return
+            await processor.push(chunk)
 
     async def _read_member_chunk(
         self,

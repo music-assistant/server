@@ -64,9 +64,12 @@ def _first_frame(pcm: bytes) -> int:
 class _FifoFFMpeg:
     """Identity DSP: ffmpeg output equals its input, byte for byte."""
 
-    def __init__(self, on_start: Callable[[], Awaitable[None]] | None) -> None:
+    def __init__(
+        self, on_start: Callable[[], Awaitable[None]] | None, *, yielding_writes: bool
+    ) -> None:
         self._reader = asyncio.StreamReader(limit=2**30)
         self._on_start = on_start
+        self._yielding_writes = yielding_writes
         self._eof = False
         self._closed = False
 
@@ -75,6 +78,9 @@ class _FifoFFMpeg:
             await self._on_start()
 
     async def write(self, data: bytes) -> None:
+        if self._yielding_writes:
+            # Yield like the stdin drain of a real ffmpeg, so concurrent writers interleave.
+            await asyncio.sleep(0)
         if not self._eof and not self._closed:
             self._reader.feed_data(data)
 
@@ -104,7 +110,13 @@ class _FifoFFMpeg:
 class _SessionHarness:
     """Drives a real playback session one commit at a time against a real PushStream."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, dsp_ids: set[str]) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        dsp_ids: set[str],
+        *,
+        yielding_writes: bool = False,
+    ) -> None:
         self.clock = ManualClock()
         self.push_stream = PushStream(
             loop=asyncio.get_running_loop(),
@@ -148,7 +160,10 @@ class _SessionHarness:
         monkeypatch.setattr(
             session,
             "_create_member_ffmpeg",
-            lambda _params: _FifoFFMpeg(self.start_hooks.popleft() if self.start_hooks else None),
+            lambda _params: _FifoFFMpeg(
+                self.start_hooks.popleft() if self.start_hooks else None,
+                yielding_writes=yielding_writes,
+            ),
         )
 
     async def _source(self) -> AsyncIterator[bytes]:
@@ -263,6 +278,24 @@ async def test_join_fanout_before_history_feed_keeps_alignment(
         harness.start_hooks.extend([None, end_consumer_sleep_with_catchup_start])
         await harness.add_member(DSP_ID)
         await harness.commit(30)
+
+        assert DSP_ID not in harness.session._join_catchup
+        channel_id = harness.session._member_pipelines[DSP_ID].channel_id
+        _assert_aligned(harness.offsets_us(channel_id))
+    finally:
+        await harness.close()
+
+
+async def test_promotion_flushes_join_backlog_before_live_pushes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A promoted DSP joiner stays aligned when live pushes arrive during the backlog flush."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID}, yielding_writes=True)
+    try:
+        await harness.start()
+        await harness.commit(20)
+        await harness.add_member(DSP_ID)
+        await harness.commit(80)
 
         assert DSP_ID not in harness.session._join_catchup
         channel_id = harness.session._member_pipelines[DSP_ID].channel_id
