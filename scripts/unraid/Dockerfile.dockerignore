@@ -1,4 +1,0 @@
-# only the package is copied into the dev image
-*
-!music_assistant
-**/__pycache__
