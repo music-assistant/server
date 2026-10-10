@@ -17,6 +17,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import math
 import os
 import string
 import textwrap
@@ -90,7 +91,9 @@ from .constants import (
     ORPHAN_GRACE_SECONDS,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
+    PREVIEW_COLUMNS,
     PREVIEW_SIZE,
+    PREVIEW_TILE_SIZE,
     PROMPT_TIMEOUT_SECONDS,
     REPLACEABLE_IMAGE_DOMAINS,
     SEED_SEPARATOR,
@@ -330,6 +333,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_PREVIEW_PLAYLIST,
                 type=ConfigEntryType.STRING,
+                category="preview",
                 required=False,
                 default_value=None,
                 options=await self._preview_playlist_options(),
@@ -338,23 +342,25 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_PREVIEW_STYLE,
                 type=ConfigEntryType.STRING,
+                category="preview",
+                multi_value=True,
                 required=False,
-                default_value=None,
+                default_value=[style.value for style in Style if style != Style.CUSTOM],
                 options=[ConfigValueOption(value=style.value) for style in Style],
                 immediate_apply=True,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_CUSTOM_PROMPT,
                 type=ConfigEntryType.STRING,
+                category="preview",
                 required=False,
                 default_value=DEFAULT_CUSTOM_PROMPT,
-                depends_on=CONF_PREVIEW_STYLE,
-                depends_on_value=Style.CUSTOM.value,
                 immediate_apply=True,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_TITLE_OVERLAY,
                 type=ConfigEntryType.BOOLEAN,
+                category="preview",
                 required=False,
                 default_value=False,
                 immediate_apply=True,
@@ -362,6 +368,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_ACTION_PREVIEW,
                 type=ConfigEntryType.ACTION,
+                category="preview",
                 action=CONF_ACTION_PREVIEW,
                 required=False,
             ),
@@ -370,6 +377,7 @@ class AIArtworkProvider(MetadataProvider):
                     ConfigEntry(
                         key=CONF_PREVIEW_IMAGE,
                         type=ConfigEntryType.IMAGE,
+                        category="preview",
                         required=False,
                         value=preview,
                     ),
@@ -380,6 +388,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_PLAYLISTS,
                 type=ConfigEntryType.STRING,
+                category="playlists",
                 required=True,
                 default_value=PLAYLISTS_SMART,
                 options=[
@@ -390,6 +399,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_EXTRA_PLAYLISTS,
                 type=ConfigEntryType.STRING,
+                category="playlists",
                 multi_value=True,
                 required=False,
                 default_value=[],
@@ -400,20 +410,25 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_KEEP_EXISTING_ARTWORK,
                 type=ConfigEntryType.BOOLEAN,
+                category="playlists",
                 required=False,
                 default_value=True,
             ),
             ConfigEntry(
                 key=CONF_DESCRIPTIONS,
                 type=ConfigEntryType.BOOLEAN,
+                category="descriptions",
                 required=False,
                 default_value=True,
             ),
             # writes the descriptions and, when asked, the visual concept of the covers
-            *await create_ai_engine_config_entries(self.mass, CONF_TEXT_ENGINE, category="generic"),
+            *await create_ai_engine_config_entries(
+                self.mass, CONF_TEXT_ENGINE, category="descriptions"
+            ),
             ConfigEntry(
                 key=CONF_USE_PROMPT_ENGINE,
                 type=ConfigEntryType.BOOLEAN,
+                category="descriptions",
                 required=False,
                 default_value=False,
                 advanced=True,
@@ -421,6 +436,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_MAX_PER_HOUR,
                 type=ConfigEntryType.INTEGER,
+                category="usage",
                 required=False,
                 default_value=DEFAULT_MAX_PER_HOUR,
                 range=(1, 100),
@@ -429,6 +445,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_ACTION_REGENERATE,
                 type=ConfigEntryType.ACTION,
+                category="usage",
                 action=CONF_ACTION_REGENERATE,
                 required=False,
                 advanced=True,
@@ -540,7 +557,7 @@ class AIArtworkProvider(MetadataProvider):
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
     async def _preview(self) -> str:
-        """Return a cover for the playlist picked to preview, as a data url, without storing it."""
+        """Return the playlist's covers in the styles picked to preview, as one data url grid."""
         playlist_id = self.config.get_value(CONF_PREVIEW_PLAYLIST)
         if not playlist_id:
             raise ActionUnavailable("Pick a playlist to preview first")
@@ -548,9 +565,27 @@ class AIArtworkProvider(MetadataProvider):
         if image_engine is None:
             raise ActionUnavailable("Pick an image engine first")
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
-        self.logger.info("Generating a preview cover for '%s'", playlist.name)
-        cover = await self._render(playlist, image_engine, self._preview_look())
-        return await asyncio.to_thread(_preview_data_url, cover)
+        looks = self._preview_looks()
+        self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
+        results = await asyncio.gather(
+            *(self._render(playlist, image_engine, look) for look in looks),
+            return_exceptions=True,
+        )
+        covers: list[tuple[str, bytes]] = []
+        for look, result in zip(looks, results, strict=True):
+            if isinstance(result, BaseException):
+                # the other styles are still worth showing
+                self.logger.warning(
+                    "Could not generate a %s preview for '%s': %s",
+                    look.style.value,
+                    playlist.name,
+                    result,
+                )
+                continue
+            covers.append((_style_name(look.style), result))
+        if not covers:
+            raise next(result for result in results if isinstance(result, BaseException))
+        return await asyncio.to_thread(_preview_grid_data_url, covers)
 
     async def _generate_description(self, playlist: Playlist, engine: AIEngine) -> str | None:
         """Write and store the playlist's description, returning None when that failed."""
@@ -796,18 +831,19 @@ class AIArtworkProvider(MetadataProvider):
             title_overlay=bool(self.config.get_value(CONF_TITLE_OVERLAY)),
         )
 
-    def _preview_look(self) -> CoverLook:
-        """Return the look picked to preview, using the configured style when none is picked."""
-        look = self._look()
-        try:
-            style = Style(str(self.config.get_value(CONF_PREVIEW_STYLE)))
-        except ValueError:
-            style = look.style
-        return CoverLook(
-            style=style,
-            custom_prompt=str(self.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or ""),
-            title_overlay=bool(self.config.get_value(CONF_PREVIEW_TITLE_OVERLAY)),
-        )
+    def _preview_looks(self) -> list[CoverLook]:
+        """Return a look per style picked to preview, every preset when none is picked."""
+        value = self.config.get_value(CONF_PREVIEW_STYLE)
+        picked = {str(item) for item in value} if isinstance(value, list) else {str(value or "")}
+        styles = [style for style in Style if style.value in picked]
+        if not styles:
+            styles = [style for style in Style if style != Style.CUSTOM]
+        custom_prompt = str(self.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or "")
+        title_overlay = bool(self.config.get_value(CONF_PREVIEW_TITLE_OVERLAY))
+        return [
+            CoverLook(style=style, custom_prompt=custom_prompt, title_overlay=title_overlay)
+            for style in styles
+        ]
 
     def _extra_playlists(self) -> set[str]:
         """Return the library ids of the playlists opted in on top of the smart playlists."""
@@ -986,12 +1022,33 @@ def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes
     return buffer.getvalue()
 
 
-def _preview_data_url(cover: bytes) -> str:
-    """Return the cover scaled down to a preview, as a JPEG data url."""
-    with Image.open(BytesIO(cover)) as image:
-        preview = image.resize((PREVIEW_SIZE, PREVIEW_SIZE))
+def _style_name(style: Style) -> str:
+    """Return the name of a style to label its preview with."""
+    return style.value.replace("_", " ").title()
+
+
+def _preview_grid_data_url(covers: list[tuple[str, bytes]]) -> str:
+    """Return the labelled covers side by side, scaled down, as a JPEG data url."""
+    tile = PREVIEW_SIZE if len(covers) == 1 else PREVIEW_TILE_SIZE
+    columns = min(len(covers), PREVIEW_COLUMNS)
+    rows = math.ceil(len(covers) / columns)
+    gap = tile // 24
+    label = tile // 8
+    grid = Image.new(
+        "RGB",
+        (columns * (tile + gap) + gap, rows * (label + tile + gap) + gap),
+        (18, 22, 32),
+    )
+    draw = ImageDraw.Draw(grid)
+    font = _get_font(label // 2)
+    for index, (name, cover) in enumerate(covers):
+        x = gap + (index % columns) * (tile + gap)
+        y = gap + (index // columns) * (label + tile + gap)
+        draw.text((x, y + label // 2), name, fill=(255, 255, 255), font=font, anchor="lm")
+        with Image.open(BytesIO(cover)) as image:
+            grid.paste(image.convert("RGB").resize((tile, tile)), (x, y + label))
     buffer = BytesIO()
-    preview.save(buffer, "JPEG", optimize=True, quality=85)
+    grid.save(buffer, "JPEG", optimize=True, quality=85)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
 
 

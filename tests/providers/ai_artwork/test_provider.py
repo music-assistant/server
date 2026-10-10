@@ -52,6 +52,7 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_USE_PROMPT_ENGINE,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
+    Style,
 )
 
 INSTANCE_ID = "ai_artwork"
@@ -578,7 +579,7 @@ async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvi
     _mass(provider).music.playlists.iter_library_items = MagicMock(
         side_effect=lambda: _async_iter([playlist])
     )
-    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["gouache"]})
 
     with _no_engine_pickers():
         entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
@@ -589,8 +590,9 @@ async def test_preview_shows_a_cover_without_storing_it(provider: AIArtworkProvi
     preview = next(entry for entry in entries if entry.key == CONF_PREVIEW_IMAGE)
     assert isinstance(preview.value, str)
     assert preview.value.startswith("data:image/jpeg;base64,")
-    with Image.open(BytesIO(base64.b64decode(preview.value.split(",", 1)[1]))) as image:
-        assert image.size == (512, 512)
+    with _decode_preview(preview.value) as image:
+        # one tile at full preview size, with a gap around it and its label above it
+        assert image.size == (512 + 2 * 21, 512 + 64 + 2 * 21)
     assert 'called "Late Night Drive"' in _sent_prompt(provider)
     assert not any(Path(provider._images_dir).iterdir())
     assert not playlist.metadata.images
@@ -605,7 +607,7 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
         provider,
         **{
             CONF_PREVIEW_PLAYLIST: "234",
-            CONF_PREVIEW_STYLE: "custom",
+            CONF_PREVIEW_STYLE: ["custom"],
             CONF_PREVIEW_CUSTOM_PROMPT: "A tiny watercolor of {name}.",
             CONF_PREVIEW_TITLE_OVERLAY: True,
         },
@@ -623,15 +625,60 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
     assert render_cover.call_args.args[1] is not None
 
 
-async def test_preview_falls_back_to_the_configured_style(provider: AIArtworkProvider) -> None:
-    """Without a style picked to preview, the preview uses the style the covers use."""
+async def test_preview_shows_every_preset_side_by_side(provider: AIArtworkProvider) -> None:
+    """Without styles picked, every preset is previewed once, in one grid."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
-    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_STYLE: "gouache"})
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
 
     with _no_engine_pickers():
-        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+        entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
-    assert "painterly editorial illustration in gouache" in _sent_prompt(provider)
+    presets = [style for style in Style if style != Style.CUSTOM]
+    assert _engine_calls(provider) == len(presets)
+    preview = next(entry for entry in entries or () if entry.key == CONF_PREVIEW_IMAGE)
+    with _decode_preview(str(preview.value)) as image:
+        # three columns of tiles, two rows
+        assert image.width > 3 * 384
+        assert 2 * 384 < image.height < 3 * 384
+
+
+async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkProvider) -> None:
+    """One style failing leaves it out of the grid instead of failing the whole preview."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["neon", "spotify", "gouache"]},
+    )
+    engine = provider.test_engine.provider  # type: ignore[attr-defined]
+
+    async def generate(prompt: str, **_kwargs: Any) -> bytes:
+        if "gouache" in prompt:
+            raise RuntimeError("engine down")
+        return _png()
+
+    engine.ai_generate_image = AsyncMock(side_effect=generate)
+
+    with _no_engine_pickers():
+        entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    # "neon" is no style of its own, so only Spotify and Gouache were asked for
+    assert engine.ai_generate_image.await_count == 2
+    preview = next(entry for entry in entries or () if entry.key == CONF_PREVIEW_IMAGE)
+    with _decode_preview(str(preview.value)) as image:
+        # only the Spotify tile is left, so it is shown at full preview size
+        assert image.size == (512 + 2 * 21, 512 + 64 + 2 * 21)
+
+
+async def test_preview_fails_when_no_style_worked(provider: AIArtworkProvider) -> None:
+    """When every style fails, the preview reports the engine's error."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("engine down")
+    )
+
+    with pytest.raises(RuntimeError, match="engine down"):
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
 
 async def test_preview_needs_a_playlist(provider: AIArtworkProvider) -> None:
@@ -863,6 +910,12 @@ def _png() -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (1200, 900), (200, 40, 120)).save(buffer, "PNG")
     return buffer.getvalue()
+
+
+def _decode_preview(data_url: str) -> Image.Image:
+    """Return the image of a preview data url."""
+    assert data_url.startswith("data:image/jpeg;base64,")
+    return Image.open(BytesIO(base64.b64decode(data_url.split(",", 1)[1])))
 
 
 @contextmanager

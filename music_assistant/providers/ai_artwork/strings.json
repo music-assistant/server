@@ -39,8 +39,8 @@
       "description": "The playlist to make a preview cover for."
     },
     "preview_style": {
-      "label": "Style to preview",
-      "description": "Try a style without changing the one your covers use. Leave empty to preview the style above.",
+      "label": "Styles to preview",
+      "description": "The styles to try, shown side by side. Each style is one image generation.",
       "options": {
         "music_assistant": "Music Assistant",
         "spotify": "Spotify",
@@ -53,7 +53,7 @@
     },
     "preview_custom_prompt": {
       "label": "Custom prompt to preview",
-      "description": "The prompt to try when previewing the Custom style. You can use the same placeholders as the custom prompt above."
+      "description": "The prompt used when Custom is one of the styles to preview. You can use the same placeholders as the custom prompt above."
     },
     "preview_title_overlay": {
       "label": "Let Music Assistant add the playlist name to the preview",
@@ -61,7 +61,7 @@
     },
     "preview": {
       "label": "Preview cover",
-      "description": "Generate a cover for the chosen playlist with the preview settings above. It is only shown here and does not change your settings or the playlist's cover.",
+      "description": "Generate a cover for the chosen playlist in each style to preview, shown side by side. They are only shown here and do not change your settings or the playlist's cover.",
       "action_label": "Generate preview"
     },
     "preview_image": {
@@ -104,6 +104,13 @@
       "description": "Generate new covers and descriptions for all playlists. The current ones stay in place until their replacement is ready.",
       "action_label": "Regenerate covers and descriptions"
     }
+  },
+  "config_categories": {
+    "generic": "Cover artwork",
+    "preview": "Preview",
+    "playlists": "Playlists",
+    "descriptions": "Descriptions",
+    "usage": "Usage"
   },
   "manifest": {
     "description": "Generates playlist covers and descriptions with AI, such as a Home Assistant AI Task entity or a model behind the OpenAI Compatible plugin, in one of several styles or with your own prompt."

@@ -36,6 +36,8 @@ IMAGE_EXTENSION: Final = ".jpg"
 CANVAS_SIZE: Final = 1024
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
+PREVIEW_TILE_SIZE: Final = 384
+PREVIEW_COLUMNS: Final = 3
 
 # playlist_metadata's collage is regenerated on every refresh, so it never counts as artwork
 # worth keeping over a generated cover
