@@ -1,0 +1,25 @@
+{
+  "active_device_id_optional": "DEVICE_MA",
+  "player_state": {
+    "player_queue": {
+      "current_playable_index": 1,
+      "playable_list": [
+        {"playable_id": "TRACK_A"},
+        {"playable_id": "TRACK_B"},
+        {"playable_id": "TRACK_C"},
+        {"playable_id": "TRACK_D"}
+      ],
+      "shuffle_optional": {
+        "playable_indices": [0, 2, 1, 3]
+      },
+      "options": {
+        "repeat_mode": "ALL"
+      },
+      "version": {
+        "device_id": "DEVICE_PHONE",
+        "version": "102",
+        "timestamp_ms": "1001"
+      }
+    }
+  }
+}
