@@ -64,7 +64,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments
+from music_assistant.helpers.api import parse_arguments, redact_json_secrets
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -785,11 +785,14 @@ class WebserverController(CoreController):
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
-        self.logger.log(VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", cmd_data)
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", redact_json_secrets(cmd_data)
+            )
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data.decode()}"
+            error = "Invalid JSON"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
