@@ -381,8 +381,27 @@ async def test_radar_metadata_cache_key_includes_account(
 
     assert cache_set.await_count == 1
     cache_key = cache_set.call_args.kwargs["key"]
-    # the uid (fixture uid is 42) is part of the key
-    assert "radar_playlist_42_3136952023" in cache_key
+    # the account uid (fixture uid is 42) is part of the key, so another account cannot reuse it
+    assert ":42:" in cache_key
+    assert "radar_playlist_3136952023" in cache_key
+
+
+@pytest.mark.asyncio
+async def test_daily_payload_cache_key_includes_account(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """The personalized daily feed is cached per account, never shared across accounts."""
+    provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cache_set = AsyncMock()
+    provider.mass.cache.set = cache_set  # type: ignore[method-assign]
+    _stub_client_get(provider)
+
+    await provider._get_daily_recommend_rows()
+
+    assert cache_set.await_count == 1
+    cache_key = cache_set.call_args.kwargs["key"]
+    assert ":42:" in cache_key
+    assert "daily_songs" in cache_key
 
 
 @pytest.mark.asyncio

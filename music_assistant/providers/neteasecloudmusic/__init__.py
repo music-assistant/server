@@ -1564,7 +1564,9 @@ class NeteaseCloudMusicProvider(MusicProvider):
         # credential and must stay out of the cache key that gets persisted to disk
         cache_params = {k: v for k, v in (params or {}).items() if k != "cookie"}
         params_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
-        cache_key = f"{_CACHE_VERSION}:{key}:{params_key}"
+        # every recommendation payload is account-personalized, so scope the key by the
+        # account uid; the uid is not a credential, unlike the cookie kept out above
+        cache_key = f"{_CACHE_VERSION}:{self._uid}:{key}:{params_key}"
         cached = await self.mass.cache.get(
             key=cache_key,
             provider=self.instance_id,
@@ -2063,7 +2065,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Fetch the cached playlist detail object of an official radar playlist."""
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             payload = await self._get_recommend_payload_cached(
-                f"radar_playlist_{self._uid}_{source_playlist_id}",
+                f"radar_playlist_{source_playlist_id}",
                 _RECOMMEND_RADAR_TTL,
                 "/playlist/detail",
                 {"id": source_playlist_id, "cookie": self._cookie},
