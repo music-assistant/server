@@ -3,9 +3,6 @@
     "path": {
       "label": "Folder"
     },
-    "folder": {
-      "label": "Folder: {0}"
-    },
     "setup_content_type": {
       "label": "What do you want to add?",
       "options": {
@@ -54,6 +51,7 @@
   "errors": {
     "music_directory_not_found": "The folder {0} does not exist.",
     "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
-    "storage_location_unavailable": "The storage location at {0} is not available right now."
+    "storage_location_unavailable": "The storage location at {0} is not available right now.",
+    "path_outside_folder": "{0} lies outside the folder of this source and can not be read."
   }
 }

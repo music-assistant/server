@@ -19,6 +19,12 @@ FS_DOMAIN = "filesystem_local"
 FS_INSTANCE = "filesystem_local--AbCd"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass_with_audio_analysis: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a real audio analysis database."""
+    return music_mass_with_audio_analysis
+
+
 async def _add_track(mass: MusicAssistant, item_id: str, name: str) -> int:
     """Add a single-provider track to the library and return its library id."""
     artist = Artist(

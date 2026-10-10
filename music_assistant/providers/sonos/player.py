@@ -249,7 +249,7 @@ class SonosPlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        # Sonos takes 44.1/48 kHz, and the older NON_HIRES_MODELS are limited to 16 bit.
+        # Sonos takes 44.1/48 kHz; NON_HIRES_MODELS are not verified for 24 bit, so 16 bit.
         # The defaults cover that full hardware range, so the output format only narrows
         # when the user selects fewer rates.
         hi_res = self._attr_device_info.model not in NON_HIRES_MODELS

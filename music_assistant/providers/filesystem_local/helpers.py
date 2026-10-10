@@ -526,9 +526,20 @@ def get_absolute_path(base_path: str, path: str) -> str:
     """
     absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
     if not is_safe_path(absolute_path, base_path):
-        msg = f"Path is outside the configured base directory: {path}"
-        raise MediaNotFoundError(msg)
+        raise _path_outside_folder(path)
     return absolute_path
+
+
+def check_real_path(real_base_path: str, path: str) -> None:
+    """
+    Raise when a path, with its symlinks resolved, lies outside a folder. NOT async friendly.
+
+    :param real_base_path: The folder, with its symlinks resolved.
+    :param path: The absolute path to check.
+    :raises MediaNotFoundError: If the path lies outside the folder.
+    """
+    if not is_safe_path(os.path.realpath(path), real_base_path):
+        raise _path_outside_folder(path)
 
 
 def recursive_iter(
@@ -765,3 +776,17 @@ def _record_dir_failure(
             base_path,
             scan_errors.consecutive_failures,
         )
+
+
+def _path_outside_folder(path: str) -> MediaNotFoundError:
+    """
+    Return the error for a path a source refuses to read because it lies outside its folder.
+
+    :param path: The path as requested, or its absolute form; never where a symlink in it leads.
+    """
+    return MediaNotFoundError(
+        f"{path} lies outside the folder of this source",
+        translation_key="path_outside_folder",
+        translation_owner="provider.filesystem_local",
+        translation_args=[path],
+    )
