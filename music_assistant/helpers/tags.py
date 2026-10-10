@@ -322,6 +322,28 @@ class AudioTags:
         return title
 
     @property
+    def popm_rating(self) -> int | None:
+        """Return the raw ID3 POPM rating (0-255), or None when the file carries none."""
+        popm = self.tags.get("popm")
+        if popm is None:
+            return None
+        try:
+            return int(popm)
+        except TypeError, ValueError:
+            return None
+
+    @property
+    def rating_tag(self) -> float | None:
+        """Return the raw Vorbis RATING or MP4 RATING value, or None when absent."""
+        raw_rating = self.tags.get("rating")
+        if raw_rating is None:
+            return None
+        try:
+            return float(str(raw_rating).strip())
+        except TypeError, ValueError:
+            return None
+
+    @property
     def version(self) -> str:
         """Return version tag (as-is)."""
         if tag := self.tags.get("version"):
@@ -1085,6 +1107,11 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
+    # only the freeform tag is read: a bare `rate` atom holds an integer, and mutagen
+    # parses unknown atoms only when they carry UTF-8 text
+    if "----:com.apple.iTunes:RATING" in tags:
+        result["rating"] = _decode_mp4_freeform_single(tags["----:com.apple.iTunes:RATING"])
+
     # album type may be multi-value; join them
     if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
         albumtypes = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:MusicBrainz Album Type"])
@@ -1239,6 +1266,10 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
     )
     _store_series_tags(result, user_frames)
 
+    # a file can carry one POPM frame per rater, so take the highest
+    if popm_ratings := [frame.rating for frame in tags.getall("POPM")]:  # type: ignore[no-untyped-call]
+        result["popm"] = max(popm_ratings)
+
     return result
 
 
@@ -1362,6 +1393,10 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     # Compilation flag
     if compilation := _vorbis_get_single(tags, "COMPILATION"):
         result["compilation"] = compilation
+
+    # Rating, written as a 0-100 value by the taggers that support the field
+    if rating := _vorbis_get_single(tags, "RATING"):
+        result["rating"] = rating
 
     # album type may be multi-value (repeated fields); join them
     if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
