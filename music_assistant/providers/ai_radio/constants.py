@@ -121,6 +121,20 @@ ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
+# per-section opt-in: a break from a section that allows it may carry its tail over the
+# next record's intro (a "post")
+ATTR_ALLOW_POST = "ai_radio_allow_post"
+
+# A post plays the last `overlap` seconds of a break over the next record's intro, with the
+# record ducked under the voice. With a break of B seconds and W seconds of intro before the
+# vocal:
+#
+#   overlap = min(W - POST_TAIL_GAP, B - POST_MIN_HEAD_SECONDS)
+POST_TAIL_GAP = 0.4  # seconds of music between the end of the voice and the vocal entry
+POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays whole
+POST_MIN_HEAD_SECONDS = 1.0  # the break keeps at least this much before the record comes in
+# MA's lyrics lookup walks every metadata provider; past this budget the break plays whole
+POST_LYRICS_TIMEOUT = 8.0
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
