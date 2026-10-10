@@ -19,7 +19,6 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
     SegueGenerator,
-    default_generators,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -113,11 +112,6 @@ def _plan_without_segue(
 ) -> TransitionPlan:
     """Plan the pair as the planner did before the segue existed."""
     with monkeypatch.context() as patch:
-        patch.setattr(
-            planner,
-            "default_generators",
-            lambda: tuple(g for g in default_generators() if g.name != SegueGenerator.name),
-        )
         patch.setattr(SegueGenerator, "generate", lambda _self, _ctx: iter(()))
         return _plan(fade_out, fade_in, buffer)
 
@@ -193,21 +187,26 @@ class TestSegueScenarios:
             plan.crossfade_duration == _plan_without_segue(monkeypatch, out, inc).crossfade_duration
         )
 
-    def test_a_kicked_quiet_tail_shrinks_below_the_drum_limit_or_loses(
+    def test_a_kicked_quiet_tail_shrinks_below_the_drum_limit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A quiet tail that keeps its kick over a kicked head never ships above 2 clash bars."""
+        """A quiet tail that keeps its kick over a kicked head shrinks until the kicks fit."""
         out, inc = _quiet_tail_out(kick_in_tail=True), _track(150.0)
 
         scored, winner = _main_pass(monkeypatch, out, inc)
 
-        segues = [e for e in scored if e.candidate.plan.style is TransitionStyle.SEGUE]
-        longest = max(segues, key=lambda e: e.candidate.plan.crossfade_duration)
-        assert longest.rejected
-        assert any(v.reason == "kick clash exceeds the guard limit" for v in longest.verdicts)
-        assert winner is not None
-        if winner.candidate.plan.style is TransitionStyle.SEGUE:
-            assert winner.candidate.metrics.rhythm_clash_bars <= 2.0
+        segues = {
+            round(e.candidate.plan.crossfade_duration, 2): e
+            for e in scored
+            if e.candidate.plan.style is TransitionStyle.SEGUE
+        }
+        # 12s and 8s of two kicks clash for 4 and 2.7 weighted bars
+        for rejected in (segues[12.0], segues[8.0]):
+            assert rejected.rejected
+            assert any(v.reason == "kick clash exceeds the guard limit" for v in rejected.verdicts)
+        # the 2s floor costs less than the 4s step: a smaller clash outweighs the halving
+        assert winner is segues[2.0]
+        assert winner.candidate.metrics.rhythm_clash_bars == pytest.approx(2 / 3)
 
     def test_a_long_quiet_tail_caps_the_segue_at_the_audible_end(self) -> None:
         """A 30s quiet tail segues over its last 15s, the next track entering 15s before the end."""

@@ -462,8 +462,8 @@ def _cue_outgoing_tail(
     folded_mix_out = kick_anchor if kick_anchor is not None else raw_mix_out
     if silence_end < MIN_EFFECTIVE_FADE_BUFFER:
         raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({silence_end:.1f}s audible)")
-    # a tail that mixes out this early is a quiet but audible musical outro, which
-    # a segue overlaps: anchor it at its audible end instead
+    # a tail that mixes out this early is a quiet but audible musical outro: anchor it
+    # at its audible end and plan it like any other tail
     quiet_outro = folded_mix_out < MIN_EFFECTIVE_FADE_BUFFER
     tier_anchor = silence_end if quiet_outro else min(silence_end, folded_mix_out)
 

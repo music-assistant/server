@@ -155,8 +155,8 @@ class PlanAssembler:
     def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
         # an unsynced cut has no beatmatched handover to stage: shelving the decks
-        # would only bury the incoming track's entry; neither has a segue with a
-        # quiet edge, which plays as recorded. A segue that fades both loud edges
+        # would only bury the incoming track's entry; nor does a segue with a quiet
+        # edge, which plays as recorded. A segue that fades both loud edges
         # equal-power keeps its handover EQ
         if plan.style is TransitionStyle.CUT or (
             plan.style is TransitionStyle.SEGUE

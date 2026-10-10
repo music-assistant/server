@@ -61,10 +61,12 @@ class CandidateSelector:
         self, candidates: Sequence[Candidate], ctx: TransitionContext
     ) -> ScoredCandidate | None:
         """
-        Score every candidate; return the lowest-penalty survivor, or None when all are rejected.
+        Score every candidate; return the lowest-penalty survivor, or None when none may ship.
 
-        A segue competes only when it lasts at least as long as the best other
-        survivor, so it never shortens the transition that would ship without it.
+        None means every candidate was rejected, or only segues survived a selector
+        that lets a segue replace a cut only. A segue competes only when it lasts
+        at least as long as the best other survivor, so it never shortens the
+        transition that would ship without it.
         Ties resolve to whichever candidate appears earlier in ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.

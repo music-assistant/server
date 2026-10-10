@@ -119,7 +119,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:
-            # every phrased candidate breached a hard rejection: retry with the
+            # every candidate was rejected, or only segues survived: retry with the
             # ungated audible-end ladder, a modest late-anchored rescue rung and
             # a segue (also for a beatmatchable pair) before falling back to the handoff
             rescue_specs = [
