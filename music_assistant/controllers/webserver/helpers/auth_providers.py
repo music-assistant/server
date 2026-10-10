@@ -659,10 +659,10 @@ class HomeAssistantOAuthProvider(LoginProvider):
             return None
 
         # If HA URL is still the internal supervisor URL (no external_url in HA config),
-        # infer from redirect_uri (the URL user is accessing MA from)
+        # infer from MA's base URL (the add-on runs on the HA host)
         if "supervisor" in ha_url.lower():
-            # Extract scheme and host from redirect_uri to build external HA URL
-            parsed = urlparse(redirect_uri)
+            # Extract scheme and host from the base URL to build external HA URL
+            parsed = urlparse(self.mass.webserver.base_url)
             # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
             if parsed.scheme == "https":
                 # HTTPS - use default port 443 (no port in URL)
@@ -672,7 +672,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
 
             self.logger.debug(
-                "HA external_url not configured, inferring from callback URL: %s",
+                "HA external_url not configured, inferring from base URL: %s",
                 inferred_ha_url,
             )
             ha_url = inferred_ha_url
