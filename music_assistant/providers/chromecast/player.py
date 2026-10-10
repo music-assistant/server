@@ -39,6 +39,8 @@ from .constants import (
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     CAST_PLAYER_CONFIG_ENTRIES,
+    CONF_DEFER_IDLE_VOLUME,
+    CONF_ENTRY_DEFER_IDLE_VOLUME,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
@@ -162,6 +164,7 @@ class ChromecastPlayer(Player):
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
+            CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
 
     async def stop(self) -> None:
@@ -217,10 +220,12 @@ class ChromecastPlayer(Player):
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        if self.type == PlayerType.PROTOCOL and self.cc.app_id in (None, IDLE_APP_ID):
-            # some non-Google receivers accept a volume set while idle but keep playing at
-            # the old level once an app starts, so keep it back until playback starts
+        """Send VOLUME_SET command to given player, or keep it back while idle if so configured."""
+        if self.cc.app_id in (None, IDLE_APP_ID) and self.config.get_value(
+            CONF_DEFER_IDLE_VOLUME, False
+        ):
+            # the receiver would accept the volume but keep playing at the old level
+            # once an app starts, so keep it back until playback starts
             self._pending_volume = volume_level
             self._attr_volume_level = volume_level
             self.update_state()

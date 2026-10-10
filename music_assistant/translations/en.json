@@ -1236,6 +1236,8 @@
   "provider.builtin.media.playlist.random_tracks.name": "500 Random tracks (from library)",
   "provider.builtin.media.playlist.recently_added_tracks.name": "Recently added tracks",
   "provider.builtin.media.playlist.recently_played.name": "Recently played tracks",
+  "provider.chromecast.config_entries.defer_idle_volume.description": "Some Cast receivers accept a volume change while nothing is playing but keep playing at the old level once playback starts. Enable this if a volume change made while this player is idle does not take effect: the change is then shown right away and sent to the device when playback starts.",
+  "provider.chromecast.config_entries.defer_idle_volume.label": "Apply volume changes at playback start",
   "provider.chromecast.config_entries.use_mass_app.description": "By default, Music Assistant will use a special Music Assistant Cast Receiver app to play media on cast devices. It is tweaked to provide better metadata and future expansion. \n\nIf you want to use the official Google Cast Receiver app instead, disable this option, for example if your device has issues with the Music Assistant app.",
   "provider.chromecast.config_entries.use_mass_app.label": "Use Music Assistant Cast App",
   "provider.chromecast.errors.app_launch_refused": "{0} refused to launch the cast app. Try toggling the 'Use Music Assistant Cast App' option in the player settings.",

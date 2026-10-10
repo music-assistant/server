@@ -1,8 +1,8 @@
 """
-Tests for keeping back a Cast volume set received while a non-Google device is idle.
+Tests for keeping back a Cast volume set received while the device is idle.
 
-Some non-Google receivers accept a volume set while no app is running but keep playing
-at their old level once one starts. So on those devices a volume set while idle is kept
+Some receivers accept a volume set while no app is running but keep playing at their old
+level once one starts. So when enabled for the player, a volume set while idle is kept
 back, shown right away, and sent once the media is loaded at playback start.
 """
 
@@ -20,10 +20,10 @@ from music_assistant.providers.chromecast.constants import MASS_APP_ID
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 
 
-def _make_player(app_id: str | None, manufacturer: str = "Terris") -> ChromecastPlayer:
+def _make_player(app_id: str | None, defer_idle_volume: bool = True) -> ChromecastPlayer:
     """Build a ChromecastPlayer whose device currently reports the given app id."""
     info = MagicMock()
-    info.manufacturer = manufacturer
+    info.manufacturer = "Terris"
     info.model_name = "CCM283"
     info.friendly_name = "Arbeitszimmer"
     info.is_audio_group = False
@@ -37,7 +37,9 @@ def _make_player(app_id: str | None, manufacturer: str = "Terris") -> Chromecast
     chromecast = MagicMock()
     chromecast.app_id = app_id
     with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        return ChromecastPlayer(provider, str(info.uuid), info, chromecast)
+        player = ChromecastPlayer(provider, str(info.uuid), info, chromecast)
+    cast("MagicMock", player.config).get_value = MagicMock(return_value=defer_idle_volume)
+    return player
 
 
 def _sent_volumes(player: ChromecastPlayer) -> list[float]:
@@ -79,9 +81,9 @@ async def test_volume_set_while_active_drops_a_kept_back_volume() -> None:
     assert player._pending_volume is None
 
 
-async def test_google_device_volume_set_while_idle_is_sent() -> None:
-    """A Google device honours a volume set while idle, so it is sent right away."""
-    player = _make_player(IDLE_APP_ID, manufacturer="Google Inc.")
+async def test_volume_set_while_idle_is_sent_unless_enabled() -> None:
+    """Keeping a volume back is opt-in: by default an idle volume set goes out right away."""
+    player = _make_player(IDLE_APP_ID, defer_idle_volume=False)
 
     await player.volume_set(42)
 
