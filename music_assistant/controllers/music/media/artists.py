@@ -842,8 +842,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 album_tracks, lookup_errors = [], {album.provider: err}
-            # a library album still lists its library tracks when the provider fails
-            if own_error := lookup_errors.get(album.provider):
+            # a library album still lists its library tracks when the provider fails; it reports
+            # the provider by instance id, while a provider album may carry the provider domain
+            own_error = lookup_errors.get(provider.instance_id) or lookup_errors.get(album.provider)
+            if own_error:
                 # one failing album must not drop the artist's other tracks on this provider
                 provider_error = own_error
                 self.logger.log(

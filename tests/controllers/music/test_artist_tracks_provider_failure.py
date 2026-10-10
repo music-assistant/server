@@ -25,10 +25,11 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 _PROVIDER = "streaming_inst"
+_DOMAIN = "streaming"
 
 
-def _album(name: str) -> Album:
-    return Album(item_id=name, provider=_PROVIDER, name=name, provider_mappings=set())
+def _album(name: str, provider: str = _PROVIDER) -> Album:
+    return Album(item_id=name, provider=provider, name=name, provider_mappings=set())
 
 
 def _track(name: str, *, available: bool = True) -> Track:
@@ -41,6 +42,8 @@ def _track(name: str, *, available: bool = True) -> Track:
 def _provider_without_artist_tracks() -> MagicMock:
     """Return a provider that has to fall back to enumerating the artist's albums."""
     provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = _PROVIDER
+    provider.domain = _DOMAIN
     provider.available = True
     provider.supports_feature = MagicMock(
         side_effect=lambda feature: feature != ProviderFeature.ARTIST_TRACKS
@@ -244,5 +247,33 @@ async def test_provider_artist_tracks_stop_when_library_album_is_rate_limited(
         patch.object(mass.music.albums, "tracks_with_lookup_errors", side_effect=_album_listing),
     ):
         tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+    assert requested == ["Fine", "InLibrary"]
+    assert [track.name for track in tracks] == ["Fine track", "InLibrary track"]
+
+
+async def test_provider_artist_tracks_stop_when_library_album_of_domain_album_is_rate_limited(
+    mass: MusicAssistant,
+) -> None:
+    """A provider album named by domain still finds its rate limit, reported by instance id."""
+    await set_global_cache_values({"available_providers": {_PROVIDER}})
+    requested: list[str] = []
+    error = _exhausted(RateLimited("Apple Music Rate Limiter"))
+
+    async def _album_listing(
+        item_id: str, _provider: str
+    ) -> tuple[list[Track], dict[str, Exception]]:
+        requested.append(item_id)
+        if item_id == "InLibrary":
+            # the library album names its failing provider mapping by instance id
+            return [_track("InLibrary track")], {_PROVIDER: error}
+        return [_track(f"{item_id} track")], {}
+
+    albums = [_album(name, provider=_DOMAIN) for name in ("Fine", "InLibrary", "Later")]
+    with (
+        patch.object(mass, "get_provider", return_value=_provider_without_artist_tracks()),
+        patch.object(mass.music.artists, "get_provider_artist_albums", return_value=albums),
+        patch.object(mass.music.albums, "tracks_with_lookup_errors", side_effect=_album_listing),
+    ):
+        tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _DOMAIN)
     assert requested == ["Fine", "InLibrary"]
     assert [track.name for track in tracks] == ["Fine track", "InLibrary track"]
