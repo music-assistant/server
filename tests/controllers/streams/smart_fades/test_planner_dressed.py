@@ -55,7 +55,11 @@ def _vocals(*windows: tuple[float, float]) -> list[float]:
 
 
 def _track(
-    bpm: float, *, rms: list[float] | None = None, vocals: list[float] | None = None
+    bpm: float,
+    *,
+    rms: list[float] | None = None,
+    vocals: list[float] | None = None,
+    beats_per_bar: int = 4,
 ) -> AudioAnalysisData:
     """Build a 240s loud-to-the-end track with a regular grid and a kick in every bar."""
     beats = np.arange(0.0, DURATION, 60.0 / bpm, dtype=np.float32)
@@ -64,8 +68,8 @@ def _track(
         duration=DURATION,
         bpm=bpm,
         beats=beats.tolist(),
-        downbeats=beats[::4].tolist(),
-        beats_per_bar=4,
+        downbeats=beats[::beats_per_bar].tolist(),
+        beats_per_bar=beats_per_bar,
         rms_energy=rms if rms is not None else _envelope(0.5),
         key="A",
         mode="minor",
@@ -188,8 +192,7 @@ class TestDressedScenarios:
 
     def test_a_cross_meter_kick_clash_echoes_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Two meters at the same tempo share no bar grid, so their clashing cut echoes out."""
-        out, inc = _track(120.0), _track(120.0)
-        inc.beats_per_bar = 3
+        out, inc = _track(120.0), _track(120.0, beats_per_bar=3)
 
         plan = _plan(out, inc)
 

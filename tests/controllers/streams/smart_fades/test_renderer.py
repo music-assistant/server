@@ -197,6 +197,7 @@ class TestDressedRendering:
         plan = _plan(
             tier=TransitionTier.QUICK_FADE,
             eq_plan=EqPlan.neutral(),
+            crossfade_duration=8.0,
             fadeout_trim=FadeOutTrim(end_pos=40.0, trimmed_seconds=5.0),
             fadein_trim_start=0.5,
             highpass=HighPassSweep(start_s=32.0, end_s=40.0, start_hz=20.0, end_hz=600.0),
@@ -216,7 +217,8 @@ class TestDressedRendering:
             20.0,
             600.0,
         )
-        assert timing.pre_crossfade_duration == pytest.approx(30.0)
+        # the sweep spans the overlap
+        assert timing.pre_crossfade_duration == pytest.approx(32.0)
 
     def test_echo_out_renders_on_the_outgoing_side(self) -> None:
         """The echo cuts the outgoing stream at its cut, ahead of the blend that starts there."""
