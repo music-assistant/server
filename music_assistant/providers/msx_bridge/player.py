@@ -160,6 +160,12 @@ class MSXPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
+        self.mark_idle()
+        provider = cast("MSXBridgeProvider", self.provider)
+        provider.notify_play_stopped(self.player_id)
+
+    def mark_idle(self) -> None:
+        """Report the player idle and drop its media, without sending a stop to the TV."""
         self._attr_playback_state = PlaybackState.IDLE
         self._native_completion_token = None
         self.playback_generation = None
@@ -170,8 +176,6 @@ class MSXPlayer(Player):
         self._playing_from_queue = False
         self._queue_source_id = None
         self.update_state()
-        provider = cast("MSXBridgeProvider", self.provider)
-        provider.notify_play_stopped(self.player_id)
 
     def clock_context(self) -> dict[str, Any]:
         """Return source metadata separately from the decoder's stream-time clock."""

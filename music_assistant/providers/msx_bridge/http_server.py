@@ -1861,8 +1861,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 queue.queue_id, media.queue_item_id
             )
             if next_item is None:
-                await self.provider.mass.player_queues.stop(queue.queue_id)
-                self.provider.mass.player_queues.mark_ended(queue.queue_id)
+                # Report idle like a speaker reaching end-of-file: the queue controller
+                # decides whether the queue resumes, refills or ends.
+                player.mark_idle()
                 return _msx_execute_ok("[player:eject|player:hide]")
             with player.suppress_ws_notify():
                 await self.provider.mass.player_queues.play_index(

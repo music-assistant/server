@@ -60,12 +60,8 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
     mass_mock.player_queues.get_next_item = controller.get_next_item
     mass_mock.player_queues.get_active_queue.return_value = queue
     mass_mock.player_queues.get.return_value = queue
-    mass_mock.player_queues.mark_ended = Mock(side_effect=lambda _: setattr(queue, "ended", True))
-
-    async def stop(_id: str) -> None:
-        await player.stop()
-
-    mass_mock.player_queues.stop = AsyncMock(side_effect=stop)
+    mass_mock.player_queues.mark_ended = Mock()
+    mass_mock.player_queues.stop = AsyncMock()
 
     async def select(_id: str, item_id: str) -> None:
         queue.current_index = int(item_id)
@@ -81,9 +77,13 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
     assert response.status == 200
     if expected is None:
         assert player.playback_state == PlaybackState.IDLE
-        mass_mock.player_queues.stop.assert_awaited_once()
-        mass_mock.player_queues.mark_ended.assert_called_once_with(player.player_id)
-        assert queue.ended
+        assert player.current_media is None
+        assert (await response.json())["response"]["data"]["action"] == (
+            "[player:eject|player:hide]"
+        )
+        mass_mock.player_queues.stop.assert_not_awaited()
+        mass_mock.player_queues.mark_ended.assert_not_called()
+        mass_mock.player_queues.play_index.assert_not_awaited()
     else:
         assert queue.current_index == expected
         mass_mock.player_queues.play_index.assert_awaited_once_with(player.player_id, str(expected))

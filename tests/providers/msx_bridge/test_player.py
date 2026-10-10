@@ -294,6 +294,20 @@ async def test_stop_idempotent(player: MSXPlayer) -> None:
     assert player._attr_playback_state == PlaybackState.IDLE
 
 
+async def test_mark_idle_resets_state_without_stopping_the_tv(player: MSXPlayer) -> None:
+    """mark_idle() reports idle like stop() but sends no stop to the TV."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_current_media = _player_media("library://track/1")
+
+    with patch.object(player.provider, "notify_play_stopped") as mock_stopped:
+        player.mark_idle()
+
+    state = vars(player)
+    assert state["_attr_playback_state"] == PlaybackState.IDLE
+    assert state["_attr_current_media"] is None
+    mock_stopped.assert_not_called()
+
+
 # --- Volume and polling ---
 
 
