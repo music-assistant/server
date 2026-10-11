@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from music_assistant_models.enums import MediaType
@@ -33,7 +33,7 @@ def _write_episodes(folder: Path, *names: str) -> None:
 def _parse_tags_spy() -> AsyncMock:
     """Return an AsyncMock standing in for async_parse_tags, tagging each file by its folder."""
 
-    async def _parse(path: str, _size: int | None = None) -> AudioTags:
+    async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         file = Path(path)
         return AudioTags(
             raw={},

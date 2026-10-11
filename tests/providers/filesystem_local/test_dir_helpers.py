@@ -386,15 +386,15 @@ def test_recursive_iter_subfolder_failure_is_not_fatal(tmp_path: Path) -> None:
     """Test that a single sub-folder scan failure is not fatal."""
     _build_music_tree(tmp_path)
     errors = helpers.ScanErrors()
-    real_scandir = os.scandir
-    bad_dir = str(tmp_path / "Artist1" / "Album1")
+    real_open = os.open
 
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == bad_dir:
+    def fake_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        # subfolders are opened through the descriptor of their parent, by name
+        if path == "Album1":
             raise OSError(errno.EIO, "i/o error")
-        return real_scandir(path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    with patch("os.scandir", side_effect=fake_scandir):
+    with patch("os.open", side_effect=fake_open):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -442,14 +442,8 @@ def test_recursive_iter_aborts_after_consecutive_failures(tmp_path: Path) -> Non
     """Test that storage disappearing mid-scan aborts the walk instead of grinding on."""
     _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
     errors = helpers.ScanErrors()
-    real_scandir = os.scandir
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == str(tmp_path):
-            return real_scandir(path)
-        raise OSError(errno.EIO, "i/o error")
-
-    with patch("os.scandir", side_effect=fake_scandir):
+    # the root is listed by its path, every subfolder fails to open
+    with patch("os.open", side_effect=OSError(errno.EIO, "i/o error")):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -471,14 +465,8 @@ def test_recursive_iter_einval_does_not_abort(tmp_path: Path) -> None:
     _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
     (tmp_path / "root.mp3").write_bytes(b"x")
     errors = helpers.ScanErrors()
-    real_scandir = os.scandir
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == str(tmp_path):
-            return real_scandir(path)
-        raise OSError(errno.EINVAL, "invalid argument")
-
-    with patch("os.scandir", side_effect=fake_scandir):
+    # the root is listed by its path, every subfolder fails to open
+    with patch("os.open", side_effect=OSError(errno.EINVAL, "invalid argument")):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -499,14 +487,8 @@ def test_recursive_iter_permission_denied_does_not_abort(tmp_path: Path) -> None
     _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
     (tmp_path / "root.mp3").write_bytes(b"x")
     errors = helpers.ScanErrors()
-    real_scandir = os.scandir
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == str(tmp_path):
-            return real_scandir(path)
-        raise PermissionError(errno.EACCES, "denied")
-
-    with patch("os.scandir", side_effect=fake_scandir):
+    # the root is listed by its path, every subfolder fails to open
+    with patch("os.open", side_effect=PermissionError(errno.EACCES, "denied")):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -585,10 +567,12 @@ def test_recursive_iter_unreadable_file_is_recorded(
     errors = helpers.ScanErrors()
     real_from_dir_entry = helpers.FileSystemItem.from_dir_entry
 
-    def fake_from_dir_entry(entry: os.DirEntry[str], base_path: str) -> helpers.FileSystemItem:
+    def fake_from_dir_entry(
+        entry: os.DirEntry[str], base_path: str, dir_path: str
+    ) -> helpers.FileSystemItem:
         if entry.name.startswith("track1") or entry.name.startswith("track2"):
             raise OSError(errno.EIO, "i/o error")
-        return real_from_dir_entry(entry, base_path)
+        return real_from_dir_entry(entry, base_path, dir_path)
 
     with (
         caplog.at_level(logging.DEBUG, logger="test"),
@@ -624,10 +608,12 @@ def test_recursive_iter_vanished_file_is_ignored(tmp_path: Path, err: OSError) -
     errors = helpers.ScanErrors()
     real_from_dir_entry = helpers.FileSystemItem.from_dir_entry
 
-    def fake_from_dir_entry(entry: os.DirEntry[str], base_path: str) -> helpers.FileSystemItem:
+    def fake_from_dir_entry(
+        entry: os.DirEntry[str], base_path: str, dir_path: str
+    ) -> helpers.FileSystemItem:
         if entry.name == "track1.mp3":
             raise err
-        return real_from_dir_entry(entry, base_path)
+        return real_from_dir_entry(entry, base_path, dir_path)
 
     with patch.object(helpers.FileSystemItem, "from_dir_entry", fake_from_dir_entry):
         items = list(
@@ -664,6 +650,37 @@ def test_recursive_iter_unreadable_entry_type_is_recorded(tmp_path: Path) -> Non
     assert not errors.aborted
     # the entry may be a folder full of tracks, so callers must not run deletions
     assert errors.failed_entries == 1
+
+
+def test_recursive_iter_skips_a_folder_replaced_by_a_symlink(tmp_path: Path) -> None:
+    """Test that a folder replaced by a symlink after it was listed is not walked into."""
+    root = tmp_path / "music"
+    (root / "Album").mkdir(parents=True)
+    (root / "Album" / "track.mp3").write_bytes(b"x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.mp3").write_bytes(b"x")
+    errors = helpers.ScanErrors()
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | int) -> _FakeScanDir:
+        with real_scandir(path) as entries:
+            listed = list(entries)
+        if path == str(root):
+            (root / "Album").rename(root / "Album.old")
+            (root / "Album").symlink_to(outside, target_is_directory=True)
+        return _FakeScanDir(listed)
+
+    with patch("os.scandir", side_effect=fake_scandir):
+        items = list(
+            helpers.recursive_iter(
+                str(root), str(root), SUPPORTED, logging.getLogger("test"), errors
+            )
+        )
+
+    assert items == []
+    # the folder could not be read as listed, so callers must not run deletions
+    assert errors.failed_dirs == 1
 
 
 def test_scan_errors_describe_names_examples() -> None:

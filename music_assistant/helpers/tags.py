@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.process import AsyncProcess, get_subprocess_env
+from music_assistant.helpers.process import AsyncProcess, descriptor_path, get_subprocess_env
 from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
@@ -737,20 +737,41 @@ class AudioTags:
 
 
 async def async_parse_tags(
-    input_file: str, file_size: int | None = None, require_duration: bool = False
+    input_file: str,
+    file_size: int | None = None,
+    require_duration: bool = False,
+    opener: Callable[[str, int], int] | None = None,
 ) -> AudioTags:
-    """Parse tags from a media file (or URL). Async friendly."""
-    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration)
+    """
+    Parse tags from a media file (or URL). Async friendly.
+
+    :param input_file: A (local) filename or URL accessible by ffmpeg.
+    :param file_size: Size of the file, to estimate a missing duration from its bitrate.
+    :param require_duration: Decode the whole file when its duration is not in its header.
+    :param opener: Opens input_file like the opener of open(), with the os.open flags, and
+        returns its descriptor; the file is then only read through that descriptor.
+    """
+    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration, opener)
 
 
 def parse_tags(
-    input_file: str, file_size: int | None = None, require_duration: bool = False
+    input_file: str,
+    file_size: int | None = None,
+    require_duration: bool = False,
+    opener: Callable[[str, int], int] | None = None,
 ) -> AudioTags:
     """
     Parse tags from a media file (or URL). NOT Async friendly.
 
-    Input_file may be a (local) filename or URL accessible by ffmpeg.
+    :param input_file: A (local) filename or URL accessible by ffmpeg.
+    :param file_size: Size of the file, to estimate a missing duration from its bitrate.
+    :param require_duration: Decode the whole file when its duration is not in its header.
+    :param opener: Opens input_file like the opener of open(), with the os.open flags, and
+        returns its descriptor; the file is then only read through that descriptor.
     """
+    fd = opener(input_file, os.O_RDONLY) if opener else None
+    source = input_file if fd is None else descriptor_path(fd)
+    pass_fds = () if fd is None else (fd,)
     args = (
         "ffprobe",
         "-hide_banner",
@@ -765,10 +786,12 @@ def parse_tags(
         "-print_format",
         "json",
         "-i",
-        input_file,
+        source,
     )
     try:
-        res = subprocess.check_output(args, stderr=subprocess.PIPE, env=get_subprocess_env())  # noqa: S603
+        res = subprocess.check_output(  # noqa: S603
+            args, stderr=subprocess.PIPE, env=get_subprocess_env(), pass_fds=pass_fds
+        )
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -785,12 +808,12 @@ def parse_tags(
             tags.duration = float(tags.raw["format"]["duration"])
 
         if not tags.duration and require_duration:
-            tags.duration = get_file_duration(input_file)
+            tags.duration = get_file_duration(source, pass_fds)
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
-        if not input_file.startswith("http") and Path(input_file).is_file():
-            extra_tags = parse_tags_mutagen(input_file)
+        if not input_file.startswith("http") and Path(source).is_file():
+            extra_tags = parse_tags_mutagen(source)
             if extra_tags:
                 tags.tags.update(extra_tags)
             # APEv2 cover art is not exposed as video streams by FFmpeg
@@ -810,13 +833,19 @@ def parse_tags(
         except UnicodeEncodeError:
             msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
         raise InvalidDataError(msg) from err
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
-def get_file_duration(input_file: str) -> float:
+def get_file_duration(input_file: str, pass_fds: tuple[int, ...] = ()) -> float:
     """
     Parse file/stream duration from an audio file using ffmpeg.
 
     NOT Async friendly.
+
+    :param input_file: A (local) filename or URL accessible by ffmpeg.
+    :param pass_fds: Descriptors ffmpeg needs to open input_file.
     """
     args = (
         "ffmpeg",
@@ -831,7 +860,7 @@ def get_file_duration(input_file: str) -> float:
     )
     try:
         res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.STDOUT, env=get_subprocess_env()
+            args, stderr=subprocess.STDOUT, env=get_subprocess_env(), pass_fds=pass_fds
         ).decode()
         # extract duration from ffmpeg output
         duration_str = res.split("time=")[-1].split(" ")[0].strip()
@@ -1653,17 +1682,36 @@ def get_apev2_image(input_file: str) -> bytes | None:
     return None
 
 
-async def get_embedded_image(input_file: str) -> bytes | None:
+async def get_embedded_image(
+    input_file: str, opener: Callable[[str, int], int] | None = None
+) -> bytes | None:
     """
     Return embedded image data.
 
     Input_file may be an existing local file or an http(s) URL; any other input
     (such as an ffmpeg protocol locator) yields None.
+
+    :param input_file: The local file or http(s) URL holding the image.
+    :param opener: Opens input_file like the opener of open(), with the os.open flags, and
+        returns its descriptor; the file is then only read through that descriptor.
     """
     if has_control_chars(input_file):
         return None
+    if opener is None:
+        return await _get_embedded_image(input_file, input_file)
+    fd = await asyncio.to_thread(opener, input_file, os.O_RDONLY)
+    try:
+        return await _get_embedded_image(input_file, descriptor_path(fd), (fd,))
+    finally:
+        os.close(fd)
+
+
+async def _get_embedded_image(
+    input_file: str, source: str, pass_fds: tuple[int, ...] = ()
+) -> bytes | None:
+    """Return the image embedded in input_file, read from source (opened with pass_fds)."""
     is_url = input_file.startswith(("http://", "https://"))
-    if not is_url and not await asyncio.to_thread(os.path.isfile, input_file):
+    if not is_url and not await asyncio.to_thread(os.path.isfile, source):
         return None
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
@@ -1672,7 +1720,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):
-            if img_data := await asyncio.to_thread(get_apev2_image, input_file):
+            if img_data := await asyncio.to_thread(get_apev2_image, source):
                 return img_data
 
     # Use FFmpeg for all other cases (URLs, ID3 tags, Vorbis comments, etc.)
@@ -1686,7 +1734,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         "-protocol_whitelist",
         "http,https,tcp,tls" if is_url else "file",
         "-i",
-        input_file,
+        source,
         "-an",
         "-vcodec",
         "mjpeg",
@@ -1695,7 +1743,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         "-",
     ]
     async with AsyncProcess(
-        args, stdin=False, stdout=True, stderr=None, name="ffmpeg_image"
+        args, stdin=False, stdout=True, stderr=None, name="ffmpeg_image", pass_fds=pass_fds
     ) as ffmpeg:
         return await ffmpeg.read(-1)
 

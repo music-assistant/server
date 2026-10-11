@@ -17,7 +17,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
@@ -229,6 +229,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             if resp.status != 200:
                 raise MediaNotFoundError(f"File not found: {path}")
             return await resp.read()
+
+    async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
+        """Parse the tags of a file over HTTP."""
+        return await async_parse_tags(file_item.absolute_path, file_item.file_size)
 
     def _convert_webdav_items(
         self,

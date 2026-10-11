@@ -25,7 +25,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, get_embedded_image
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -388,6 +388,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             return await self._api_download_bytes(file_id)
         except ProviderUnavailableError as err:
             raise MediaNotFoundError(f"Unable to read cloud file {path}: {err}") from err
+
+    async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
+        """Parse the tags of a cloud file from its stream URL."""
+        return await async_parse_tags(file_item.absolute_path, file_item.file_size)
 
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return the streamable URL for an audiobook chapter file."""

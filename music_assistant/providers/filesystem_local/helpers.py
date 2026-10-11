@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -206,17 +208,24 @@ class FileSystemItem:
         return self.metadata_token or self.checksum
 
     @classmethod
-    def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
+    def from_dir_entry(
+        cls, entry: os.DirEntry[str], base_path: str, dir_path: str
+    ) -> FileSystemItem:
         """
         Create FileSystemItem from os.DirEntry. NOT Async friendly.
 
+        :param entry: The entry as listed by os.scandir.
+        :param base_path: The root base path for constructing relative paths.
+        :param dir_path: Absolute path of the directory the entry was listed from.
         :raises OSError: If the file cannot be stat'd (e.g., invalid filename encoding).
         """
+        # a directory listed through its descriptor names its entries without the path
+        path = os.path.join(dir_path, entry.name)
         if entry.is_dir(follow_symlinks=False):
             return cls(
                 filename=entry.name,
-                relative_path=get_relative_path(base_path, entry.path),
-                absolute_path=entry.path,
+                relative_path=get_relative_path(base_path, path),
+                absolute_path=path,
                 is_dir=True,
                 checksum=None,
                 file_size=None,
@@ -229,8 +238,8 @@ class FileSystemItem:
         created_at = int(getattr(stat, "st_birthtime", stat.st_ctime))
         return cls(
             filename=entry.name,
-            relative_path=get_relative_path(base_path, entry.path),
-            absolute_path=entry.path,
+            relative_path=get_relative_path(base_path, path),
+            absolute_path=path,
             is_dir=False,
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
@@ -542,15 +551,47 @@ def check_real_path(real_base_path: str, path: str) -> None:
         raise _path_outside_folder(path)
 
 
+def open_real_path(real_base_path: str, path: str, flags: int = os.O_RDONLY) -> int:
+    """
+    Open a path for reading like os.open, if it really lies inside a folder. NOT async friendly.
+
+    The check runs on the file that was opened, so reading through the returned descriptor
+    reads that file, also when the path changes afterwards. The caller closes it.
+
+    :param real_base_path: The folder, with its symlinks resolved.
+    :param path: The absolute path to open.
+    :param flags: The flags for os.open, e.g. with os.O_DIRECTORY to list a folder.
+    :raises MediaNotFoundError: If the path lies outside the folder.
+    """
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        # a path leading outside is refused as such, also when its target can not be opened
+        check_real_path(real_base_path, path)
+        raise
+    try:
+        if not is_safe_path(_real_path_of(fd), real_base_path):
+            raise _path_outside_folder(path)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def recursive_iter(
     path: str,
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
     scan_errors: ScanErrors | None = None,
+    dir_fd: int | None = None,
 ) -> Iterator[FileSystemItem]:
     """
     Recursively traverse directory entries yielding supported files.
+
+    Symlinks are skipped. Subfolders are opened through the descriptor of their parent
+    without following symlinks, so a folder replaced by a symlink during the walk is skipped
+    as well.
 
     :param path: The directory path to scan.
     :param base_path: The root base path for constructing relative paths.
@@ -558,20 +599,15 @@ def recursive_iter(
     :param log: Logger instance to use for warnings/debug messages.
     :param scan_errors: Optional state object collecting the errors raised during this
         scan. Callers treat ``fatal`` as "provider unreachable" and abort the sync.
+    :param dir_fd: Open descriptor of the directory at path, listed instead of path itself.
+        The caller keeps it open while iterating and closes it.
     """
     if scan_errors is None:
         scan_errors = ScanErrors()
     try:
-        scan_iter = os.scandir(path)
+        scan_iter = os.scandir(path if dir_fd is None else dir_fd)
     except OSError as err:
-        if err.errno == errno.EINVAL:
-            log.warning(
-                "Skipping directory '%s' - unsupported characters in path",
-                path,
-            )
-            return
-        log.warning("Unable to scan directory %s: %s", path, err)
-        _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
+        _record_unreadable_dir(scan_errors, err, path=path, base_path=base_path, log=log)
         return
     entry_error_logged = False
     with scan_iter:
@@ -591,6 +627,7 @@ def recursive_iter(
                 or _skip_undecodable_name(item.name, log)
             ):
                 continue
+            item_path = os.path.join(path, item.name)
             try:
                 is_dir = item.is_dir(follow_symlinks=False)
                 is_file = item.is_file(follow_symlinks=False)
@@ -605,15 +642,17 @@ def recursive_iter(
                     entry_error_logged = _record_entry_failure(
                         scan_errors,
                         err,
-                        entry_path=item.path,
+                        entry_path=item_path,
                         base_path=base_path,
                         log=log,
                         already_logged=entry_error_logged,
                     )
                 continue
             if is_dir:
-                yield from recursive_iter(
-                    item.path,
+                yield from _recursive_iter_subdir(
+                    item.name,
+                    item_path,
+                    dir_fd,
                     base_path,
                     supported_extensions,
                     log,
@@ -628,7 +667,7 @@ def recursive_iter(
                 if ext not in supported_extensions:
                     continue
                 try:
-                    yield FileSystemItem.from_dir_entry(item, base_path)
+                    yield FileSystemItem.from_dir_entry(item, base_path, path)
                 except OSError as err:
                     if err.errno == errno.EINVAL:
                         log.warning(
@@ -639,18 +678,25 @@ def recursive_iter(
                         entry_error_logged = _record_entry_failure(
                             scan_errors,
                             err,
-                            entry_path=item.path,
+                            entry_path=item_path,
                             base_path=base_path,
                             log=log,
                             already_logged=entry_error_logged,
                         )
 
 
-def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[FileSystemItem]:
+def sorted_scandir(
+    base_path: str, sub_path: str, sort: bool = False, dir_fd: int | None = None
+) -> list[FileSystemItem]:
     """
     Implement os.scandir that returns (optionally) sorted entries.
 
     Not async friendly!
+
+    :param base_path: The root base path for constructing relative paths.
+    :param sub_path: The directory to list, absolute or relative to base_path.
+    :param sort: Sort the entries by (natural) name.
+    :param dir_fd: Open descriptor of the directory at sub_path, listed instead of sub_path.
     """
 
     def nat_key(name: str) -> tuple[int | str, ...]:
@@ -662,7 +708,7 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
         sub_path = os.path.join(base_path, sub_path)
     items: list[FileSystemItem] = []
     try:
-        entries = os.scandir(sub_path)
+        entries = os.scandir(sub_path if dir_fd is None else dir_fd)
     except OSError as err:
         if err.errno == errno.EINVAL:
             logger.warning(
@@ -692,7 +738,7 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
             if not (is_dir or is_file):
                 continue
             try:
-                items.append(FileSystemItem.from_dir_entry(entry, base_path))
+                items.append(FileSystemItem.from_dir_entry(entry, base_path, sub_path))
             except OSError as err:
                 if err.errno == errno.EINVAL:
                     logger.warning(
@@ -778,6 +824,44 @@ def _record_dir_failure(
         )
 
 
+def _record_unreadable_dir(
+    scan_errors: ScanErrors,
+    err: OSError,
+    *,
+    path: str,
+    base_path: str,
+    log: logging.Logger,
+) -> None:
+    """Register a directory that could not be opened, skipping one whose name is unsupported."""
+    if err.errno == errno.EINVAL:
+        log.warning("Skipping directory '%s' - unsupported characters in path", path)
+        return
+    log.warning("Unable to scan directory %s: %s", path, err)
+    _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
+
+
+def _recursive_iter_subdir(
+    name: str,
+    path: str,
+    parent_fd: int | None,
+    base_path: str,
+    supported_extensions: set[str],
+    log: logging.Logger,
+    scan_errors: ScanErrors,
+) -> Iterator[FileSystemItem]:
+    """Yield the supported files below a subfolder, which is skipped if it became a symlink."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        dir_fd = os.open(path if parent_fd is None else name, flags, dir_fd=parent_fd)
+    except OSError as err:
+        _record_unreadable_dir(scan_errors, err, path=path, base_path=base_path, log=log)
+        return
+    try:
+        yield from recursive_iter(path, base_path, supported_extensions, log, scan_errors, dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def _path_outside_folder(path: str) -> MediaNotFoundError:
     """
     Return the error for a path a source refuses to read because it lies outside its folder.
@@ -790,3 +874,11 @@ def _path_outside_folder(path: str) -> MediaNotFoundError:
         translation_owner="provider.filesystem_local",
         translation_args=[path],
     )
+
+
+def _real_path_of(fd: int) -> str:
+    """Return where the file of an open descriptor lies, with its symlinks resolved."""
+    if sys.platform == "darwin":
+        # 1024 is MAXPATHLEN, the buffer size F_GETPATH writes the path into
+        return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
+    return str(Path(f"/proc/self/fd/{fd}").readlink())

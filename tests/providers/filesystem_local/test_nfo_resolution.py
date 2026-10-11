@@ -1051,7 +1051,7 @@ async def test_get_album_tracks_skips_a_malformed_sibling_track() -> None:
     )
     provider._parse_track = AsyncMock(return_value=parsed_track)
 
-    async def _parse_tags_side_effect(absolute_path: str, _file_size: int) -> Any:
+    async def _parse_tags_side_effect(absolute_path: str, _file_size: int, **_kwargs: Any) -> Any:
         if absolute_path == bad_item.absolute_path:
             raise InvalidDataError("corrupt file")
         return MagicMock()
