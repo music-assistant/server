@@ -1417,6 +1417,10 @@ class LocalFileSystemProvider(MusicProvider):
             # reparsing its registered representative track
             metadata_files.append(item)
             return
+        if self.media_content_type == "audiobooks" and not item.is_dir and is_image_file(item):
+            # an audiobook takes any image of its folder as cover, whatever its name
+            metadata_files.append(item)
+            return
         if not item.is_dir and item.ext and item.ext.lower() in METADATA_FILE_EXTENSIONS:
             # an nfo/image extension is walked only to catch a recognized metadata file above;
             # an unrecognized one (wrong filename) must stay as invisible to the scan as before
@@ -1529,9 +1533,9 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Return the audiobook files that need to be read again, each with its stored checksum.
 
-        A book with embedded chapters is stored with the checksum of its own file. Any other
-        book can take its chapters from all audio files in its folder, so it is stored with
-        the signature of that folder, which covers the folder's artwork too.
+        A book that takes its chapters from its own file is stored with the checksum of that
+        file. Any other book takes them from the audio files in its folder, so it is stored
+        with the signature of that folder, which covers the folder's artwork too.
 
         :param files: The audiobook files found by the scan.
         :param metadata_files: The local metadata files (NFO/images) found by the scan.
@@ -2387,7 +2391,7 @@ class LocalFileSystemProvider(MusicProvider):
         :param prev_filenames: The ids/paths the previous scan found, used to keep the
             ids of a CUE sheet that fails to parse.
         :param folder_signatures: Signature of each audiobook folder in this scan, stored
-            with a book that has no embedded chapters instead of its own checksum.
+            with a book that takes its chapters from the files in its folder.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -2438,16 +2442,15 @@ class LocalFileSystemProvider(MusicProvider):
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
+                folder_signature = (
+                    folder_signatures.get(item.relative_parent_path) if folder_signatures else None
+                )
                 try:
-                    audiobook = await self._parse_audiobook(item, tags)
+                    audiobook = await self._parse_audiobook(item, tags, folder_signature)
                 except IsChapterFile:
                     # a chapter of another book: leaving it out of the scan result removes
                     # a book an earlier sync stored for this file
                     return False
-                if not tags.chapters and folder_signatures:
-                    # the book can take its chapters from any file in its folder
-                    for prov_mapping in audiobook.provider_mappings:
-                        prov_mapping.details = folder_signatures[item.relative_parent_path]
                 await self.mass.music.audiobooks.add_item_to_library(
                     audiobook, overwrite_existing=prev_checksum is not None
                 )
@@ -3131,12 +3134,19 @@ class LocalFileSystemProvider(MusicProvider):
 
         return artist
 
-    async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
+    async def _parse_audiobook(
+        self, file_item: FileSystemItem, tags: AudioTags, folder_signature: str | None = None
+    ) -> Audiobook:
         """
         Parse Audiobook details from file tags.
 
         Audiobooks can be single files with embedded chapters or multiple files per folder.
         Only the first file (by track number or alphabetically) is processed as the audiobook.
+
+        :param file_item: The audio file to parse.
+        :param tags: The tags of the audio file.
+        :param folder_signature: Signature of the file's folder, stored as change marker of a
+            book that takes its chapters from the files in its folder.
         """
         # Skip files that aren't the first chapter.
         # A file carrying its own embedded chapter markers is a standalone audiobook,
@@ -3172,7 +3182,9 @@ class LocalFileSystemProvider(MusicProvider):
             sort_name = None
 
         # collect all chapters
-        total_duration, chapters = await self._get_chapters_for_audiobook(file_item, tags)
+        total_duration, chapters, embedded_chapters = await self._get_chapters_for_audiobook(
+            file_item, tags
+        )
 
         audio_book = Audiobook(
             item_id=file_item.relative_path,
@@ -3194,7 +3206,7 @@ class LocalFileSystemProvider(MusicProvider):
                         channels=tags.channels,
                         bit_rate=tags.bit_rate,
                     ),
-                    details=file_item.checksum,
+                    details=file_item.checksum if embedded_chapters else folder_signature,
                     in_library=True,
                 )
             },
@@ -3956,9 +3968,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _get_chapters_for_audiobook(
         self, audiobook_file_item: FileSystemItem, tags: AudioTags
-    ) -> tuple[int, list[MediaItemChapter]]:
+    ) -> tuple[int, list[MediaItemChapter], bool]:
         """
-        Return chapters for an audiobook.
+        Return the duration and chapters of an audiobook, and whether its own file holds them.
 
         Chapter sources in order of preference:
         1. Multiple files with track tags - sorted by track number
@@ -4064,7 +4076,7 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
         )
-        return int(total_duration), chapters
+        return int(total_duration), chapters, use_embedded
 
     async def _get_podcast_metadata(self, podcast_folder: str) -> dict[str, Any]:
         """Return metadata for a podcast."""

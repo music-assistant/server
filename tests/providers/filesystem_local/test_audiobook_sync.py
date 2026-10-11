@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import CONF_PROVIDERS, DB_TABLE_PROVIDER_MAPPINGS
@@ -50,20 +51,22 @@ async def _parse(path: str, _size: int | None = None) -> AudioTags:
     Return the tags of a dummy file, derived from its name.
 
     An ``.m4b`` file is a book with embedded chapters, a ``partN`` file is chapter N of the
-    book named after its folder, any other file is an untagged file of that book.
+    book named after its folder, any other file is an untagged file of that book. A ``partN``
+    file with embedded chapters is an ``.m4b`` named ``partN``.
 
     :param path: The absolute path of the file.
     """
     file = Path(path)
     tags: dict[str, Any] = {"title": file.stem}
     raw: dict[str, Any] = {}
-    if file.suffix == ".m4b":
+    if file.suffix == ".m4b" and not file.stem.startswith("part"):
         tags["album"] = file.stem
-        raw["chapters"] = [{"id": 1, "start_time": "0", "end_time": str(CHAPTER_DURATION)}]
     else:
         tags["album"] = file.parent.name
         if file.stem.startswith("part"):
             tags["track"] = file.stem.removeprefix("part")
+    if file.suffix == ".m4b":
+        raw["chapters"] = [{"id": 1, "start_time": "0", "end_time": str(CHAPTER_DURATION)}]
     return AudioTags(
         raw=raw,
         sample_rate=44100,
@@ -179,14 +182,17 @@ async def test_a_changed_chapter_refreshes_its_audiobook(
     assert len(audiobook.metadata.chapters or []) == 4
 
 
-async def test_new_artwork_refreshes_its_audiobook(mass: MusicAssistant, tmp_path: Path) -> None:
+@pytest.mark.parametrize("image_name", ["cover.jpg", "Book Title.jpg"])
+async def test_new_artwork_refreshes_its_audiobook(
+    mass: MusicAssistant, tmp_path: Path, image_name: str
+) -> None:
     """Artwork added to the folder of a multi-file book reaches the library on the next sync."""
     book = tmp_path / "Author" / "Book"
     _write_files(book, "part1.mp3", "part2.mp3")
     provider = await _load_provider(mass, tmp_path)
     await _sync(provider)
 
-    (book / "cover.jpg").write_bytes(b"dummy image")
+    (book / image_name).write_bytes(b"dummy image")
     _, added = await _sync(provider)
 
     assert added == ["Author/Book/part1.mp3"]
@@ -195,7 +201,43 @@ async def test_new_artwork_refreshes_its_audiobook(mass: MusicAssistant, tmp_pat
     )
     assert audiobook is not None
     assert audiobook.image is not None
-    assert audiobook.image.path.startswith("Author/Book/cover.jpg")
+    assert audiobook.image.path.startswith(f"Author/Book/{image_name}")
+
+
+async def test_a_book_split_over_files_with_embedded_chapters_reads_no_part_again(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """A book whose first part has embedded chapters still takes the other parts as chapters."""
+    _write_files(tmp_path / "Author" / "Book", "part1.m4b", "part2.mp3")
+    provider = await _load_provider(mass, tmp_path)
+    await _sync(provider)
+
+    read, added = await _sync(provider)
+
+    assert read == []
+    assert added == []
+
+
+async def test_a_refreshed_multi_file_book_is_read_once_more(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """A multi-file book refreshed by hand is read once more by the next sync, then skipped."""
+    _write_files(tmp_path / "Author" / "Book", "part1.mp3", "part2.mp3")
+    provider = await _load_provider(mass, tmp_path)
+    await _sync(provider)
+    audiobook = await mass.music.audiobooks.get_library_item_by_prov_id(
+        "Author/Book/part1.mp3", INSTANCE_ID
+    )
+    assert audiobook is not None
+    with patch(PARSE_TAGS_TARGET, new=AsyncMock(side_effect=_parse)):
+        await mass.music.refresh_item(audiobook)
+
+    _, added = await _sync(provider)
+    assert added == ["Author/Book/part1.mp3"]
+
+    read, added = await _sync(provider)
+    assert read == []
+    assert added == []
 
 
 async def test_a_new_book_next_to_single_file_books_adds_only_that_book(
