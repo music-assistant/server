@@ -1308,6 +1308,10 @@ def format_ip_for_url(ip_address: str) -> str:
     return ip_address
 
 
+# mDNS, special-use (RFC 6761, RFC 8375, ICANN .internal) and common home router suffixes
+_LOCAL_NETWORK_SUFFIXES = (".local", ".localhost", ".home.arpa", ".internal", ".lan", ".home")
+
+
 def is_public_url(url: str) -> bool:
     """
     Return whether a URL is an http(s) URL on a host that is reachable from the internet.
@@ -1329,8 +1333,9 @@ def is_public_url(url: str) -> bool:
         return ip_address(host).is_global
     except ValueError:
         pass
-    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
-    return "." in host and not host.endswith(".local")
+    # single-label names (e.g. localhost), mDNS names, special-use names and common home
+    # network suffixes only resolve on the local network
+    return "." in host and not host.lower().endswith(_LOCAL_NETWORK_SUFFIXES)
 
 
 async def get_folder_size(folderpath: str, exclude: Iterable[str] = ()) -> float:
