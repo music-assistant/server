@@ -26,7 +26,6 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
-from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -55,6 +54,7 @@ from .constants import (
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
     NO_WEATHER_DATA_INSTRUCTION,
+    POST_LOAD_TIMEOUT,
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
@@ -514,7 +514,7 @@ class AIRadioRenderMixin:
     async def _plan_post_over(
         self, queue_item: QueueItem, next_item: QueueItem | None, clip_duration: int | None
     ) -> TailOverlap | None:
-        """Return how far the clip may carry over the given next item's intro, or None."""
+        """Return how far the clip may carry over the next track's intro, or None."""
         if next_item is None or not isinstance(next_item.media_item, Track):
             self._post_skipped(queue_item.name, "no next track in the queue")
             return None
@@ -526,6 +526,17 @@ class AIRadioRenderMixin:
         ):
             self._post_skipped(next_item.name, "the player does not stream in flow mode")
             return None
+        # which copy of the track streams is only known once its stream details are
+        # resolved: the queue resolves them now rather than when the clip nears its end,
+        # as it will again then, and moves on to the item after a track it cannot play
+        loaded, reason = await self._load_next_item(queue_item)
+        if loaded is None:
+            self._post_skipped(next_item.name, reason)
+            return None
+        if not isinstance(loaded.media_item, Track):
+            self._post_skipped(loaded.name, "the item that plays next is not a track")
+            return None
+        next_item = loaded
         onset, reason = await self._resolve_vocal_onset(next_item)
         if onset is None:
             self._post_skipped(next_item.name, reason)
@@ -550,6 +561,20 @@ class AIRadioRenderMixin:
             onset,
         )
         return TailOverlap(duration=round(overlap, 3), next_queue_item_id=next_item.queue_item_id)
+
+    async def _load_next_item(self, queue_item: QueueItem) -> tuple[QueueItem | None, str]:
+        """Return the item the queue plays after the clip, loaded, or the reason it has none."""
+        try:
+            # a show starts on its opening clip, whose playback start waits for this
+            async with asyncio.timeout(POST_LOAD_TIMEOUT):
+                next_item = await self.mass.player_queues.load_next_queue_item(
+                    queue_item.queue_id, queue_item.queue_item_id
+                )
+        except TimeoutError:
+            return None, f"loading the next track took longer than {POST_LOAD_TIMEOUT:.0f}s"
+        except MusicAssistantError as err:
+            return None, f"the next track could not be loaded ({err})"
+        return next_item, ""
 
     async def _resolve_vocal_onset(self, queue_item: QueueItem) -> tuple[float | None, str]:
         """Return the second the track's vocal enters, and the reason when there is none."""
@@ -576,21 +601,12 @@ class AIRadioRenderMixin:
 
     async def _analysis_vocal_onset(self, queue_item: QueueItem) -> float | None:
         """Return the track's vocal onset from its stored audio analysis, or None."""
-        audio_analysis = self.mass.streams.audio_analysis
         # the analysis is keyed by the provider-native id of the copy that streams
-        if (streamdetails := queue_item.streamdetails) is not None:
-            return await audio_analysis.get_vocal_onset(
-                streamdetails.item_id, streamdetails.provider
-            )
-        media_item = cast("Track", queue_item.media_item)
-        # tried in the order playback would pick them: another master can have another intro
-        for mapping in rank_provider_mappings(media_item.provider_mappings):
-            if not mapping.available:
-                continue
-            onset = await audio_analysis.get_vocal_onset(mapping.item_id, mapping.provider_instance)
-            if onset is not None:
-                return onset
-        return None
+        if (streamdetails := queue_item.streamdetails) is None:
+            return None
+        return await self.mass.streams.audio_analysis.get_vocal_onset(
+            streamdetails.item_id, streamdetails.provider
+        )
 
     def _post_skipped(self, item_name: str, reason: str) -> None:
         """Log why an opted-in break does not carry over the next track."""
