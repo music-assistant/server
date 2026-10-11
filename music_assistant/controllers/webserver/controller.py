@@ -101,6 +101,8 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
@@ -1505,7 +1507,7 @@ def _url_origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".lower()
 
 
-def _list_files(directory: str) -> list[str]:
+def _list_files(directory: Path) -> list[str]:
     """
     Return the names of the files directly inside a directory.
 
