@@ -25,7 +25,7 @@ from music_assistant_models.enums import (
     MediaType,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -302,7 +302,10 @@ class CueSheetHandler:
 
         # re-resolve to get a current absolute path (e.g. fresh auth for WebDAV)
         audio_item = await self.provider.resolve(audio_relative_path)
-        fd = await self.provider.open_local_file(audio_item.absolute_path)
+        try:
+            fd = await self.provider.open_local_file(audio_item.absolute_path)
+        except MediaNotFoundError as err:
+            raise AudioError(f"Unable to open {audio_relative_path}: {err}") from err
         try:
             async for chunk in get_ffmpeg_stream(
                 audio_input=audio_item.absolute_path if fd is None else descriptor_path(fd),

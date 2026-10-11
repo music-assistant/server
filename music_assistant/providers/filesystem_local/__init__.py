@@ -1268,12 +1268,12 @@ class LocalFileSystemProvider(MusicProvider):
         Open a file of this source for playback, if it lies inside the folder of this source.
 
         :param path: The absolute path of the file.
-        :raises MediaNotFoundError: If the file is gone or lies outside the folder of this source.
+        :raises MediaNotFoundError: If the file can not be read or lies outside the folder.
         """
         try:
             return await open_in_thread(self._open_file, path, os.O_RDONLY)
-        except FileNotFoundError as err:
-            raise MediaNotFoundError(f"Media file not found: {path}") from err
+        except OSError as err:
+            raise MediaNotFoundError(f"Unable to read media file {path}: {err}") from err
 
     async def resolve_image(self, path: str) -> str | bytes | None:
         """

@@ -1171,12 +1171,12 @@ class StreamsAudio:
 
         :param streamdetails: The stream the paths belong to.
         :param paths: The path of the stream, or of each of its parts.
-        :raises MediaNotFoundError: If the provider does not allow reading a file.
+        :raises AudioError: If the provider can not or may not open a file.
         """
+        if streamdetails.stream_type != StreamType.LOCAL_FILE:
+            return paths, ()
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-        if streamdetails.stream_type != StreamType.LOCAL_FILE or not isinstance(
-            provider, AudioStreamMixin
-        ):
+        if not isinstance(provider, AudioStreamMixin):
             return paths, ()
         inputs: list[str] = []
         fds: list[int] = []
@@ -1187,9 +1187,11 @@ class StreamsAudio:
                     continue
                 fds.append(fd)
                 inputs.append(descriptor_path(fd))
-        except BaseException:
+        except BaseException as err:
             for fd in fds:
                 os.close(fd)
+            if isinstance(err, MediaNotFoundError):
+                raise AudioError(f"Unable to open {streamdetails.uri}: {err}") from err
             raise
         return inputs, tuple(fds)
 
@@ -5583,7 +5585,7 @@ class StreamsAudio:
             return None
         try:
             inputs, pass_fds = await self.open_local_files(streamdetails, [streamdetails.path])
-        except (MediaNotFoundError, OSError) as err:
+        except AudioError as err:
             self.logger.warning(
                 "Audio overlay source %s can not be read (%s) - continuing without overlay",
                 mapping.uri,

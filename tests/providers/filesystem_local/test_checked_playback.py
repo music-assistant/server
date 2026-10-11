@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
@@ -139,16 +139,17 @@ async def test_playback_refuses_a_file_leading_outside(tree: Path) -> None:
     (tree / "elsewhere.flac").symlink_to(tree.parent / "outside" / "track.flac")
     audio = _make_audio(_make_provider(tree))
 
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(AudioError) as exc_info:
         await _play(audio, _local_stream(str(tree / "elsewhere.flac")))
+    assert isinstance(exc_info.value.__cause__, MediaNotFoundError)
 
 
-async def test_playback_of_a_removed_file_reports_it_missing(tree: Path) -> None:
-    """A file removed after it was queued is reported as missing media."""
+async def test_playback_of_a_removed_file_fails_the_stream(tree: Path) -> None:
+    """A file removed after it was queued fails the stream like a file ffmpeg can not read."""
     (tree / "inside-track.flac").unlink()
     audio = _make_audio(_make_provider(tree))
 
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(AudioError):
         await _play(audio, _local_stream(str(tree / "track.flac")))
 
 
@@ -243,7 +244,7 @@ async def test_opening_parts_stops_at_a_refused_one_without_leaking(tree: Path) 
     paths = [str(tree / "part1.flac"), str(tree / "elsewhere.flac")]
     open_before = len(list(Path("/proc/self/fd").iterdir()))
 
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(AudioError):
         await audio.open_local_files(_local_stream(paths[0]), paths)
 
     assert len(list(Path("/proc/self/fd").iterdir())) == open_before

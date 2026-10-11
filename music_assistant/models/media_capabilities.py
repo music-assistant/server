@@ -264,14 +264,15 @@ class AudioStreamMixin(Provider):
 
     async def open_local_file(self, path: str) -> int | None:
         """
-        Open a local file of this provider's StreamDetails, right before it is read.
+        Open a local file of this provider's StreamDetails, right before Music Assistant reads it.
 
-        Music Assistant reads the file through the returned descriptor and closes it, so a
-        provider can refuse a path or have the file it checked read. None (the default) has
-        the path opened as is.
+        Music Assistant reads the file through the returned descriptor and then closes it, which
+        lets a provider check the very file that is read. It is called on every start, seek or
+        retry of a stream and for each part of a multi-part stream. Return None (the default)
+        to have the path opened as is.
 
         :param path: The path of a StreamDetails with stream type LOCAL_FILE, or of one of
             its parts.
-        :raises MediaNotFoundError: If the provider does not allow reading the file.
+        :raises MediaNotFoundError: If the file can not or may not be read.
         """
         return None

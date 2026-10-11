@@ -27,7 +27,7 @@ from music_assistant_models.enums import (
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
@@ -1044,7 +1044,7 @@ async def _probe_source_format(
             inputs, pass_fds = await mass.streams.audio.open_local_files(
                 streamdetails, [input_path]
             )
-        except (MediaNotFoundError, OSError) as err:
+        except AudioError as err:
             LOGGER.debug("Unable to open %s to detect its format: %s", streamdetails.uri, err)
             return
         try:
