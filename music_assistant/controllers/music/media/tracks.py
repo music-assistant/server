@@ -1636,43 +1636,6 @@ class TracksController(MediaControllerBase[Track]):
                 row["album_id"], provider_instance_id
             )
 
-    async def _metadata_without_album_thumbs(self, update: Track) -> MediaItemMetadata:
-        """
-        Return the metadata of a track update without the album thumbs of a library read.
-
-        A track read from the library carries its album thumb among its images, which
-        does not belong in the track's own stored images. An album thumb the track
-        stores as its own artwork is kept.
-
-        :param update: The track to store.
-        """
-        if update.provider != "library" or not update.metadata.images:
-            return update.metadata
-        source_id = int(update.item_id)
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.images') AS images "
-            f"FROM {DB_TABLE_ALBUM_TRACKS} JOIN {DB_TABLE_ALBUMS} "
-            f"ON {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id "
-            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = :track_id",
-            {"track_id": source_id},
-        )
-        album_thumbs = {
-            MediaItemImage.from_dict(image)
-            for row in rows
-            if row["images"]
-            for image in json_loads(row["images"])
-            if image["type"] == ImageType.THUMB.value
-        }
-        if not album_thumbs:
-            return update.metadata
-        own_images = (await self._get_stored_metadata(source_id)).images or ()
-        images = UniqueList(
-            image
-            for image in update.metadata.images
-            if image not in album_thumbs or image in own_images
-        )
-        return replace(update.metadata, images=images or None)
-
     async def _set_track_album(
         self,
         db_id: int,
