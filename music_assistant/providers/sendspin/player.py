@@ -1523,6 +1523,15 @@ class SendspinPlayer(SendspinBasePlayer):
 
         await self.playback_session.start(media)
         self.update_state()
+        if self.synced_to is None:
+            # Push progress explicitly: a seek restarts the item that is already playing,
+            # so current_media's identity is unchanged and update_state() above won't
+            # debounce a metadata push through the normal media-changed callback.
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+                abort_existing=True,
+            )
 
         if cast_app_ready is None:
             return
