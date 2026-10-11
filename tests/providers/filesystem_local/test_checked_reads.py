@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from mutagen.id3 import APIC, ID3
 from PIL import Image
 
@@ -143,6 +143,27 @@ async def test_tags_are_refused_for_a_link_leading_outside(tree: Path) -> None:
     item = MagicMock(absolute_path=str(tree / "elsewhere.flac"), file_size=None)
 
     with pytest.raises(MediaNotFoundError):
+        await provider._parse_tags(item)
+
+
+async def test_untagged_file_keeps_its_filename_for_the_tags(tree: Path) -> None:
+    """A file without tags read through its descriptor still gets a title from its filename."""
+    shutil.copy(UNTAGGED_MP3, tree / "Some Artist - Some Title.mp3")
+    provider = _make_provider(tree)
+
+    tags = await provider._parse_tags(await provider.resolve("Some Artist - Some Title.mp3"))
+
+    assert tags.filename == str(tree / "Some Artist - Some Title.mp3")
+    assert tags.title == "Some Title"
+
+
+async def test_tags_of_a_removed_file_are_unreadable(tree: Path) -> None:
+    """A file removed before its tags are parsed counts as unreadable, like a corrupt one."""
+    provider = _make_provider(tree)
+    item = await provider.resolve("inside.flac")
+    (tree / "inside.flac").unlink()
+
+    with pytest.raises(InvalidDataError):
         await provider._parse_tags(item)
 
 

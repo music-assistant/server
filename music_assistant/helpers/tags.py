@@ -769,7 +769,10 @@ def parse_tags(
     :param opener: Opens input_file like the opener of open(), with the os.open flags, and
         returns its descriptor; the file is then only read through that descriptor.
     """
-    fd = opener(input_file, os.O_RDONLY) if opener else None
+    try:
+        fd = opener(input_file, os.O_RDONLY) if opener else None
+    except OSError as err:
+        raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
     args = (
@@ -798,6 +801,9 @@ def parse_tags(
         if not data.get("streams"):
             msg = "Not an audio file"
             raise InvalidDataError(msg)
+        if fd is not None:
+            # ffprobe names the descriptor path, which the tags fall back to for a title
+            data["format"]["filename"] = input_file
         tags = AudioTags.parse(data)
         del res
         del data
