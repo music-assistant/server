@@ -67,6 +67,8 @@ class ChromecastPlayer(Player):
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
+    # Cast reports the running app accurately, and only a foreign app is listed as source
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -693,7 +695,7 @@ class ChromecastPlayer(Player):
 
         self._update_playback_state(status, is_playing)
         self._update_elapsed_time(status, is_playing)
-        self._update_active_source(group_player)
+        self._update_active_source(status, group_player)
         self._update_current_media(status, is_idle)
         self._update_multichannel_group_members()
         self.update_state()
@@ -778,15 +780,18 @@ class ChromecastPlayer(Player):
             status.adjusted_current_time if is_playing else status.current_time
         )
 
-    def _update_active_source(self, group_player: ChromecastPlayer | None) -> None:
+    def _update_active_source(
+        self, status: MediaStatus, group_player: ChromecastPlayer | None
+    ) -> None:
         """
         Apply the active source, exposing a foreign Cast app as a selectable source.
 
+        :param status: Media status as reported by the receiver.
         :param group_player: Cast group player whose status is being followed, if any.
         """
         if group_player:
             self._attr_active_source = group_player.active_source or group_player.player_id
-        elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, SENDSPIN_CAST_APP_ID):
+        elif self.cc.app_id == SENDSPIN_CAST_APP_ID or self._is_own_session(status):
             self._attr_active_source = None
         elif self.cc.app_id in (None, IDLE_APP_ID):
             # a released device sits on its backdrop with no app running, which is
@@ -977,3 +982,13 @@ class ChromecastPlayer(Player):
             self.mass.create_task(queue_command(queue.queue_id))
 
         self.mass.loop.call_soon_threadsafe(dispatch)
+
+    def _is_own_session(self, status: MediaStatus) -> bool:
+        """Return whether the running receiver app plays a Music Assistant session."""
+        if self.cc.app_id == MASS_APP_ID:
+            return True
+        if self.cc.app_id != APP_MEDIA_RECEIVER:
+            return False
+        # other apps cast through the Default Media Receiver too, so only our own stream
+        # (or nothing loaded yet, right after we launched it) makes the session ours
+        return not status.content_id or status.content_id.startswith(self.mass.streams.base_url)
