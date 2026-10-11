@@ -33,6 +33,7 @@ from scripts.release_workflow import (
     set_addon_version,
     update_addon_release,
     verify_app_secrets,
+    verify_build_info,
     verify_oci_manifest,
 )
 
@@ -439,6 +440,56 @@ def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
 
     assert digest == f"sha256:{'c' * 64}"
     assert runtime_digests == [f"sha256:{'d' * 64}", f"sha256:{'e' * 64}"]
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({}, None),
+        (None, "unsupported installation"),
+        ({"version": "2.10.0b7"}, "version"),
+        # a build arg that no longer reaches the Dockerfile leaves an empty value behind
+        ({"revision": ""}, "revision"),
+        ({"wheel_sha256": None}, "wheel_sha256"),
+    ],
+)
+def test_build_info_identifies_the_release(
+    changes: dict[str, str | None] | None, error: str | None
+) -> None:
+    """The exact image must report the official build of this exact release."""
+    version, source_sha, wheel_sha = "2.10.0b8", "a" * 40, "b" * 64
+    release: dict[str, str | None] = {
+        "version": version,
+        "revision": source_sha,
+        "wheel_sha256": wheel_sha,
+    }
+    build_info = None if changes is None else release | changes
+
+    if error is None:
+        verify_build_info(build_info, version, source_sha, wheel_sha)
+    else:
+        with pytest.raises(ReleaseWorkflowError, match=error):
+            verify_build_info(build_info, version, source_sha, wheel_sha)
+
+
+def test_release_workflow_verifies_the_build_info_of_the_exact_image() -> None:
+    """The verified exact image must report an official build before anything is published."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["exact_image"]["steps"]]
+
+    assert step_names.index("Verify exact image") < step_names.index("Verify official build info")
+    step = _workflow_step(workflow, "exact_image", "Verify official build info")
+    # only skipped for a release source without the check, never for an existing image
+    guarded_path = "music_assistant/helpers/build_info.py"
+    assert step["if"] == f"hashFiles('source/{guarded_path}') != ''"
+    assert (ROOT / guarded_path).is_file()
+    assert step["env"]["DIGEST"] == "${{ steps.verify.outputs.digest }}"
+    run = str(step["run"])
+    assert '--entrypoint python "$IMAGE_REPOSITORY@$DIGEST"' in run
+    assert "get_official_build_info" in run
+    assert "release_workflow.py verify-build-info" in run
+    assert "exact_image" in workflow["jobs"]["publish_release"]["needs"]
 
 
 def test_addon_update_replaces_duplicate_version_and_retains_three(tmp_path: Path) -> None:
