@@ -987,8 +987,10 @@ jobs:
           done
 
       # Runs the server's own official build check inside the image, without starting the
-      # server, so a release can never flag all of its installs as unsupported.
+      # server, so a release can never flag all of its installs as unsupported. A release
+      # source without that check has nothing to verify.
       - name: Verify official build info
+        if: hashFiles('source/music_assistant/helpers/build_info.py') != ''
         env:
           DIGEST: ${{ steps.verify.outputs.digest }}
           IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
