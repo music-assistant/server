@@ -1769,7 +1769,9 @@ class SpotifyProvider(MusicProvider):
                 if item is None:
                     continue
                 yield item
-            if len(result[key]) < limit:
+            # Spotify can return a short page mid-list while total says there is more,
+            # so a short page only ends the listing when the total is unknown
+            if not total and len(result[key]) < limit:
                 break
 
     async def _get_data_with_caching(
