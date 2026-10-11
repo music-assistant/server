@@ -631,7 +631,11 @@ class NugsProvider(MusicProvider):
                 limit=min(limit, 100),
                 offset=offset,
             )
-            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("items"), list)
+                or not isinstance(data.get("total"), int)
+            ):
                 raise InvalidDataError("Invalid Nugs releases response")
             page = data["items"]
             if not page:
