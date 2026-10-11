@@ -20,9 +20,8 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
 from functools import partial
-from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import urlsplit
+from urllib.parse import urlparse
 
 import aiofiles
 from aiohttp import web
@@ -41,6 +40,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
+    RateLimited,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -48,6 +48,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from yarl import URL
 
 from music_assistant.constants import (
+    APP_MA_HOST,
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
@@ -64,7 +65,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments
+from music_assistant.helpers.api import parse_arguments, redact_json_secrets
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -76,6 +77,7 @@ from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
     get_publish_ip_candidates,
+    is_public_url,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -93,11 +95,14 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
+from .helpers.login_flow import AuthTransport, RedirectTarget
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
@@ -254,6 +259,37 @@ class WebserverController(CoreController):
         protocol = "https" if self._ssl_active else "http"
         return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
 
+    def get_auth_callback_base(
+        self,
+        transport: AuthTransport,
+        *,
+        redirect_target: RedirectTarget = "server",
+        return_url: str | None = None,
+        request_host: str | None = None,
+    ) -> str:
+        """
+        Return the URL (without the callback path) a redirect sign-in returns the browser to.
+
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param redirect_target: Where the client asked the browser to return to; "app" is
+            only honoured over Remote Access.
+        :param return_url: The URL the client returns to after signing in, if any.
+        :param request_host: The host (and any port) the client used to reach the server.
+        """
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            return APP_MA_HOST
+        external_url = self.external_url
+        if not external_url:
+            return self.base_url
+        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
+            return external_url
+        # A native app returns to its own URL scheme, so look at how its connection came in
+        if transport is AuthTransport.REMOTE or (
+            request_host and request_host.lower() == urlparse(external_url).netloc.lower()
+        ):
+            return external_url
+        return self.base_url
+
     @property
     def internal_sendspin_url(self) -> str:
         """Return the URL to reach the in-process Sendspin server from this host."""
@@ -308,7 +344,7 @@ class WebserverController(CoreController):
         routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
         frontend_dir = locate_frontend()
-        for filename in next(os.walk(frontend_dir))[2]:
+        for filename in await asyncio.to_thread(_list_files, frontend_dir):
             if filename.endswith(".py"):
                 continue
             filepath = os.path.join(frontend_dir, filename)
@@ -785,11 +821,14 @@ class WebserverController(CoreController):
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
-        self.logger.log(VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", cmd_data)
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", redact_json_secrets(cmd_data)
+            )
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data.decode()}"
+            error = "Invalid JSON"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
@@ -1083,7 +1122,9 @@ class WebserverController(CoreController):
                 # unknown external URL, so checking is_valid alone would still leak the JWT.
                 # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
                 # the token immediately with no consent step, so "external" must be rejected.
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1169,17 +1210,21 @@ class WebserverController(CoreController):
 
             # Validate return_url if provided
             if return_url:
-                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                is_valid, _ = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
-            auth_url = await self.auth.get_authorization_url(provider_id, return_url)
-            if not auth_url:
+            started = await self.auth.get_authorization_url(provider_id, return_url)
+            if not started:
                 return web.Response(
                     status=400, text="Provider does not support OAuth or is not configured"
                 )
 
-            return web.json_response({"authorization_url": auth_url})
+            return web.json_response({"authorization_url": started[0]})
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
@@ -1194,10 +1239,7 @@ class WebserverController(CoreController):
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
-            redirect_uri = f"{self.base_url}/auth/callback?provider_id={provider_id}"
-            auth_result = await self.auth.handle_oauth_callback(
-                provider_id, code, state, redirect_uri
-            )
+            auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
 
             if not auth_result.success or not auth_result.user:
                 # Return error page
@@ -1223,7 +1265,7 @@ class WebserverController(CoreController):
             # Validate redirect URL for security
             if auth_result.return_url:
                 is_valid, category = is_allowed_redirect_url(
-                    auth_result.return_url, request, self.base_url
+                    auth_result.return_url, request, self.base_url, self.external_url
                 )
                 if not is_valid:
                     self.logger.warning("Invalid return_url blocked: %s", auth_result.return_url)
@@ -1266,7 +1308,9 @@ class WebserverController(CoreController):
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            _, category = is_allowed_redirect_url(
+                return_url, request, self.base_url, self.external_url
+            )
             if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
 
@@ -1361,7 +1405,9 @@ class WebserverController(CoreController):
             # Only forward the token to a trusted destination (no consent step here).
             return_url = body.get("return_url")
             if return_url and isinstance(return_url, str):
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
                         return_url, token, {"onboard": "true"}
@@ -1448,21 +1494,23 @@ def _is_valid_external_url(value: ConfigValueType) -> bool:
     """Return whether a configured external URL is empty or an http(s) URL on a public host."""
     if not value:
         return True
-    if not isinstance(value, str):
-        return False
-    try:
-        parts = urlsplit(value)
-        # reading the port raises on a malformed one (e.g. :notaport)
-        _ = parts.port
-        host = (parts.hostname or "").rstrip(".")
-    except ValueError:
-        return False
-    # query or fragment (e.g. a copied frontend route like /#/home) breaks appended links
-    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
-        return False
-    try:
-        return ip_address(host).is_global
-    except ValueError:
-        pass
-    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
-    return "." in host and not host.endswith(".local")
+    return isinstance(value, str) and is_public_url(value)
+
+
+def _url_origin(url: str) -> str:
+    """
+    Return the origin (scheme and host, including any port) of a URL.
+
+    :param url: The URL to get the origin of.
+    """
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _list_files(directory: Path) -> list[str]:
+    """
+    Return the names of the files directly inside a directory.
+
+    :param directory: The directory to list.
+    """
+    return next(os.walk(directory))[2]

@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
 from music_assistant.controllers.streams.smart_fades.models import (
     PlanMetrics,
     TransitionPlan,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateSpec,
+    EchoOutGenerator,
+    FilterOutGenerator,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def build_test_candidate(  # noqa: PLR0913
@@ -31,13 +37,18 @@ def build_test_candidate(  # noqa: PLR0913
     tier: TransitionTier = TransitionTier.FULL_BLEND,
     fadein_trim: float | None = None,
     fade_end: float | None = None,
+    style: TransitionStyle | None = None,
+    rhythm_clash: float = 0.0,
 ) -> Candidate:
     """Build a minimal ``Candidate`` with only the fields a policy under test reads."""
-    spec = CandidateSpec(tier=tier, bars=bars, anchor_s=None, entry_s=None)
+    if style is None:
+        style = TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
+    spec = CandidateSpec(tier=tier, bars=bars, anchor_s=None, entry_s=None, style=style)
     plan = TransitionPlan(
         tier=tier,
         fade_out_window=fade_end if fade_end is not None else duration,
         crossfade_duration=duration,
+        style=style,
         fadein_trim_start=fadein_trim,
     )
     metrics = PlanMetrics(
@@ -46,8 +57,15 @@ def build_test_candidate(  # noqa: PLR0913
         anchor_on_downbeat=on_downbeat,
         collision_seconds=collision,
         weighted_collision_seconds=weighted,
+        rhythm_clash_bars=rhythm_clash,
     )
     return Candidate(spec=spec, plan=plan, metrics=metrics, ideal_bars=ideal)
+
+
+def disable_dressed_transitions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan as before the dressed transitions existed: neither generator emits a spec."""
+    for generator in (FilterOutGenerator, EchoOutGenerator):
+        monkeypatch.setattr(generator, "generate", lambda _self, _ctx: iter(()))
 
 
 def _envelope(value: float | list[float] | np.ndarray) -> list[float]:
@@ -68,6 +86,7 @@ def _analysis_with_bands(
     duration: float = 240.0,
     key: str | None = "A",
     mode: str | None = "minor",
+    bpm: float = 120.0,
 ) -> AudioAnalysisData:
     """
     Build an analysis row with v2 ``band_rms`` envelopes for band-profile tests.
@@ -83,11 +102,12 @@ def _analysis_with_bands(
     :param duration: Track duration in seconds.
     :param key: Detected key pitch class (Camelot key gating).
     :param mode: Detected mode, "major" or "minor".
+    :param bpm: Tempo of the 4/4 beat grid.
     """
-    beats = np.arange(0.0, duration, 0.5, dtype=np.float32)
+    beats = np.arange(0.0, duration, 60.0 / bpm, dtype=np.float32)
     return AudioAnalysisData(
         duration=duration,
-        bpm=120.0,
+        bpm=bpm,
         beats=beats.tolist(),
         downbeats=beats[::4].tolist(),
         rms_energy=np.full(1800, 0.5, dtype=np.float32).tolist(),

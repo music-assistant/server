@@ -812,6 +812,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
         known_global = use_global
+        spotify_result: dict[str, Any] = {}
 
         while True:
             try:
