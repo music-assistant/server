@@ -117,7 +117,7 @@ async def debug_query(
     try:
         yield
     except OperationalError as err:
-        LOGGER.error(f"{err}\n{sql_query}")
+        LOGGER.error("%s\n%s", err, sql_query)
         raise
     finally:
         # queries run on aiosqlite's connection thread, so the awaited wall time also covers any
