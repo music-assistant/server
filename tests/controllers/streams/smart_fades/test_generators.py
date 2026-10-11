@@ -18,7 +18,9 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     _INSTRUMENTAL_BLEND_BARS,
     CodaAnchorGenerator,
+    EchoOutGenerator,
     EnergyLadderGenerator,
+    FilterOutGenerator,
     ProtectiveAnchorGenerator,
     RescueAnchorGenerator,
     SegueGenerator,
@@ -624,6 +626,80 @@ class TestSegueGenerator:
         assert list(SegueGenerator().generate(ctx)) == []
 
 
+_DOWNBEATS = (35.0, 37.0, 39.0, 41.0, 43.0, 45.0)
+
+
+class TestDressedGenerators:
+    """A pair that can't be beatmatched gets a filter out and an echo out at its energy anchor."""
+
+    @pytest.mark.parametrize("tier", [TransitionTier.FULL_BLEND, TransitionTier.TEMPO_BLEND])
+    def test_a_beatmatchable_pair_gets_none(self, tier: TransitionTier) -> None:
+        """A blend tier keeps its blend: neither dressed style is emitted."""
+        ctx = _base_ctx(tier=tier, protective_downbeats=_DOWNBEATS)
+
+        assert list(FilterOutGenerator().generate(ctx)) == []
+        assert list(EchoOutGenerator().generate(ctx)) == []
+
+    def test_a_filter_out_runs_four_then_two_bars_where_a_cut_ends(self) -> None:
+        """Each rung ends on the downbeat nearest the energy anchor and nearest the audible end."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, default_anchor=40.2, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(FilterOutGenerator().generate(ctx))
+
+        # the cut's own anchor also tries the explicit entry options (here only 0.0)
+        shape = [(41.0, None), (45.0, None), (45.0, 0.0)]
+        assert [(s.bars, s.anchor_s, s.entry_s) for s in specs] == [
+            *((4, anchor, entry) for anchor, entry in shape),
+            *((2, anchor, entry) for anchor, entry in shape),
+        ]
+        assert all(spec.ideal_bars == 4 for spec in specs)
+        assert all(spec.style is TransitionStyle.FILTER_OUT for spec in specs)
+        assert all(spec.source == "filter-out" for spec in specs)
+
+    def test_a_cross_meter_filter_out_stays_as_short_as_the_cut(self) -> None:
+        """Two meters share no bar grid, so the filter out keeps to the cut's 2 bars."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, cross_meter=True, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(FilterOutGenerator().generate(ctx))
+
+        assert {(spec.bars, spec.ideal_bars) for spec in specs} == {(2, 2)}
+
+    def test_an_echo_out_ends_where_a_cut_ends(self) -> None:
+        """The echo ends on the downbeat nearest the energy anchor and nearest the audible end."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE, default_anchor=38.4, protective_downbeats=_DOWNBEATS
+        )
+
+        specs = list(EchoOutGenerator().generate(ctx))
+
+        assert [(s.bars, s.ideal_bars, s.anchor_s, s.entry_s) for s in specs] == [
+            (1, 1, 39.0, None),
+            (1, 1, 45.0, None),
+        ]
+        assert all(spec.style is TransitionStyle.ECHO_OUT for spec in specs)
+        assert all(spec.source == "echo-out" for spec in specs)
+
+    def test_both_also_end_past_the_last_outgoing_vocal(self) -> None:
+        """A filter out ends on the first downbeat after the vocal, an echo cuts after it."""
+        ctx = _base_ctx(
+            tier=TransitionTier.QUICK_FADE,
+            default_anchor=38.4,
+            protective_downbeats=_DOWNBEATS,
+            vocal_out_placement=VocalMask(windows=[(10.0, 35.5)]),
+        )
+
+        filter_anchors = {spec.anchor_s for spec in FilterOutGenerator().generate(ctx)}
+        echo_anchors = [spec.anchor_s for spec in EchoOutGenerator().generate(ctx)]
+
+        assert filter_anchors == {39.0, 37.0, 45.0}
+        # the 2s echo has to end 2s past the vocal for its cut to clear it
+        assert echo_anchors == [39.0, 45.0]
+
+
 class TestDefaultGenerators:
     """The standard generator set and its preference order."""
 
@@ -632,7 +708,7 @@ class TestDefaultGenerators:
         Generators run best-first.
 
         Order: energy ladder, coda anchor, protective anchor, onset entry,
-        segue, trim closing.
+        segue, trim closing, filter out, echo out.
         """
         names = [g.name for g in default_generators()]
         assert names == [
@@ -642,4 +718,6 @@ class TestDefaultGenerators:
             "vocal-onset-entry",
             "segue",
             "trim-closing-anchor",
+            "filter-out",
+            "echo-out",
         ]

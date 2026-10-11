@@ -106,6 +106,8 @@ _KICKLESS_DUTY_MAX: float = 0.125
 _SNAP_GRID_STD_MAX: float = 0.1
 # a downbeat this close to a segue point sits on it (RMS bins are ~0.1 s wide)
 _SNAP_SLACK_S: float = 0.05
+# Past this tempo gap (percent) an echo out suits a short transition better than a filter out
+_ECHO_OUT_MIN_GAP_PERCENT: float = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +186,14 @@ class TransitionContext:
         if self.tier is TransitionTier.QUICK_FADE:
             return TransitionStyle.SEGUE
         return TransitionStyle.BLEND
+
+    @property
+    def dressed_style(self) -> TransitionStyle:
+        """The dressed style that suits the pair: an echo out across meters or past 20 %."""
+        # an echo out overlaps no second meter: the outgoing dry signal stops at its cut
+        if self.cross_meter or self.bpm_diff_percent > _ECHO_OUT_MIN_GAP_PERCENT:
+            return TransitionStyle.ECHO_OUT
+        return TransitionStyle.FILTER_OUT
 
 
 def build_transition_context(

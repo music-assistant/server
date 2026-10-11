@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.filters import ECHO_DECAYS
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SEGUE_ENERGY_FRACTION,
@@ -31,7 +32,9 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     sustained_energy_floor,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    EchoOut,
     FadeOutTrim,
+    HighPassSweep,
     PlanMetrics,
     TempoPlan,
     TransitionPlan,
@@ -101,6 +104,17 @@ _SEGUE_MAX_SPECS: int = 7
 # a deck sings over a segue window above this vocal duty
 _SINGS_DUTY: float = 0.10
 
+# A filter out sweeps the outgoing high-pass up over 2 to 4 outgoing bars, longest first
+_FILTER_OUT_BARS: tuple[int, ...] = (4, 2)
+_FILTER_OUT_START_HZ: float = 20.0
+_FILTER_OUT_END_HZ: float = 600.0
+# an outgoing kick counts until the cutoff passes the top of the low band its kick bars are
+# read in (BAND_RMS_BANDS["low"])
+_KICK_TOP_HZ: float = 120.0
+# echo taps at or above this level repeat a word audibly over the next track; the softer
+# ones sit under it
+_ECHO_AUDIBLE_DECAY: float = 0.25
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
@@ -117,7 +131,8 @@ class CandidateSpec:
     source: str = ""
     # the tier ladder's top rung; 0 = same as bars
     ideal_bars: int = 0
-    # SEGUE from the segue generator, else None until the factory sets the style it built
+    # the style of a segue or dressed generator, else None until the factory sets the
+    # style it built
     style: TransitionStyle | None = None
     # a segue's overlap and the longest overlap of its shrink steps, in seconds
     overlap_s: float | None = None
@@ -430,6 +445,63 @@ class SegueGenerator(CandidateGenerator):
             )
 
 
+class FilterOutGenerator(CandidateGenerator):
+    """Emits filter outs ending where a cut of the pair would end."""
+
+    name = "filter-out"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit 4- and 2-bar filter outs for a pair that can't be beatmatched."""
+        if ctx.tier is not TransitionTier.QUICK_FADE:
+            return
+        # two meters share no bar grid, so a filter out stays as short as their cut
+        ladder = [
+            bars
+            for bars in _FILTER_OUT_BARS
+            if not ctx.cross_meter or bars <= _CROSS_METER_MAX_BARS
+        ]
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        energy_anchor = _dressed_anchor(ctx)
+        for bars in ladder:
+            for anchor in _dressed_anchors(ctx, bars * bar_out):
+                # like the cuts: the energy anchor keeps the factory's entry, the
+                # protective anchors also try the explicit entry options
+                entries = [None] if anchor == energy_anchor else [None, *_entry_options(ctx, bars)]
+                for entry in entries:
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ladder[0],
+                        style=TransitionStyle.FILTER_OUT,
+                    )
+
+
+class EchoOutGenerator(CandidateGenerator):
+    """Emits echo outs whose echo ends where a cut of the pair would end."""
+
+    name = "echo-out"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the echo outs for a pair that can't be beatmatched."""
+        if ctx.tier is not TransitionTier.QUICK_FADE:
+            return
+        echo_length = _echo_length(ctx)
+        # the dry signal stops an echo before the anchor, so that is what clears the vocals
+        for anchor in _dressed_anchors(ctx, echo_length, vocal_margin=echo_length):
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=1,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=1,
+                style=TransitionStyle.ECHO_OUT,
+            )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
@@ -439,6 +511,8 @@ def default_generators() -> tuple[CandidateGenerator, ...]:
         VocalOnsetEntryGenerator(),
         SegueGenerator(),
         TrimClosingAnchorGenerator(),
+        FilterOutGenerator(),
+        EchoOutGenerator(),
     )
 
 
@@ -458,7 +532,8 @@ class CandidateFactory:
         context and the spec's anchor - a candidate never inherits state from
         a previously built one. Infeasible means the spec's bar count needs
         more room than the incoming buffer has, or its entry leaves no legal
-        alignment; a 1-bar spec never fails this way, matching the plan floor.
+        alignment; a 1-bar spec never fails this way, matching the plan floor,
+        except an echo out with no outgoing downbeat to cut on.
         The returned candidate's spec reflects what was actually built: a
         re-anchored tail can downgrade the tier and cap the bar count.
 
@@ -467,13 +542,18 @@ class CandidateFactory:
         """
         if spec.style is TransitionStyle.SEGUE:
             return self._build_segue(spec)
+        if spec.style is TransitionStyle.ECHO_OUT:
+            return self._build_echo_out(spec)
         tail = self._anchored_tail(spec.anchor_s)
-        # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
-        # requested bar count still reflects the old tier, so cap it at the new
-        # tier's largest rung or a long overlap ships without its tempo ramp
-        _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
-        bars_cap = bars_ladder(self._ctx, tier)[0]
-        bars = min(spec.bars, bars_cap)
+        if spec.style is TransitionStyle.FILTER_OUT:
+            # a filter out keeps its own rungs and its quick fade tier: it never stretches
+            tier, bars = spec.tier, spec.bars
+        else:
+            # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
+            # requested bar count still reflects the old tier, so cap it at the new
+            # tier's largest rung or a long overlap ships without its tempo ramp
+            _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
+            bars = min(spec.bars, bars_ladder(self._ctx, tier)[0])
 
         fadein_start_pos = (
             spec.entry_s if spec.entry_s is not None else self._choose_fadein_entry(tail, bars)
@@ -548,7 +628,18 @@ class CandidateFactory:
             fadein_trim_start = None
             spec = replace(spec, entry_s=None)
 
-        style = TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
+        style = spec.style or (
+            TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
+        )
+        highpass = None
+        if style is TransitionStyle.FILTER_OUT:
+            # the sweep rides the volume fade; without a stretch input time is rendered time
+            highpass = HighPassSweep(
+                start_s=tail.effective_end - crossfade_duration,
+                end_s=tail.effective_end,
+                start_hz=_FILTER_OUT_START_HZ,
+                end_hz=_FILTER_OUT_END_HZ,
+            )
         plan = TransitionPlan(
             tier=tier,
             fade_out_window=tail.effective_end,
@@ -557,6 +648,7 @@ class CandidateFactory:
             tempo_plan=tempo_plan,
             fadeout_trim=tail.fadeout_trim,
             fadein_trim_start=fadein_trim_start,
+            highpass=highpass,
         )
         built_spec = replace(spec, tier=tier, bars=bars, style=style)
         return Candidate(
@@ -581,18 +673,7 @@ class CandidateFactory:
 
         ctx = self._ctx
         anchor = anchor_s if anchor_s is not None else ctx.default_anchor
-        effective_end = min(anchor, ctx.audio_end)
-        # same sub-half-second slack rule as the tail cue: the rendered stream
-        # still ends at the buffer end, so the anchor must follow it
-        fadeout_trim: FadeOutTrim | None
-        if effective_end >= ctx.buffer_duration - 0.5:
-            effective_end = ctx.buffer_duration
-            fadeout_trim = None
-        else:
-            fadeout_trim = FadeOutTrim(
-                end_pos=effective_end,
-                trimmed_seconds=ctx.buffer_duration - effective_end,
-            )
+        effective_end, fadeout_trim = self._tail_end(min(anchor, ctx.audio_end))
         protective = np.asarray(ctx.protective_downbeats, dtype=np.float32)
         return _AnchoredTail(
             effective_end=effective_end,
@@ -603,6 +684,15 @@ class CandidateFactory:
             # any position an anchor could have chosen
             extrapolated_downbeats=protective[protective <= effective_end],
         )
+
+    def _tail_end(self, end: float) -> tuple[float, FadeOutTrim | None]:
+        """Return where the outgoing stream ends for a tail ending at ``end``, and its trim."""
+        ctx = self._ctx
+        # same sub-half-second slack rule as the tail cue: the rendered stream
+        # still ends at the buffer end, so the anchor must follow it
+        if end >= ctx.buffer_duration - 0.5:
+            return ctx.buffer_duration, None
+        return end, FadeOutTrim(end_pos=end, trimmed_seconds=ctx.buffer_duration - end)
 
     def _choose_fadein_entry(self, tail: _AnchoredTail, crossfade_bars: int) -> float | None:
         """Choose where the incoming track enters, aligned to its beat grid."""
@@ -968,11 +1058,56 @@ class CandidateFactory:
             spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
         )
 
+    def _build_echo_out(self, spec: CandidateSpec) -> Candidate | None:
+        """
+        Build an echo out: the dry signal stops on a downbeat and its last beat echoes out.
+
+        The echo ends near the spec's anchor and the next track starts on its first
+        downbeat at the cut, both at full level; ``None`` when no echo fits the buffer or the
+        next track has no first downbeat close enough to drop in on.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        assert spec.anchor_s is not None  # a dressed spec carries its anchor
+        ctx = self._ctx
+        beat = 60.0 / ctx.outgoing.bpm
+        echo_length = len(ECHO_DECAYS) * beat
+        downbeats = np.asarray(ctx.protective_downbeats, dtype=np.float64)
+        # the echo repeats the beat before the cut, so the cut needs a beat of buffer before it
+        fitting = downbeats[(downbeats >= beat) & (downbeats + echo_length <= ctx.buffer_duration)]
+        if not len(fitting):
+            return None
+        cut = float(fitting[np.argmin(np.abs(fitting - (spec.anchor_s - echo_length)))])
+        fade_out_window, fadeout_trim = self._tail_end(cut + echo_length)
+        crossfade_duration = fade_out_window - cut
+        # the next track drops in on its first downbeat: without one close to its start,
+        # the echo has nothing to land on and a filter out or the cut does better
+        if not len(ctx.incoming.downbeats):
+            return None
+        entry = float(ctx.incoming.downbeats[0])
+        if entry > crossfade_duration + _MAX_UNHEARD_INTRO_S:
+            return None
+        plan = TransitionPlan(
+            tier=spec.tier,
+            fade_out_window=fade_out_window,
+            crossfade_duration=crossfade_duration,
+            style=TransitionStyle.ECHO_OUT,
+            fadeout_trim=fadeout_trim,
+            fadein_trim_start=entry,
+            # the taps carry their own decay, and the next track drops in on its downbeat
+            fadeout_curve="nofade",
+            fadein_curve="nofade",
+            echo=EchoOut(cut_s=cut, beat_s=beat),
+        )
+        return Candidate(
+            spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
+        )
+
     def _score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
         """Score a candidate: trims, retained vocals, downbeat alignment, vocal and kick clash."""
         ctx = self._ctx
         audible_outgoing_trim = max(0.0, ctx.audio_end - plan.fade_out_window)
-        anchor_on_downbeat = self._is_on_downbeat(plan.fade_out_window)
+        anchor_on_downbeat = self._is_on_downbeat(plan.outgoing_end)
         # deliberate extension over the old planner (which never scored the
         # energy-only path): policies need real trim/downbeat facts on every
         # candidate; each vocal-dependent field needs only its own deck's mask
@@ -989,6 +1124,8 @@ class CandidateFactory:
                 right - left for left, right in merge_windows(in_fade)
             )
             if ctx.vocal_in_scoring is not None:
+                if plan.echo is not None:
+                    outgoing_windows += _echoed_windows(ctx.vocal_out_scoring.windows, plan.echo)
                 collision_seconds, weighted_collision = collision_metrics(
                     outgoing_windows,
                     self._rendered_incoming_windows(plan, ctx.vocal_in_scoring.windows),
@@ -1001,8 +1138,12 @@ class CandidateFactory:
             and ctx.kick_out is not None
             and ctx.kick_in is not None
         ):
+            kick_out = list(ctx.kick_out)
+            if plan.highpass is not None:
+                # the sweep takes the outgoing kick out once its cutoff passes the low band
+                kick_out = _clipped(kick_out, plan.highpass.time_at(_KICK_TOP_HZ))
             _, weighted_kicks = collision_metrics(
-                self._rendered_outgoing_windows(plan, ctx.kick_out),
+                self._rendered_outgoing_windows(plan, kick_out),
                 self._rendered_incoming_windows(plan, ctx.kick_in),
                 plan.crossfade_duration,
             )
@@ -1030,7 +1171,7 @@ class CandidateFactory:
                 self._rendered_time(plan, left) - rendered_start,
                 self._rendered_time(plan, right) - rendered_start,
             )
-            for left, right in windows
+            for left, right in _clipped(windows, plan.outgoing_end)
         ]
 
     @staticmethod
@@ -1113,6 +1254,67 @@ def _window_duties(ctx: TransitionContext, seconds: float) -> tuple[float | None
             / span
         )
     return out_duty, in_duty
+
+
+def _dressed_anchor(ctx: TransitionContext) -> float:
+    """Return the outgoing downbeat nearest the energy anchor, where a dressed transition ends."""
+    if not ctx.protective_downbeats:
+        return ctx.default_anchor
+    return min(ctx.protective_downbeats, key=lambda downbeat: abs(downbeat - ctx.default_anchor))
+
+
+def _dressed_anchors(
+    ctx: TransitionContext, length: float, *, vocal_margin: float = 0.0
+) -> list[float]:
+    """
+    Return where a dressed transition may end: the energy anchor and a cut's own anchors.
+
+    :param ctx: The transition context.
+    :param length: The transition's overlap; the anchor nearest the audible end
+        leaves no more than this of the audible tail out.
+    :param vocal_margin: Seconds the anchor past the last outgoing vocal keeps after it.
+    """
+    anchors = [_dressed_anchor(ctx)]
+    if ctx.vocal_out_placement is not None and ctx.vocal_out_placement.windows:
+        anchors.append(_nearest_protective_anchor(ctx, _outgoing_vocal_end(ctx) + vocal_margin))
+    anchors.append(_nearest_protective_anchor(ctx, ctx.audio_end - length, prefer_earliest=False))
+    return list(dict.fromkeys(anchors))
+
+
+def _echo_length(ctx: TransitionContext) -> float:
+    """Return how long an echo out's taps ring at the outgoing tempo, in seconds."""
+    return len(ECHO_DECAYS) * 60.0 / ctx.outgoing.bpm
+
+
+def _echoed_windows(
+    windows: Iterable[tuple[float, float]], echo: EchoOut
+) -> list[tuple[float, float]]:
+    """
+    Return the audible echo taps' copies of the windows in the beat before the cut.
+
+    The copies are in rendered crossfade seconds: an echo out never stretches, so its overlap
+    starts at the cut in input and rendered time.
+
+    :param windows: Outgoing buffer-local windows.
+    :param echo: The plan's echo out.
+    """
+    beat_start = echo.cut_s - echo.beat_s
+    echoed = [
+        (max(left, beat_start) - beat_start, min(right, echo.cut_s) - beat_start)
+        for left, right in windows
+        if right > beat_start and left < echo.cut_s
+    ]
+    return [
+        (left + (tap - 1) * echo.beat_s, right + (tap - 1) * echo.beat_s)
+        for tap, decay in enumerate(ECHO_DECAYS, start=1)
+        if decay >= _ECHO_AUDIBLE_DECAY
+        for left, right in echoed
+    ]
+
+
+def _clipped(windows: Iterable[tuple[float, float]], end: float) -> list[tuple[float, float]]:
+    """Windows cut off at ``end``; those starting at or after it are dropped."""
+    return [(left, min(right, end)) for left, right in windows if left < end]
 
 
 def _fade_onset_pin(ctx: TransitionContext) -> float:

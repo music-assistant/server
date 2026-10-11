@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
     TransitionPlan,
     TransitionStyle,
     TransitionTier,
@@ -91,16 +92,17 @@ class VocalCollisionPolicy(Policy):
 
 
 class RhythmClashPolicy(Policy):
-    """Reject or penalize a segue that plays both decks' kicks on top of each other."""
+    """Reject or penalize a segue or a dressed transition that plays both decks' kicks together."""
 
     clash_bars_limit: float = 2.0
     penalty_scale: float = 20.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
-        # only a segue is judged: a blend beatmatches its kicks, and a cut keeps the
-        # quick fade length it always had
-        if candidate.plan.style is not TransitionStyle.SEGUE:
+        # a blend beatmatches its kicks, and a cut keeps the quick fade it always was: a
+        # clashing cut gives way to a dressed transition at selection instead
+        style = candidate.plan.style
+        if style is not TransitionStyle.SEGUE and style not in DRESSED_STYLES:
             return Verdict.ok()
         if ctx.kick_out is None or ctx.kick_in is None:
             return Verdict.ok()
@@ -122,8 +124,9 @@ class VocalTruncationPolicy(Policy):
         if ctx.vocal_out_scoring is None:
             return Verdict.ok()
         # truncation = audible vocal BEYOND the candidate's anchor (cut off by the
-        # trim), not vocal inside the fade - a phrase riding the fade is normal
-        anchor = candidate.plan.fade_out_window
+        # trim), not vocal inside the fade - a phrase riding the fade is normal; an
+        # echo out stops the phrase at its cut
+        anchor = candidate.plan.outgoing_end
         truncated = sum(
             min(right, ctx.audio_end) - max(left, anchor)
             for left, right in ctx.vocal_out_scoring.windows

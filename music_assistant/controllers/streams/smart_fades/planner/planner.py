@@ -6,10 +6,11 @@ build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
 rejection/penalty policies, finalize the winner's EQ - or, when every
 candidate is rejected, retry with late-anchored rescue candidates (the
-ungated audible-end ladder, a modest rescue rung and the segue), then ship a plain
-equal-power fallback crossfade - or, when even that collides too severely,
-the click-free emergency handoff as a last resort. Alternative strategies
-slot in as sibling ``TransitionPlanner`` subclasses.
+ungated audible-end ladder, a modest rescue rung, the segue and the dressed
+transitions), then ship a plain equal-power fallback crossfade - or, when
+even that collides too severely, the click-free emergency handoff as a last
+resort. Alternative strategies slot in as sibling ``TransitionPlanner``
+subclasses.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
     QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionStyle,
@@ -31,6 +33,8 @@ from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAss
 from .candidates import (
     _SINGS_DUTY,
     CandidateFactory,
+    EchoOutGenerator,
+    FilterOutGenerator,
     RescueAnchorGenerator,
     SegueGenerator,
     TrimClosingAnchorGenerator,
@@ -118,19 +122,23 @@ class SmartCrossFadePlanner(TransitionPlanner):
             )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
-        # a segue never replaces a blend and here never wins on its own: when every
-        # other candidate is rejected, the rescue pass weighs it
-        selector = CandidateSelector(default_policies(), self.logger, lone_segue_wins=False)
+        # a segue never replaces a blend, and here neither a segue nor a dressed
+        # transition wins on its own: when no blend or cut survives, the rescue pass
+        # weighs them
+        selector = CandidateSelector(default_policies(), self.logger, lone_replacement_wins=False)
         winner = selector.select(candidates, ctx)
         rescue_pass = winner is None
         if rescue_pass:
-            # every candidate was rejected, or only segues survived: retry with the
-            # ungated audible-end ladder, a modest late-anchored rescue rung and
-            # a segue (also for a beatmatchable pair) before falling back to the handoff
+            # every candidate was rejected, or no blend or cut survived: retry with the
+            # ungated audible-end ladder, a modest late-anchored rescue rung, a segue
+            # (also for a beatmatchable pair) and the dressed transitions before
+            # falling back to the handoff
             rescue_specs = [
                 *TrimClosingAnchorGenerator(min_gap=0.0).generate(ctx),
                 *RescueAnchorGenerator().generate(ctx),
                 *SegueGenerator(allow_blend_context=True).generate(ctx),
+                *FilterOutGenerator().generate(ctx),
+                *EchoOutGenerator().generate(ctx),
             ]
             built = [
                 (spec, candidate)
@@ -150,14 +158,21 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
                 source = "emergency-handoff"
             bars = None
+            replaced_cut = None
         else:
             shipped = _drop_unneeded_stretch(winner.candidate, built, factory, ctx)
             plan = PlanAssembler(ctx, self.logger).finalize(shipped)
             source = shipped.spec.source
-            bars = None if plan.style is TransitionStyle.SEGUE else shipped.spec.bars
+            # a segue and an echo out have no phrased bar count
+            bars = (
+                None
+                if plan.style in (TransitionStyle.SEGUE, TransitionStyle.ECHO_OUT)
+                else shipped.spec.bars
+            )
             if rescue_pass:
                 source += " (rescue pass)"
-        self._log_plan(ctx, plan, source, bars)
+            replaced_cut = winner.replaced_cut
+        self._log_plan(ctx, plan, source, bars, replaced_cut)
         # the caller reads the outgoing grid off the planner after a successful
         # plan and expects it masked to the plan's own anchor
         self.outgoing = replace(
@@ -168,7 +183,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
         return plan
 
     def _log_plan(
-        self, ctx: TransitionContext, plan: TransitionPlan, source: str, bars: int | None
+        self,
+        ctx: TransitionContext,
+        plan: TransitionPlan,
+        source: str,
+        bars: int | None,
+        replaced_cut: Candidate | None,
     ) -> None:
         """
         Log the one DEBUG line that sums up the shipped plan.
@@ -177,12 +197,22 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param plan: The plan that ships.
         :param source: The winning candidate's generator, or the fallback/handoff that shipped.
         :param bars: The winning candidate's bar count; None for an unphrased plan.
+        :param replaced_cut: The clashing cut a dressed plan replaced, if any.
         """
         trigger = None
         if plan.tier is TransitionTier.QUICK_FADE:
             # meter and tempo do not depend on the anchor, so a blend context whose
             # shipped candidate re-anchored into a quick fade lost its beat grid
             trigger = ctx.quick_fade_trigger or QuickFadeTrigger.BEAT_GRID
+        reason = None
+        if plan.style is TransitionStyle.SEGUE:
+            reason = _segue_reason(ctx, plan)
+        elif plan.style in DRESSED_STYLES:
+            reason = (
+                f"cut kick clash {replaced_cut.metrics.rhythm_clash_bars:.2f} bars"
+                if replaced_cut is not None
+                else "no blend or cut survived"
+            )
         self.logger.debug(
             "planned transition: style=%s tier=%s%s strategy=%s source=%s%s overlap=%.2fs "
             "bpm=%.1f->%.1f (%+.1f%%)%s%s",
@@ -199,7 +229,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
             f" stretch={'on' if plan.tempo_plan else 'off'}"
             if plan.style is TransitionStyle.BLEND
             else "",
-            f' reason="{_segue_reason(ctx, plan)}"' if plan.style is TransitionStyle.SEGUE else "",
+            f' reason="{reason}"' if reason is not None else "",
         )
 
 

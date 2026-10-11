@@ -145,7 +145,7 @@ CAUSES = (
     "segue: shrunk for a clash",
     "segue: short quiet material",
 )
-STYLES = ("BLEND", "SEGUE", "CUT")
+STYLES = ("BLEND", "SEGUE", "FILTER_OUT", "ECHO_OUT", "CUT")
 VOCAL_CLASSES = ("both sing", "outgoing only", "incoming only", "neither", "unknown")
 # shipped via and source of the plans that no selection pass won
 _UNPHRASED = {
@@ -684,6 +684,7 @@ def _plan_facts(ctx: TransitionContext, plan: TransitionPlan, passes: list[_Sele
         "fadein_curve": plan.fadein_curve,
         "quiet_tail_s": round(ctx.segue.quiet_tail, 3) if ctx.segue else "",
         "quiet_head_s": round(ctx.segue.quiet_head, 3) if ctx.segue else "",
+        "audible_trim_s": round(plan.metrics.audible_outgoing_trim, 3),
         "rhythm_clash_bars": round(plan.metrics.rhythm_clash_bars, 3),
         "collision_s": round(plan.metrics.collision_seconds, 3),
         "weighted_collision_s": round(plan.metrics.weighted_collision_seconds, 3),
