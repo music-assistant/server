@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -741,21 +742,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
             report_current_task_failure(f"Deletions skipped: {summary}")
         else:
-            deleted_files = prev_filenames - cur_filenames
-            if unreachable := await self._unreachable_folders():
-                # a folder whose storage is gone reads as empty, its files are still there
-                self.logger.warning(
-                    "Skipping deletions for %s below unavailable folder(s): %s",
-                    self.name,
-                    ", ".join(unreachable),
-                )
-                # a podcast is tracked by its folder, which can be the unavailable folder itself
-                prefixes = tuple(f"{folder}/" for folder in unreachable)
-                deleted_files = {
-                    path
-                    for path in deleted_files
-                    if path not in unreachable and not path.startswith(prefixes)
-                }
+            deleted_files = await self._without_unreachable_files(prev_filenames - cur_filenames)
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
@@ -2467,6 +2454,38 @@ class LocalFileSystemProvider(MusicProvider):
             limit=100000,
         ):
             await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
+
+    async def _without_unreachable_files(self, deleted_files: set[str]) -> set[str]:
+        """
+        Return the ids/paths to delete, leaving out those in a folder whose storage is gone.
+
+        Nothing is deleted when it can not be told which folders are gone.
+
+        :param deleted_files: The ids/paths the previous scan found and this one did not.
+        """
+        if not deleted_files:
+            return deleted_files
+        try:
+            unreachable = await self._unreachable_folders()
+        except ActionUnavailable as err:
+            self.logger.warning("Skipping deletions for %s: %s", self.name, err)
+            report_current_task_failure(f"Deletions skipped: {err}")
+            return set()
+        if not unreachable:
+            return deleted_files
+        # a folder whose storage is gone reads as empty, its files are still there
+        self.logger.warning(
+            "Skipping deletions for %s below unavailable folder(s): %s",
+            self.name,
+            ", ".join(unreachable),
+        )
+        # a podcast is tracked by its folder, which can be the unavailable folder itself
+        prefixes = tuple(f"{folder}/" for folder in unreachable)
+        return {
+            path
+            for path in deleted_files
+            if path not in unreachable and not path.startswith(prefixes)
+        }
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""

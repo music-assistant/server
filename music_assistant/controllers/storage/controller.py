@@ -135,8 +135,9 @@ class StorageController(CoreController):
             os.path.normpath(mass.cache_path),
         )
         self._probes: dict[str, _ProbeState] = {}
-        # every mountpoint the mount table showed since the start: an unmounted drive or share
-        # leaves an empty folder behind, which must not pass for the storage itself
+        # every mountpoint the mount table showed since the start, until its location is removed:
+        # an unmounted drive or share leaves an empty folder behind, which must not pass for the
+        # storage itself
         self._seen_mountpoints: set[str] = set()
         # the registered folders whose drive or share is not mounted, as of the last refresh
         self._unmounted_folders: set[str] = set()
@@ -334,6 +335,7 @@ class StorageController(CoreController):
         )
         # dropped after the folder, so a registered folder never goes without its record
         self.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, self._get_folder_mounts(), immediate=True)
+        self._seen_mountpoints.discard(path)
         await self.refresh()
 
     @api_command("storage/network_shares/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
@@ -499,6 +501,7 @@ class StorageController(CoreController):
                 await mounter.remove(spec)
             self._share_errors.pop(name, None)
             self._changed_shares.discard(name)
+            self._seen_mountpoints.discard(spec.path)
             self.mass.config.remove(f"{CONF_STORAGE_SHARES}/{name}")
             self.mass.config.save(immediate=True)
         await self.refresh()
@@ -614,19 +617,38 @@ class StorageController(CoreController):
         Return the paths of the media locations below a folder that can not be used right now.
 
         A folder reads the files of the locations below it, which look empty while they are gone.
+        A location counts until it is gone for good: one added in Music Assistant until it is
+        removed there, a share the mount backends list (such as one added in Home Assistant)
+        while they list it, and any other drive or share that was mounted since the start while
+        the folder it leaves behind is there.
 
         :param path: An absolute path.
+        :raises ActionUnavailable: When a mount backend does not list its network shares.
         """
         path = os.path.normpath(path)
+        # a share of a mount backend counts also when it did not mount since the start
+        backend_paths = await self._get_backend_mount_paths()
         media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
         # a discovered drive or share that went away is only remembered as a mountpoint
         candidates = sorted(
             candidate
-            for candidate in media | self._seen_mountpoints
+            for candidate in media | backend_paths | self._seen_mountpoints
             if candidate != path and is_within(candidate, path)
         )
         await self._probe_outdated(candidates)
-        return [candidate for candidate in candidates if not await self.is_available(candidate)]
+        # the probes rebuilt the locations from the current mount table
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
+        unavailable: list[str] = []
+        for candidate in candidates:
+            if candidate in backend_paths and candidate not in media:
+                # the empty folder of a share that did not mount passes for an available folder
+                if not await asyncio.to_thread(_is_mountpoint, candidate):
+                    unavailable.append(candidate)
+            elif not await self.is_available(candidate) and (
+                candidate in media or await asyncio.to_thread(os.path.isdir, candidate)
+            ):
+                unavailable.append(candidate)
+        return unavailable
 
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
@@ -1259,6 +1281,25 @@ class StorageController(CoreController):
                         self._changed_shares.add(spec.name)
                     else:
                         self._changed_shares.discard(spec.name)
+
+    async def _get_backend_mount_paths(self) -> set[str]:
+        """
+        Return the paths of the network shares the mount backends have, working or not.
+
+        :raises ActionUnavailable: When a mount backend does not list its shares in time.
+        """
+        if self.mass.running_as_hass_addon:
+            # the Supervisor may not have answered yet when the server started
+            await self._get_mounter(MountBackend.SUPERVISOR)
+        paths: set[str] = set()
+        for backend, mounter in self._mounters.items():
+            try:
+                async with asyncio.timeout(SHARE_STATES_TIMEOUT):
+                    paths.update(await mounter.get_mount_paths())
+            except (TimeoutError, MusicAssistantError) as err:
+                msg = f"{backend} did not list its network shares: {str(err) or type(err).__name__}"
+                raise self._error(ActionUnavailable, msg, "shares_not_listed") from err
+        return paths
 
     async def _check_share(self, mounter: ShareMounter, spec: NetworkShareSpec) -> NetworkShareSpec:
         """
