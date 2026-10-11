@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.auth import Scope
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     SetupFailedError,
@@ -79,12 +80,14 @@ from music_assistant.controllers.storage.constants import (
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
     SIZE_DECIMALS,
+    STORAGE_DOCS_URL,
 )
 from music_assistant.controllers.storage.helpers import is_within, share_key
 from music_assistant.controllers.storage.models import (
     MountBackend,
     NetworkShareSpec,
     ShareType,
+    SourceFolder,
     StorageInfo,
     StorageKind,
     StorageLocation,
@@ -95,6 +98,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.provider_access import access_allows, source_access
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_folder_size, get_ip_from_host, join_task
 from music_assistant.models.core_controller import CoreController
@@ -102,6 +106,7 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
 
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.helpers.json import SerializableType
@@ -122,6 +127,7 @@ class StorageController(CoreController):
         self.manifest.name = "Storage"
         self.manifest.description = "Keeps track of the storage the server can use."
         self.manifest.icon = "harddisk"
+        self.manifest.documentation = STORAGE_DOCS_URL
         self._locations: list[StorageLocation] = []
         self._in_container = False
         # the data and cache directory of the server, as given until setup resolves them
@@ -130,8 +136,9 @@ class StorageController(CoreController):
             os.path.normpath(mass.cache_path),
         )
         self._probes: dict[str, _ProbeState] = {}
-        # every mountpoint the mount table showed since the start: an unmounted drive or share
-        # leaves an empty folder behind, which must not pass for the storage itself
+        # every mountpoint the mount table showed since the start, until its location is removed:
+        # an unmounted drive or share leaves an empty folder behind, which must not pass for the
+        # storage itself
         self._seen_mountpoints: set[str] = set()
         # the registered folders whose drive or share is not mounted, as of the last refresh
         self._unmounted_folders: set[str] = set()
@@ -230,6 +237,38 @@ class StorageController(CoreController):
         """
         return await self.list_folders(path, _caller_manages_all_sources())
 
+    @api_command("storage/source_folder", required_scope=READ_SCOPES)
+    async def get_source_folder(self, instance_id: str) -> SourceFolder:
+        """
+        Return the folder a Local files music source reads from, and its storage location.
+
+        The location is given as last seen, without looking at it again.
+
+        :param instance_id: The instance id of a Local files music source the caller may use.
+        :raises InsufficientPermissions: The caller may not use this music source.
+        :raises InvalidDataError: The instance is not a Local files music source.
+        """
+        manages_all_sources = _caller_manages_all_sources()
+        if not manages_all_sources and not access_allows(
+            source_access(self.mass, instance_id), get_current_user()
+        ):
+            raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
+        conf = self.mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
+        folder = (
+            self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+            if conf.get("domain") in FILESYSTEM_PROVIDER_DOMAINS
+            else None
+        )
+        if not isinstance(folder, str):
+            msg = f"{instance_id} is not a Local files music source"
+            raise self._error(InvalidDataError, msg, "not_a_folder_source")
+        path = os.path.normpath(folder)
+        location = self.get_location_for_path(path)
+        if location is not None and not manages_all_sources:
+            visible = self._is_visible(location, manages_all_sources)
+            location = _without_private_details(location) if visible else None
+        return SourceFolder(path=path, location=location)
+
     @api_command("storage/local_folders/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def add_local_folder(self, path: str) -> StorageLocation:
         """
@@ -297,6 +336,7 @@ class StorageController(CoreController):
         )
         # dropped after the folder, so a registered folder never goes without its record
         self.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, self._get_folder_mounts(), immediate=True)
+        self._seen_mountpoints.discard(path)
         await self.refresh()
 
     @api_command("storage/network_shares/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
@@ -462,6 +502,7 @@ class StorageController(CoreController):
                 await mounter.remove(spec)
             self._share_errors.pop(name, None)
             self._changed_shares.discard(name)
+            self._seen_mountpoints.discard(spec.path)
             self.mass.config.remove(f"{CONF_STORAGE_SHARES}/{name}")
             self.mass.config.save(immediate=True)
         await self.refresh()
@@ -530,6 +571,24 @@ class StorageController(CoreController):
             and self._is_visible(location, manages_all_sources)
         )
 
+    def get_overlapping_sources(
+        self, path: str, exclude: str | None = None, user: User | None = None
+    ) -> list[str]:
+        """
+        Return the sorted names of the enabled music sources that read files of a folder too.
+
+        That is every source whose folder is the same, contains it, or lies inside it.
+
+        :param path: An absolute path.
+        :param exclude: The instance id of a music source to leave out, such as the one being
+            reconfigured.
+        :param user: Only count the sources this user may use; None for every source.
+        """
+        sources = self._get_source_folders(exclude, user)
+        return sorted(
+            {*_sources_using(path, sources), *_sources_around(path, sources)}, key=str.casefold
+        )
+
     async def is_available(self, path: str) -> bool:
         """
         Return whether a folder can be used right now.
@@ -571,6 +630,44 @@ class StorageController(CoreController):
         ):
             self._request_remount(location)
         return False
+
+    async def get_unavailable_locations(self, path: str) -> list[str]:
+        """
+        Return the paths of the media locations below a folder that can not be used right now.
+
+        A folder reads the files of the locations below it, which look empty while they are gone.
+        A location counts until it is gone for good: one added in Music Assistant until it is
+        removed there, a share the mount backends list (such as one added in Home Assistant)
+        while they list it, and any other drive or share that was mounted since the start while
+        the folder it leaves behind is there.
+
+        :param path: An absolute path.
+        :raises ActionUnavailable: When a mount backend does not list its network shares.
+        """
+        path = os.path.normpath(path)
+        # a share of a mount backend counts also when it did not mount since the start
+        backend_paths = await self._get_backend_mount_paths()
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
+        # a discovered drive or share that went away is only remembered as a mountpoint
+        candidates = sorted(
+            candidate
+            for candidate in media | backend_paths | self._seen_mountpoints
+            if candidate != path and is_within(candidate, path)
+        )
+        await self._probe_outdated(candidates)
+        # the probes rebuilt the locations from the current mount table
+        media = {loc.path for loc in self._locations if loc.usage == StorageUsage.MEDIA}
+        unavailable: list[str] = []
+        for candidate in candidates:
+            if candidate in backend_paths and candidate not in media:
+                # the empty folder of a share that did not mount passes for an available folder
+                if not await asyncio.to_thread(_is_mountpoint, candidate):
+                    unavailable.append(candidate)
+            elif not await self.is_available(candidate) and (
+                candidate in media or await asyncio.to_thread(os.path.isdir, candidate)
+            ):
+                unavailable.append(candidate)
+        return unavailable
 
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
@@ -986,18 +1083,28 @@ class StorageController(CoreController):
         # anything else in the record, a leftover or a value that is no path, is ignored
         return [folder for folder in self._get_registered_folders() if folder in recorded]
 
-    def _get_source_folders(self) -> list[tuple[str, str]]:
+    def _get_source_folders(
+        self, exclude: str | None = None, user: User | None = None
+    ) -> list[tuple[str, str]]:
         """
         Return the name and folder of every enabled music source reading a folder of this server.
 
         Loaded or not: a source that failed to load, e.g. because its share is down, still
         reads from its folder.
+
+        :param exclude: The instance id of a music source to leave out.
+        :param user: Only return the sources this user may use; None for every source.
         """
         folders: list[tuple[str, str]] = []
         for instance_id, conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
             if (
-                not conf.get("enabled", True)
+                instance_id == exclude
+                or not conf.get("enabled", True)
                 or conf.get("domain") not in FILESYSTEM_PROVIDER_DOMAINS
+                or (
+                    user is not None
+                    and not access_allows(source_access(self.mass, instance_id), user)
+                )
             ):
                 continue
             try:
@@ -1203,6 +1310,25 @@ class StorageController(CoreController):
                         self._changed_shares.add(spec.name)
                     else:
                         self._changed_shares.discard(spec.name)
+
+    async def _get_backend_mount_paths(self) -> set[str]:
+        """
+        Return the paths of the network shares the mount backends have, working or not.
+
+        :raises ActionUnavailable: When a mount backend does not list its shares in time.
+        """
+        if self.mass.running_as_hass_addon:
+            # the Supervisor may not have answered yet when the server started
+            await self._get_mounter(MountBackend.SUPERVISOR)
+        paths: set[str] = set()
+        for backend, mounter in self._mounters.items():
+            try:
+                async with asyncio.timeout(SHARE_STATES_TIMEOUT):
+                    paths.update(await mounter.get_mount_paths())
+            except (TimeoutError, MusicAssistantError) as err:
+                msg = f"{backend} did not list its network shares: {str(err) or type(err).__name__}"
+                raise self._error(ActionUnavailable, msg, "shares_not_listed") from err
+        return paths
 
     async def _check_share(self, mounter: ShareMounter, spec: NetworkShareSpec) -> NetworkShareSpec:
         """

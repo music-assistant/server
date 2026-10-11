@@ -1047,19 +1047,19 @@ class TestQuickFadeMasteredFadeDeadZone:
             fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
-    def test_main_pass_rejects_every_candidate_on_the_trim_guard_alone(
+    def test_main_pass_rejects_every_cut_on_the_trim_guard_alone(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Every main-pass candidate dies on the one guard; the rescue pass ships the fade."""
+        """Every main-pass cut dies on the one guard; the rescue pass ships the fade."""
         self._build_fade(caplog)
+        # both cuts and two dressed transitions die on the trim guard; the surviving
+        # dressed transitions never win the main pass on their own
         assert (
-            "all 2 candidates rejected (audible trim exceeds a short fade's own duration x2)"
+            "no blend or cut survives (segues=0 dressed=6 of 10 candidates; rejected: "
+            "audible trim exceeds a short fade's own duration x4); none wins on its own"
             in caplog.text
         )
-        assert (
-            "shipping a rescue-pass candidate (source=rescue-anchor) instead of the "
-            "emergency handoff" in caplog.text
-        )
+        assert "source=rescue-anchor (rescue pass)" in caplog.text
 
     def test_rescue_ships_a_late_anchored_chain_within_the_trim_bound(
         self, caplog: pytest.LogCaptureFixture
@@ -1101,7 +1101,7 @@ class TestQuickFadeMasteredFadeDeadZone:
         )
         with caplog.at_level(logging.DEBUG):
             fade.build(_seconds(45), _seconds(45), PCM)
-        assert "shipping a rescue-pass candidate (source=trim-closing-anchor)" in caplog.text
+        assert "source=trim-closing-anchor (rescue pass)" in caplog.text
         # the audible-end anchor keeps the full 4-bar overlap and trims nothing audible
         assert fade.effective_end == pytest.approx(43.40, abs=0.05)
         assert fade.timing_info.crossfade_duration == pytest.approx(7.78, abs=0.05)

@@ -213,10 +213,14 @@ async def test_rows_restricted_provider_returns_no_rows(
 ) -> None:
     """A music source the user may not use keeps its rows out of the listing."""
     mock_get_user.return_value = _restricted_user(mass)
+    set_music_source_access(mass, {"allowed_instance": None})
     restricted = _build(_RowsProvider, instance_id="restricted_instance")
-    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted])
+    allowed = _build(_RowsProvider, instance_id="allowed_instance")
+    monkeypatch.setattr(
+        mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted, allowed]
+    )
     folders = await mass.music.recommendations.get_recommendations()
-    assert not any(f.provider == "restricted_instance" for f in folders)
+    assert [(f.provider, f.item_id) for f in folders] == [("allowed_instance", "row1")]
 
 
 async def test_items_providers_forwarded_to_builtin_provider(

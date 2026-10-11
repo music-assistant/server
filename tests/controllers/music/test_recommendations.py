@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
@@ -220,14 +222,13 @@ async def test_library_rows_listed_by_controller(mass: MusicAssistant) -> None:
 
 async def test_unknown_library_row_returns_empty(mass: MusicAssistant) -> None:
     """Requesting items for an unknown builtin row returns an empty list."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "no_such_row"
-    )
-    assert items == []
+    provider = mass.get_provider("recommendations")
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    assert await provider.get_recommendation_items("no_such_row") == []
 
 
 async def test_failing_library_row_items_isolated(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A library row whose items query raises returns an empty list, not an error."""
 
@@ -239,46 +240,47 @@ async def test_failing_library_row_items_isolated(
         "recommendations", "in_progress"
     )
     assert items == []
-
-
-async def test_forgotten_tracks_row_callable(mass: MusicAssistant) -> None:
-    """Forgotten Tracks row can be called and uses played_only parameter."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "forgotten_tracks"
+    assert (
+        "Error while fetching recommendation items for recommendations/in_progress: row boom"
+        in caplog.messages
     )
-    assert isinstance(items, list)
 
 
-async def test_forgotten_albums_row_callable(mass: MusicAssistant) -> None:
-    """Forgotten Albums row can be called and uses played_only parameter."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "forgotten_albums"
-    )
-    assert isinstance(items, list)
+@pytest.mark.parametrize(
+    ("row_id", "media_type"),
+    [
+        (LibraryRowID.FORGOTTEN_TRACKS, MediaType.TRACK),
+        (LibraryRowID.FORGOTTEN_ALBUMS, MediaType.ALBUM),
+        (LibraryRowID.FORGOTTEN_ARTISTS, MediaType.ARTIST),
+    ],
+)
+async def test_forgotten_rows_list_least_recently_played_first(
+    mass: MusicAssistant, row_id: LibraryRowID, media_type: MediaType
+) -> None:
+    """A forgotten row lists played items longest ago first and leaves out unplayed items."""
+    await _add_library_item(mass, media_type, "Recent", play_count=1, last_played=2000)
+    await _add_library_item(mass, media_type, "Long Ago", play_count=1, last_played=1000)
+    await _add_library_item(mass, media_type, "Never", play_count=0, last_played=0)
+
+    assert await _library_row_item_names(mass, row_id) == ["Long Ago", "Recent"]
 
 
-async def test_forgotten_artists_row_callable(mass: MusicAssistant) -> None:
-    """Forgotten Artists row can be called and uses played_only parameter."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "forgotten_artists"
-    )
-    assert isinstance(items, list)
+@pytest.mark.parametrize(
+    ("row_id", "expected_names"),
+    [
+        (LibraryRowID.MOST_PLAYED_TRACKS, ["Often", "Once", "Never"]),
+        (LibraryRowID.NEVER_PLAYED_TRACKS, ["Never", "Once", "Often"]),
+    ],
+)
+async def test_play_count_rows_order_tracks_by_play_count(
+    mass: MusicAssistant, row_id: LibraryRowID, expected_names: list[str]
+) -> None:
+    """Most Played lists the highest play count first, Never / Rarely Played the lowest."""
+    await _add_library_item(mass, MediaType.TRACK, "Once", play_count=1, last_played=1000)
+    await _add_library_item(mass, MediaType.TRACK, "Often", play_count=5, last_played=2000)
+    await _add_library_item(mass, MediaType.TRACK, "Never", play_count=0, last_played=0)
 
-
-async def test_most_played_tracks_row_callable(mass: MusicAssistant) -> None:
-    """Most Played Tracks row can be called and uses play_count_desc ordering."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "most_played_tracks"
-    )
-    assert isinstance(items, list)
-
-
-async def test_never_played_tracks_row_callable(mass: MusicAssistant) -> None:
-    """Never / Rarely Played row can be called and uses play_count ordering."""
-    items = await mass.music.recommendations.get_recommendation_items(
-        "recommendations", "never_played_tracks"
-    )
-    assert isinstance(items, list)
+    assert await _library_row_item_names(mass, row_id) == expected_names
 
 
 async def test_all_default_rows_advertise_provider_filter_support(mass: MusicAssistant) -> None:
@@ -371,3 +373,79 @@ async def _add_playlog_row(
             "user_initiated": user_initiated,
         },
     )
+
+
+async def _add_library_item(
+    mass: MusicAssistant,
+    media_type: MediaType,
+    name: str,
+    *,
+    play_count: int,
+    last_played: int,
+) -> None:
+    """
+    Add an item to the library with the given play statistics.
+
+    :param mass: The MusicAssistant instance to seed.
+    :param media_type: The media type of the item (track, album or artist).
+    :param name: The item name, also used as its provider item id.
+    :param play_count: The play count to store for the library item.
+    :param last_played: The last played timestamp to store for the library item.
+    """
+    # tracks and albums can not be added to the library without an artist
+    artist = Artist(item_id=name, provider="test_prov", name=name, provider_mappings=_mapping(name))
+    db_item: Track | Album | Artist
+    match media_type:
+        case MediaType.TRACK:
+            db_item = await mass.music.tracks.add_item_to_library(
+                Track(
+                    item_id=name,
+                    provider="test_prov",
+                    name=name,
+                    provider_mappings=_mapping(name),
+                    artists=UniqueList([artist]),
+                )
+            )
+        case MediaType.ALBUM:
+            db_item = await mass.music.albums.add_item_to_library(
+                Album(
+                    item_id=name,
+                    provider="test_prov",
+                    name=name,
+                    provider_mappings=_mapping(name),
+                    artists=UniqueList([artist]),
+                )
+            )
+        case _:
+            db_item = await mass.music.artists.add_item_to_library(artist)
+    ctrl = mass.music.get_controller(media_type)
+    await mass.music.database.execute(
+        f"UPDATE {ctrl.db_table} SET play_count = :play_count, last_played = :last_played "
+        "WHERE item_id = :item_id",
+        {"play_count": play_count, "last_played": last_played, "item_id": db_item.item_id},
+    )
+    await mass.music.database.commit()
+
+
+async def _library_row_item_names(mass: MusicAssistant, row_id: LibraryRowID) -> list[str]:
+    """
+    Return the names of the items of a library row, straight from the builtin provider.
+
+    :param mass: The MusicAssistant instance to query.
+    :param row_id: The library row to get the items for.
+    """
+    provider = mass.get_provider("recommendations")
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    return [item.name for item in await provider.get_recommendation_items(row_id)]
+
+
+def _mapping(item_id: str) -> set[ProviderMapping]:
+    """Return the in-library provider mapping of a seeded library item."""
+    return {
+        ProviderMapping(
+            item_id=item_id,
+            provider_domain="test_prov",
+            provider_instance="test_prov",
+            in_library=True,
+        )
+    }

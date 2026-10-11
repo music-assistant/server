@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     ProviderFeature,
+    SortField,
 )
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -1320,7 +1321,7 @@ class SmartPlaylistProvider(PluginProvider):
             genre=genre_ids,
             explicit=explicit,
             limit=limit,
-            order_by="random",
+            sort_field=SortField.RANDOM,
             provider=user_provider_filter,
             summary=False,
         )
@@ -1491,8 +1492,9 @@ class SmartPlaylistProvider(PluginProvider):
         engine = await select_ai_engine(self, CONF_AI_ENGINE)
         if engine is None:
             return None
+        query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+            async with query_timeout:
                 response = await engine.provider.ai_query(
                     self._build_ai_prompt(name, rules, locale), engine_id=engine.id
                 )

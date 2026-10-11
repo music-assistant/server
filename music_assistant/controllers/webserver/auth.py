@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
@@ -23,9 +24,11 @@ from music_assistant_models.auth import (
     UserRole,
 )
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
     InvalidDataError,
+    RateLimited,
 )
 
 from music_assistant.constants import (
@@ -55,6 +58,15 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginRateLimiter,
     normalize_username,
 )
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTH_CODE_RE,
+    PKCE_CHALLENGE_RE,
+    AuthTransport,
+    PendingLogin,
+    PendingLoginStore,
+    RedirectTarget,
+    verify_pkce,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
@@ -65,6 +77,7 @@ from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
     from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
@@ -142,6 +155,8 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        self.pending_logins = PendingLoginStore()
+        self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
         self._custom_roles: dict[str, Role] = {}
@@ -982,12 +997,14 @@ class AuthenticationManager:
         await self._sync_ha_oauth_provider()
 
         providers = []
-        for provider_id, provider in self.login_providers.items():
+        # a concurrent listing can add or remove the HA provider while this one awaits
+        for provider_id, provider in list(self.login_providers.items()):
             providers.append(
                 {
                     "provider_id": provider_id,
                     "provider_type": provider.provider_type.value,
                     "requires_redirect": provider.requires_redirect,
+                    "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
         return providers
@@ -1072,7 +1089,8 @@ class AuthenticationManager:
         Get list of available authentication providers.
 
         Returns information about all available login providers including
-        whether they require OAuth redirect flow.
+        whether they require OAuth redirect flow and whether a sign-in can
+        return to the remote app.
         """
         return await self.get_login_providers()
 
@@ -1081,6 +1099,9 @@ class AuthenticationManager:
         self,
         provider_id: str,
         return_url: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        redirect_target: str = "server",
     ) -> dict[str, str | None]:
         """
         Get OAuth authorization URL for authentication.
@@ -1090,58 +1111,209 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url, or None plus an error when the provider
-            does not support OAuth or return_url is invalid.
+        :param code_challenge: PKCE code challenge (unpadded base64url SHA-256) of the
+            client's code verifier, which auth/exchange checks; only with redirect_target "app".
+        :param code_challenge_method: Method of code_challenge, only "S256" is supported.
+        :param redirect_target: Where the browser returns to: "server" (default), or "app"
+            for the remote app, which is only allowed over Remote Access, requires a
+            code_challenge and is completed with auth/exchange.
+        :return: Dictionary with authorization_url, the state of the sign-in and when it
+            expires (ISO 8601), or authorization_url None plus an error when the request is
+            invalid or the provider does not support it.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, base_url=self.webserver.base_url)
+            is_valid, _ = is_allowed_redirect_url(
+                return_url,
+                base_url=self.webserver.base_url,
+                external_url=self.webserver.external_url,
+            )
             if not is_valid:
                 return {"authorization_url": None, "error": "Invalid return_url"}
+        if (code_challenge or code_challenge_method) and (
+            code_challenge_method != "S256" or not PKCE_CHALLENGE_RE.fullmatch(code_challenge or "")
+        ):
+            return {"authorization_url": None, "error": "Invalid code_challenge"}
+        if redirect_target not in ("server", "app"):
+            return {"authorization_url": None, "error": "Invalid redirect_target"}
+        if code_challenge and redirect_target != "app":
+            return {
+                "authorization_url": None,
+                "error": "code_challenge is only supported with redirect_target app",
+            }
 
-        auth_url = await self.get_authorization_url(provider_id, return_url)
-        if not auth_url:
+        client = self._get_calling_client()
+        transport = client.auth_transport if client else AuthTransport.DIRECT
+        if redirect_target == "app":
+            if transport is not AuthTransport.REMOTE or not code_challenge:
+                return {
+                    "authorization_url": None,
+                    "error": "redirect_target app requires Remote Access and a code_challenge",
+                }
+            provider = self.login_providers.get(provider_id)
+            if not provider or not await provider.supports_remote_app():
+                return {
+                    "authorization_url": None,
+                    "error": "Provider does not support the remote app",
+                }
+
+        started = await self.get_authorization_url(
+            provider_id,
+            return_url,
+            transport=transport,
+            request_host=client.request_host if client else None,
+            redirect_target=cast("RedirectTarget", redirect_target),
+            code_challenge=code_challenge,
+        )
+        if not started:
             return {
                 "authorization_url": None,
                 "error": "Provider does not support OAuth or does not exist",
             }
-
+        auth_url, pending = started
         return {
             "authorization_url": auth_url,
+            "state": pending.state,
+            "expires_at": (
+                utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
+            ).isoformat(),
         }
 
     async def get_authorization_url(
-        self, provider_id: str, return_url: str | None = None
-    ) -> str | None:
+        self,
+        provider_id: str,
+        return_url: str | None = None,
+        *,
+        transport: AuthTransport = AuthTransport.DIRECT,
+        request_host: str | None = None,
+        redirect_target: RedirectTarget = "server",
+        code_challenge: str | None = None,
+    ) -> tuple[str, PendingLogin] | None:
         """
-        Get OAuth authorization URL for a provider.
+        Start a sign-in with a redirect provider and return its authorization URL.
 
         :param provider_id: The provider ID.
-        :param return_url: Optional URL to redirect to after successful login.
+        :param return_url: Optional (validated) URL to redirect to after successful login.
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param request_host: The host (and any port) the client used to reach the server.
+        :param redirect_target: Where the browser returns to; "app" must be validated first.
+        :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
+        :return: The authorization URL and the started sign-in, or None when the provider
+            does not exist, needs no redirect or is not reachable.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         provider = self.login_providers.get(provider_id)
         if not provider or not provider.requires_redirect:
             return None
 
-        # Build callback redirect_uri
-        redirect_uri = f"{self.webserver.base_url}/auth/callback?provider_id={provider_id}"
-        return await provider.get_authorization_url(redirect_uri, return_url)
+        callback_base_url = self.webserver.get_auth_callback_base(
+            transport,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            request_host=request_host,
+        )
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            # the provider is found from the state, as the app callback serves every provider
+            redirect_uri = f"{callback_base_url}/auth/callback/"
+        else:
+            redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
+        pending = self.pending_logins.start(
+            provider_id,
+            transport,
+            redirect_uri,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            client_code_challenge=code_challenge,
+            idp_code_verifier=secrets.token_urlsafe(64),
+        )
+        auth_url = None
+        try:
+            auth_url = await provider.build_authorization_url(pending)
+        finally:
+            if not auth_url:
+                self.pending_logins.pop(pending.state)
+        return (auth_url, pending) if auth_url else None
 
-    async def handle_oauth_callback(
-        self, provider_id: str, code: str, state: str, redirect_uri: str
-    ) -> AuthResult:
+    async def handle_oauth_callback(self, provider_id: str, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback.
 
         :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
         provider = self.login_providers.get(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
-        return await provider.handle_oauth_callback(code, state, redirect_uri)
+        pending = self.pending_logins.pop(state)
+        # a sign-in that returns to the app is completed by the app itself (auth/exchange)
+        if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
+            return AuthResult(success=False, error="Invalid or expired state parameter")
+        if not AUTH_CODE_RE.fullmatch(code):
+            return AuthResult(success=False, error="Invalid authorization code")
+        try:
+            user = await provider.complete_authorization(pending, {"code": code})
+        except AuthenticationFailed as err:
+            return AuthResult(success=False, error=str(err))
+        return AuthResult(success=True, user=user, return_url=pending.return_url)
+
+    @api_command("auth/exchange", authenticated=False)
+    async def exchange_authorization_code(
+        self, state: str, code: str, code_verifier: str, device_name: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Complete a sign-in that returned to the remote app, for an access token.
+
+        :param state: The state of the sign-in, as returned by auth/authorization_url.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The PKCE code verifier of the code_challenge the sign-in was
+            started with.
+        :param device_name: Optional device name for the token (e.g., "iPhone 15").
+        :return: The same result as auth/login on success, else success False with an error
+            and its translation_key.
+        """
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
+        allowed, remaining_delay = await self._auth_exchange_rate_limiter.check_rate_limit(
+            rate_limit_key
+        )
+        if not allowed:
+            self.logger.warning(
+                "Sign-in exchange throttled (client=%s). %d seconds remaining.",
+                rate_limit_key,
+                remaining_delay,
+            )
+            return {
+                "success": False,
+                "error": f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                "translation_key": RateLimited.translation_key,
+            }
+
+        try:
+            user = await self._complete_app_sign_in(
+                self.pending_logins.pop(state), code, code_verifier
+            )
+        except AuthenticationFailed as err:
+            await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
+            self.logger.warning("Sign-in exchange failed: %s", err)
+            return {"success": False, "error": str(err), "translation_key": err.translation_key}
+        if key_is_exclusive:
+            await self._auth_exchange_rate_limiter.clear_attempts(rate_limit_key)
+
+        token = await self.create_token(
+            user, is_long_lived=False, name=device_name or f"WebSocket Session - {user.username}"
+        )
+        self.logger.info("User '%s' signed in through the remote app", user.username)
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": user.user_id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+            },
+        }
 
     @api_command("auth/token/create")
     async def create_long_lived_token(self, name: str, user_id: str | None = None) -> str:
@@ -1818,7 +1990,7 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        rate_limit_key, key_is_exclusive = _join_code_rate_limit_key()
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
         async with self._join_code_exchange_lock:
             if throttled := await self._check_join_code_rate_limit(rate_limit_key):
                 return throttled
@@ -2628,10 +2800,41 @@ class AuthenticationManager:
         for callback in list(self._access_revoked_callbacks):
             self.mass.loop.call_soon(callback, user)
 
+    def _get_calling_client(self) -> WebsocketClientHandler | None:
+        """Return the websocket connection the current command came in on, if any."""
+        client_id = get_current_client_id()
+        return next((c for c in self.webserver.clients if c.client_id == client_id), None)
 
-def _join_code_rate_limit_key() -> tuple[str, bool]:
+    async def _complete_app_sign_in(
+        self, pending: PendingLogin | None, code: str, code_verifier: str
+    ) -> User:
+        """
+        Complete a sign-in that returned to the remote app and return its user.
+
+        :param pending: The sign-in the exchange is for, None when unknown or expired.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The client's PKCE code verifier.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
+        """
+        if pending is None:
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            )
+        if not AUTH_CODE_RE.fullmatch(code):
+            raise AuthenticationFailed("Invalid authorization code")
+        if pending.redirect_target != "app" or not pending.client_code_challenge:
+            raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
+        if not verify_pkce(code_verifier, pending.client_code_challenge):
+            raise AuthenticationFailed("The code_verifier does not match the code_challenge")
+        provider = self.login_providers.get(pending.provider_id)
+        if not provider:
+            raise AuthenticationFailed("The login provider of this sign-in is not available")
+        return await provider.complete_authorization(pending, {"code": code})
+
+
+def _client_rate_limit_key() -> tuple[str, bool]:
     """
-    Work out which bucket the calling client's failed join code exchanges belong to.
+    Work out which bucket the calling client's failed attempts belong to.
 
     :return: The rate limit key, and whether that key identifies a single caller
         exclusively (a shared key must never be cleared on a successful exchange).

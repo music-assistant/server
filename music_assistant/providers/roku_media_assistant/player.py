@@ -93,6 +93,7 @@ class MediaAssistantPlayer(Player):
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received POWER command on player %s", self.display_name)
 
+        app_running = False
         try:
             device_info = await self.roku.update()
             app_running = self._app_in_front(device_info)

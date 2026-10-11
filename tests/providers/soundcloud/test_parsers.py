@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.providers.soundcloud import SoundcloudMusicProvider
 
@@ -31,6 +31,18 @@ async def test_parse_artist_requires_id(provider: SoundcloudMusicProvider) -> No
     """A user without an id cannot be turned into an artist."""
     with pytest.raises(InvalidDataError):
         await provider._parse_artist(_artist_obj(id=None))
+
+
+@pytest.mark.parametrize("artist_obj", [{}, _artist_obj(id=None)])
+async def test_get_artist_not_found(
+    provider: SoundcloudMusicProvider, artist_obj: dict[str, Any]
+) -> None:
+    """An unknown or unparsable user is reported as not found."""
+    get_artist: Any = SoundcloudMusicProvider.get_artist.__wrapped__  # type: ignore[attr-defined]
+    provider._soundcloud.get_user_details.return_value = artist_obj
+
+    with pytest.raises(MediaNotFoundError):
+        await get_artist(provider, "5")
 
 
 async def test_parse_artist_metadata(provider: SoundcloudMusicProvider) -> None:

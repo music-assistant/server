@@ -32,14 +32,16 @@ The only officially supported ways to run the Music Assistant server are:
 - **Home Assistant app** (recommended) — see https://music-assistant.io/installation/
 - **Docker container** — `ghcr.io/music-assistant/server`
 
-Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (6.1+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
+Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (7.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
+
+Third-party packages (e.g. Linux distributions) are not supported, and issues reported from them may be closed. The bundled credentials for the services Music Assistant integrates with are only licensed for our official builds (see [NOTICE](NOTICE)), so such builds must supply their own (see `music_assistant/helpers/app_vars.py`).
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
 [repository-url]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon
 
 ### Running from source (development)
 
-For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 6.1+** are required.
+For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 7.0+** are required.
 
 - `scripts/setup.sh` — create the virtualenv and install dependencies and pre-commit hooks
 - `python -m music_assistant --log-level debug` — run the server locally (listens on http://localhost:8095)

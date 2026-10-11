@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
@@ -12,6 +13,12 @@ from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.mass import MusicAssistant
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
 
 
 async def _add_playlog_row(

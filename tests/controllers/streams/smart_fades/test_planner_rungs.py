@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 
 from music_assistant.controllers.streams.smart_fades.models import (
-    TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
-    _LAZY_OVERLAY_SECONDS,
     EnergyLadderGenerator,
-    LazyOverlayGenerator,
+    SegueGenerator,
     TrimClosingAnchorGenerator,
     _entry_options,
     _vocal_duties,
@@ -19,6 +18,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     earns_instrumental_blend,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
+    SEGUE_MAX_SECONDS,
     TransitionContext,
     build_transition_context,
 )
@@ -289,7 +289,7 @@ def _ctx_with_late_natural_entry() -> TransitionContext:
 
 def _ambient_unblendable_ctx() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     """
-    Build an outgoing/incoming pair whose grid is unusable but both decks are ambient.
+    Build an outgoing/incoming pair whose grid is unusable and whose outgoing tail is quiet.
 
     The outgoing downbeat grid dies at 10s (rubato tail, like the 3.2 sparse-tail
     fixture); its energy stays quiet-but-audible out to ~43s before real silence,
@@ -324,13 +324,6 @@ def _ambient_unblendable_ctx() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     return aa_out, aa_in
 
 
-def _vocal_unblendable_ctx() -> TransitionContext:
-    """Build the same ambient pair, but with the incoming deck fully sung: never qualifies."""
-    aa_out, aa_in = _ambient_unblendable_ctx()
-    aa_in.vocal_activity = [0.9] * 1800
-    return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
-
-
 def _clean_full_blend_ctx() -> TransitionContext:
     """Build a context with a full, evenly-spaced grid: earns the ordinary full-blend tier."""
     aa_out = _analysis(bpm=124.0, duration=200.0)
@@ -338,53 +331,49 @@ def _clean_full_blend_ctx() -> TransitionContext:
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
 
-def test_lazy_overlay_wins_for_both_ambient_unblendable_pair() -> None:
-    """Quiet-tail + ambient incoming: the long overlay replaces the 2-bar rescue."""
-    ctx_out_aa, ctx_in_aa = _ambient_unblendable_ctx()
-    plan = SmartCrossFadePlanner(logging.getLogger("test")).plan(ctx_out_aa, ctx_in_aa, 45.0)
-    assert plan.metrics.strategy is TransitionStrategy.LAZY_OVERLAY
-    assert plan.crossfade_duration >= 12.0
+def test_segue_wins_for_a_quiet_tail_on_an_unblendable_grid() -> None:
+    """A quiet tail behind a dead grid segues over that tail instead of a short rescue."""
+    aa_out, aa_in = _ambient_unblendable_ctx()
+    plan = SmartCrossFadePlanner(logging.getLogger("test")).plan(aa_out, aa_in, 45.0)
+    assert plan.style is TransitionStyle.SEGUE
+    assert plan.crossfade_duration >= 10.0
     assert plan.fadein_trim_start is None  # B keeps its intro
-    # the long overlay keeps its handover EQ despite riding the QUICK_FADE tier
-    assert plan.eq_plan.low_in is not None
+    assert not plan.tempo_plan
+    # the quiet tail plays as recorded, so there is no handover EQ to stage
+    assert plan.fadeout_curve == "nofade"
+    assert plan.eq_plan.low_in is None
 
 
-def test_lazy_overlay_not_emitted_for_vocal_material() -> None:
-    """A singing deck never gets the unphrased long overlay."""
-    specs = list(LazyOverlayGenerator().generate(_vocal_unblendable_ctx()))
-    assert specs == []
+def test_segue_waits_for_the_rescue_pass_when_the_grid_is_blendable() -> None:
+    """A clean, blendable pair keeps its blend; only the rescue pass offers the segue."""
+    aa_out = _analysis(bpm=124.0, duration=200.0)
+    aa_out.rms_energy = [0.8] * 1700 + [0.2] * 100
+    aa_in = _analysis(bpm=124.0, duration=200.0)
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert ctx.tier is TransitionTier.FULL_BLEND
+
+    assert list(SegueGenerator().generate(ctx)) == []
+    assert list(SegueGenerator(allow_blend_context=True).generate(ctx))
 
 
-def test_lazy_overlay_not_emitted_when_grid_blendable() -> None:
-    """A clean, blendable pair never falls back to the unphrased overlay."""
-    specs = list(LazyOverlayGenerator().generate(_clean_full_blend_ctx()))
-    assert specs == []
-
-
-def test_lazy_overlay_beats_trim_closing_on_a_qualifying_pair() -> None:
-    """
-    The overlay must win the tie against trim-closing's equally-cheap short rungs.
-
-    Both generators anchor near the audible end with ~zero trim on this
-    context, so this exercises the actual tie-break (generator order), not
-    just an absence of competition.
-    """
+def test_segue_beats_trim_closing_on_a_qualifying_pair() -> None:
+    """The segue outlasts and outscores trim-closing's rungs at the audible end."""
     aa_out, aa_in = _ambient_unblendable_ctx()
     ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
     # trim-closing must actually compete here, or this proves nothing
     assert list(TrimClosingAnchorGenerator().generate(ctx))
 
     plan = SmartCrossFadePlanner(logging.getLogger("test")).plan(aa_out, aa_in, 45.0)
-    assert plan.metrics.strategy is TransitionStrategy.LAZY_OVERLAY
+    assert plan.style is TransitionStyle.SEGUE
 
 
-def _lazy_gate_outgoing() -> AudioAnalysisData:
+def _window_gate_outgoing() -> AudioAnalysisData:
     """
-    Outgoing analysis shared by the lazy-gate vocal-window fixtures.
+    Outgoing analysis shared by the segue-window vocal fixtures.
 
     Same shape as ``_late_blendable_only_ctx``'s outgoing deck: a full 4/4
     grid at 124 BPM, but the early mix-out anchor leaves fewer than 8
-    downbeats before it, so the pair reaches QUICK_FADE and the lazy gate.
+    downbeats before it, so the pair reaches QUICK_FADE.
     The vocal timeline is all-zero, so the outgoing side never contributes duty.
     """
     beats = [i * 60 / 124 for i in range(int(240 * 124 / 60))]
@@ -403,8 +392,8 @@ def _lazy_gate_outgoing() -> AudioAnalysisData:
     )
 
 
-def _lazy_gate_incoming(vocal_run: tuple[float, float]) -> AudioAnalysisData:
-    """Incoming analysis for the lazy-gate fixtures: a 45s head with vocal only over ``vocal_run``."""
+def _window_gate_incoming(vocal_run: tuple[float, float]) -> AudioAnalysisData:
+    """Incoming analysis for the segue-window fixtures: a 45s head sung only over ``vocal_run``."""
     beats = [i * 60 / 124 for i in range(int(45 * 124 / 60))]
     vocal_activity = [0.0] * 1800
     frame_duration = 45.0 / 1800
@@ -427,58 +416,40 @@ def _lazy_gate_incoming(vocal_run: tuple[float, float]) -> AudioAnalysisData:
 
 def _front_loaded_vocal_ctx() -> TransitionContext:
     """
-    Build a lazy-gate context where B's vocal sits inside the overlay's first 16s.
+    Build a context where B's vocal sits inside the segue window's first 15s.
 
-    B's vocal run covers media 4.0-7.2s: ~3.2s of a 16s overlay (~0.20 duty)
-    but only ~0.07 over the full 45s head, so the whole-window gate would
-    pass it while the windowed gate correctly blocks it.
+    B's vocal run covers media 4.0-7.2s: ~3.2s of a 15s window (~0.21 duty)
+    but only ~0.07 over the full 45s head.
     """
     ctx = build_transition_context(
-        _lazy_gate_outgoing(), _lazy_gate_incoming((4.0, 7.2)), 45.0, logging.getLogger("test")
+        _window_gate_outgoing(), _window_gate_incoming((4.0, 7.2)), 45.0, logging.getLogger("test")
     )
     assert ctx.tier is TransitionTier.QUICK_FADE
     whole = _vocal_duties(ctx)
     assert whole is not None
     assert whole[1] <= 0.10
-    windowed = _window_duties(ctx, _LAZY_OVERLAY_SECONDS)
-    assert windowed is not None
-    assert windowed[1] > 0.10
     return ctx
 
 
-def _late_vocal_ctx() -> TransitionContext:
-    """
-    Build a lazy-gate context where B's vocal sits entirely outside the overlay's first 16s.
-
-    B's vocal run covers media 20.0-30.0s: 0.0 duty inside a 16s overlay but
-    ~0.22 over the full 45s head, so the whole-window gate wrongly blocks it
-    while the windowed gate correctly allows it.
-    """
-    ctx = build_transition_context(
-        _lazy_gate_outgoing(), _lazy_gate_incoming((20.0, 30.0)), 45.0, logging.getLogger("test")
+def test_segue_window_duty_reads_only_the_window() -> None:
+    """B's vocals count over the segue window, not over the whole head."""
+    front = _front_loaded_vocal_ctx()
+    late = build_transition_context(
+        _window_gate_outgoing(),
+        _window_gate_incoming((20.0, 30.0)),
+        45.0,
+        logging.getLogger("test"),
     )
-    assert ctx.tier is TransitionTier.QUICK_FADE
-    whole = _vocal_duties(ctx)
+    whole = _vocal_duties(late)
     assert whole is not None
     assert whole[1] > 0.10
-    windowed = _window_duties(ctx, _LAZY_OVERLAY_SECONDS)
-    assert windowed is not None
-    assert windowed[1] <= 0.10
-    return ctx
 
+    front_in = _window_duties(front, SEGUE_MAX_SECONDS)[1]
+    late_in = _window_duties(late, SEGUE_MAX_SECONDS)[1]
 
-def test_lazy_overlay_denied_when_vocals_sit_inside_the_overlay() -> None:
-    """Vocals concentrated in B's first 16s block the overlay even when its 45s duty is low."""
-    ctx = _front_loaded_vocal_ctx()
-    assert list(LazyOverlayGenerator().generate(ctx)) == []
-
-
-def test_lazy_overlay_allowed_when_vocals_sit_outside_the_overlay() -> None:
-    """Vocals late in B's head leave the overlay window ambient, so the overlay still fires."""
-    ctx = _late_vocal_ctx()
-    specs = list(LazyOverlayGenerator().generate(ctx))
-    assert len(specs) == 1
-    assert specs[0].strategy is TransitionStrategy.LAZY_OVERLAY
+    assert front_in is not None
+    assert front_in > 0.10
+    assert late_in == 0.0
 
 
 def test_instrumental_blend_gate_unchanged_by_window_duties() -> None:

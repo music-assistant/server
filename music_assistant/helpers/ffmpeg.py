@@ -274,8 +274,8 @@ class FFMpeg(AsyncProcess):
         status = "running"
         chunk_count = 0
         self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
+        start = time.time()
         try:
-            start = time.time()
             while True:
                 try:
                     chunk = await anext(self.audio_input)
@@ -640,7 +640,7 @@ def get_ffmpeg_args(
             } & {ContentType.MP3, ContentType.MPEG}:
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
-                _add_input_fflag(input_args, "+fastseek")
+                add_input_fflag(input_args, "+fastseek")
         if input_format.content_type.is_pcm():
             input_args += [
                 *get_ffmpeg_channel_args(input_format),
@@ -774,6 +774,22 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
         return ["-extension_picky", "0"]
     return []
+
+
+def add_input_fflag(input_args: list[str], flag: str) -> None:
+    """
+    Add a format flag to the input args, merging it into an existing -fflags option.
+
+    :param input_args: The ffmpeg input args to extend in place.
+    :param flag: The flag to add, including its sign (e.g. "+fastseek").
+    """
+    if "-fflags" in input_args:
+        # ffmpeg only honours the last -fflags given to an input
+        idx = len(input_args) - input_args[::-1].index("-fflags")
+        if flag not in input_args[idx]:
+            input_args[idx] += flag
+    else:
+        input_args += ["-fflags", flag]
 
 
 async def check_ffmpeg_version() -> None:
@@ -1028,16 +1044,6 @@ def _is_stream_limit_error(err: BaseException) -> bool:
     from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
 
     return isinstance(err, ProviderStreamLimitError)
-
-
-def _add_input_fflag(input_args: list[str], flag: str) -> None:
-    """Add a format flag to the input, merging into an existing -fflags option."""
-    if "-fflags" in input_args:
-        # ffmpeg only honours the last -fflags given to an input
-        idx = len(input_args) - input_args[::-1].index("-fflags")
-        input_args[idx] += flag
-    else:
-        input_args += ["-fflags", flag]
 
 
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:

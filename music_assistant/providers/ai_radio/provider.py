@@ -103,6 +103,8 @@ class AIRadioProvider(
         self._sections: dict[str, dict[str, Any]] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
         self._dj_queues: dict[str, DJQueueState] = {}
+        # queue id -> the show session that holds that queue in flow mode
+        self._flow_mode_queues: dict[str, str] = {}
         self._dj_lock = asyncio.Lock()
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
@@ -223,6 +225,9 @@ class AIRadioProvider(
         for state in self._dj_queues.values():
             if state.task and not state.task.done():
                 state.task.cancel()
+        for queue_id in self._flow_mode_queues:
+            self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, False)
+        self._flow_mode_queues.clear()
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
