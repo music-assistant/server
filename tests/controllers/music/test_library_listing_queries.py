@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType, SortDirection, SortField
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
@@ -41,6 +41,7 @@ from music_assistant.constants import (
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.mass import MusicAssistant
 
@@ -311,11 +312,15 @@ async def _compare(
     legacy_rows = await mass.music.database.get_rows_from_query(
         legacy_sql, legacy_params, limit=limit, offset=offset
     )
-    order_by = filter_kwargs.pop("order_by", "sort_name")
+    sort_field, sort_direction = LEGACY_SORT_KEYS[filter_kwargs.pop("order_by", "sort_name")]
     # a favorite belongs to a user, so the listing runs as the one that holds the seeded ones
     with patch(GET_CURRENT_USER, return_value=LISTING_USER):
         new_items = await controller.get_library_items_by_query(
-            order_by=order_by, limit=limit, offset=offset, **filter_kwargs
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            **filter_kwargs,
         )
     assert [str(row["item_id"]) for row in legacy_rows] == [x.item_id for x in new_items]
     # provider mappings must be hydrated identically
@@ -432,7 +437,7 @@ async def test_track_listing_artist_join_matches_legacy(seeded_mass: MusicAssist
     legacy_params["search_artist"] = "%artist02%"
     legacy_rows = await seeded_mass.music.database.get_rows_from_query(legacy_sql, legacy_params)
     new_items = await seeded_mass.music.tracks.get_library_items_by_query(
-        order_by="sort_name",
+        sort_field=SortField.SORT_NAME,
         in_library_only=True,
         extra_join_parts=[join],
         extra_query_params={"search_artist": "%artist02%"},
@@ -504,7 +509,7 @@ async def test_hidden_track_excluded_from_library_listing(seeded_mass: MusicAssi
 async def test_random_order_applies_filters(seeded_mass: MusicAssistant) -> None:
     """The random-order subquery applies the provider/in-library filters."""
     items = await seeded_mass.music.tracks.get_library_items_by_query(
-        order_by="random", in_library_only=True, provider_filter=["prov_b_inst"]
+        sort_field=SortField.RANDOM, in_library_only=True, provider_filter=["prov_b_inst"]
     )
     expected = await seeded_mass.music.tracks.get_library_items_by_query(
         in_library_only=True, provider_filter=["prov_b_inst"]
@@ -665,7 +670,8 @@ async def test_audiobook_collections_collapse_and_preserve_order(
 
     items = await controller.get_library_items_by_query(
         in_library_only=True,
-        order_by="name_desc",
+        sort_field=SortField.NAME,
+        sort_direction=SortDirection.DESC,
         collapse_collections=True,
     )
     collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
@@ -684,7 +690,8 @@ async def test_audiobook_collections_collapse_and_preserve_order(
         search_results = await controller.get_library_items_by_query(
             search="Series",
             in_library_only=True,
-            order_by="name_desc",
+            sort_field=SortField.NAME,
+            sort_direction=SortDirection.DESC,
             collapse_collections=True,
         )
     assert [item.name for item in search_results] == ["Beta Series", "Alpha Series"]
@@ -785,7 +792,7 @@ async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistan
 
             with patch.object(database, "get_rows_from_query", spy):
                 await controller.get_library_items_by_query(
-                    order_by="sort_name", in_library_only=True
+                    sort_field=SortField.SORT_NAME, in_library_only=True
                 )
             plan_rows = await database.get_rows_from_query(
                 f"EXPLAIN QUERY PLAN {captured['query']} LIMIT 500 OFFSET 0",

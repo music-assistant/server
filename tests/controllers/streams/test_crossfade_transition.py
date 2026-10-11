@@ -54,6 +54,7 @@ def _queue_item(item_id: str, name: str, duration: int = 300) -> SimpleNamespace
         buffer=_buffer(),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri=f"test://{item_id}",
         seek_position=0,
         seconds_streamed=0,

@@ -244,7 +244,7 @@ def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
     for items in groups:
         total = len(items)
         for offset, item in enumerate(items):
-            positioned.append(((offset + random.random()) / total, item))
+            positioned.append(((offset + random.random()) / total, item))  # noqa: S311 - shuffle order
     positioned.sort(key=lambda entry: entry[0])
     return [item for _, item in positioned]
 

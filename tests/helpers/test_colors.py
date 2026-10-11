@@ -109,7 +109,7 @@ def test_palette_invariants_over_random_candidates() -> None:
     """
     import random  # noqa: PLC0415
 
-    rng = random.Random(42)
+    rng = random.Random(42)  # noqa: S311 - test data
     # Calibrated for CI: 50 iterations runs in a few ms. Bump if invariants
     # regress and we need denser coverage.
     for _ in range(50):
