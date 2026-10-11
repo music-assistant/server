@@ -9,10 +9,12 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import UniqueList
+from music_assistant_models.media_items import BrowseFolder, UniqueList
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.music.constants import (
+    RECOMMENDATIONS_BROWSE_LIMIT,
+    RECOMMENDATIONS_BROWSE_SCHEME,
     RECOMMENDATIONS_ITEMS_TIMEOUT,
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
@@ -22,7 +24,6 @@ from music_assistant.providers.recommendations import LibraryRecommendationsProv
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
-        BrowseFolder,
         ItemMapping,
         MediaItemType,
         RecommendationFolder,
@@ -80,6 +81,64 @@ class RecommendationsController:
             instance ids (OR semantics). Only honored on rows that advertise
             `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
+        return await self._get_row_items(provider, item_id, providers)
+
+    async def browse(self, sub_path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse the recommendation rows under the discover:// path.
+
+        :param sub_path: The path after discover://: empty for the providers owning rows,
+            "<provider>" for the rows of that provider, "<provider>/<item_id>" for all
+            items of that row.
+        """
+        provider, _, item_id = sub_path.partition("/")
+        if item_id:
+            return list(
+                await self._get_row_items(provider, item_id, limit=RECOMMENDATIONS_BROWSE_LIMIT)
+            )
+        rows = await self.get_recommendations()
+        if provider:
+            return [
+                BrowseFolder(
+                    item_id=row.item_id,
+                    provider=row.provider,
+                    path=f"{RECOMMENDATIONS_BROWSE_SCHEME}://{row.provider}/{row.item_id}",
+                    name=row.name,
+                    translation_key=row.translation_key,
+                )
+                for row in rows
+                if row.provider == provider
+            ]
+        folders: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        for row_provider in dict.fromkeys(row.provider for row in rows):
+            if not (prov := self.mass.get_provider(row_provider)):
+                continue
+            folders.append(
+                BrowseFolder(
+                    item_id=row_provider,
+                    provider=prov.domain,
+                    path=f"{RECOMMENDATIONS_BROWSE_SCHEME}://{row_provider}",
+                    name=prov.name,
+                )
+            )
+        return folders
+
+    async def _get_row_items(
+        self,
+        provider: str,
+        item_id: str,
+        providers: list[str] | None = None,
+        limit: int | None = None,
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row, empty when it can not be fetched.
+
+        :param provider: The provider instance id owning the row.
+        :param item_id: The item_id of the row.
+        :param providers: Restrict items to those reachable through one of these provider
+            instance ids, on rows that support it.
+        :param limit: The maximum number of items a library row returns, None for its default.
+        """
         # the rows listing leaves out the music sources the user may not see, and only lists
         # providers declaring the feature; a row of any other provider does not exist, nor
         # does another account of the same service stand in for the rows of a hidden one
@@ -94,9 +153,13 @@ class RecommendationsController:
         try:
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
                 if isinstance(prov, LibraryRecommendationsProvider):
-                    return await prov.get_recommendation_items(item_id, providers=providers)
-                # external provider rows don't support provider filtering: their SPI
-                # signature is unchanged, so `providers` is silently ignored here
+                    if limit is None:
+                        return await prov.get_recommendation_items(item_id, providers=providers)
+                    return await prov.get_recommendation_items(
+                        item_id, providers=providers, limit=limit
+                    )
+                # external provider rows don't support provider filtering or a limit: their
+                # SPI signature is unchanged, so `providers` and `limit` are ignored here
                 items = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
             # a plugin or metadata row can list items on any music source
             return UniqueList(visible_items(self.mass, items, get_current_user()))
