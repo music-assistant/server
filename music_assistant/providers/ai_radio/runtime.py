@@ -1322,8 +1322,9 @@ class AIRadioRuntimeMixin:
             web_mode,
             len(query),
         )
+        query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+            async with query_timeout:
                 response = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
             # expired() tells our own cap apart from a timeout raised inside the engine

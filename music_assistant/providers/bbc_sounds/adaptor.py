@@ -768,7 +768,7 @@ class BrowseConverter(BaseConverter):
                 if image_url
                 else None
             )
-        elif item.image_url:
+        else:
             image = ImageProvider.create_image(item.image_url, self.context.provider_domain)
 
         path = self._build_path(item.item_id)

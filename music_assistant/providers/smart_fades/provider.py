@@ -529,6 +529,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         duration: float,
     ) -> tuple[tuple[np.ndarray, np.ndarray, int, str | None, str | None], np.ndarray]:
         """Run beat/key and vocal inference branches; the first failure cancels the other."""
+        beat_key_task = None
         try:
             async with asyncio.TaskGroup() as task_group:
                 beat_key_task = task_group.create_task(
@@ -540,7 +541,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         except ExceptionGroup as group:
             # Unwrap for the base class; prefer the beat/key error since it decides
             # permanent vs retryable failure recording.
-            beat_key_error = None if beat_key_task.cancelled() else beat_key_task.exception()
+            beat_key_error = (
+                None
+                if beat_key_task is None or beat_key_task.cancelled()
+                else beat_key_task.exception()
+            )
             primary = beat_key_error or group.exceptions[0]
             for error in group.exceptions:
                 if error is not primary:

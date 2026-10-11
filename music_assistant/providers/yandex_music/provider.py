@@ -710,6 +710,7 @@ class YandexMusicProvider(MusicProvider):
         # listing) and MA's play-time reconstruction (underscore form
         # "my_wave_modes_<preset>", built as "<instance>://<item_id>") work.
         mode_preset: str | None = None
+        load_more_modes = False
         if subpath == MY_WAVE_MODES_FOLDER_ID and sub_subpath is None:
             return self._browse_my_wave_modes_list(path)
         if subpath == MY_WAVE_MODES_FOLDER_ID and sub_subpath is not None:
