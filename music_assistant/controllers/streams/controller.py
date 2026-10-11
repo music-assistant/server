@@ -1765,19 +1765,19 @@ class StreamsController(CoreController):
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
+            assert queue  # the item was found in that queue's data, so the queue exists
             if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
                 self.logger.debug(
                     "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
                 )
-            mix_overlay = queue is not None and overlay_mixed_in(queue, queue_item, flow_mode=False)
-            if queue is not None:
-                self._update_audio_processing_context(
-                    queue=queue,
-                    queue_item=queue_item,
-                    pcm_format=pcm_format,
-                    overlay_enabled=mix_overlay,
-                    session_id=queue_session_id,
-                )
+            mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
+            self._update_audio_processing_context(
+                queue=queue,
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                overlay_enabled=mix_overlay,
+                session_id=queue_session_id,
+            )
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
@@ -1789,7 +1789,7 @@ class StreamsController(CoreController):
                 ),
                 session_id=queue_session_id,
             )
-            if queue is not None and mix_overlay:
+            if mix_overlay:
                 inner_stream = self.audio.get_overlay_mixed_stream(queue, inner_stream, pcm_format)
             # mirror the on_source_selected/unselected lifecycle the HTTP route
             # fires, so direct-PCM consumers (AirPlay, Snapcast, UGP) honour the
