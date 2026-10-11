@@ -7,7 +7,7 @@
   "codeowners": [
     "@ryanmac8"
   ],
-  "documentation": "https://music-assistant.io/metadata/ai_artwork/",
+  "documentation": "https://music-assistant.io/metadata-providers/ai-artwork/",
   "multi_instance": false,
   "builtin": false,
   "requirements": []
