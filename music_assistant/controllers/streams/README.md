@@ -63,10 +63,23 @@ controllers/streams/
   audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
   constants.py         - Shared constants (buffer sizes, config keys)
   ogg_handler.py       - Chained OGG stream stitching for radio
-  smart_fades/         - Smart crossfade detection and mixing
-    analyzer.py        - Beat analysis for smart fade detection
-    fades.py           - Fade curve generation
-    mixer.py           - Crossfade mixing logic
+  smart_fades/         - Smart crossfade planning and mixing
+    mixer.py           - SmartFadesMixer: loads both analysis rows, picks the fade, runs the mix
+    fades.py           - SmartCrossFade, StandardCrossFade and VoiceOverFade: the ffmpeg mix per mode
+    planner/           - Transition planner, pure over the stored analysis (no audio bytes)
+      planner.py       - SmartCrossFadePlanner: pipeline, rescue pass, fallbacks, per-transition log line
+      context.py       - TransitionContext: per-transition facts (anchors, tier, vocals, kicks, segue facts)
+      candidates.py    - Candidate generators and the CandidateFactory that times each spec
+      policies.py      - Policies that reject or penalize a candidate
+      selection.py     - CandidateSelector: scores every candidate and applies the style rules
+      assembly.py      - PlanAssembler (winner EQ), fallback crossfade and emergency handoff factories
+    renderer.py        - TransitionRenderer: turns a TransitionPlan into the filter chain and timing
+    filters.py         - FFmpeg filters (EQ, time stretch, high-pass sweep, echo out, crossfade)
+    models.py          - TransitionPlan, TransitionStyle, TransitionTier and the other data models
+    bands.py           - Bar-level band power and kick runs from the stored band envelopes
+    structure.py       - Mastered fade-out and coda detection
+    vocal.py           - Vocal activity windows and the vocal collision math
+    helpers.py         - Shared constants plus energy, beat grid and key helpers
 ```
 
 Supporting modules in `helpers/`:
@@ -126,7 +139,6 @@ Supporting modules in `helpers/`:
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
 - **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
-- **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the
 StreamsController, combines queue processing and per-player output plans into complete
@@ -148,30 +160,75 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
 
-## Analyze Callbacks
+## Audio Analysis
 
-AudioBuffer supports registering chunk callbacks that receive raw PCM data as it flows into the buffer. This enables ahead-of-time analysis without re-streaming:
+When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
 
 ### Loudness Measurement
-- Attached automatically when a new buffer is created (tracks and radio)
-- Feeds up to 2 minutes of PCM into an FFmpeg `ebur128` process
+- Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM, for tracks and radio
 - Result stored for future volume normalization (avoids dynamic mode overhead)
 
-### Smart Fades Beat Analysis
-- Attached automatically for music tracks (MediaType.TRACK only, not podcasts/audiobooks)
-- Collects first 45 seconds (intro) and last 45 seconds (outro) of audio
-- Triggers librosa beat detection in a background thread
-- Results cached for crossfade timing decisions
-
-Both analyzers check for existing measurements before starting, avoiding redundant work.
+### Smart Fades Analysis
+- Produced by the `smart_fades` audio analysis provider (`providers/smart_fades/`), for music tracks only (`MediaType.TRACK`): live through `AudioAnalysisController.start_analysis()` while a track streams, and by the background scan for local files
+- Stores the whole track's beats, downbeats, BPM, meter, key, RMS energy, four band RMS envelopes (`band_rms_*`) and FireRed vocal activity in `audio_analysis.db`; the provider's README describes the models
+- The mixer reads both rows with `get_audio_analysis()` at `SMART_FADES_ANALYSIS_DOMAIN` priority
 
 ## Smart Fades
 
-The smart fades system provides intelligent crossfading between tracks:
+Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the incoming track's head in one ffmpeg process, in both flow mode (continuous stream) and per-item mode (gapless playback). `SmartFadesMixer.build()` picks the fade for each boundary from the crossfade mode:
 
-- **Smart Crossfade**: Analyzes audio beats to detect natural fade points
-- **Standard Crossfade**: Fixed-duration overlap crossfade with silence stripping
-- Operates in both flow mode (continuous stream) and per-item mode (gapless playback)
+- `SMART_CROSSFADE`: `SmartCrossFade` plans the transition with `SmartCrossFadePlanner` and renders it with `TransitionRenderer`
+- `STANDARD_CROSSFADE`: `StandardCrossFade`, a fixed-length overlap after stripping trailing silence
+- `VOICE_OVER`: `VoiceOverFade`, a declared transition that plays as declared and is never planned
+
+A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
+
+### Planner pipeline
+
+The planner reads only the two `AudioAnalysisData` rows and the length of the held-back tail, never audio. `SmartCrossFadePlanner.plan()` runs:
+
+1. `build_transition_context()` computes the frozen `TransitionContext`: the outgoing anchor (energy mix-out point, folded with the kick die-out and snapped to a downbeat) and audible end, the tier and what made it a quick fade, vocal masks, kick runs, mastered fade and coda zones, and the segue facts. A quiet but audible outro is anchored at its audible end and planned like any other tail.
+2. The generators in `default_generators()` emit `CandidateSpec`s: bar ladders at several outgoing anchors and incoming entries, segue overlaps, filter outs and echo outs.
+3. `CandidateFactory.build()` times each spec into a `Candidate`, a `TransitionPlan` (anchor, overlap, entry trim, tempo ramp) plus `PlanMetrics` (audible trim, vocal collision, kick clash), or drops it as infeasible.
+4. `CandidateSelector` scores every candidate against every policy in `default_policies()` and picks the lowest total penalty among the survivors, under the style rules below. Every policy runs on every candidate, so the VERBOSE scoreboard is complete.
+5. `PlanAssembler.finalize()` adds the EQ handover to the winner only.
+6. `TransitionRenderer` turns the plan into the filter chain and `CrossfadeTimingInfo`.
+
+When every candidate is rejected, or no blend or cut survives, a rescue pass tries late-anchored rungs, a segue (also for a beatmatchable pair) and the dressed styles. Without a winner there, `FallbackCrossfadeFactory` ships a plain 8 second equal-power fade, or `EmergencyHandoffFactory` a 0.4 to 1 second click-free handoff when the fallback's vocal collision exceeds twice the candidate limits.
+
+### Transition styles
+
+The plan's `TransitionStyle` says how it is timed and rendered. `TransitionContext.preferred_style` is `BLEND` for a beatmatchable tier and `SEGUE` for every other pair, and `OverlapPreferencePolicy` penalizes the other styles.
+
+- `BLEND`: the beatmatched blend, on tier `FULL_BLEND` or `TEMPO_BLEND`. A pair is beatmatchable with the same meter, a BPM gap of at most 8 % and at least 8 regular downbeats before the anchor; `FULL_BLEND` also needs compatible keys, RMS data and 4/4. 8 bars, 16 on a full blend between two near-instrumental decks, with a bass, mid and high EQ handover. The outgoing track ramps its tempo (rubberband, at most 8 %) in the 10 seconds before the overlap; `_drop_unneeded_stretch()` ships the blend unstretched when a deck has no kick in the overlap. A segue never replaces a surviving blend.
+- `SEGUE`: an unsynced overlap where the outgoing track has gone quiet. The quiet tail runs from the last bar-smoothed point at or above -8 dB of the track's sustained level to the audible end, the quiet head from the incoming start to its first rise to that level. The overlap is their sum, capped at 15 seconds and the room, and shrinks in steps down to the cut's length (at least 2 seconds) for the clash checks to choose from; quiet material shorter than that gives no segue. Within the quiet material a side that is already quiet plays as recorded (`nofade`) and a loud side fades equal-power; a longer overlap fades both sides. A segue that fades both sides keeps the EQ handover. A segue replaces a cut only when it lasts at least as long.
+- `FILTER_OUT`: 4 or 2 outgoing bars (2 across meters) under a high-pass that sweeps from 20 to 600 Hz along with the volume fade, so the outgoing kick drops out. It suits a pair in the same meter up to a 20 % BPM gap.
+- `ECHO_OUT`: the outgoing dry signal stops on a downbeat, the beat before it repeats as four decaying taps at the outgoing tempo, and the incoming track starts at full level on its first downbeat. The mix runs through a -0.5 dB limiter. It suits a BPM gap above 20 % or a pair across meters.
+- `CUT`: an unsynced volume fade without EQ: 4 bars up to a 12 % BPM gap, 2 bars up to 20 %, 1 bar beyond, at most 2 bars across meters.
+
+A dressed style (`FILTER_OUT`, `ECHO_OUT`) replaces a winning cut whose kicks overlap for more than one beat, and wins on its own only in the rescue pass. The style that suits the gap (`TransitionContext.dressed_style`) wins when one survives, the other is the fallback.
+
+### Clash checks
+
+Both checks only count what plays on both decks at once, so a voice or a kick on one side is never a clash.
+
+- Vocals (`VocalCollisionPolicy`): rejects 2 seconds or more of overlapping vocals, or 0.35 seconds or more weighted by the fade's simultaneous gain (`4p(1-p)`), and penalizes less. It abstains when both decks read as singing throughout (`vocal_collision_reliable`), and such a pair gets no segue.
+- Drums (`RhythmClashPolicy`): a bar carries a kick when its stored low band (20 to 120 Hz) reaches half the track's reference. It judges segues and dressed styles only, rejecting more than 2 bars of overlapping kicks, weighted the same way, and penalizing less. A blend beatmatches its kicks, and a clashing cut gives way to a dressed style at selection.
+
+Within its steps, the clash checks decide how long a segue runs. A segue may also run up to 15 seconds over loud material when neither deck sings near the boundary (vocal data required on both) and at least one of them has almost no kick there (`_beatless_long_qualifies()`).
+
+### Logging and replay
+
+With the streams setting `smart_fades_log_level` at DEBUG, the planner logs one `planned transition:` line per boundary: style, tier, quick fade trigger (meter, tempo or beat grid), strategy, winning generator, bars, overlap, BPM gap, whether a blend stretches, and a reason for a segue (quiet tail and head, curves, which deck sings and kicks) or a dressed style (the kick clash of the cut it replaced). VERBOSE adds the context line and the full per-candidate scoreboard.
+
+`scripts/smart_fades_replay.py` plans random track pairs from copies of a server's `audio_analysis.db` and `library.db` without playing anything, and writes `pairs.csv` and `summary.txt` (tiers, styles, overlap lengths, quick fade triggers, vocal and drum overlap, music style). To measure a planner change, run it on both sides with the same databases, seed and `--buffer`; `--code` loads `music_assistant` from another checkout. It reads analysis data and library metadata only, never audio.
+
+```
+python -m scripts.smart_fades_replay \
+    --analysis-db ~/.musicassistant/audio_analysis.db \
+    --library-db ~/.musicassistant/library.db \
+    --n 3000 --seed 20261010 --buffer 45 --out /tmp/replay
+```
 
 ## Audio Overlay
 
