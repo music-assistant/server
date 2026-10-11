@@ -496,6 +496,8 @@ class ARDAudiothek(MusicProvider):
                 show_episode_query.variable_values = {"coreId": item_id}
                 result = (await session.execute(show_episode_query))["itemByCoreId"]
                 seek = True
+            else:
+                raise UnplayableMediaError(f"Unsupported media type: {media_type}")
 
         streams = result["audioList"]
         if len(streams) == 0:

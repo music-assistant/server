@@ -39,6 +39,12 @@ from music_assistant.mass import MusicAssistant
 MERGE_USER = "merge-user"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
     """Create a provider mapping for a library fixture item."""
     return ProviderMapping(

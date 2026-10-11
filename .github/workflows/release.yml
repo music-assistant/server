@@ -346,6 +346,7 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
+      base_image_version: ${{ needs.resolve.outputs.base_image_version }}
 
   build_artifacts:
     name: Build or recover release assets
@@ -463,16 +464,6 @@ jobs:
         if: needs.resolve.outputs.assets_ready != 'true'
         run: python3 -m pip install build tomli tomli-w
 
-      - name: Provision app secrets
-        if: needs.resolve.outputs.assets_ready != 'true'
-        env:
-          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
-        run: |
-          gh api \
-            -H "Accept: application/vnd.github.raw" \
-            "repos/music-assistant/appvars/contents/app_secrets.json" \
-            > source/music_assistant/helpers/app_secrets.json
-
       - name: Set package version
         if: needs.resolve.outputs.assets_ready != 'true'
         working-directory: source
@@ -490,10 +481,27 @@ jobs:
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
 
-      - name: Build wheel and source distribution
+      # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
+      # the wheel (and the image built from it) but never in the source distribution.
+      - name: Build source distribution
         if: needs.resolve.outputs.assets_ready != 'true'
         working-directory: source
-        run: python3 -m build
+        run: python3 -m build --sdist
+
+      - name: Provision app secrets
+        if: needs.resolve.outputs.assets_ready != 'true'
+        env:
+          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "repos/music-assistant/appvars/contents/app_secrets.json" \
+            > source/music_assistant/helpers/app_secrets.json
+
+      - name: Build wheel
+        if: needs.resolve.outputs.assets_ready != 'true'
+        working-directory: source
+        run: python3 -m build --wheel
 
       - name: Verify exact assets
         id: assets
@@ -510,6 +518,14 @@ jobs:
             --directory source/dist \
             "${extra_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify bundled app secrets
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py verify-app-secrets \
+            --version "$VERSION" \
+            --directory source/dist
 
       - name: Preserve release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -908,6 +924,8 @@ jobs:
           provenance: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
+            MASS_REVISION=${{ needs.resolve.outputs.source_sha }}
+            MASS_WHEEL_SHA256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
             BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
           labels: |
             org.opencontainers.image.version=${{ inputs.version }}

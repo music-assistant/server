@@ -15,6 +15,11 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferDiscarded
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    VOCAL_ACTIVITY_BINS,
+    first_vocal_onset,
+)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
     AudioAnalysisProvider,
@@ -687,3 +692,28 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+async def test_get_vocal_onset_is_none_without_analysis(
+    controller: AudioAnalysisController,
+) -> None:
+    """A track without stored analysis has no known vocal onset."""
+    controller.get_audio_analysis = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await controller.get_vocal_onset("test_123", "test_prov") is None
+    controller.get_audio_analysis.assert_awaited_once_with("test_123", "test_prov", MediaType.TRACK)
+
+
+async def test_get_vocal_onset_reads_the_stored_vocal_timeline(
+    controller: AudioAnalysisController,
+) -> None:
+    """The onset comes from the vocal-activity timeline of the stored analysis."""
+    vocal_activity = [0.0] * VOCAL_ACTIVITY_BINS
+    vocal_activity[300:400] = [0.9] * 100
+    analysis = AudioAnalysisData(duration=180.0, vocal_activity=vocal_activity)
+    controller.get_audio_analysis = AsyncMock(return_value=analysis)  # type: ignore[method-assign]
+
+    onset = await controller.get_vocal_onset("test_123", "test_prov")
+
+    assert onset is not None
+    assert onset == first_vocal_onset(analysis)

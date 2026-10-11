@@ -4,8 +4,8 @@ Fail when code calls ``datetime.now()`` / ``datetime.utcnow()`` instead of the s
 ``music_assistant.helpers.datetime`` centralizes "current time" handling (``utc()``, ``now()``,
 ``utc_timestamp()``, ...) so the whole codebase agrees on timezone-awareness and is trivially
 mockable in tests. Reaching for ``datetime.datetime.now(...)`` / ``.utcnow()`` directly bypasses
-that. New code must use the helpers; the call sites that predate this check are grandfathered
-through ``scripts/lint_baselines/naive_datetime_usage.txt`` and are cleaned up separately.
+that. Call sites that cannot migrate yet can be grandfathered through
+``scripts/lint_baselines/naive_datetime_usage.txt`` (absent while there are none).
 
 Usage:
     uv run -m scripts.check_datetime_helpers

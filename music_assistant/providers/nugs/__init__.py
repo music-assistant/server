@@ -8,7 +8,9 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -50,7 +52,7 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -65,6 +67,12 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
+CONF_QUALITY = "quality"
+QUALITY_LOSSY = "lossy"
+QUALITY_LOSSLESS = "lossless"
+# platformID values nugs.net's own clients send to subPlayer.aspx for each quality
+PLATFORM_IDS = {QUALITY_LOSSY: -1, QUALITY_LOSSLESS: 2}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -78,13 +86,28 @@ class NugsProvider(MusicProvider):
 
     _auth_token: str | None = None
     _token_expiry: float = 0
+    _plan_quality_logged: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=QUALITY_LOSSLESS,
+                options=[
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                    ConfigValueOption(QUALITY_LOSSY),
+                ],
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # a reload may follow a switch to another account, which the cached details cannot tell
+        for cached in (self._get_subscription_info, self._get_user_id):
+            await self.mass.cache.delete(cached.__name__, provider=self.instance_id)
         await self.login()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -424,8 +447,26 @@ class NugsProvider(MusicProvider):
             track.duration = int(duration)
         return track
 
-    async def _get_stream_url(self, item_id: str) -> Any:
-        subscription_info = await self._get_data("subscription", "")
+    # both are fixed for the account, so track starts spend no requests on account lookups
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_subscription_info(self) -> dict[str, Any]:
+        """Return the subscription details of the nugs.net account."""
+        subscription_info: dict[str, Any] = await self._get_data("subscription", "")
+        return subscription_info
+
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_user_id(self) -> str:
+        """Return the user id of the nugs.net account."""
+        user_info = await self._get_data("user", "")
+        return str(user_info["userId"])
+
+    async def _get_stream_url(self, item_id: str) -> str:
+        """
+        Return the stream url for a track in the configured quality, or lossy when unavailable.
+
+        :param item_id: The nugs.net track id.
+        """
+        subscription_info = await self._get_subscription_info()
         # trial and promo accounts have no regular plan: their plan sits on the promo object
         plan = subscription_info.get("plan") or (subscription_info.get("promo") or {}).get("plan")
         if not plan:
@@ -437,11 +478,7 @@ class NugsProvider(MusicProvider):
         dt_end = datetime.strptime(subscription_info["endsAt"], "%m/%d/%Y %H:%M:%S").replace(
             tzinfo=UTC
         )
-        user_info = await self._get_data("user", "")
-        url = "https://streamapi.nugs.net/bigriver/subplayer.aspx"
-        timeout = ClientTimeout(total=120)
-        params = {
-            "platformID": -1,
+        params: dict[str, Any] = {
             "app": 1,
             "HLS": 1,
             "orgn": "websdk",
@@ -450,18 +487,53 @@ class NugsProvider(MusicProvider):
             "subCostplanIDAccessList": plan["id"],
             "startDateStamp": int(dt_start.timestamp()),
             "endDateStamp": int(dt_end.timestamp()),
-            "nn_userID": user_info["userId"],
+            "nn_userID": await self._get_user_id(),
             "subscriptionID": subscription_info["legacySubscriptionId"],
         }
+        quality = self._get_quality(plan)
+        if quality != QUALITY_LOSSY:
+            if stream_url := await self._request_stream_link(
+                {**params, "platformID": PLATFORM_IDS[quality]}
+            ):
+                return stream_url
+            self.logger.debug("No %s stream for track %s, falling back to lossy", quality, item_id)
+        if stream_url := await self._request_stream_link(
+            {**params, "platformID": PLATFORM_IDS[QUALITY_LOSSY]}
+        ):
+            return stream_url
+        raise MediaNotFoundError(f"No stream found for song {item_id}.")
+
+    def _get_quality(self, plan: dict[str, Any]) -> str:
+        """
+        Return the configured stream quality, capped at what the subscription plan includes.
+
+        :param plan: The plan object of the user's nugs.net subscription.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY))
+        if quality != QUALITY_LOSSY and not plan.get("isHighQuality"):
+            if not self._plan_quality_logged:
+                self.logger.info(
+                    "Your nugs.net plan does not include %s streaming, using lossy instead",
+                    quality,
+                )
+                self._plan_quality_logged = True
+            return QUALITY_LOSSY
+        return quality
+
+    async def _request_stream_link(self, params: dict[str, Any]) -> str | None:
+        """
+        Request a stream link from the nugs.net stream API, returning None when there is none.
+
+        :param params: The query parameters for the subPlayer request.
+        """
+        url = "https://streamapi.nugs.net/bigriver/subplayer.aspx"
+        timeout = ClientTimeout(total=120)
         async with (
             self.mass.http_session.get(url, params=params, ssl=True, timeout=timeout) as response,
         ):
             response.raise_for_status()
-            content = await response.text()
-            stream = json_loads(content)
-            if not stream.get("streamLink"):
-                raise MediaNotFoundError("No stream found for song %s.", item_id)
-            return stream["streamLink"]
+            stream = json_loads(await response.text())
+        return stream.get("streamLink") or None
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(

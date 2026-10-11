@@ -606,8 +606,8 @@ class PhishInProvider(MusicProvider):
     @use_cache(expiration=21600)  # 6 hours - today's shows are historical but queried daily
     async def _browse_today(self) -> list[Album]:
         """Get shows that happened on this day in history."""
+        today = now()
         try:
-            today = now()
             target_date = today.strftime("%Y-%m-%d")
 
             shows_data = await api_request(

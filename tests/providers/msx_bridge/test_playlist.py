@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
-from music_assistant.providers.msx_bridge.mappers import map_tracks_to_msx_playlist
+from music_assistant.providers.msx_bridge.mappers import PlaylistTrack, map_tracks_to_msx_playlist
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
@@ -15,16 +15,15 @@ def _mock_provider() -> MSXBridgeProvider:
     return provider
 
 
-def _make_track(item_id: int, name: str, artist: str, duration: int) -> Mock:
-    """Create a mock Track object."""
-    track = Mock()
-    track.item_id = item_id
-    track.name = name
-    track.artist_str = artist
-    track.uri = f"library://track/{item_id}"
-    track.image = f"img{item_id}"
-    track.duration = duration
-    return track
+def _make_track(item_id: int, name: str, artist: str, duration: int) -> PlaylistTrack:
+    """Create playlist rendering metadata."""
+    return PlaylistTrack(
+        name=name,
+        uri=f"library://track/{item_id}",
+        duration=duration,
+        artist=artist,
+        image=None,
+    )
 
 
 def test_map_tracks_to_msx_playlist_basic() -> None:
@@ -57,6 +56,13 @@ def test_map_tracks_to_msx_playlist_basic() -> None:
     assert "library%3A%2F%2Ftrack%2F2" in item0.action
     assert "/msx/audio/msx_1?" in item0.action
     assert "&from_playlist=1" in item0.action
+    assert item0.properties is not None
+    assert item0.properties["button:next:action"] == "execute:http://localhost/api/next/msx_1"
+    assert item0.properties["trigger:complete"].startswith(
+        "execute:http://localhost/api/complete/msx_1?playback_id="
+    )
+    playback_id = item0.properties["trigger:complete"].split("playback_id=", 1)[1]
+    assert "&playback_id=" + playback_id in item0.action
     assert item0.player_label == "Track 2"
     assert item0.duration == 200
     assert item0.label is not None
@@ -138,3 +144,13 @@ def test_map_tracks_to_msx_playlist_serialization() -> None:
     assert len(data["items"]) == 1
     assert data["items"][0]["playerLabel"] == "Track 1"
     assert data["items"][0]["action"].startswith("audio:")
+
+
+def test_known_duration_is_exposed_to_native_decoder() -> None:
+    """Chunked audio still has a known duration in the native MSX controls."""
+    content = map_tracks_to_msx_playlist(
+        [_make_track(1, "Track", "Artist", 180)], 0, "http://ma", "msx_1", _mock_provider()
+    )
+    assert content.items is not None
+    assert content.items[0].properties is not None
+    assert content.items[0].properties["video:duration"] == "180"

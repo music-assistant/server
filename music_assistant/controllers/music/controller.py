@@ -21,9 +21,12 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
     TaskStatus,
 )
 from music_assistant_models.errors import (
@@ -111,6 +114,7 @@ from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
 )
+from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress,
@@ -158,6 +162,7 @@ from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE,
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.api import SortOptionInfo
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, AudioSource
@@ -925,6 +930,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
+    @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
+    def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
+        """
+        Return the sort options a listing offers, the listing's default first.
+
+        :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When the listing does not sort on the server.
+        """
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} has no sort options")
+        return list(options)
+
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
         self,
@@ -1088,7 +1105,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(
-            limit=limit, order_by="timestamp_added_desc", summary=False
+            limit=limit,
+            sort_field=SortField.TIMESTAMP_ADDED,
+            sort_direction=SortDirection.DESC,
+            summary=False,
         )
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
@@ -1784,6 +1804,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
+        user_ids: list[str] = []
         # update generic playlog table (when not playing)
         if not is_playing:
             if user:
@@ -1949,6 +1970,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Get a track by its name, optionally with artist and album."""
         if track_version is None:
             track_name, version = parse_title_and_version(track_name)
+        else:
+            version = track_version
         search_query = f"{artist_name} - {track_name}" if artist_name else track_name
         search_result = await self.mass.music.search(
             search_query=search_query,

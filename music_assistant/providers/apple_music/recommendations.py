@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientResponseError
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
@@ -18,10 +17,14 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
+from .constants import PARSED_ITEM_CACHE_CHECKSUM
 from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+# stations looked up per request when resolving the unnamed stations of the recommendations
+_STATION_BATCH_SIZE = 25
 
 
 def _slugify_title(title: str) -> str:
@@ -68,13 +71,7 @@ class AppleMusicRecommendationManager:
         if not response:
             return []
         tracks = [track for track in response.get("data", []) if track and track.get("id")][:limit]
-        if not tracks:
-            return []
-        track_ids = [track["id"] for track in tracks]
-        rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
-        return [
-            parse_track(self.provider, track, rating_response.get(track["id"])) for track in tracks
-        ]
+        return [parse_track(self.provider, track) for track in tracks]
 
     @use_cache(3600 * 24)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
@@ -95,6 +92,7 @@ class AppleMusicRecommendationManager:
                 artists.append(parsed)
         return artists
 
+    @use_cache(3600 * 24, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_station_playlist(self, station_id: str) -> Playlist:
         """Fetch name and artwork for a radio station and return it as a dynamic Playlist."""
         try:
@@ -113,7 +111,7 @@ class AppleMusicRecommendationManager:
             "me/recommendations?include[personal-recommendation]=contents"
         )
         seen: set[str] = set()
-        folders: dict[str, RecommendationFolder] = {}
+        entries: list[tuple[str, dict[str, Any]]] = []
         # Reset maps so stale entries from previous fetches are not kept.
         self._station_id_to_name.clear()
         self._station_name_to_id.clear()
@@ -131,27 +129,32 @@ class AppleMusicRecommendationManager:
                 station_id = item.get("id")
                 if not station_id or station_id in seen:
                     continue
-                attributes = item.get("attributes", {})
-                if attributes.get("isLive", False):
+                if item.get("attributes", {}).get("isLive", False):
                     # Live broadcast stations require Widevine DRM; skip them.
                     continue
                 seen.add(station_id)
-                if attributes.get("name"):
-                    playlist = parse_station_as_playlist(self.provider, item)
-                else:
-                    playlist = await self.provider.get_playlist(station_id)
-                    if playlist.name == station_id:
-                        continue
-                if playlist.name and playlist.name != station_id:
-                    self._station_id_to_name[station_id] = playlist.name
-                    self._station_name_to_id[playlist.name] = station_id
-                if title not in folders:
-                    folders[title] = RecommendationFolder(
-                        item_id=_slugify_title(title),
-                        provider=self.provider.instance_id,
-                        name=title,
-                    )
-                folders[title].items.append(playlist)
+                entries.append((title, item))
+        unnamed = [item["id"] for _, item in entries if not item.get("attributes", {}).get("name")]
+        fetched = await self._get_station_playlists(unnamed)
+        folders: dict[str, RecommendationFolder] = {}
+        for title, item in entries:
+            station_id = item["id"]
+            if item.get("attributes", {}).get("name"):
+                playlist = parse_station_as_playlist(self.provider, item)
+            elif (fetched_playlist := fetched.get(station_id)) is not None:
+                playlist = fetched_playlist
+            else:
+                continue
+            if playlist.name and playlist.name != station_id:
+                self._station_id_to_name[station_id] = playlist.name
+                self._station_name_to_id[playlist.name] = station_id
+            if title not in folders:
+                folders[title] = RecommendationFolder(
+                    item_id=_slugify_title(title),
+                    provider=self.provider.instance_id,
+                    name=title,
+                )
+            folders[title].items.append(playlist)
         return list(folders.values())
 
     async def resolve_station_id(self, stale_id: str) -> str | None:
@@ -182,6 +185,38 @@ class AppleMusicRecommendationManager:
                 for item in folder.items
             ],
         )
+
+    async def _get_station_playlists(self, station_ids: list[str]) -> dict[str, Playlist]:
+        """
+        Return the named stations among the given ids as playlists, keyed by station id.
+
+        :param station_ids: The station ids to look up.
+        """
+        playlists: dict[str, Playlist] = {}
+        for i in range(0, len(station_ids), _STATION_BATCH_SIZE):
+            batch = station_ids[i : i + _STATION_BATCH_SIZE]
+            try:
+                response = await self.api.get_data(
+                    f"catalog/{self.provider._storefront}/stations", ids=",".join(batch)
+                )
+            except MediaNotFoundError:
+                response = {}
+            answered: set[str] = set()
+            for station_obj in response.get("data", []):
+                if (station_id := station_obj.get("id")) not in batch:
+                    continue
+                answered.add(station_id)
+                if not station_obj.get("attributes", {}).get("isLive", False):
+                    playlists[station_id] = parse_station_as_playlist(self.provider, station_obj)
+            # a station Apple answers for under another id is looked up on its own, cached
+            for station_id in batch:
+                if station_id not in answered:
+                    playlists[station_id] = await self.get_station_playlist(station_id)
+        return {
+            station_id: playlist
+            for station_id, playlist in playlists.items()
+            if playlist.name and playlist.name != station_id
+        }
 
     def _populate_station_maps(self, folders: list[RecommendationFolder]) -> None:
         """

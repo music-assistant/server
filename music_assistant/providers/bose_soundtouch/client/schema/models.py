@@ -145,6 +145,7 @@ class Info(DataClassJSONMixin):
     device_id: str
     name: str
     model: str | None = None
-    mac_addresses: set[str] | None = None
-    ip_addresses: set[str] | None = None
+    # ordered with the interface of the active connection first
+    mac_addresses: list[str] = field(default_factory=list)
+    ip_addresses: list[str] = field(default_factory=list)
     software_version: str | None = None

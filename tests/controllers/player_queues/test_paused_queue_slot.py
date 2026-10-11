@@ -161,7 +161,7 @@ class _Rig:
         )
 
     @contextlib.asynccontextmanager
-    async def playback_lock(self, player_id: str) -> AsyncIterator[None]:
+    async def playback_lock(self, player_id: str, strict: bool = False) -> AsyncIterator[None]:
         """Hold a player's playback lock, re-entrant within one task like the real one."""
         task = asyncio.current_task()
         if self._lock_owners.get(player_id) is task:

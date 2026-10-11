@@ -228,6 +228,25 @@ def test_location_for_path_is_the_most_specific(storage: StorageController) -> N
 
 
 @pytest.mark.usefixtures("probes")
+async def test_unplugged_drive_below_a_folder_stays_unavailable(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable
+) -> None:
+    """A drive below a folder counts as unavailable after it went away, also once unlisted."""
+    media = tmp_path / "media"
+    usb = media / "usb"
+    (usb / "music").mkdir(parents=True)
+    mount_table.set(mount_line(usb, "ext4"))
+    await storage.refresh()
+    assert await storage.get_unavailable_locations(str(media)) == []
+
+    mount_table.set()
+    await storage.refresh()
+
+    assert storage.get_location_for_path(str(usb)) is None
+    assert await storage.get_unavailable_locations(str(media)) == [str(usb)]
+
+
+@pytest.mark.usefixtures("probes")
 async def test_folder_on_a_mount_needs_its_mount(
     storage: StorageController, tmp_path: Path, mount_table: MountTable
 ) -> None:

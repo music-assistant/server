@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from music_assistant_models.errors import MediaNotFoundError
+
 from music_assistant.providers.soundcloud import SoundcloudMusicProvider
 
 
@@ -34,6 +37,15 @@ async def test_parse_playlist_basics(provider: SoundcloudMusicProvider) -> None:
     mapping = next(iter(playlist.provider_mappings))
     assert mapping.item_id == "10"
     assert mapping.provider_instance == provider.instance_id
+
+
+async def test_get_playlist_unparsable_is_not_found(provider: SoundcloudMusicProvider) -> None:
+    """A playlist that cannot be parsed is reported as not found."""
+    get_playlist: Any = SoundcloudMusicProvider.get_playlist.__wrapped__  # type: ignore[attr-defined]
+    provider._soundcloud.get_playlist_details.return_value = {"title": "No id"}
+
+    with pytest.raises(MediaNotFoundError):
+        await get_playlist(provider, "10")
 
 
 async def test_parse_playlist_strips_related_tracks_prefix(

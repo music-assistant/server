@@ -80,3 +80,20 @@ def test_optional_union_that_fits_no_member_warns_and_returns_none(
     with caplog.at_level(logging.WARNING):
         assert parse_value("values", {}, int | str | None) is None
     assert "is invalid for values" in caplog.text
+
+
+def test_rejected_value_is_left_out_of_the_error() -> None:
+    """The error for a value of the wrong type names the argument, not the value."""
+    with pytest.raises(TypeError, match="is invalid for password") as err:
+        parse_value("password", ["made-up-password"], str)
+    assert "made-up-password" not in str(err.value)
+
+
+def test_rejected_optional_value_is_left_out_of_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning for a value that fits no member of an optional union leaves out the value."""
+    with caplog.at_level(logging.WARNING):
+        assert parse_value("password", ["made-up-password"], str | None) is None
+    assert "is invalid for password" in caplog.text
+    assert "made-up-password" not in caplog.text

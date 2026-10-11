@@ -284,7 +284,7 @@
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
-      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.",
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.\n\nA change takes effect after restarting Music Assistant.",
       "options": {
         "default": "Default interface",
         "all": "All interfaces"
@@ -1210,11 +1210,18 @@
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
+    "invalid_config_value": "The value for {0} is not valid.",
+    "config_value_required": "{0} is required.",
+    "invalid_value": "This value is not valid.",
+    "required": "This field is required.",
     "role_can_not_own_music_sources": "This role can not own a music source.",
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
     "username_taken": "This username is already in use.",
     "username_too_short": "Username must be at least {0} characters.",
+    "sign_in_expired": "This sign-in has expired or was already used. Please sign in again.",
+    "self_registration_disabled": "Self-registration is disabled. Please contact an administrator.",
+    "user_account_disabled": "This user account is disabled.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
     "role_not_found": "This role does not exist.",
     "role_name_invalid": "A role name must be between 1 and {0} characters long.",
