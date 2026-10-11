@@ -1233,6 +1233,18 @@ class LocalFileSystemProvider(MusicProvider):
         async for chunk in self._cue.get_audio_stream(streamdetails, seek_position):
             yield chunk
 
+    async def open_local_file(self, path: str) -> int | None:
+        """
+        Open a file of this source for playback, if it lies inside the folder of this source.
+
+        :param path: The absolute path of the file.
+        :raises MediaNotFoundError: If the file is gone or lies outside the folder of this source.
+        """
+        try:
+            return await asyncio.to_thread(self._open_file, path, os.O_RDONLY)
+        except FileNotFoundError as err:
+            raise MediaNotFoundError(f"Media file not found: {path}") from err
+
     async def resolve_image(self, path: str) -> str | bytes | None:
         """
         Resolve an image from an image path.

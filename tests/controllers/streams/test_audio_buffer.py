@@ -106,7 +106,11 @@ def _make_mass_for_get_buffer(
     start_analysis = AsyncMock(return_value=None)
     mass.streams = SimpleNamespace(
         audio_analysis=SimpleNamespace(start_analysis=start_analysis),
-        audio=SimpleNamespace(get_media_stream=_get_media_stream),
+        audio=SimpleNamespace(
+            get_media_stream=_get_media_stream,
+            # these sources are not local files, so they are opened by their path
+            open_local_files=AsyncMock(side_effect=lambda _details, paths: (paths, ())),
+        ),
     )
     scheduled_tasks: list[asyncio.Task[None]] = []
 
@@ -1845,7 +1849,7 @@ async def test_get_buffer_decodes_an_unknown_source_at_its_probed_format() -> No
     ) as probe:
         buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
     try:
-        probe.assert_awaited_once_with(details.path, ["-user_agent", "test"])
+        probe.assert_awaited_once_with(details.path, ["-user_agent", "test"], pass_fds=())
         assert buffer.pcm_format.content_type == ContentType.PCM_S24LE
         assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (48000, 24)
         assert requested_formats == [buffer.pcm_format]
@@ -1956,7 +1960,7 @@ async def test_get_buffer_probes_while_holding_a_source_stream_slot() -> None:
     mass.get_provider.return_value = _make_slot_limited_provider(_acquire_stream_slot)
     held_during_probe: list[bool] = []
 
-    async def _probe(*_args: Any) -> FFMpegStreamInfo:
+    async def _probe(*_args: Any, **_kwargs: Any) -> FFMpegStreamInfo:
         held_during_probe.append(slot_held)
         return PROBED_FLAC
 
@@ -2037,7 +2041,7 @@ async def test_get_buffer_probes_the_hls_substream_the_producer_plays(resolves: 
             "https://example.com/master.m3u8"
         )
         if resolves:
-            probe.assert_awaited_once_with("https://cdn.example.com/variant.m3u8", [])
+            probe.assert_awaited_once_with("https://cdn.example.com/variant.m3u8", [], pass_fds=())
             assert buffer.pcm_format.sample_rate == 48000
         else:
             probe.assert_not_awaited()
