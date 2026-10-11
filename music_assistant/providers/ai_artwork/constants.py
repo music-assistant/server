@@ -34,6 +34,10 @@ DEFAULT_MAX_PER_HOUR: Final = 30
 IMAGES_DIR: Final = "ai_artwork"
 IMAGE_EXTENSION: Final = ".jpg"
 CANVAS_SIZE: Final = 1024
+# an overlaid title takes at most this many lines; past that the font shrinks, down to
+# this fraction of its size, before more lines are allowed
+MAX_TITLE_LINES: Final = 3
+MIN_TITLE_SCALE: Final = 0.4
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
 
@@ -56,6 +60,9 @@ MAX_CONTEXT_GENRES: Final = 3
 # the descriptions live in the cache, kept until the playlist (or the text engine) changes
 CACHE_CATEGORY_DESCRIPTIONS: Final = 1
 CACHE_KEY_GENERATION: Final = "generation"
+# the times of the recent generations, so the hourly limit survives a reload or restart
+CACHE_KEY_GENERATED_AT: Final = "generated_at"
+CACHE_KEY_DESCRIBED_AT: Final = "described_at"
 # a refresh shortly after loading picks up changed settings and playlists added meanwhile
 CATCH_UP_DELAY_SECONDS: Final = 120
 CACHE_KEEP_SECONDS: Final = 10 * 365 * 24 * 3600

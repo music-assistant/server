@@ -27,10 +27,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from music_assistant.constants import CONF_LOG_LEVEL
-from music_assistant.providers.ai_artwork import AIArtworkProvider, _format_template
+from music_assistant.providers.ai_artwork import AIArtworkProvider, _fit_title, _format_template
 from music_assistant.providers.ai_artwork.constants import (
     CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
@@ -356,6 +356,33 @@ async def test_the_hourly_limit_postpones_generation(provider: AIArtworkProvider
     assert _mass(provider).call_later.call_args.args[2] == second.uri
 
 
+async def test_the_hourly_limit_survives_a_reload(provider: AIArtworkProvider) -> None:
+    """Covers generated before a reload (as a settings change causes) still count."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
+    await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+
+    await provider.handle_async_init()
+    second = _smart_playlist(item_id="2")
+    await provider.get_playlist_metadata(second)
+
+    assert _engine_calls(provider) == 1
+    assert second.image is None
+
+
+async def test_the_hourly_limit_forgets_generations_older_than_an_hour(
+    provider: AIArtworkProvider,
+) -> None:
+    """Stored generations from over an hour ago no longer count after a reload."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
+    with patch("music_assistant.providers.ai_artwork.time.time", return_value=1_000_000.0):
+        await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+
+    await provider.handle_async_init()
+    await provider.get_playlist_metadata(_smart_playlist(item_id="2"))
+
+    assert _engine_calls(provider) == 2
+
+
 async def test_a_failing_engine_leaves_the_playlist_untouched(
     provider: AIArtworkProvider,
 ) -> None:
@@ -484,6 +511,47 @@ async def test_refreshes_soon_after_loading(provider: AIArtworkProvider) -> None
     await provider.unload()
 
     mass.cancel_timer.assert_called_once_with(f"{INSTANCE_ID}_catch_up")
+
+
+async def test_refresh_takes_the_cover_off_playlists_that_left_the_scope(
+    provider: AIArtworkProvider,
+) -> None:
+    """A playlist no longer in scope is refreshed so its cover comes off, and the file goes."""
+    _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_SMART})
+    old_cover = Path(provider._images_dir, "5_cover.jpg")
+    old_cover.write_bytes(b"old")
+    os.utime(old_cover, (time.time() - 3600, time.time() - 3600))
+    left = _playlist("spotify", item_id="5")
+    left.metadata.images = UniqueList([_image("5_cover.jpg", provider=INSTANCE_ID)])
+    _mass(provider).music.playlists.iter_library_items = MagicMock(return_value=_async_iter([left]))
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._refresh_covers()
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(left, force_refresh=True)
+    assert not old_cover.exists()
+
+
+def test_a_long_title_is_fitted_whole() -> None:
+    """A title too long for the overlay shrinks the font instead of losing words."""
+    title = "The Very Long Name Of A Playlist That Keeps Going Well Past Three Lines Of Text"
+
+    font, font_size, lines = _fit_title(title, 123, 880)
+
+    assert " ".join(lines).split() == title.split()
+    assert len(lines) <= 3
+    assert font_size < 123
+    measure = ImageDraw.Draw(Image.new("L", (1, 1)))
+    assert all(measure.textlength(line, font=font) <= 880 for line in lines)
+
+
+def test_a_word_wider_than_the_cover_is_split_not_dropped() -> None:
+    """Even at the smallest size, a word that does not fit is split over lines."""
+    title = "Supercalifragilisticexpialidocious" * 3
+
+    _font, _size, lines = _fit_title(title, 123, 200)
+
+    assert "".join(lines) == title
 
 
 async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProvider) -> None:

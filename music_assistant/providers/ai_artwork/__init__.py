@@ -19,7 +19,6 @@ import contextlib
 import hashlib
 import os
 import string
-import textwrap
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -49,6 +48,8 @@ from .constants import (
     BASE_PROMPT,
     CACHE_CATEGORY_DESCRIPTIONS,
     CACHE_KEEP_SECONDS,
+    CACHE_KEY_DESCRIBED_AT,
+    CACHE_KEY_GENERATED_AT,
     CACHE_KEY_GENERATION,
     CANVAS_SIZE,
     CATCH_UP_DELAY_SECONDS,
@@ -87,6 +88,8 @@ from .constants import (
     MAX_CONTEXT_TRACKS,
     MAX_DESCRIPTION_CHARS,
     MAX_FAVORITES,
+    MAX_TITLE_LINES,
+    MIN_TITLE_SCALE,
     NO_TEXT_RULES,
     ORPHAN_GRACE_SECONDS,
     PLAYLISTS_ALL,
@@ -235,8 +238,8 @@ class AIArtworkProvider(MetadataProvider):
         await asyncio.to_thread(os.makedirs, self._images_dir, exist_ok=True)
         self._lock = asyncio.Lock()
         self._description_lock = asyncio.Lock()
-        self._generated_at = deque()
-        self._described_at = deque()
+        self._generated_at = await self._load_timestamps(CACHE_KEY_GENERATED_AT)
+        self._described_at = await self._load_timestamps(CACHE_KEY_DESCRIBED_AT)
         generation = await self.mass.cache.get(
             CACHE_KEY_GENERATION, provider=self.instance_id, default=0
         )
@@ -519,7 +522,7 @@ class AIArtworkProvider(MetadataProvider):
                     task_id=f"{self.instance_id}_retry_{playlist.item_id}",
                 )
                 return False
-            self._generated_at.append(time.time())
+            await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
             try:
                 cover = await self._render(playlist, engine, self._look())
                 await asyncio.to_thread(
@@ -533,7 +536,7 @@ class AIArtworkProvider(MetadataProvider):
                     "Could not generate a cover for '%s': %s",
                     playlist.name,
                     err,
-                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                    exc_info=err,
                 )
                 return False
             self.logger.info("Generated a cover for '%s'", playlist.name)
@@ -614,7 +617,7 @@ class AIArtworkProvider(MetadataProvider):
                     "Reached the limit of descriptions per hour, skipping '%s'", playlist.name
                 )
                 return None
-            self._described_at.append(time.time())
+            await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
             try:
                 description = await self._write_description(playlist, engine)
             except Exception as err:
@@ -623,7 +626,7 @@ class AIArtworkProvider(MetadataProvider):
                     "Could not write a description for '%s': %s",
                     playlist.name,
                     err,
-                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                    exc_info=err,
                 )
                 return None
             if not description:
@@ -649,7 +652,10 @@ class AIArtworkProvider(MetadataProvider):
         except Exception as err:
             # the covers are still worth showing
             self.logger.warning(
-                "Could not write a preview description for '%s': %s", playlist.name, err
+                "Could not write a preview description for '%s': %s",
+                playlist.name,
+                err,
+                exc_info=err,
             )
             return ""
 
@@ -702,7 +708,7 @@ class AIArtworkProvider(MetadataProvider):
                 query, {"artists": artists[:MAX_CONTEXT_ITEMS]}, limit=MAX_FAVORITES
             )
         except Exception as err:
-            self.logger.debug("Could not read the play counts: %s", err)
+            self.logger.warning("Could not read the play counts: %s", err, exc_info=err)
             return "n/a"
         return (
             "; ".join(f"{row['artist']} - {row['track']} ({row['plays']} plays)" for row in rows)
@@ -747,7 +753,12 @@ class AIArtworkProvider(MetadataProvider):
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
-            self.logger.debug("Prompt engine failed for '%s': %s", playlist.name, err)
+            self.logger.warning(
+                "The text engine could not write a visual concept for '%s': %s",
+                playlist.name,
+                err,
+                exc_info=err,
+            )
             return DEFAULT_CONCEPT
         concept = " ".join(concept.split()).strip().strip('"').rstrip(".")
         if not concept or len(concept) > MAX_CONCEPT_CHARS:
@@ -778,7 +789,9 @@ class AIArtworkProvider(MetadataProvider):
                 if count >= MAX_CONTEXT_TRACKS:
                     break
         except Exception as err:
-            self.logger.debug("Could not read the tracks of '%s': %s", playlist.name, err)
+            self.logger.warning(
+                "Could not read the tracks of '%s': %s", playlist.name, err, exc_info=err
+            )
         top_artists = [artist for artist, _ in artist_counts.most_common(MAX_CONTEXT_ITEMS)]
         return PlaylistContext(
             seeds=[
@@ -803,7 +816,9 @@ class AIArtworkProvider(MetadataProvider):
                     mapping.item_id
                 )
             except Exception as err:
-                self.logger.debug("Could not read the rules of '%s': %s", playlist.name, err)
+                self.logger.warning(
+                    "Could not read the rules of '%s': %s", playlist.name, err, exc_info=err
+                )
         return None
 
     async def _file_name(self, playlist: Playlist, image_engine: ImageEngine) -> str:
@@ -830,6 +845,29 @@ class AIArtworkProvider(MetadataProvider):
         )
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()
         return f"{playlist.item_id}_{digest[:16]}{IMAGE_EXTENSION}"
+
+    async def _load_timestamps(self, key: str) -> deque[float]:
+        """Return the stored times of the generations of one kind within the last hour."""
+        stored = await self.mass.cache.get(key, provider=self.instance_id, default=[])
+        now = time.time()
+        return deque(
+            sorted(
+                float(stamp)
+                for stamp in (stored if isinstance(stored, list) else [])
+                if isinstance(stamp, int | float) and now - stamp < THROTTLE_WINDOW_SECONDS
+            )
+        )
+
+    async def _record(self, timestamps: deque[float], key: str) -> None:
+        """Record a generation now, and store it so a reload or restart still counts it."""
+        timestamps.append(time.time())
+        await self.mass.cache.set(
+            key,
+            list(timestamps),
+            expiration=THROTTLE_WINDOW_SECONDS,
+            provider=self.instance_id,
+            persistent=True,
+        )
 
     def _throttle_delay(self, timestamps: deque[float]) -> int | None:
         """
@@ -884,13 +922,16 @@ class AIArtworkProvider(MetadataProvider):
         """Return the library playlists that can be opted in, keeping the current selection."""
         selected = self._extra_playlists()
         options: list[ConfigValueOption] = []
-        with contextlib.suppress(Exception):
+        try:
             async for playlist in self.mass.music.playlists.iter_library_items():
                 if any(
                     m.provider_domain == SMART_PLAYLIST_DOMAIN for m in playlist.provider_mappings
                 ):
                     continue
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
+        except Exception as err:
+            # the settings page still opens, with only the current selection to pick from
+            self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         known = {option.value for option in options}
         options.extend(ConfigValueOption(item_id) for item_id in sorted(selected - known))
         return options
@@ -899,9 +940,12 @@ class AIArtworkProvider(MetadataProvider):
         """Return the library playlists that can be previewed, keeping the current selection."""
         selected = self.config.get_value(CONF_PREVIEW_PLAYLIST)
         options: list[ConfigValueOption] = []
-        with contextlib.suppress(Exception):
+        try:
             async for playlist in self.mass.music.playlists.iter_library_items():
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
+        except Exception as err:
+            # the settings page still opens, with only the current selection to pick from
+            self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         if selected and str(selected) not in {option.value for option in options}:
             options.append(ConfigValueOption(str(selected)))
         return options
@@ -959,9 +1003,13 @@ class AIArtworkProvider(MetadataProvider):
         )
         referenced: set[str] = set()
         async for playlist in self.mass.music.playlists.iter_library_items():
-            referenced.update(Path(img.path).name for img in self._own_images(playlist))
+            own_images = self._own_images(playlist)
             if not self._in_scope(playlist):
+                if own_images:
+                    # the metadata refresh takes the cover off, so its file is orphaned below
+                    await self.mass.metadata.update_metadata(playlist, force_refresh=True)
                 continue
+            referenced.update(Path(img.path).name for img in own_images)
             file_name: str | None = None
             if image_engine is not None and await self._wants_cover(playlist):
                 file_name = await self._file_name(playlist, image_engine)
@@ -1092,13 +1140,12 @@ def _draw_title(canvas: Image.Image, layout: TitleLayout, title: str) -> Image.I
     size = canvas.width
     margin = int(size * 0.07)
     if layout == TitleLayout.BOTTOM_LEFT_SMALL:
-        font_size, max_chars = int(size * 0.065), 26
+        font_size = int(size * 0.065)
     elif layout == TitleLayout.CENTER:
-        font_size, max_chars = int(size * 0.09), 16
+        font_size = int(size * 0.09)
     else:
-        font_size, max_chars = int(size * 0.12), 12
-    font = _get_font(font_size)
-    lines = textwrap.wrap(title, width=max_chars, break_long_words=True)[:3] or [title]
+        font_size = int(size * 0.12)
+    font, font_size, lines = _fit_title(title, font_size, size - 2 * margin)
     line_height = int(font_size * 1.08)
     block_height = line_height * len(lines)
 
@@ -1142,6 +1189,56 @@ def _draw_title(canvas: Image.Image, layout: TitleLayout, title: str) -> Image.I
             stroke_fill=(255, 255, 255, 255),
         )
     return canvas.convert("RGB")
+
+
+def _fit_title(
+    title: str, font_size: int, max_width: int
+) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, int, list[str]]:
+    """
+    Return the font, its size and the lines that fit the whole title within the width.
+
+    The font shrinks until the title takes at most a few lines; nothing of it is ever dropped.
+
+    :param title: The title to fit.
+    :param font_size: The size to start from.
+    :param max_width: The width each line has to fit in, in pixels.
+    """
+    measure = ImageDraw.Draw(Image.new("L", (1, 1)))
+    min_size = max(1, int(font_size * MIN_TITLE_SCALE))
+    while True:
+        font = _get_font(font_size)
+        lines = _wrap_title(title, font, max_width, measure)
+        if len(lines) <= MAX_TITLE_LINES or font_size <= min_size:
+            return font, font_size, lines
+        font_size = max(min_size, int(font_size * 0.9))
+
+
+def _wrap_title(
+    title: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: int,
+    measure: ImageDraw.ImageDraw,
+) -> list[str]:
+    """Return the title wrapped into lines that fit the width, breaking only too long words."""
+    lines: list[str] = []
+    current = ""
+    for word in title.split():
+        candidate = f"{current} {word}" if current else word
+        if measure.textlength(candidate, font=font) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        # a word wider than the line on its own is split over as many lines as it needs
+        current = ""
+        for char in word:
+            if current and measure.textlength(current + char, font=font) > max_width:
+                lines.append(current)
+                current = ""
+            current += char
+    if current:
+        lines.append(current)
+    return lines or [title]
 
 
 def _vertical_gradient(
