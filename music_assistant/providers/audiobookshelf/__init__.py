@@ -22,6 +22,9 @@ from aioaudiobookshelf.exceptions import (
 from aioaudiobookshelf.exceptions import (
     NotFoundError as AbsNotFoundError,
 )
+from aioaudiobookshelf.exceptions import (
+    ServiceUnavailableError as AbsServiceUnavailableError,
+)
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
@@ -86,6 +89,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -259,6 +263,11 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 translation_key="login_failed",
                 translation_owner=self.translation_owner,
                 translation_args=[base_url],
+            ) from exc
+        except AbsServiceUnavailableError as exc:
+            # lets mass retry the load once the server is reachable again
+            raise ProviderUnavailableError(
+                f"Audiobookshelf instance at {base_url} is unreachable."
             ) from exc
 
         if token_old is not None and token_api is None:

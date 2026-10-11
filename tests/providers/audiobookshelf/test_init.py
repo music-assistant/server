@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf import Audiobookshelf
@@ -62,3 +64,23 @@ async def test_sync_library_keys_prunes_stale_and_adds_new(provider: Audiobooksh
     assert list(provider.libraries.audiobooks.keys()) == ["existing_book"]
     assert provider.libraries.audiobooks["existing_book"].item_ids == {"id_a", "id_b"}
     assert list(provider.libraries.podcasts.keys()) == ["new_pod"]
+
+
+@pytest.mark.parametrize("api_token", [None, "key"])
+@pytest.mark.asyncio
+async def test_async_init_unreachable_server(
+    provider: Audiobookshelf, api_token: str | None
+) -> None:
+    """An unreachable server raises an error mass retries the load on."""
+    setup = {
+        "url": "http://abs:13378",
+        "username": "user",
+        "password": "pw",
+        "api_token": api_token,
+    }
+    provider.mass.http_session.post = AsyncMock(side_effect=ClientConnectionError)  # type: ignore[method-assign]
+    with (
+        patch.object(provider, "get_setup_value", side_effect=setup.get),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await provider.handle_async_init()
