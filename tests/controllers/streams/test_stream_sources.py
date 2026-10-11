@@ -305,7 +305,7 @@ def test_the_order_does_not_depend_on_the_input_order() -> None:
         _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
     ]
     expected = [f"{LOCAL}/1", f"{TIDAL}/1", f"{TIDAL}/2", f"{OTHER_TIDAL}/1", f"{SPOTIFY}/1"]
-    rng = random.Random(1)
+    rng = random.Random(1)  # noqa: S311 - test data
 
     for _ in range(20):
         shuffled = list(candidates)
