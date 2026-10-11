@@ -86,7 +86,7 @@ if TYPE_CHECKING:
 
 DOMAIN = "hass"
 CONF_URL = "url"
-CONF_AUTH_TOKEN = "token"
+CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30

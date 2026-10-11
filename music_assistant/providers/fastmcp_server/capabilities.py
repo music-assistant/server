@@ -31,5 +31,5 @@ class Capability(StrEnum):
     CONFIG_WRITE_CORE = "config:write:core"
     CONFIG_WRITE_PLAYER = "config:write:player"
     # Bandit B105: this fixed authorization capability is not a secret value.
-    CONFIG_WRITE_SECRET = "config:write:secret"  # nosec B105
+    CONFIG_WRITE_SECRET = "config:write:secret"  # noqa: S105
     SYSTEM_ADMIN = "system:admin"

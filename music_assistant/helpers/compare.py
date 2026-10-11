@@ -1372,7 +1372,7 @@ def _is_missing_remaster_version(base_version: str, compare_version_value: str) 
         return False
     version_tokens = base_tokens or compare_tokens
     return "remaster" in version_tokens and all(
-        token == "remaster" or token.isdigit() for token in version_tokens
+        word == "remaster" or word.isdigit() for word in version_tokens
     )
 
 
