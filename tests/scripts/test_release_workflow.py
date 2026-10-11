@@ -17,6 +17,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from music_assistant.helpers.build_info import BUILD_INFO_FILE
 from scripts.release_workflow import (
     APP_SECRETS_PATH,
     OCI_REVISION_ANNOTATION,
@@ -490,6 +491,20 @@ def test_release_workflow_verifies_the_build_info_of_the_exact_image() -> None:
     assert "get_official_build_info" in run
     assert "release_workflow.py verify-build-info" in run
     assert "exact_image" in workflow["jobs"]["publish_release"]["needs"]
+
+
+def test_release_image_build_args_reach_the_build_info_file() -> None:
+    """The release passes the build info args to the Dockerfile, which writes the file it reads."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    build_step = _workflow_step(workflow, "exact_image", "Build and push exact image")
+    passed = set(re.findall(r"^(\w+)=", build_step["with"]["build-args"], re.MULTILINE))
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    # a build arg the Dockerfile does not declare is silently ignored
+    assert passed <= set(re.findall(r"^ARG (\w+)", dockerfile, re.MULTILINE))
+    assert {"MASS_VERSION", "MASS_REVISION", "MASS_WHEEL_SHA256"} <= passed
+    assert f"> {BUILD_INFO_FILE}" in dockerfile
 
 
 def test_addon_update_replaces_duplicate_version_and_retains_three(tmp_path: Path) -> None:

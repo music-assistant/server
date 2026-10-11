@@ -135,10 +135,11 @@ branch recovery path.
 - **Before publication:** The matching draft remains mutable. Complete assets are
   downloaded and reused byte-for-byte; incomplete assets are replaced. If the exact
   image already exists, its source, wheel digest, platforms, OCI digest, and official
-  build info must match, otherwise the rerun stops without overwriting it. Run-scoped
-  build artifacts remain available to GitHub's **Re-run failed jobs** path. A crash after
-  exact tag creation but before draft creation can resume only when the annotated tag has
-  the workflow's exact source marker and `github-actions[bot]` identity.
+  build info must match, otherwise the rerun stops without overwriting it, so a build info
+  failure needs its fix released under a new version. Run-scoped build artifacts remain
+  available to GitHub's **Re-run failed jobs** path. A crash after exact tag creation but
+  before draft creation can resume only when the annotated tag has the workflow's exact
+  source marker and `github-actions[bot]` identity.
 - **After publication:** Tests, package builds, draft mutation, and publication are
   skipped. The immutable release, assets, attestations, tag, and exact image are verified
   again, then rolling aliases and downstream updates resume. If a newer release already
