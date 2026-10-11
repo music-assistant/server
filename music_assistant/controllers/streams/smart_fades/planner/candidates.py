@@ -111,6 +111,9 @@ _FILTER_OUT_END_HZ: float = 600.0
 # an outgoing kick counts until the cutoff passes the top of the low band its kick bars are
 # read in (BAND_RMS_BANDS["low"])
 _KICK_TOP_HZ: float = 120.0
+# echo taps at or above this level repeat a word audibly over the next track; the softer
+# ones sit under it
+_ECHO_AUDIBLE_DECAY: float = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -1121,6 +1124,8 @@ class CandidateFactory:
                 right - left for left, right in merge_windows(in_fade)
             )
             if ctx.vocal_in_scoring is not None:
+                if plan.echo is not None:
+                    outgoing_windows += _echoed_windows(ctx.vocal_out_scoring.windows, plan.echo)
                 collision_seconds, weighted_collision = collision_metrics(
                     outgoing_windows,
                     self._rendered_incoming_windows(plan, ctx.vocal_in_scoring.windows),
@@ -1279,6 +1284,32 @@ def _dressed_anchors(
 def _echo_length(ctx: TransitionContext) -> float:
     """Return how long an echo out's taps ring at the outgoing tempo, in seconds."""
     return len(ECHO_DECAYS) * 60.0 / ctx.outgoing.bpm
+
+
+def _echoed_windows(
+    windows: Iterable[tuple[float, float]], echo: EchoOut
+) -> list[tuple[float, float]]:
+    """
+    Return the audible echo taps' copies of the windows in the beat before the cut.
+
+    The copies are in rendered crossfade seconds: an echo out never stretches, so its overlap
+    starts at the cut in input and rendered time.
+
+    :param windows: Outgoing buffer-local windows.
+    :param echo: The plan's echo out.
+    """
+    beat_start = echo.cut_s - echo.beat_s
+    echoed = [
+        (max(left, beat_start) - beat_start, min(right, echo.cut_s) - beat_start)
+        for left, right in windows
+        if right > beat_start and left < echo.cut_s
+    ]
+    return [
+        (left + (tap - 1) * echo.beat_s, right + (tap - 1) * echo.beat_s)
+        for tap, decay in enumerate(ECHO_DECAYS, start=1)
+        if decay >= _ECHO_AUDIBLE_DECAY
+        for left, right in echoed
+    ]
 
 
 def _clipped(windows: Iterable[tuple[float, float]], end: float) -> list[tuple[float, float]]:

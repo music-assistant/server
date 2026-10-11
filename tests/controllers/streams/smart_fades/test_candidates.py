@@ -375,7 +375,7 @@ class TestBuildEchoOut:
         assert plan.highpass is None
 
     def test_nothing_dry_clashes_after_the_cut(self) -> None:
-        """Kicks and vocals on both decks never meet: the outgoing ones stop at the cut."""
+        """The dry signal stops at the cut; only the two audible taps repeat the sung beat."""
         sung = VocalMask(windows=[(0.0, 45.0)])
         ctx = dataclasses.replace(
             _ctx(_kicked(120.0), _kicked(156.0)), vocal_out_scoring=sung, vocal_in_scoring=sung
@@ -384,8 +384,8 @@ class TestBuildEchoOut:
         candidate = _dressed(ctx)[(TransitionStyle.ECHO_OUT, 1)]
 
         assert candidate.metrics.rhythm_clash_bars == 0.0
-        assert candidate.metrics.collision_seconds == 0.0
-        assert candidate.metrics.weighted_collision_seconds == 0.0
+        # the 0.5 and 0.25 taps of the sung last beat play over the next track's vocal
+        assert candidate.metrics.collision_seconds == pytest.approx(2 * 60.0 / 120.0)
         assert candidate.metrics.outgoing_vocal_fade_seconds == 0.0
         assert candidate.metrics.anchor_on_downbeat is True
 

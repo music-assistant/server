@@ -36,6 +36,7 @@ from music_assistant.controllers.streams.smart_fades.planner.selection import (
     CandidateSelector,
     ScoredCandidate,
 )
+from music_assistant.controllers.streams.smart_fades.vocal import VocalMask
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 from .conftest import disable_dressed_transitions
@@ -230,6 +231,43 @@ class TestDressedScenarios:
         assert CandidateFactory(ctx, LOGGER).build(spec) is not None
         assert CandidateFactory(late, LOGGER).build(spec) is None
         assert CandidateFactory(none, LOGGER).build(spec) is None
+
+    def test_an_echoed_word_counts_against_the_next_tracks_vocal(self) -> None:
+        """The two audible taps repeat a vocal sung into the cut over the next track's vocal."""
+        out, inc = _track(120.0), _track(150.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=30.0,
+            entry_s=None,
+            source="echo-out",
+            ideal_bars=1,
+            style=TransitionStyle.ECHO_OUT,
+        )
+        built = CandidateFactory(ctx, LOGGER).build(spec)
+        assert built is not None
+        assert built.plan.echo is not None
+        cut, beat = built.plan.echo.cut_s, built.plan.echo.beat_s
+        sings_in = VocalMask(windows=[(0.0, 10.0)])
+        sung_into_cut = dataclasses.replace(
+            ctx,
+            vocal_out_scoring=VocalMask(windows=[(cut - 4 * beat, cut)]),
+            vocal_in_scoring=sings_in,
+        )
+        ends_a_beat_early = dataclasses.replace(
+            ctx,
+            vocal_out_scoring=VocalMask(windows=[(cut - 4 * beat, cut - beat)]),
+            vocal_in_scoring=sings_in,
+        )
+
+        echoed = CandidateFactory(sung_into_cut, LOGGER).build(spec)
+        clear = CandidateFactory(ends_a_beat_early, LOGGER).build(spec)
+
+        assert echoed is not None
+        assert clear is not None
+        assert echoed.metrics.collision_seconds == pytest.approx(2 * beat, abs=0.05)
+        assert clear.metrics.collision_seconds == 0.0
 
     def test_kick_against_kick_25_percent_apart_echoes_out(
         self, monkeypatch: pytest.MonkeyPatch
