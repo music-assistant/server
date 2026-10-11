@@ -13,7 +13,9 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.nugs import NugsProvider
+from tests.common import use_real_create_task
 
 
 def _response(provider: NugsProvider, status: int = 200) -> Mock:
@@ -99,3 +101,35 @@ async def test_authenticated_request(provider: NugsProvider) -> None:
     assert request.args == ("https://catalog.nugs.net/api/v1/search",)
     assert request.kwargs["headers"] == {"Authorization": "Bearer test-token"}
     assert request.kwargs["params"] == {"query": "Billy"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["authenticated", "legacy"])
+async def test_temporary_failure_retries_through_decorated_transport(
+    provider: NugsProvider, transport: str
+) -> None:
+    """A temporary HTTP failure retries once and returns the following successful response."""
+    failed = _response(provider, 500)
+    failed_context = cast("Mock", provider.mass.http_session.get).return_value
+    succeeded = _response(provider)
+    succeeded_context = cast("Mock", provider.mass.http_session.get).return_value
+    request = cast("Mock", provider.mass.http_session.get)
+    request.side_effect = [failed_context, succeeded_context]
+    provider.throttler = ThrottlerManager(rate_limit=1000, retry_attempts=2, initial_backoff=0)
+
+    if transport == "authenticated":
+        result = await provider._get_data("catalog", "search", query="Billy")
+        assert result == {"items": []}
+        succeeded.json.assert_awaited_once()
+    else:
+        provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+            return_value=(None, False, False)
+        )
+        provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+        use_real_create_task(provider.mass)
+        result = await provider._get_search_data("Billy")
+        assert result == {}
+        succeeded.text.assert_awaited_once()
+    assert request.call_count == 2
+    failed.json.assert_not_awaited()
+    failed.text.assert_not_awaited()

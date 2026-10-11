@@ -153,6 +153,22 @@ async def test_duplicate_and_unavailable_hits_do_not_consume_limit(provider: Nug
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("missing_id", ["trackID", "artistID", "containerID"])
+async def test_malformed_recording_ids_do_not_displace_valid_hit(
+    provider: NugsProvider, missing_id: str
+) -> None:
+    """Incomplete catalog rows cannot become playable results or consume the limit."""
+    request = _stub_search(provider, "song")
+    section = request.return_value["catalogSearchTypeContainers"][0]["catalogSearchContainers"][0]
+    first = section["catalogSearchResultItems"][0]
+    section["catalogSearchResultItems"] = [{**first, "trackID": 999999, missing_id: None}, first]
+
+    result = await provider.search("Dust", [MediaType.TRACK], 1)
+
+    assert [track.item_id for track in result.tracks] == [str(first["trackID"])]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
 async def test_search_respects_requested_type(
     provider: NugsProvider, media_type: MediaType
@@ -321,8 +337,8 @@ async def test_artist_title_fallback_filters_before_limit(provider: NugsProvider
 async def test_literal_song_title_with_separator(provider: NugsProvider) -> None:
     """A successful literal song query is not reinterpreted as artist and title."""
     request = _stub_search(provider, "song")
-    result = await provider.search("Song - Part Two", [MediaType.TRACK], 1)
-    assert len(result.tracks) == 1
+    result = await provider.search("Song - Part Two", [MediaType.TRACK], 4)
+    assert len(result.tracks) == 3
     request.assert_awaited_once_with("Song - Part Two")
 
 

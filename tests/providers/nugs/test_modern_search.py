@@ -274,3 +274,51 @@ async def test_partial_venue_preserves_recording_results(provider: NugsProvider)
     assert result.albums
     assert result.tracks == [recording]
     provider._search_recordings.assert_awaited_once_with("Billy Strings Red", 5)
+
+
+@pytest.mark.asyncio
+async def test_artist_discovery_deduplicates_before_limit(provider: NugsProvider) -> None:
+    """Repeated artist suggestions cannot displace a distinct artist."""
+    request = _catalog(provider)
+    request.side_effect = None
+    request.return_value = {
+        "result": {
+            "artists": [
+                {"id": 1125, "name": "Billy Strings"},
+                {"id": 1125, "name": "Billy Strings"},
+                {"id": 22, "name": "Umphrey's McGee"},
+            ]
+        }
+    }
+    result = await provider.search("artists", [MediaType.ARTIST], 2)
+    assert [artist.item_id for artist in result.artists] == ["1125", "22"]
+
+
+def test_longest_artist_name_wins_over_prefix(provider: NugsProvider) -> None:
+    """A shorter artist prefix must not consume a longer artist's name."""
+    data = {
+        "artists": [
+            {"id": 1, "name": "Billy"},
+            {"id": 1125, "name": "Billy Strings"},
+        ],
+        "venues": [{"id": 42, "name": "Red Rocks"}],
+    }
+    assert provider._get_search_filters("Billy Strings Red Rocks", data) == {
+        "artistIds": "1125",
+        "venueIds": "42",
+    }
+
+
+@pytest.mark.asyncio
+async def test_short_release_page_advances_by_consumed_items(provider: NugsProvider) -> None:
+    """A short page can still have later results available."""
+    first = _fixture("releases_page0")["items"][0]
+    second = _fixture("releases_page1")["items"][0]
+    request = _catalog(
+        provider,
+        {"items": [first], "total": 2},
+        {"items": [second], "total": 2},
+    )
+    result = await provider.search("Billy Strings", [MediaType.ALBUM], 3)
+    assert [album.item_id for album in result.albums] == [first["id"], second["id"]]
+    assert [call.kwargs["offset"] for call in request.call_args_list[1:]] == [0, 1]
