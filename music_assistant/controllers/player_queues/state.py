@@ -40,6 +40,13 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
 _VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback_speed")
 
 
+@dataclass
+class FlowPlayLogEntry(PlayLogEntry):
+    """A flow playback entry with the seek offset of that particular playback."""
+
+    seek_position: float = 0
+
+
 @dataclass(slots=True)
 class PlayerQueueData:
     """The complete server-side record for a queue: the wire `PlayerQueue` plus all server-only state."""

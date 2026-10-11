@@ -359,7 +359,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     if current_item.queue_item_id == item_id_in_buffer:
                         break
                     await asyncio.sleep(1)
-                if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
+                # Flow repeats are loaded at the stream transition, not speculatively while
+                # this item's audio is playing. The loader checks every retry before mutation.
+                if next_item := await self.load_next_queue_item(
+                    queue_id, item_id_in_buffer, allow_same_item=not queue.flow_mode
+                ):
                     self.logger.debug(
                         "Preloaded next item %s for queue %s",
                         next_item.name,
