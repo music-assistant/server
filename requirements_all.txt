@@ -73,7 +73,7 @@ pyamplipi==0.4.12
 pyatv==0.18.0
 pyblu==2.1.0
 PyChromecast==14.0.10
-pycryptodome==3.23.0
+pycryptodome==3.24.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.1.0
