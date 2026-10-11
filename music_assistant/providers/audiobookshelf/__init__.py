@@ -257,6 +257,9 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                     session_config=session_config, username=username, password=password
                 )
             await self._client_socket.init_client()
+            libraries = await self._client.get_all_libraries()
+            # cache username
+            self.abs_username = (await self._client.get_my_user()).username
         except AbsLoginError as exc:
             raise LoginFailed(
                 f"Login to abs instance at {base_url} failed.",
@@ -307,12 +310,8 @@ for more details.
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
 
-        libraries = await self._client.get_all_libraries()
         if libraries:
             self._sync_library_keys(libraries)
-
-        # cache username
-        self.abs_username = (await self._client.get_my_user()).username
 
         # set socket callbacks
         self._client_socket.set_item_callbacks(

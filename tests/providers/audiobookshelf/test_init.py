@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
 from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
@@ -81,6 +82,26 @@ async def test_async_init_unreachable_server(
     provider.mass.http_session.post = AsyncMock(side_effect=ClientConnectionError)  # type: ignore[method-assign]
     with (
         patch.object(provider, "get_setup_value", side_effect=setup.get),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await provider.handle_async_init()
+
+
+@pytest.mark.parametrize("failing_call", ["get_all_libraries", "get_my_user"])
+@pytest.mark.asyncio
+async def test_async_init_server_lost_after_login(
+    provider: Audiobookshelf, failing_call: str
+) -> None:
+    """A server lost right after login raises an error mass retries the load on."""
+    client = Mock(get_all_libraries=AsyncMock(return_value=[]), get_my_user=AsyncMock())
+    setattr(client, failing_call, AsyncMock(side_effect=AbsServiceUnavailableError))
+    socket_client = Mock(init_client=AsyncMock())
+    with (
+        patch.object(provider, "get_setup_value", return_value=None),
+        patch(
+            "music_assistant.providers.audiobookshelf.aioabs.get_user_and_socket_client",
+            AsyncMock(return_value=(client, socket_client)),
+        ),
         pytest.raises(ProviderUnavailableError),
     ):
         await provider.handle_async_init()
