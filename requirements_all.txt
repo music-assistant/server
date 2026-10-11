@@ -111,7 +111,7 @@ ya-passport-auth[ma]==2.2.0
 yadisk==3.4.1
 yandex-music[async]==3.2.1
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
-yoto-api==4.5.0
+yoto-api==4.5.1
 ytmusicapi==1.12.3
 zeroconf==0.151.5
 zvuk-music[async]==0.6.3
