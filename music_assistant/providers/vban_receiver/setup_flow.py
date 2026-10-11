@@ -98,11 +98,11 @@ async def run_setup(session: SetupSession) -> None:
                     key=CONF_BIND_IP,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value="0.0.0.0",
+                    default_value="0.0.0.0",  # noqa: S104 - user-configurable bind address
                     value=prefill.get(CONF_BIND_IP),
                     options=[
                         ConfigValueOption(value, title=value)
-                        for value in {"0.0.0.0", *await get_ip_addresses(include_ipv6=True)}
+                        for value in {"0.0.0.0", *await get_ip_addresses(include_ipv6=True)}  # noqa: S104 - user-configurable bind address
                     ],
                     advanced=True,
                 ),

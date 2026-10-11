@@ -1189,7 +1189,7 @@ async def is_port_in_use(port: int, host: str | None = None) -> bool:
         else:
             # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
             # A port is considered free if it can be bound on at least one address family.
-            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))  # noqa: S104 - probe whether the port is free
         for family, addr in candidates:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as _sock:

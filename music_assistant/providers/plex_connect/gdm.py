@@ -158,11 +158,11 @@ class PlexGDMAdvertiser:
 
         # Bind to the GDM client port so M-SEARCH replies originate from it
         # (strict clients ignore replies from an ephemeral source port)
-        sock.bind(("0.0.0.0", GDM_LISTEN_PORT))
+        sock.bind(("0.0.0.0", GDM_LISTEN_PORT))  # noqa: S104 - broadcast discovery
 
         # Join the GDM multicast group to also receive multicast M-SEARCH queries
         # (may be denied in restricted network namespaces - broadcast still works)
-        mreq = socket.inet_aton(GDM_MULTICAST_ADDR) + socket.inet_aton("0.0.0.0")
+        mreq = socket.inet_aton(GDM_MULTICAST_ADDR) + socket.inet_aton("0.0.0.0")  # noqa: S104 - multicast on the default interface
         try:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         except OSError as e:
