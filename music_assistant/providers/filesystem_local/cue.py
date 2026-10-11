@@ -41,6 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.cue_sheet import CueSheet, CueTrack, parse_cue_sheet
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.process import descriptor_path
 from music_assistant.helpers.tags import AudioTags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
@@ -301,13 +302,19 @@ class CueSheetHandler:
 
         # re-resolve to get a current absolute path (e.g. fresh auth for WebDAV)
         audio_item = await self.provider.resolve(audio_relative_path)
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_item.absolute_path,
-            input_format=original_format,
-            output_format=streamdetails.audio_format,
-            extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
-        ):
-            yield chunk
+        fd = await self.provider.open_local_file(audio_item.absolute_path)
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_item.absolute_path if fd is None else descriptor_path(fd),
+                input_format=original_format,
+                output_format=streamdetails.audio_format,
+                extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
+                pass_fds=() if fd is None else (fd,),
+            ):
+                yield chunk
+        finally:
+            if fd is not None:
+                os.close(fd)
 
     async def _parse_tracks_impl(self, cue_item: FileSystemItem) -> list[Track]:
         """Parse a CUE sheet's tracks (implementation, see :meth:`parse_tracks`)."""
