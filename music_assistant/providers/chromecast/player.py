@@ -371,8 +371,11 @@ class ChromecastPlayer(Player):
             return
         if not (current_media := self.state.current_media):
             return
+        stream_url = self._attr_current_media.uri if self._attr_current_media else ""
         if not (
-            (self._attr_current_media and "/flow/" in self._attr_current_media.uri)
+            "/flow/" in stream_url
+            # a Universal Group member plays the group's flow stream, which carries no metadata
+            or "/ugp/" in stream_url
             or current_media.media_type
             in (
                 MediaType.RADIO,

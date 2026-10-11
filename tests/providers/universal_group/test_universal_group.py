@@ -20,6 +20,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_GROUP_MEMBERS
 from music_assistant.controllers.players.constants import PlayerLockPurpose
@@ -232,6 +233,69 @@ class TestPowerlessLifecycle:
         mass.players.get_player_lock.assert_any_call("m2", PlayerLockPurpose.PLAYBACK)
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_play_media_forwards_track_metadata(self) -> None:
+        """Members must receive the track details so they can render artwork."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp._attr_static_group_members = ["m1"]
+        member1 = _make_mock_player("m1")
+        mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: {"m1": member1}.get(pid)
+        )
+        mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter([member1])
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(
+                PlayerMedia(
+                    uri="track://x",
+                    source_id="src",
+                    title="Song",
+                    artist="Artist",
+                    album="Album",
+                    image_url="http://test/imageproxy/cover.jpg",
+                    queue_session_id="session-1",
+                )
+            )
+
+        member_media = mass.players._handle_play_media.await_args_list[0].args[1]
+        assert member_media.image_url == "http://test/imageproxy/cover.jpg"
+        assert member_media.artist == "Artist"
+        assert member_media.album == "Album"
+
+    @pytest.mark.asyncio
+    async def test_joining_member_gets_current_track_metadata(self) -> None:
+        """A member joining mid-stream must get the current track, not the first one."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp.stream.session_id = "session-1"
+        ugp._attr_current_media = PlayerMedia(
+            uri="track://old",
+            artist="Old Artist",
+            album="Old Album",
+            image_url="http://test/imageproxy/old.jpg",
+        )
+        ugp._state.current_media = PlayerMedia(
+            uri="track://new",
+            artist="New Artist",
+            album="New Album",
+            image_url="http://test/imageproxy/new.jpg",
+        )
+        mass.players.get_player = MagicMock(return_value=_make_mock_player("m2"))
+
+        with (
+            patch.object(UniversalGroupPlayer, "is_dynamic", True),
+            patch.object(ugp, "update_state"),
+        ):
+            await ugp.set_members(player_ids_to_add=["m2"])
+
+        member_media = mass.players._handle_play_media.await_args_list[0].args[1]
+        assert member_media.image_url == "http://test/imageproxy/new.jpg"
+        assert member_media.artist == "New Artist"
+        assert member_media.album == "New Album"
 
     @pytest.mark.asyncio
     async def test_stop_releases_members_when_powerless(self) -> None:
