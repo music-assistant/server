@@ -95,6 +95,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             return PurePosixPath(parsed.path).name
         return parsed.netloc
 
+    async def open_local_file(self, path: str) -> int | None:
+        """Return None: the stream path of a WebDAV file is its URL, which ffmpeg opens itself."""
+        return None
+
     @property
     def _auth_header(self) -> str | None:
         """Return the WebDAV Authorization header value, or None when no credentials are set."""
