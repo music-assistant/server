@@ -24,7 +24,7 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
+from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -261,9 +261,13 @@ async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
     """
     for provider in mass.providers:
         await provider.initialized.wait()
-    # twice the window: the debounce a registration already armed, plus the tail of the
-    # post-load work that runs after a provider marks itself initialized
-    await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
+        # the post-load task keeps working after it marks the provider initialized
+        if post_load := mass.get_task(f"post_load_provider_{provider.instance_id}"):
+            await asyncio.wait({post_load})
+    # emit the debounced task list now rather than waiting out its timer
+    if mass.tasks._scheduled_task_update_at is not None:
+        mass.cancel_timer(TASK_UPDATE_TIMER_ID)
+        mass.tasks._signal_task_update()
 
 
 @contextlib.contextmanager

@@ -31,6 +31,12 @@ ARTIST_MBID = "aa1b2c3d-1c99-4c1b-b0f1-9f2c1b2a3d44"
 ARTIST_IMAGE = "http://images/artist1.jpg"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 def _artist_stub() -> Artist:
     """Return the bare artist providers embed in their track payloads."""
     return Artist(

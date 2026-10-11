@@ -10,6 +10,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
@@ -22,6 +23,8 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
     CandidateSpec,
+    EchoOutGenerator,
+    FilterOutGenerator,
     bars_ladder,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -316,6 +319,104 @@ class TestQuickFadeSkipsEq:
         assert eq.mid_in is None
 
 
+class TestFinalizeSegue:
+    """A segue keeps the curves its factory picked; only two equal-power edges get the EQ."""
+
+    def _segue(self, ctx: TransitionContext, fadeout: str, fadein: str) -> Candidate:
+        spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=ctx.audio_end,
+            entry_s=None,
+            style=TransitionStyle.SEGUE,
+            overlap_s=15.0,
+            ideal_overlap_s=15.0,
+        )
+        candidate = CandidateFactory(ctx, LOGGER).build(spec)
+        assert candidate is not None
+        plan = replace(candidate.plan, fadeout_curve=fadeout, fadein_curve=fadein)
+        return replace(candidate, plan=plan)
+
+    @pytest.mark.parametrize(("fadeout", "fadein"), [("nofade", "qsin"), ("qsin", "nofade")])
+    def test_a_quiet_edge_ships_neutral_eq_and_its_curves(self, fadeout: str, fadein: str) -> None:
+        """A segue with a quiet side plays as a pure volume handover with the factory's curves."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, fadeout, fadein))
+
+        assert (plan.fadeout_curve, plan.fadein_curve) == (fadeout, fadein)
+        assert plan.eq_plan.low_out is None
+        assert plan.eq_plan.low_in is None
+        assert plan.eq_plan.high_out is None
+        assert plan.eq_plan.high_in is None
+
+    def test_two_equal_power_edges_keep_the_handover_eq(self) -> None:
+        """A segue fading both loud edges stages the bass handover like a blend."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, "qsin", "qsin"))
+
+        assert plan.eq_plan.low_out is not None
+        assert plan.eq_plan.low_in is not None
+
+    def test_the_factory_curve_survives_a_mastered_fade(self) -> None:
+        """Finalize does not re-run the mastered-fade rule over a segue's own choice."""
+        out, inc = _mastered_fade_pair()
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, "qsin", "qsin"))
+
+        assert plan.fadeout_curve == "qsin"
+
+
+class TestFinalizeDressed:
+    """A dressed transition hands over without EQ; an echo out keeps the curves it was built with."""
+
+    def _built(self, ctx: TransitionContext) -> list[Candidate]:
+        factory = CandidateFactory(ctx, LOGGER)
+        specs = [*FilterOutGenerator().generate(ctx), *EchoOutGenerator().generate(ctx)]
+        built = [factory.build(spec) for spec in specs]
+        return [candidate for candidate in built if candidate is not None]
+
+    def test_a_bass_heavy_pair_ships_no_shelf(self) -> None:
+        """The incoming track enters at full range and the outgoing has only its own effect."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        for candidate in self._built(ctx):
+            eq = PlanAssembler(ctx, LOGGER).finalize(candidate).eq_plan
+            assert (eq.low_out, eq.low_in, eq.high_out, eq.high_in, eq.mid_out, eq.mid_in) == (
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+    def test_inside_a_mastered_fade_only_the_filter_out_drops_its_curve(self) -> None:
+        """The record's own fade replaces a filter out's volume fade; the echo keeps nofade."""
+        out, inc = _mastered_fade_pair()
+        inc.bpm = 150.0
+        # anchored at the audible end, inside the fade detected from 17s on
+        ctx = replace(_ctx(out, inc), default_anchor=43.0)
+        assert ctx.fade_onset is not None
+        assembler = PlanAssembler(ctx, LOGGER)
+        plans = {(c.plan.style, c.spec.bars): assembler.finalize(c) for c in self._built(ctx)}
+
+        assert plans[(TransitionStyle.FILTER_OUT, 4)].fadeout_curve == "nofade"
+        echo = plans[(TransitionStyle.ECHO_OUT, 1)]
+        assert (echo.fadeout_curve, echo.fadein_curve) == ("nofade", "nofade")
+        assert echo.echo is not None
+
+
 class TestFallbackCrossfadeOnUnreliableMasks:
     """Saturated (unreliable) masks never push the fallback into deferral or a duck."""
 
@@ -349,6 +450,25 @@ class TestFallbackCrossfadeOnUnreliableMasks:
 
         assert plan is not None
         assert plan.fadeout_curve == "nofade"
+
+
+class TestFallbackPlansShipAsCut:
+    """The fallback crossfade and the emergency handoff are unsynced volume fades."""
+
+    def test_both_last_resorts_carry_the_cut_style_on_a_blend_tier(self) -> None:
+        """Even on a beatmatchable tier, neither last resort reads as a blend."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = _ctx(out, inc)
+        assert ctx.tier is TransitionTier.FULL_BLEND
+        factory = CandidateFactory(ctx, LOGGER)
+
+        fallback = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+        handoff = EmergencyHandoffFactory(ctx, factory, LOGGER).build()
+
+        assert fallback is not None
+        assert fallback.style is TransitionStyle.CUT
+        assert handoff.style is TransitionStyle.CUT
 
 
 class TestEmergencyHandoff:

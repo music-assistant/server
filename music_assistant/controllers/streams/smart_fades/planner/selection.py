@@ -3,7 +3,10 @@ Smart Fades - candidate selection.
 
 A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
-entry, then picks the lowest-penalty, non-rejected survivor. Every policy runs
+entry, then picks the lowest-penalty, non-rejected survivor; a segue only when
+it lasts at least as long as the best other survivor, and a dressed transition
+only in place of a winning cut that stacks the decks' kicks for more than a
+beat, or when nothing else survives. Every policy runs
 on every candidate - no short-circuit on the first rejection - so the debug
 log always shows the complete scoreboard, not just whichever rule fired first.
 """
@@ -13,13 +16,21 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
+    TransitionStyle,
+)
 
 from .candidates import Candidate
 from .context import TransitionContext
 from .policies import Policy, Verdict
+
+# A winning cut gives way to a dressed transition once both decks' kicks overlap, weighted
+# by the fade's gain, for more than this many outgoing beats
+_DRESSING_CLASH_BEATS: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,23 +41,48 @@ class ScoredCandidate:
     total_penalty: float
     verdicts: tuple[Verdict, ...]
     rejected: bool
+    # the clashing cut a dressed winner replaced
+    replaced_cut: Candidate | None = None
 
 
 class CandidateSelector:
     """Scores every candidate against a fixed policy set and picks the best survivor."""
 
-    def __init__(self, policies: Sequence[Policy], logger: logging.Logger) -> None:
-        """Initialize the selector with the policy set to score every candidate against."""
+    def __init__(
+        self,
+        policies: Sequence[Policy],
+        logger: logging.Logger,
+        *,
+        lone_replacement_wins: bool = True,
+    ) -> None:
+        """
+        Initialize the selector with the policy set to score every candidate against.
+
+        :param policies: The policies every candidate is judged by, in evaluation order.
+        :param logger: Logger for the scoreboard and the selection.
+        :param lone_replacement_wins: Let a segue or a dressed transition win when no
+            blend or cut survives; False for a pass that a rescue pass follows, which then
+            weighs them.
+        """
         self._policies = tuple(policies)
         self._logger = logger
+        self._lone_replacement_wins = lone_replacement_wins
 
     def select(
         self, candidates: Sequence[Candidate], ctx: TransitionContext
     ) -> ScoredCandidate | None:
         """
-        Score every candidate; return the lowest-penalty survivor, or None when all are rejected.
+        Score every candidate; return the lowest-penalty survivor, or None when none may ship.
 
-        Ties resolve to whichever candidate appears earlier in ``candidates``.
+        None means every candidate was rejected, or no blend or cut survived a selector
+        that doesn't let a lone segue or dressed transition win. A segue never replaces a surviving blend,
+        and replaces a cut only when it lasts at least as long, so it never shortens
+        the transition that would ship without it. A dressed transition replaces a
+        winning cut that stacks the decks' kicks for more than one outgoing beat, never
+        a cut within that, a blend or a segue, and wins on its own only where nothing
+        else survives; the best one of the style that suits the pair wins, else the best
+        of the other style. Ties resolve to whichever candidate appears earlier in
+        ``candidates``.
 
         :param candidates: Built candidates to score, in generator-declared order.
         :param ctx: The shared per-transition facts every policy judges against.
@@ -54,28 +90,62 @@ class CandidateSelector:
         scored = [self._score(candidate, ctx) for candidate in candidates]
         survivors = [entry for entry in scored if not entry.rejected]
         if not survivors:
-            histogram = Counter(
-                verdict.reason for entry in scored for verdict in entry.verdicts if verdict.rejected
-            )
-            reasons = ", ".join(f"{reason} x{count}" for reason, count in histogram.most_common())
             # the planner logs which fallback actually ships after this pass
             self._logger.debug(
                 "all %d candidates rejected (%s)",
                 len(scored),
-                reasons,
+                _rejection_reasons(scored),
             )
             return None
+        dressed = [e for e in survivors if e.candidate.plan.style in DRESSED_STYLES]
+        survivors = [e for e in survivors if e.candidate.plan.style not in DRESSED_STYLES]
+        others = [e for e in survivors if e.candidate.plan.style is not TransitionStyle.SEGUE]
+        replaced = min(others, key=lambda entry: entry.total_penalty) if others else None
+        if replaced is None:
+            if not self._lone_replacement_wins:
+                self._logger.debug(
+                    "no blend or cut survives (segues=%d dressed=%d of %d candidates; "
+                    "rejected: %s); none wins on its own",
+                    len(survivors),
+                    len(dressed),
+                    len(scored),
+                    _rejection_reasons(scored),
+                )
+                return None
+            # nothing but segues and dressed transitions survives
+            survivors = survivors or _suited(dressed, ctx)
+        elif any(entry.candidate.plan.style is TransitionStyle.BLEND for entry in others):
+            # a beatmatchable pair keeps its blend
+            survivors = others
+        else:
+            survivors = [
+                entry
+                for entry in survivors
+                if entry.candidate.plan.style is not TransitionStyle.SEGUE
+                or entry.candidate.plan.crossfade_duration
+                >= replaced.candidate.plan.crossfade_duration
+            ]
         winner = min(survivors, key=lambda entry: entry.total_penalty)
+        if (
+            dressed
+            and winner.candidate.plan.style is TransitionStyle.CUT
+            and winner.candidate.metrics.rhythm_clash_bars * ctx.outgoing.beats_per_bar
+            > _DRESSING_CLASH_BEATS
+        ):
+            survivors = _suited(dressed, ctx)
+            dressed_winner = min(survivors, key=lambda entry: entry.total_penalty)
+            winner = replace(dressed_winner, replaced_cut=winner.candidate)
         if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             ranked = sorted(survivors, key=lambda entry: entry.total_penalty)
             runner_up = ranked[1] if len(ranked) > 1 else None
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "selection: scored=%d survivors=%d winner source=%s tier=%s bars=%d total=%.2f "
-                "runner_up=%s runner_up_total=%s",
+                "selection: scored=%d survivors=%d winner source=%s style=%s tier=%s bars=%d "
+                "total=%.2f runner_up=%s runner_up_total=%s",
                 len(scored),
                 len(survivors),
                 winner.candidate.spec.source,
+                winner.candidate.plan.style,
                 winner.candidate.spec.tier,
                 winner.candidate.spec.bars,
                 winner.total_penalty,
@@ -102,10 +172,11 @@ class CandidateSelector:
             plan, metrics = candidate.plan, candidate.metrics
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
-                "candidate source=%s tier=%s bars=%d duration=%.2f anchor=%.2f fadein_trim=%s "
-                "total=%.2f rejected=%s trim=%.2f collision=%.2f weighted_collision=%.2f "
-                "on_downbeat=%s %s",
+                "candidate source=%s style=%s tier=%s bars=%d duration=%.2f anchor=%.2f "
+                "fadein_trim=%s total=%.2f rejected=%s trim=%.2f collision=%.2f "
+                "weighted_collision=%.2f rhythm_clash=%.2f on_downbeat=%s %s",
                 candidate.spec.source,
+                plan.style,
                 candidate.spec.tier,
                 candidate.spec.bars,
                 plan.crossfade_duration,
@@ -116,6 +187,7 @@ class CandidateSelector:
                 metrics.audible_outgoing_trim,
                 metrics.collision_seconds,
                 metrics.weighted_collision_seconds,
+                metrics.rhythm_clash_bars,
                 metrics.anchor_on_downbeat,
                 " ".join(breakdown_entries),
             )
@@ -125,3 +197,17 @@ class CandidateSelector:
             verdicts=verdicts,
             rejected=rejected,
         )
+
+
+def _suited(dressed: list[ScoredCandidate], ctx: TransitionContext) -> list[ScoredCandidate]:
+    """Return the dressed survivors of the style that suits the pair, else all of them."""
+    suited = [entry for entry in dressed if entry.candidate.plan.style is ctx.dressed_style]
+    return suited or dressed
+
+
+def _rejection_reasons(scored: list[ScoredCandidate]) -> str:
+    """Return how often each rejection reason fired, most frequent first."""
+    histogram = Counter(
+        verdict.reason for entry in scored for verdict in entry.verdicts if verdict.rejected
+    )
+    return ", ".join(f"{reason} x{count}" for reason, count in histogram.most_common())

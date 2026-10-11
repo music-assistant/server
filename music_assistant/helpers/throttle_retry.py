@@ -340,16 +340,15 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                                 # Retry-After is a floor, not a target: escalate above it,
                                 # jittering up only so we never retry sooner than asked
                                 base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
-                                sleep_time = base * random.uniform(1.0, 1.1)
+                                sleep_time = base * random.uniform(1.0, 1.1)  # noqa: S311 - retry jitter
                                 exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                             elif server_wait:
                                 # Server named a recovery time — respect it, with citizen jitter
-                                sleep_time = server_wait * random.uniform(1.0, 1.1)
+                                sleep_time = server_wait * random.uniform(1.0, 1.1)  # noqa: S311 - retry jitter
                             else:
                                 # No server guidance — exponential backoff with jitter
-                                sleep_time = min(
-                                    exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF
-                                )
+                                jitter = random.uniform(0.75, 1.25)  # noqa: S311 - retry jitter
+                                sleep_time = min(exp_backoff * jitter, MAX_BACKOFF)
                                 exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                             if isinstance(e, RateLimited):
                                 # a rate limit applies to the whole account, so hold back every

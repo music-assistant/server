@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import EventType, ExternalID, MediaType, TaskStatus
+from music_assistant_models.enums import (
+    EventType,
+    ExternalID,
+    MediaType,
+    SortDirection,
+    SortField,
+    TaskStatus,
+)
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import (
@@ -240,7 +247,8 @@ async def test_link_run_queries_the_phases_in_order_newest_first() -> None:
     ):
         controller.get_library_items_by_query.assert_awaited_once_with(
             limit=MUSICBRAINZ_LINK_BATCH_SIZE,
-            order_by="timestamp_added_desc",
+            sort_field=SortField.TIMESTAMP_ADDED,
+            sort_direction=SortDirection.DESC,
             extra_query_parts=[query],
             extra_query_params=params,
         )

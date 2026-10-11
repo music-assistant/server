@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -1397,6 +1397,84 @@ class TestQueryMethods:
         assert isinstance(tracks, list)
         assert isinstance(albums, list)
         assert isinstance(artists, list)
+
+    async def test_mapped_media_artist_name_sort_adds_media_type_joins(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Typed artist sorting adds the joins required by genre-mapped media."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MappedArtistSort"))
+        tracks = [
+            await _add_test_track(mass, "Zebra Track"),
+            await _add_test_track(mass, "Apple Track"),
+        ]
+        for track in tracks:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "MappedArtistSort"
+            )
+
+        mapped_tracks, mapped_albums, mapped_artists = await genre_ctrl.mapped_media(
+            genre,
+            sort_field=SortField.ARTIST_NAME,
+            sort_direction=SortDirection.ASC,
+        )
+
+        assert [track.artists[0].name for track in mapped_tracks] == [
+            "Artist for Apple Track",
+            "Artist for Zebra Track",
+        ]
+        assert mapped_albums == []
+        assert mapped_artists == []
+
+    async def test_genre_track_and_album_endpoints_resolve_legacy_artist_sorts(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Public legacy sort keys are resolved before the internal mapped-media query."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MappedLegacyArtistSort"))
+        apple_artist = await _add_test_artist(mass, "Apple Artist")
+        zebra_artist = await _add_test_artist(mass, "Zebra Artist")
+        tracks = [
+            Track(
+                item_id="0",
+                provider="library",
+                name=f"{artist.name} Track",
+                provider_mappings=_library_provider_mapping(),
+                artists=UniqueList([artist]),
+            )
+            for artist in (zebra_artist, apple_artist)
+        ]
+        albums = [
+            Album(
+                item_id="0",
+                provider="library",
+                name=f"{artist.name} Album",
+                album_type=AlbumType.ALBUM,
+                provider_mappings=_library_provider_mapping(),
+                artists=UniqueList([artist]),
+            )
+            for artist in (zebra_artist, apple_artist)
+        ]
+        tracks = [await mass.music.tracks.add_item_to_library(track) for track in tracks]
+        albums = [await mass.music.albums.add_item_to_library(album) for album in albums]
+        for track in tracks:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "MappedLegacyArtistSort"
+            )
+        for album in albums:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.ALBUM, album.item_id, "MappedLegacyArtistSort"
+            )
+
+        sorted_tracks = await genre_ctrl.tracks(genre.item_id, order_by="track_artist_name")
+        sorted_albums = await genre_ctrl.albums(genre.item_id, order_by="album_artist_name")
+
+        assert [track.artists[0].name for track in sorted_tracks] == [
+            "Apple Artist",
+            "Zebra Artist",
+        ]
+        assert [album.artists[0].name for album in sorted_albums] == [
+            "Apple Artist",
+            "Zebra Artist",
+        ]
 
     async def test_mapped_media_empty(self, genre_ctrl: GenreController) -> None:
         """No mappings returns ([], [], [])."""
