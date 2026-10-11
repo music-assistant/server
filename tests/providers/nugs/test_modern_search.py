@@ -322,3 +322,44 @@ async def test_short_release_page_advances_by_consumed_items(provider: NugsProvi
     result = await provider.search("Billy Strings", [MediaType.ALBUM], 3)
     assert [album.item_id for album in result.albums] == [first["id"], second["id"]]
     assert [call.kwargs["offset"] for call in request.call_args_list[1:]] == [0, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filtered_count", "limit", "expected_sources"),
+    [
+        (0, 3, ["general", "overlap", "other"]),
+        (1, 3, ["filtered", "general", "other"]),
+        (1, 1, ["filtered"]),
+    ],
+)
+async def test_filtered_and_general_albums_merge(
+    provider: NugsProvider, filtered_count: int, limit: int, expected_sources: list[str]
+) -> None:
+    """Filtered albums lead, while general matches fill remaining slots without duplicates."""
+    release = _fixture("releases_intersection")["items"][0]
+    discovery = _fixture("search_modern")
+    discovery["result"]["albums"] = [
+        {"id": "general", "title": "General album"},
+        {"id": int(release["id"]), "title": "Sparse overlapping album"},
+        {"id": "general", "title": "Duplicate general album"},
+        {"id": "other", "title": "Other album"},
+    ]
+    request = _catalog(provider)
+    request.side_effect = [
+        discovery,
+        {"items": [release] if filtered_count else [], "total": filtered_count},
+    ]
+    result = await provider.search("Billy Strings Red Rocks", [MediaType.ALBUM], limit)
+    ids = {
+        "filtered": str(release["id"]),
+        "overlap": str(release["id"]),
+        "general": "general",
+        "other": "other",
+    }
+    assert [album.item_id for album in result.albums] == [ids[key] for key in expected_sources]
+    if filtered_count:
+        assert isinstance(result.albums[0], Album)
+        assert result.albums[0].name == release["title"]
+        assert result.albums[0].artists
+    assert request.await_count == 2

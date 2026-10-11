@@ -169,29 +169,28 @@ class NugsProvider(MusicProvider):
                     self._parse_album(item)
                     for item in await self._get_search_releases(filters, limit)
                 ]
-            else:
-                seen.clear()
-                for item in data.get("albums") or []:
-                    item_id = str(item.get("id") or "")
-                    if not item_id or not item.get("title") or item_id in seen:
-                        continue
-                    # Discovery supplies titles and covers, but no artist or availability.
-                    # Full details are resolved through get_album when the item is opened.
-                    albums.append(
-                        self._parse_album(
-                            {
-                                **item,
-                                "artistID": None,
-                                "artistName": None,
-                                "image": {"url": item["coverImage"]}
-                                if item.get("coverImage")
-                                else None,
-                            }
-                        )
+            seen = {album.item_id for album in albums}
+            for item in data.get("albums") or []:
+                if len(albums) >= limit:
+                    break
+                item_id = str(item.get("id") or "")
+                if not item_id or not item.get("title") or item_id in seen:
+                    continue
+                # Discovery supplies titles and covers, but no artist or availability.
+                # Full details are resolved through get_album when the item is opened.
+                albums.append(
+                    self._parse_album(
+                        {
+                            **item,
+                            "artistID": None,
+                            "artistName": None,
+                            "image": {"url": item["coverImage"]}
+                            if item.get("coverImage")
+                            else None,
+                        }
                     )
-                    seen.add(item_id)
-                    if len(albums) == limit:
-                        break
+                )
+                seen.add(item_id)
         tracks = (
             await self._search_recordings(query, limit) if MediaType.TRACK in media_types else []
         )
