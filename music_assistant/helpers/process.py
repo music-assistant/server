@@ -64,6 +64,24 @@ def descriptor_path(fd: int) -> str:
     return f"/proc/self/fd/{fd}" if sys.platform == "linux" else f"/dev/fd/{fd}"
 
 
+async def open_in_thread(opener: Callable[[str, int], int], path: str, flags: int) -> int:
+    """
+    Open a path in a worker thread with an opener like that of open() and return the descriptor.
+
+    A descriptor the opener only returns after the caller was cancelled is closed.
+
+    :param opener: Called with the path and the os.open flags, returns the descriptor.
+    :param path: The path to open.
+    :param flags: The flags for os.open.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(opener, path, flags))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_close_late_descriptor)
+        raise
+
+
 def collect_child_process_counts(
     proc_root: Path = _PROC_ROOT, parent_pid: int | None = None
 ) -> dict[str, int] | None:
@@ -761,3 +779,9 @@ async def communicate(
     stdout, stderr = await proc.communicate(input)
     assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout, stderr)
+
+
+def _close_late_descriptor(task: asyncio.Future[int]) -> None:
+    """Close the descriptor of an open whose caller was cancelled."""
+    if not task.cancelled() and task.exception() is None:
+        os.close(task.result())

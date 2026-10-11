@@ -29,7 +29,12 @@ if TYPE_CHECKING:
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.process import AsyncProcess, descriptor_path, get_subprocess_env
+from music_assistant.helpers.process import (
+    AsyncProcess,
+    descriptor_path,
+    get_subprocess_env,
+    open_in_thread,
+)
 from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
@@ -1705,7 +1710,7 @@ async def get_embedded_image(
         return None
     if opener is None:
         return await _get_embedded_image(input_file, input_file)
-    fd = await asyncio.to_thread(opener, input_file, os.O_RDONLY)
+    fd = await open_in_thread(opener, input_file, os.O_RDONLY)
     try:
         return await _get_embedded_image(input_file, descriptor_path(fd), (fd,))
     finally:
