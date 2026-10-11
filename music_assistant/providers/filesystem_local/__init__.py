@@ -110,6 +110,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_AUTHOR_NARRATOR_REPARSE_DONE,
+    CONF_CHAPTER_FOLDER_REPARSE_DONE,
     CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -228,6 +229,9 @@ class LocalFileSystemProvider(MusicProvider):
     # set for the single sync that has to reparse an audiobook library that was
     # indexed before authors/narrators became artists
     _force_full_reparse: bool = False
+    # set for the single sync that has to reparse the multi-file audiobooks that were
+    # indexed before they stored the signature of their folder
+    _reparse_chapter_folders: bool = False
 
     def __init__(
         self,
@@ -562,6 +566,9 @@ class LocalFileSystemProvider(MusicProvider):
             self._force_full_reparse = not self.mass.config.get_raw_provider_config_value(
                 self.instance_id, CONF_AUTHOR_NARRATOR_REPARSE_DONE, False
             )
+            self._reparse_chapter_folders = not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_CHAPTER_FOLDER_REPARSE_DONE, False
+            )
 
         elif self.media_content_type == "podcasts":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
@@ -603,6 +610,8 @@ class LocalFileSystemProvider(MusicProvider):
         metadata_files: list[FileSystemItem] = []
         # relative_path of every representative queued because of a metadata-file change
         force_refresh_tracks: set[str] = set()
+        # signature of every audiobook folder, stored with the books read from their whole folder
+        folder_signatures: dict[str, str] = {}
         # collects the errors raised while walking the tree; any error means the
         # scan is incomplete, a fatal one means the provider is unreachable
         scan_errors = ScanErrors()
@@ -674,6 +683,14 @@ class LocalFileSystemProvider(MusicProvider):
                     file_checksums,
                     cur_filenames,
                 )
+            elif self.media_content_type == "audiobooks":
+                items_to_process = self._changed_audiobook_files(
+                    [item for item, _ in items_to_process],
+                    metadata_files,
+                    file_checksums,
+                    cur_filenames,
+                    folder_signatures,
+                )
             # register synthetic track IDs for unchanged CUE files so the
             # deletion pass does not treat them as removed
             for cue_item in unchanged_cue_items:
@@ -701,7 +718,7 @@ class LocalFileSystemProvider(MusicProvider):
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
                 if await self._process_item_async(
-                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames
+                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames, folder_signatures
                 ):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
@@ -750,6 +767,9 @@ class LocalFileSystemProvider(MusicProvider):
         if self._force_full_reparse and not scan_errors.incomplete:
             self._force_full_reparse = False
             self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
+        if self._reparse_chapter_folders and not scan_errors.incomplete:
+            self._reparse_chapter_folders = False
+            self._update_config_value(CONF_CHAPTER_FOLDER_REPARSE_DONE, True, immediate=True)
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
@@ -1409,9 +1429,9 @@ class LocalFileSystemProvider(MusicProvider):
         if not self._is_imported_file(item):
             cur_filenames.add(item.relative_path)
             return
-        if self.media_content_type == "podcasts":
-            # an episode is not stored in the library: its podcast folder is what a sync
-            # tracks, compared once the walk has found all of the folder's episodes
+        if self.media_content_type in ("podcasts", "audiobooks"):
+            # an episode or audiobook chapter is not stored in the library, so files are
+            # compared per folder once the walk has found all of them
             items_to_process.append((item, None))
             return
         # skip playlists in album directories if configured
@@ -1432,7 +1452,7 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             prev_checksum = file_checksums.get(item.relative_path)
             checksum_matches = item_checksum == prev_checksum
-        if checksum_matches and not self._force_full_reparse:
+        if checksum_matches:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -1496,6 +1516,63 @@ class LocalFileSystemProvider(MusicProvider):
                 checksum=signature,
             )
             changed.append((folder_item, prev_signature))
+        return changed
+
+    def _changed_audiobook_files(
+        self,
+        files: list[FileSystemItem],
+        metadata_files: list[FileSystemItem],
+        file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        folder_signatures: dict[str, str],
+    ) -> list[tuple[FileSystemItem, str | None]]:
+        """
+        Return the audiobook files that need to be read again, each with its stored checksum.
+
+        A book with embedded chapters is stored with the checksum of its own file. Any other
+        book can take its chapters from all audio files in its folder, so it is stored with
+        the signature of that folder, which covers the folder's artwork too.
+
+        :param files: The audiobook files found by the scan.
+        :param metadata_files: The local metadata files (NFO/images) found by the scan.
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cur_filenames: Receives the unchanged files.
+        :param folder_signatures: Receives the signature of every folder holding one of the files.
+        """
+        files_by_folder: dict[str, list[FileSystemItem]] = {}
+        for item in files:
+            files_by_folder.setdefault(item.relative_parent_path, []).append(item)
+        artwork_by_folder: dict[str, list[FileSystemItem]] = {}
+        for item in metadata_files:
+            if is_image_file(item) and item.relative_parent_path in files_by_folder:
+                artwork_by_folder.setdefault(item.relative_parent_path, []).append(item)
+        changed: list[tuple[FileSystemItem, str | None]] = []
+        for folder, folder_files in files_by_folder.items():
+            signature = get_folder_signature([*folder_files, *artwork_by_folder.get(folder, [])])
+            folder_signatures[folder] = signature
+            prev_checksums = {
+                item.relative_path: file_checksums.get(item.relative_path) for item in folder_files
+            }
+            # a book stored with this signature saw the folder as it is now, so the files
+            # that are no book of their own (its chapters) are unchanged too
+            folder_unchanged = signature in prev_checksums.values()
+            # a multi-file book stored before folder signatures existed only carries the
+            # checksum of its own file, so a folder with chapter files is read once more
+            reparse = self._force_full_reparse or (
+                self._reparse_chapter_folders
+                and not folder_unchanged
+                and None in prev_checksums.values()
+            )
+            for item in folder_files:
+                prev_checksum = prev_checksums[item.relative_path]
+                if prev_checksum is None:
+                    unchanged = folder_unchanged
+                else:
+                    unchanged = prev_checksum in (item.checksum, signature)
+                if unchanged and not reparse:
+                    cur_filenames.add(item.relative_path)
+                else:
+                    changed.append((item, prev_checksum))
         return changed
 
     async def _root_artist_path(self, name: str) -> str | None:
@@ -2297,6 +2374,7 @@ class LocalFileSystemProvider(MusicProvider):
         cur_filenames: set[str] | None = None,
         cue_stems: set[str] | None = None,
         prev_filenames: set[str] | None = None,
+        folder_signatures: dict[str, str] | None = None,
     ) -> bool:
         """
         Process a single item asynchronously.
@@ -2308,6 +2386,8 @@ class LocalFileSystemProvider(MusicProvider):
             used to detect companion-CUE audio files without a filesystem stat.
         :param prev_filenames: The ids/paths the previous scan found, used to keep the
             ids of a CUE sheet that fails to parse.
+        :param folder_signatures: Signature of each audiobook folder in this scan, stored
+            with a book that has no embedded chapters instead of its own checksum.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -2361,7 +2441,13 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     audiobook = await self._parse_audiobook(item, tags)
                 except IsChapterFile:
-                    return True
+                    # a chapter of another book: leaving it out of the scan result removes
+                    # a book an earlier sync stored for this file
+                    return False
+                if not tags.chapters and folder_signatures:
+                    # the book can take its chapters from any file in its folder
+                    for prov_mapping in audiobook.provider_mappings:
+                        prov_mapping.details = folder_signatures[item.relative_parent_path]
                 await self.mass.music.audiobooks.add_item_to_library(
                     audiobook, overwrite_existing=prev_checksum is not None
                 )
