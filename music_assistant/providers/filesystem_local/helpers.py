@@ -589,9 +589,7 @@ def recursive_iter(
     """
     Recursively traverse directory entries yielding supported files.
 
-    Symlinks are skipped. Subfolders are opened through the descriptor of their parent
-    without following symlinks, so a folder replaced by a symlink during the walk is skipped
-    as well.
+    Symlinks are skipped, including a folder that is replaced by one during the walk.
 
     :param path: The directory path to scan.
     :param base_path: The root base path for constructing relative paths.

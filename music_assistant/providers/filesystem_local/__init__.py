@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import os.path
@@ -4148,7 +4149,15 @@ class LocalFileSystemProvider(MusicProvider):
         abs_path = self.get_absolute_path(path)
 
         def _list() -> list[FileSystemItem]:
-            dir_fd = self._open_file(abs_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                dir_fd = self._open_file(abs_path, os.O_RDONLY | os.O_DIRECTORY)
+            except OSError as err:
+                if err.errno != errno.EINVAL:
+                    raise
+                self.logger.warning(
+                    "Skipping directory '%s' - unsupported characters in path", abs_path
+                )
+                return []
             try:
                 return sorted_scandir(self.base_path, abs_path, sort=True, dir_fd=dir_fd)
             finally:

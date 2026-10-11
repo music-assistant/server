@@ -1,5 +1,6 @@
 """Tests that the filesystem provider reads the very file it checked to lie inside its folder."""
 
+import errno
 import io
 import os
 import shutil
@@ -165,6 +166,20 @@ async def test_tags_of_a_removed_file_are_unreadable(tree: Path) -> None:
 
     with pytest.raises(InvalidDataError):
         await provider._parse_tags(item)
+
+
+async def test_folder_with_an_unsupported_name_lists_as_empty(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder the storage refuses to open by its name (e.g. on SMB) is listed as empty."""
+    provider = _make_provider(tree)
+
+    def _refuse(_real_base_path: str, path: str, _flags: int = os.O_RDONLY) -> int:
+        raise OSError(errno.EINVAL, "Invalid argument", path)
+
+    monkeypatch.setattr("music_assistant.providers.filesystem_local.open_real_path", _refuse)
+
+    assert await provider._scandir("Albums Real") == []
 
 
 async def test_read_file_reads_the_checked_file(tree: Path, repoint_after_check: Repoint) -> None:

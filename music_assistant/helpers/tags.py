@@ -824,7 +824,7 @@ def parse_tags(
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
         if not input_file.startswith("http") and Path(source).is_file():
-            extra_tags = parse_tags_mutagen(source)
+            extra_tags = parse_tags_mutagen(input_file, fd)
             if extra_tags:
                 tags.tags.update(extra_tags)
             # APEv2 cover art is not exposed as video streams by FFmpeg
@@ -1593,7 +1593,7 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     return result
 
 
-def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
+def parse_tags_mutagen(input_file: str, fd: int | None = None) -> dict[str, Any]:
     """
     Parse tags from an audio file using Mutagen.
 
@@ -1601,6 +1601,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
     and APEv2 tags (WavPack, Musepack, Monkey's Audio).
 
     :param input_file: Path to the audio file.
+    :param fd: An open descriptor of the audio file to read it through instead of its path.
     """
     import mutagen  # noqa: PLC0415
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
@@ -1610,7 +1611,12 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
     result: dict[str, Any] = {}
     try:
-        audio = mutagen.File(input_file)
+        if fd is None:
+            audio = mutagen.File(input_file)
+        else:
+            # named after the file, so mutagen can also tell the format from its extension
+            with open(input_file, "rb", opener=lambda *_: os.dup(fd)) as file:
+                audio = mutagen.File(file)
         if audio is None or not audio.tags:
             return result
 
