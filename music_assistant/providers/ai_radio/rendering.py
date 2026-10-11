@@ -526,18 +526,17 @@ class AIRadioRenderMixin:
         ):
             self._post_skipped(next_item.name, "the player does not stream in flow mode")
             return None
-        if next_item.streamdetails is None:
-            # which copy of the track streams is only known once its stream details are
-            # resolved: the queue resolves them now rather than when the clip nears its
-            # end, and moves on to the item after a track it cannot play
-            loaded, reason = await self._load_next_item(queue_item)
-            if loaded is None:
-                self._post_skipped(next_item.name, reason)
-                return None
-            if not isinstance(loaded.media_item, Track):
-                self._post_skipped(loaded.name, "the item that plays next is not a track")
-                return None
-            next_item = loaded
+        # which copy of the track streams is only known once its stream details are
+        # resolved: the queue resolves them now rather than when the clip nears its end,
+        # as it will again then, and moves on to the item after a track it cannot play
+        loaded, reason = await self._load_next_item(queue_item)
+        if loaded is None:
+            self._post_skipped(next_item.name, reason)
+            return None
+        if not isinstance(loaded.media_item, Track):
+            self._post_skipped(loaded.name, "the item that plays next is not a track")
+            return None
+        next_item = loaded
         onset, reason = await self._resolve_vocal_onset(next_item)
         if onset is None:
             self._post_skipped(next_item.name, reason)

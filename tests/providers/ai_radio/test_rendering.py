@@ -1252,7 +1252,7 @@ async def test_a_posting_clip_declares_its_overlap_from_the_stored_analysis() ->
 
 
 async def test_the_analysis_is_read_for_the_copy_that_streams() -> None:
-    """Resolved streamdetails of the next track name the copy whose analysis is read."""
+    """The queue's load keeps valid streamdetails, and they name the copy whose analysis is read."""
     renderer = DummyRenderer()
     clip = _posting_clip_item()
     _attach_queue(renderer, [clip])
@@ -1265,7 +1265,8 @@ async def test_the_analysis_is_read_for_the_copy_that_streams() -> None:
     assert streamdetails.tail_overlap is not None
     assert streamdetails.tail_overlap.duration == 3.6
     get_vocal_onset.assert_awaited_once_with("qobuz_1", "qobuz")
-    cast("Any", renderer).mass.player_queues.load_next_queue_item.assert_not_awaited()
+    load_next_queue_item = cast("Any", renderer).mass.player_queues.load_next_queue_item
+    load_next_queue_item.assert_awaited_once_with("player_a", "qi_sess_001")
 
 
 async def test_the_queue_resolves_the_next_track_before_its_analysis_is_read() -> None:
