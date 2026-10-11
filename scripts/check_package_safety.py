@@ -736,7 +736,7 @@ def _is_spdx_operator(token: str) -> bool:
 
     :param token: The token to inspect.
     """
-    return token == ")" or token.upper() in ("AND", "OR", "WITH")
+    return token == ")" or token.upper() in ("AND", "OR", "WITH")  # noqa: S105 - SPDX token
 
 
 def _is_copyleft(license_upper: str) -> bool:
@@ -759,10 +759,10 @@ def _max_group_depth(tokens: list[str]) -> int:
     depth = 0
     deepest = 0
     for token in tokens:
-        if token == "(":
+        if token == "(":  # noqa: S105 - SPDX token
             depth += 1
             deepest = max(deepest, depth)
-        elif token == ")":
+        elif token == ")":  # noqa: S105 - SPDX token
             depth = max(0, depth - 1)
     return deepest
 
