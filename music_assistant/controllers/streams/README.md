@@ -11,7 +11,7 @@ This document provides an overview of the Music Assistant Streams Controller arc
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
 - [Streaming Pipeline](#streaming-pipeline)
-- [Analyze Callbacks](#analyze-callbacks)
+- [Audio Analysis](#audio-analysis)
 - [Smart Fades](#smart-fades)
 - [Audio Overlay](#audio-overlay)
 - [Stream Types](#stream-types)
@@ -27,7 +27,7 @@ The Streams Controller is a core controller that manages all audio streaming to 
 - Flow mode for continuous queue playback
 - Audio overlay: a looping sound effect (e.g. rain) mixed into queue playback
 - Announcement and plugin source streaming
-- Ahead-of-time audio analysis (loudness, beat detection) via buffer callbacks
+- Ahead-of-time audio analysis (loudness, smart fades) by analysis providers reading the buffer
 
 ## Network Architecture
 
@@ -148,7 +148,7 @@ StreamsController, combines queue processing and per-player output plans into co
 
 ```
 Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
-    -> AudioBuffer (raw PCM storage, analyze callbacks run here)
+    -> AudioBuffer (raw PCM storage, analysis providers read it here)
     -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, speed, fade-in)
     -> Optional: Smart Fades (crossfade mixing between tracks)
     -> FFmpeg (encode to output format with player-specific DSP)
@@ -165,7 +165,7 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
 
 ### Loudness Measurement
-- Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM, for tracks and radio
+- Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM
 - Result stored for future volume normalization (avoids dynamic mode overhead)
 
 ### Smart Fades Analysis
@@ -183,7 +183,7 @@ Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the 
 
 A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
 
-### Planner pipeline
+### Planner Pipeline
 
 The planner reads only the two `AudioAnalysisData` rows and the length of the held-back tail, never audio. `SmartCrossFadePlanner.plan()` runs:
 
@@ -192,11 +192,12 @@ The planner reads only the two `AudioAnalysisData` rows and the length of the he
 3. `CandidateFactory.build()` times each spec into a `Candidate`, a `TransitionPlan` (anchor, overlap, entry trim, tempo ramp) plus `PlanMetrics` (audible trim, vocal collision, kick clash), or drops it as infeasible.
 4. `CandidateSelector` scores every candidate against every policy in `default_policies()` and picks the lowest total penalty among the survivors, under the style rules below. Every policy runs on every candidate, so the VERBOSE scoreboard is complete.
 5. `PlanAssembler.finalize()` adds the EQ handover to the winner only.
-6. `TransitionRenderer` turns the plan into the filter chain and `CrossfadeTimingInfo`.
 
-When every candidate is rejected, or no blend or cut survives, a rescue pass tries late-anchored rungs, a segue (also for a beatmatchable pair) and the dressed styles. Without a winner there, `FallbackCrossfadeFactory` ships a plain 8 second equal-power fade, or `EmergencyHandoffFactory` a 0.4 to 1 second click-free handoff when the fallback's vocal collision exceeds twice the candidate limits.
+`SmartCrossFade.build()` then hands the plan to `TransitionRenderer` for the filter chain and `CrossfadeTimingInfo`.
 
-### Transition styles
+When every candidate is rejected, or no blend or cut survives, a rescue pass tries late-anchored rungs, a segue (also for a beatmatchable pair) and, for a pair that can't be beatmatched, the dressed styles. Without a winner there, `FallbackCrossfadeFactory` ships a plain 8 second equal-power fade, or `EmergencyHandoffFactory` a 0.4 to 1 second click-free handoff when the fallback's vocal collision exceeds twice the candidate limits.
+
+### Transition Styles
 
 The plan's `TransitionStyle` says how it is timed and rendered. `TransitionContext.preferred_style` is `BLEND` for a beatmatchable tier and `SEGUE` for every other pair, and `OverlapPreferencePolicy` penalizes the other styles.
 
@@ -208,7 +209,7 @@ The plan's `TransitionStyle` says how it is timed and rendered. `TransitionConte
 
 A dressed style (`FILTER_OUT`, `ECHO_OUT`) replaces a winning cut whose kicks overlap for more than one beat, and wins on its own only in the rescue pass. The style that suits the gap (`TransitionContext.dressed_style`) wins when one survives, the other is the fallback.
 
-### Clash checks
+### Clash Checks
 
 Both checks only count what plays on both decks at once, so a voice or a kick on one side is never a clash.
 
@@ -217,7 +218,7 @@ Both checks only count what plays on both decks at once, so a voice or a kick on
 
 Within its steps, the clash checks decide how long a segue runs. A segue may also run up to 15 seconds over loud material when neither deck sings near the boundary (vocal data required on both) and at least one of them has almost no kick there (`_beatless_long_qualifies()`).
 
-### Logging and replay
+### Logging and Replay
 
 With the streams setting `smart_fades_log_level` at DEBUG, the planner logs one `planned transition:` line per boundary: style, tier, quick fade trigger (meter, tempo or beat grid), strategy, winning generator, bars, overlap, BPM gap, whether a blend stretches, and a reason for a segue (quiet tail and head, curves, which deck sings and kicks) or a dressed style (the kick clash of the cut it replaced). VERBOSE adds the context line and the full per-candidate scoreboard.
 
