@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -390,6 +391,13 @@ def sanitize_m3u_value(value: str) -> str:
     :param value: Raw value (name, title, path or URL) about to be written to an M3U line.
     """
     return value.translate(_LINE_BREAK_TABLE)
+
+
+def sanitize_playlist_filename(name: str) -> str:
+    """Return the playlist name made safe to use as a file name."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+    sanitized = sanitized.strip(" .")
+    return sanitized or "untitled"
 
 
 def escape_markdown(value: str, table: bool = False) -> str:

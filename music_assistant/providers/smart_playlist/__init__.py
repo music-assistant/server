@@ -60,7 +60,6 @@ from music_assistant.helpers.plugin_engines import (
     select_ai_engine,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
-from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -512,15 +511,6 @@ class SmartPlaylistProvider(PluginProvider):
         :param is_dynamic: If True, tracks are re-evaluated fresh on each play.
         :return: The created library Playlist.
         """
-        if not is_safe_name(name):
-            msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(
-                msg,
-                translation_key="invalid_name",
-                translation_owner=self.translation_owner,
-                translation_args=[name],
-            )
-
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         parsed_rules.is_dynamic = is_dynamic
         self._validate_rules(parsed_rules)
@@ -550,15 +540,6 @@ class SmartPlaylistProvider(PluginProvider):
         :param count: Optional track count override.
         :return: The created library Playlist.
         """
-        if not is_safe_name(name):
-            msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(
-                msg,
-                translation_key="invalid_name",
-                translation_owner=self.translation_owner,
-                translation_args=[name],
-            )
-
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
 
