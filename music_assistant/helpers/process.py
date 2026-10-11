@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 
 # if TYPE_CHECKING:
 from collections import Counter
@@ -43,6 +44,19 @@ def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if env:
         result.update(env)
     return result
+
+
+def descriptor_path(fd: int) -> str:
+    """
+    Return a path that opens the file of an open descriptor.
+
+    Opening it reaches that same file wherever its path leads by now, also from a child
+    process the descriptor is passed to (``pass_fds``).
+
+    :param fd: The open descriptor.
+    """
+    # on Linux every open gets a file position of its own; on macOS it shares the descriptor's
+    return f"/proc/self/fd/{fd}" if sys.platform == "linux" else f"/dev/fd/{fd}"
 
 
 def collect_child_process_counts(

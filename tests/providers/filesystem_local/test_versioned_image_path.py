@@ -43,18 +43,31 @@ class TestVersionedImagePath:
         """resolve_image strips the cache-busting suffix before resolving the file."""
         provider = _create_provider()
         versioned = LocalFileSystemProvider._versioned_image_path("Moby Dick/folder.jpg", "123")
-        with patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve:
-            mock_resolve.return_value = MagicMock(absolute_path="/music/folder.jpg", is_dir=False)
-            await provider.resolve_image(versioned)
+        with (
+            patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve,
+            patch.object(provider, "_read_file", AsyncMock(return_value=b"image")),
+        ):
+            mock_resolve.return_value = MagicMock(
+                relative_path="Moby Dick/folder.jpg", ext="jpg", is_dir=False
+            )
+            assert await provider.resolve_image(versioned) == b"image"
         mock_resolve.assert_awaited_once_with("Moby Dick/folder.jpg")
 
     @pytest.mark.asyncio
     async def test_resolve_image_without_suffix(self) -> None:
         """A plain path without a suffix is resolved unchanged."""
         provider = _create_provider()
-        with patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve:
-            mock_resolve.return_value = MagicMock(absolute_path="/music/track.flac", is_dir=False)
-            await provider.resolve_image("Moby Dick/track.flac")
+        with (
+            patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve,
+            patch(
+                "music_assistant.providers.filesystem_local.get_embedded_image",
+                AsyncMock(return_value=b"image"),
+            ),
+        ):
+            mock_resolve.return_value = MagicMock(
+                absolute_path="/music/track.flac", ext="flac", is_dir=False
+            )
+            assert await provider.resolve_image("Moby Dick/track.flac") == b"image"
         mock_resolve.assert_awaited_once_with("Moby Dick/track.flac")
 
     @pytest.mark.asyncio

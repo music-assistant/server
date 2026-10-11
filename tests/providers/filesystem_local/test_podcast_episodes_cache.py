@@ -72,7 +72,7 @@ def _parse_tags_spy(chapters: bool = False, slow_first: bool = False) -> AsyncMo
         task completion order comes out in a different order than the directory listing.
     """
 
-    async def _parse(path: str, _size: int | None = None) -> AudioTags:
+    async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         if slow_first and path.endswith("episode-01.mp3"):
             await asyncio.sleep(0.05)
         return _audio_tags(path, chapters)
@@ -157,7 +157,7 @@ async def test_parsing_stays_within_the_concurrency_limit(
     in_flight = 0
     peak = 0
 
-    async def _parse(path: str, _size: int | None = None) -> AudioTags:
+    async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
@@ -436,7 +436,7 @@ async def test_partial_listing_is_cached_only_briefly(
             expirations.append(kwargs.get("expiration"))
         return await original_set(*args, **kwargs)
 
-    def _side_effect(path: str, _size: int | None = None) -> AudioTags:
+    def _side_effect(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         if path.endswith("episode-02.mp3"):
             raise InvalidDataError("Unable to parse file")
         return _audio_tags(path)
