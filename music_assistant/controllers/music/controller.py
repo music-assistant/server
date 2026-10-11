@@ -1804,6 +1804,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
+        user_ids: list[str] = []
         # update generic playlog table (when not playing)
         if not is_playing:
             if user:
@@ -1969,6 +1970,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Get a track by its name, optionally with artist and album."""
         if track_version is None:
             track_name, version = parse_title_and_version(track_name)
+        else:
+            version = track_version
         search_query = f"{artist_name} - {track_name}" if artist_name else track_name
         search_result = await self.mass.music.search(
             search_query=search_query,

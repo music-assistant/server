@@ -103,6 +103,19 @@ async def test_deletions_run_on_clean_scan() -> None:
     provider._process_orphaned_albums_and_artists.assert_awaited_once()  # type: ignore[attr-defined]
 
 
+async def test_storage_is_not_asked_without_deletions() -> None:
+    """A scan that found every file deletes nothing, so it does not ask which storage is gone."""
+    provider = _create_provider()
+    provider._enumerate_files_for_sync = _enumerate_result(  # type: ignore[method-assign]
+        found_files={FOUND_FILE, MISSING_FILE}
+    )
+
+    await provider.sync_library(MediaType.TRACK)
+
+    cast("MagicMock", provider.mass.storage).get_unavailable_locations.assert_not_awaited()
+    provider._process_deletions.assert_awaited_once_with(set())  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("folder", ["/media/Artist/Album", f"/media/{MISSING_FILE}"])
 async def test_deletions_skipped_below_an_unavailable_folder(folder: str) -> None:
     """Items in or below a folder whose storage is gone are kept."""

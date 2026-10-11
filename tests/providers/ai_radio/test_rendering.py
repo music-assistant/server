@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    QueueEmpty,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -1184,6 +1185,15 @@ def _posting_clip_item() -> QueueItem:
     return item
 
 
+def _resolved(provider: str, item_id: str) -> StreamDetails:
+    """Build the stream details of the copy a track resolves to."""
+    return StreamDetails(
+        provider=provider,
+        item_id=item_id,
+        audio_format=AudioFormat(content_type=ContentType.FLAC),
+    )
+
+
 def _attach_post(
     renderer: DummyRenderer,
     next_item: QueueItem | None,
@@ -1192,10 +1202,28 @@ def _attach_post(
     lyrics: tuple[str | None, str | None] = (None, None),
     flow_mode: bool = True,
     flow_mode_required: bool = False,
+    load_next: QueueItem | Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
-    """Wire the next queue item, the queue's flow mode, its stored analysis and its lyrics."""
+    """
+    Wire the next queue item, the queue's flow mode, its stored analysis and its lyrics.
+
+    The queue's load of the next item yields ``load_next``, or raises it; by default it
+    is the next item itself, resolved to its own provider mapping.
+    """
     mass = cast("Any", renderer).mass
     mass.player_queues.get_next_item = lambda _queue_id, _item_id: next_item
+
+    async def load_next_queue_item(_queue_id: str, _item_id: str) -> QueueItem:
+        if isinstance(load_next, Exception):
+            raise load_next
+        loaded = load_next or next_item
+        assert loaded is not None
+        if loaded.streamdetails is None:
+            mapping = next(iter(cast("Track", loaded.media_item).provider_mappings))
+            loaded.streamdetails = _resolved(mapping.provider_instance, mapping.item_id)
+        return loaded
+
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next_queue_item)
     mass.player_queues.get = lambda queue_id: SimpleNamespace(
         queue_id=queue_id, flow_mode=flow_mode
     )
@@ -1217,21 +1245,19 @@ async def test_a_posting_clip_declares_its_overlap_from_the_stored_analysis() ->
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    load_next_queue_item = cast("Any", renderer).mass.player_queues.load_next_queue_item
+    load_next_queue_item.assert_awaited_once_with("player_a", "qi_sess_001")
     get_vocal_onset.assert_awaited_once_with("tidal_1", "tidal")
     get_track_lyrics.assert_not_awaited()
 
 
 async def test_the_analysis_is_read_for_the_copy_that_streams() -> None:
-    """Resolved streamdetails of the next track name the copy whose analysis is read."""
+    """The queue's load keeps valid streamdetails, and they name the copy whose analysis is read."""
     renderer = DummyRenderer()
     clip = _posting_clip_item()
     _attach_queue(renderer, [clip])
     next_item = _track_item()
-    next_item.streamdetails = StreamDetails(
-        provider="qobuz",
-        item_id="qobuz_1",
-        audio_format=AudioFormat(content_type=ContentType.FLAC),
-    )
+    next_item.streamdetails = _resolved("qobuz", "qobuz_1")
     get_vocal_onset, _ = _attach_post(renderer, next_item, analysis_onset=4.0)
 
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
@@ -1239,6 +1265,108 @@ async def test_the_analysis_is_read_for_the_copy_that_streams() -> None:
     assert streamdetails.tail_overlap is not None
     assert streamdetails.tail_overlap.duration == 3.6
     get_vocal_onset.assert_awaited_once_with("qobuz_1", "qobuz")
+    load_next_queue_item = cast("Any", renderer).mass.player_queues.load_next_queue_item
+    load_next_queue_item.assert_awaited_once_with("player_a", "qi_sess_001")
+
+
+async def test_the_queue_resolves_the_next_track_before_its_analysis_is_read() -> None:
+    """A track without streamdetails is loaded first, so its mappings never pick the copy."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    resolved = _track_item()
+    resolved.streamdetails = _resolved("qobuz", "qobuz_1")
+    get_vocal_onset, _ = _attach_post(
+        renderer, _track_item(), analysis_onset=4.0, load_next=resolved
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=3.6, next_queue_item_id="qi_track")
+    get_vocal_onset.assert_awaited_once_with("qobuz_1", "qobuz")
+
+
+async def test_the_post_follows_the_track_the_queue_loads_past_an_unplayable_one() -> None:
+    """When the queue moves past a track it cannot play, the post targets the one it loaded."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, _ = _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, load_next=_track_item("qi_track_2")
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track_2")
+    get_vocal_onset.assert_awaited_once_with("tidal_1", "tidal")
+
+
+async def test_a_post_is_skipped_when_the_next_track_cannot_be_loaded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A next track the queue cannot load gets no post, and no lyrics are looked up for it."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, get_track_lyrics = _attach_post(
+        renderer,
+        _track_item(),
+        analysis_onset=6.0,
+        load_next=QueueEmpty("No more (playable) tracks left in the queue."),
+    )
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    get_track_lyrics.assert_not_awaited()
+    assert any("the next track could not be loaded" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_post_is_skipped_when_loading_the_next_track_takes_too_long(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A load that outlasts its budget is given up on, so the clip can still air on time."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, get_track_lyrics = _attach_post(renderer, _track_item(), analysis_onset=6.0)
+
+    async def _slow_load(_queue_id: str, _item_id: str) -> QueueItem:
+        await asyncio.sleep(5)
+        raise AssertionError("the load should have been given up on")
+
+    mass = cast("Any", renderer).mass
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=_slow_load)
+    monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.POST_LOAD_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    get_track_lyrics.assert_not_awaited()
+    assert any("loading the next track took longer" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_post_is_skipped_when_the_item_that_plays_next_is_not_a_track(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When the queue moves past an unplayable track onto another clip, nothing is posted."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, _ = _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, load_next=_clip_item("sess_002")
+    )
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    assert any("is not a track" in r.getMessage() for r in caplog.records)
 
 
 async def test_synced_lyrics_time_the_post_when_the_analysis_has_nothing() -> None:
@@ -1289,6 +1417,7 @@ async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
 
     assert first.tail_overlap is None
     assert second.tail_overlap is None
+    cast("Any", renderer).mass.player_queues.load_next_queue_item.assert_not_awaited()
     get_vocal_onset.assert_not_awaited()
     get_track_lyrics.assert_not_awaited()
     skips = [r for r in caplog.records if "does not stream in flow mode" in r.getMessage()]

@@ -1492,8 +1492,9 @@ class SmartPlaylistProvider(PluginProvider):
         engine = await select_ai_engine(self, CONF_AI_ENGINE)
         if engine is None:
             return None
+        query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+            async with query_timeout:
                 response = await engine.provider.ai_query(
                     self._build_ai_prompt(name, rules, locale), engine_id=engine.id
                 )

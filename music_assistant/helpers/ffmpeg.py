@@ -274,8 +274,8 @@ class FFMpeg(AsyncProcess):
         status = "running"
         chunk_count = 0
         self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
+        start = time.time()
         try:
-            start = time.time()
             while True:
                 try:
                     chunk = await anext(self.audio_input)

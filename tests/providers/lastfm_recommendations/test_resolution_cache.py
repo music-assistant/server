@@ -6,9 +6,9 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ProviderFeature, ProviderStatus
-from music_assistant_models.errors import RetriesExhausted
-from music_assistant_models.media_items import ItemMapping, Track
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature, ProviderStatus
+from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 
 from music_assistant.providers.lastfm_recommendations import parsers
 from music_assistant.providers.lastfm_recommendations.recommendations import (
@@ -17,6 +17,11 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 INSTANCE_ID = "lastfm_recommendations--test1"
 LASTFM_TRACK = {"name": "Chasing Cars", "artist": {"name": "Snow Patrol"}}
+MBID = "5a4f2d0e-6e1c-4b7a-9c3d-2f1e8b7a6c5d"
+LASTFM_TRACK_WITH_MBID = {**LASTFM_TRACK, "mbid": MBID}
+APPLE_MUSIC_MAPPING = ProviderMapping(
+    item_id="1", provider_domain="apple_music", provider_instance="apple_music--1"
+)
 
 
 class _FakeCache:
@@ -138,6 +143,7 @@ def _mass(provider_status: ProviderStatus) -> Mock:
     """Return a mass stand-in with one streaming provider that finds nothing."""
     streaming = Mock(
         instance_id="apple_music--1",
+        domain="apple_music",
         is_streaming_provider=True,
         supported_features={ProviderFeature.LIBRARY_TRACKS},
     )
@@ -287,3 +293,165 @@ async def test_no_match_after_a_failed_provider_is_incomplete() -> None:
             ctrl, mapping, [_provider("first"), _provider("second")], None
         )
     assert ctrl.search.await_count == 2
+
+
+def _mass_with_musicbrainz(musicbrainz: Mock) -> Mock:
+    """Return a mass stand-in with all providers settled and the given MusicBrainz provider."""
+    mass = _mass(ProviderStatus.LOADED)
+    mass.get_provider = Mock(return_value=musicbrainz)
+    mass.music.tracks.get_provider_item = AsyncMock(return_value=_track())
+    return mass
+
+
+def _musicbrainz() -> Mock:
+    """Return a MusicBrainz provider stand-in that knows the recording."""
+    musicbrainz = Mock()
+    musicbrainz.get_recording_details = AsyncMock(return_value=Mock(relations=[]))
+    return musicbrainz
+
+
+def _linked(mappings: list[ProviderMapping]) -> Any:
+    """Patch the link-to-mapping helper to hand out the given mappings."""
+    return patch(
+        "music_assistant.providers.lastfm_recommendations.parsers.provider_mappings_from_urls",
+        AsyncMock(return_value=mappings),
+    )
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_link_is_fetched_instead_of_searched() -> None:
+    """A track MusicBrainz links to the user's provider is fetched by id, never searched for."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    with _linked([APPLE_MUSIC_MAPPING]) as linked:
+        resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert resolved is not None
+    assert resolved.name == "Chasing Cars"
+    linked.assert_awaited_once_with(mass, [], MediaType.TRACK, exclude_domains=set())
+    mass.music.tracks.get_provider_item.assert_awaited_once_with(
+        "1", "apple_music--1", allow_fallback=False, strict_provider_instance=True
+    )
+    mass.music.tracks.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_linked_item_is_fetched_from_the_users_own_account() -> None:
+    """A link mapped to another account of the same service is fetched from the user's own."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    other_account = ProviderMapping(
+        item_id="1", provider_domain="apple_music", provider_instance="apple_music--2"
+    )
+    with _linked([other_account]):
+        await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert mass.music.tracks.get_provider_item.await_args.args == ("1", "apple_music--1")
+
+
+@pytest.mark.parametrize(
+    ("media_type", "lookup"),
+    [
+        (MediaType.ARTIST, "get_artist_details"),
+        (MediaType.ALBUM, "get_release_details"),
+        (MediaType.TRACK, "get_recording_details"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_each_media_type_is_looked_up_as_its_musicbrainz_entity(
+    media_type: MediaType, lookup: str
+) -> None:
+    """An artist id names an artist, an album id a release and a track id a recording."""
+    mapping = ItemMapping(media_type=media_type, item_id="temp", provider="x", name="a")
+    mapping.mbid = MBID
+    musicbrainz = Mock(**{lookup: AsyncMock(return_value=Mock(relations=[]))})
+    mass = Mock()
+    mass.get_provider = Mock(return_value=musicbrainz)
+    with _linked([]):
+        assert await parsers._resolve_via_musicbrainz(Mock(), mapping, mass, [], None) == (
+            None,
+            False,
+        )
+    getattr(musicbrainz, lookup).assert_awaited_once_with(MBID)
+
+
+@pytest.mark.asyncio
+async def test_no_link_to_the_users_providers_is_searched() -> None:
+    """A track MusicBrainz links to none of the user's providers goes to the name search."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    spotify = ProviderMapping(
+        item_id="1", provider_domain="spotify", provider_instance="spotify--1"
+    )
+    with _linked([spotify]):
+        await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    mass.music.tracks.get_provider_item.assert_not_awaited()
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_trouble_leaves_the_search_to_decide() -> None:
+    """A failed MusicBrainz lookup runs the name search, whose clean miss is still a miss."""
+    musicbrainz = Mock()
+    musicbrainz.get_recording_details = AsyncMock(side_effect=RetriesExhausted("rate limited"))
+    mass = _mass_with_musicbrainz(musicbrainz)
+    assert await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID) is None
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_linked_item_the_provider_no_longer_has_is_searched() -> None:
+    """A MusicBrainz link whose item is gone from the provider goes to the name search."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    with _linked([APPLE_MUSIC_MAPPING]):
+        assert await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID) is None
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_linked_item_the_provider_could_not_hand_over_makes_a_miss_incomplete() -> None:
+    """A rate limited fetch of the linked item still runs the search, whose miss is not final."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(side_effect=RetriesExhausted("rate limited"))
+    with _linked([APPLE_MUSIC_MAPPING]), pytest.raises(parsers.SearchIncomplete):
+        await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_hit_after_a_failed_linked_fetch_is_returned() -> None:
+    """A name search match still counts when the linked item could not be fetched."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(side_effect=RetriesExhausted("rate limited"))
+    mass.music.tracks.search = AsyncMock(return_value=[_track()])
+    with _linked([APPLE_MUSIC_MAPPING]):
+        resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert resolved is not None
+    assert resolved.name == "Chasing Cars"
+
+
+@pytest.mark.asyncio
+async def test_linked_item_with_another_name_is_searched() -> None:
+    """A MusicBrainz link to an item of another name is not trusted over the name search."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    mass.music.tracks.get_provider_item = AsyncMock(
+        return_value=Track(item_id="2", provider="apple_music", name="Run", provider_mappings=set())
+    )
+    with _linked([APPLE_MUSIC_MAPPING]):
+        await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    mass.music.tracks.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_item_fetched_via_musicbrainz_prefers_the_library_copy() -> None:
+    """The user's own copy of a track fetched through MusicBrainz wins over the provider item."""
+    mass = _mass_with_musicbrainz(_musicbrainz())
+    fetched = _track()
+    fetched.external_ids = {(ExternalID.ISRC, "GBUM70502337")}
+    library_copy = Track(
+        item_id="7", provider="library", name="Chasing Cars", provider_mappings=set()
+    )
+    mass.music.tracks.get_provider_item = AsyncMock(return_value=fetched)
+    mass.music.tracks.get_library_item_by_external_ids = AsyncMock(side_effect=[None, library_copy])
+    with _linked([APPLE_MUSIC_MAPPING]):
+        resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
+    assert resolved is library_copy
+    library_lookups = mass.music.tracks.get_library_item_by_external_ids.await_args_list
+    assert library_lookups[-1].args == (fetched.external_ids,)
+    mass.music.tracks.search.assert_not_awaited()

@@ -307,6 +307,23 @@ def overlay_active(queue: PlayerQueue) -> bool:
     return queue.overlay_enabled and queue.overlay_source is not None
 
 
+def overlay_mixed_in(queue: PlayerQueue, queue_item: QueueItem, *, flow_mode: bool) -> bool:
+    """
+    Return True if the queue's audio overlay is mixed into the stream serving this item.
+
+    The overlay rides on the queue's continuous flow stream. Among per-item streams only
+    radio carries it, because a station never plays in flow mode and is one long-lived
+    stream of its own.
+
+    :param queue: The queue the item plays on.
+    :param queue_item: The item the stream serves.
+    :param flow_mode: Whether the stream is the queue's flow stream instead of a per-item one.
+    """
+    if not overlay_active(queue):
+        return False
+    return flow_mode or queue_item.media_type == MediaType.RADIO
+
+
 def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> int:
     """
     Return how many bytes of tail may be held back for a fade right now.
@@ -2793,8 +2810,10 @@ class StreamsAudio:
                             # leave the queue's position mapping on the wrong track
                             # for the whole (source-paced) duration of the blend. The
                             # pre-counted tail makes way for that live credit.
+                            fadeout_timing = crossfade_smart_fade.timing_info
                             fadeout_share_seconds = (
-                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
+                                fadeout_timing.pre_crossfade_duration
+                                + fadeout_timing.crossfade_duration
                             )
                             fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
                             fadeout_share = (fadeout_share // frame_size) * frame_size
@@ -2808,8 +2827,8 @@ class StreamsAudio:
                                 fade_out_part=last_fadeout_part,
                                 pcm_format=pcm_format,
                             )
+                            crossfade_bytes_written = 0
                             try:
-                                crossfade_bytes_written = 0
                                 # closed before item_stream on an aborted flow: its
                                 # teardown stops the feeder that still holds a read
                                 # on item_stream, which must not be closed mid-read

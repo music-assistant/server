@@ -1082,6 +1082,7 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
 
     # a probe that could not reach the server is not repeated until its retry time
     mp3_probe.result = None
+    streamdetails = _seekable_streamdetails()
     for retry_seconds, expected_calls in ((60, 1), (-1, 2)):
         monkeypatch.setattr(audio_mod, "MP3_SEEK_PROBE_RETRY_SECONDS", retry_seconds)
         mp3_probe.calls.clear()

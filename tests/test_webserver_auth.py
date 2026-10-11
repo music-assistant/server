@@ -5,11 +5,12 @@ import hashlib
 import logging
 import pathlib
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiohttp import web
@@ -18,6 +19,7 @@ from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     InsufficientPermissions,
     InvalidDataError,
     UserNotFoundError,
@@ -56,11 +58,25 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    AuthTransport,
+    PendingLogin,
+    pkce_challenge,
+)
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
+
+# a client's PKCE pair, and the arguments of a valid sign-in for the remote app
+CLIENT_VERIFIER = "client-verifier-" + "v" * 40
+CLIENT_CHALLENGE = pkce_challenge(CLIENT_VERIFIER)
+APP_SIGN_IN_ARGS = {
+    "code_challenge": CLIENT_CHALLENGE,
+    "code_challenge_method": "S256",
+    "redirect_target": "app",
+}
 
 
 @pytest.fixture
@@ -1430,7 +1446,8 @@ def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
     :param auth_manager: AuthenticationManager instance.
     """
     provider = MagicMock(requires_redirect=True)
-    provider.get_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
+    provider.build_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
+    provider.supports_remote_app = AsyncMock(return_value=True)
     auth_manager.login_providers["oauth"] = provider
     return provider
 
@@ -1443,20 +1460,29 @@ async def test_get_auth_url_rejects_invalid_return_url(
     result = await auth_manager.get_auth_url("oauth", return_url)
 
     assert result == {"authorization_url": None, "error": "Invalid return_url"}
-    oauth_provider.get_authorization_url.assert_not_called()
+    oauth_provider.build_authorization_url.assert_not_called()
 
 
 @pytest.mark.parametrize(
-    "return_url", ["https://music.example.com/#/home", "musicassistant://auth/callback"]
+    ("return_url", "state_prefix"),
+    [("https://music.example.com/#/home", "w."), ("musicassistant://auth/callback", "n.")],
 )
 async def test_get_auth_url_passes_valid_return_url(
-    auth_manager: AuthenticationManager, oauth_provider: MagicMock, return_url: str
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    return_url: str,
+    state_prefix: str,
 ) -> None:
     """Test that a valid return_url is passed to the provider and its URL is returned."""
     result = await auth_manager.get_auth_url("oauth", return_url)
 
-    assert result == {"authorization_url": "https://idp.example.com/authorize"}
-    oauth_provider.get_authorization_url.assert_awaited_once_with(ANY, return_url)
+    pending = _started_login(oauth_provider)
+    assert pending.return_url == return_url
+    assert pending.state.startswith(state_prefix)
+    assert result["authorization_url"] == "https://idp.example.com/authorize"
+    assert result["state"] == pending.state
+    assert result["expires_at"] is not None
+    assert datetime.fromisoformat(result["expires_at"]) > utc()
 
 
 @pytest.mark.parametrize(
@@ -1500,6 +1526,371 @@ async def test_get_authorization_url_picks_callback_base(
     :param return_url: The URL the sign-in returns to.
     :param expected_callback_base: The server URL the callback is expected on.
     """
+    with _webserver_urls(external_url):
+        await auth_manager.get_authorization_url("oauth", return_url)
+
+    pending = _started_login(oauth_provider)
+    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback?provider_id=oauth"
+    assert pending.return_url == return_url
+
+
+@pytest.mark.parametrize(
+    ("external_url", "path", "headers", "peer_ip", "expected_callback_base"),
+    [
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "192.168.1.10:8095"},
+            "192.168.1.20",
+            "http://192.168.1.10:8095",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "ma.example.com"},
+            "192.168.1.20",
+            "https://ma.example.com",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "127.0.0.1:8095", "X-Forwarded-Host": "MA.example.com"},
+            "127.0.0.1",
+            "https://ma.example.com",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws?webrtc_session_id=live",
+            {"Host": "127.0.0.1:8095"},
+            "127.0.0.1",
+            "https://ma.example.com",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws?webrtc_session_id=gone",
+            {"Host": "127.0.0.1:8095"},
+            "127.0.0.1",
+            "http://192.168.1.10:8095",
+        ),
+        (
+            None,
+            "/ws?webrtc_session_id=live",
+            {"Host": "127.0.0.1:8095"},
+            "127.0.0.1",
+            "http://192.168.1.10:8095",
+        ),
+    ],
+    ids=[
+        "local",
+        "external_url",
+        "external_url_forwarded_host",
+        "remote_access",
+        "spoofed_remote_access",
+        "remote_access_without_external_url",
+    ],
+)
+async def test_get_authorization_url_picks_callback_base_for_app(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    external_url: str | None,
+    path: str,
+    headers: dict[str, str],
+    peer_ip: str,
+    expected_callback_base: str,
+) -> None:
+    """
+    Test that an app sign-in gets its callback on the External URL when it connected through it.
+
+    :param external_url: The configured External URL.
+    :param path: The websocket request path the app connected on.
+    :param headers: The websocket request headers.
+    :param peer_ip: The address the websocket connection came from.
+    :param expected_callback_base: The server URL the callback is expected on.
+    """
+    return_url = "musicassistant://auth/callback"
+    with (
+        _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
+        _calling_client(auth_manager, path, headers, peer_ip),
+        _webserver_urls(external_url),
+    ):
+        await auth_manager.get_auth_url("oauth", return_url)
+
+    pending = _started_login(oauth_provider)
+    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback?provider_id=oauth"
+
+
+@pytest.mark.parametrize("external_url", [None, "https://ma.example.com"])
+async def test_get_auth_url_returns_to_the_app_over_remote_access(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, external_url: str | None
+) -> None:
+    """
+    A remote app sign-in with a code challenge returns to the app, even with an External URL.
+
+    :param external_url: The configured External URL.
+    """
+    challenge = pkce_challenge("client_verifier")
+    with (
+        _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
+        _calling_client(auth_manager, "/ws?webrtc_session_id=live", {}, "127.0.0.1"),
+        _webserver_urls(external_url),
+    ):
+        result = await auth_manager.get_auth_url(
+            "oauth",
+            code_challenge=challenge,
+            code_challenge_method="S256",
+            redirect_target="app",
+        )
+
+    pending = _started_login(oauth_provider)
+    assert result["state"] == pending.state
+    assert pending.redirect_uri == "https://app.music-assistant.io/auth/callback/"
+    assert pending.redirect_target == "app"
+    assert pending.transport is AuthTransport.REMOTE
+    assert pending.client_code_challenge == challenge
+
+
+@pytest.mark.parametrize(
+    ("session_id", "args", "supports_remote_app", "error"),
+    [
+        ("live", {"redirect_target": "app"}, True, "Remote Access and a code_challenge"),
+        (None, APP_SIGN_IN_ARGS, True, "Remote Access and a code_challenge"),
+        ("gone", APP_SIGN_IN_ARGS, True, "Remote Access and a code_challenge"),
+        ("live", APP_SIGN_IN_ARGS, False, "does not support the remote app"),
+        ("live", {"redirect_target": "elsewhere"}, True, "Invalid redirect_target"),
+        (
+            "live",
+            {"code_challenge": CLIENT_CHALLENGE, "code_challenge_method": "plain"},
+            True,
+            "Invalid code_challenge",
+        ),
+        ("live", {"code_challenge": CLIENT_CHALLENGE}, True, "Invalid code_challenge"),
+        (
+            "live",
+            {"code_challenge": "too-short", "code_challenge_method": "S256"},
+            True,
+            "Invalid code_challenge",
+        ),
+        (
+            "live",
+            {"code_challenge": CLIENT_CHALLENGE, "code_challenge_method": "S256"},
+            True,
+            "only supported with redirect_target app",
+        ),
+    ],
+    ids=[
+        "app_without_challenge",
+        "app_on_a_direct_connection",
+        "app_on_a_spoofed_remote_connection",
+        "app_not_supported_by_provider",
+        "unknown_redirect_target",
+        "plain_challenge",
+        "challenge_without_method",
+        "malformed_challenge",
+        "challenge_for_the_server",
+    ],
+)
+async def test_get_auth_url_refuses_an_invalid_sign_in_request(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    session_id: str | None,
+    args: dict[str, Any],
+    supports_remote_app: bool,
+    error: str,
+) -> None:
+    """
+    Test that an invalid sign-in request is refused without starting a sign-in.
+
+    :param session_id: The WebRTC session id the calling connection claims, if any.
+    :param args: The sign-in arguments next to the provider id.
+    :param supports_remote_app: Whether the login provider supports the remote app.
+    :param error: Part of the expected error.
+    """
+    oauth_provider.supports_remote_app.return_value = supports_remote_app
+    path = f"/ws?webrtc_session_id={session_id}" if session_id else "/ws"
+    with (
+        _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
+        _calling_client(auth_manager, path, {}, "127.0.0.1"),
+    ):
+        result = await auth_manager.get_auth_url("oauth", **args)
+
+    assert result["authorization_url"] is None
+    assert error in str(result["error"])
+    oauth_provider.build_authorization_url.assert_not_called()
+    assert not auth_manager.pending_logins._pending
+
+
+async def test_exchange_signs_in_the_user_of_an_app_sign_in(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """An app sign-in is exchanged once, with the matching verifier, for a token of its user."""
+    user = await auth_manager.create_user(username="remote", display_name="Remote User")
+    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    pending = _start_app_sign_in(auth_manager)
+
+    result = await auth_manager.exchange_authorization_code(
+        pending.state, "idp_code", CLIENT_VERIFIER, device_name="Phone"
+    )
+
+    assert result["success"] is True
+    assert result["user"] == {
+        "user_id": user.user_id,
+        "username": "remote",
+        "display_name": "Remote User",
+        "role": user.role,
+    }
+    assert await auth_manager.authenticate_with_token(result["access_token"]) is not None
+    oauth_provider.complete_authorization.assert_awaited_once_with(pending, {"code": "idp_code"})
+    again = await auth_manager.exchange_authorization_code(
+        pending.state, "idp_code", CLIENT_VERIFIER
+    )
+    assert again["success"] is False
+    assert again["translation_key"] == "sign_in_expired"
+
+
+@pytest.mark.parametrize(
+    ("redirect_target", "code", "verifier", "expired", "translation_key"),
+    [
+        ("app", "idp_code", "wrong-verifier", False, "authentication_failed"),
+        ("server", "idp_code", CLIENT_VERIFIER, False, "authentication_failed"),
+        ("app", "idp_code", CLIENT_VERIFIER, True, "sign_in_expired"),
+        ("app", "idp_code&code_verifier=x", CLIENT_VERIFIER, False, "authentication_failed"),
+    ],
+    ids=["wrong_verifier", "server_target", "expired", "malformed_code"],
+)
+async def test_exchange_refuses_an_invalid_sign_in(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    redirect_target: str,
+    code: str,
+    verifier: str,
+    expired: bool,
+    translation_key: str,
+) -> None:
+    """
+    An exchange with a wrong verifier or code, for another target or after expiry fails.
+
+    :param redirect_target: Where the sign-in was started to return to.
+    :param code: The authorization code the exchange presents.
+    :param verifier: The code verifier the exchange presents.
+    :param expired: Whether the sign-in expired before the exchange.
+    :param translation_key: The expected translation key of the error.
+    """
+    oauth_provider.complete_authorization = AsyncMock()
+    pending = auth_manager.pending_logins.start(
+        "oauth",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        redirect_target="app" if redirect_target == "app" else "server",
+        client_code_challenge=CLIENT_CHALLENGE,
+        idp_code_verifier="idp_verifier",
+    )
+    if expired:
+        pending.expires_at = 0
+
+    result = await auth_manager.exchange_authorization_code(pending.state, code, verifier)
+
+    assert result["success"] is False
+    assert result["translation_key"] == translation_key
+    assert "access_token" not in result
+    oauth_provider.complete_authorization.assert_not_awaited()
+    assert pending.state not in auth_manager.pending_logins._pending
+
+
+async def test_exchange_refuses_an_unknown_state(auth_manager: AuthenticationManager) -> None:
+    """An exchange for a state that was never handed out fails."""
+    result = await auth_manager.exchange_authorization_code("w.unknown", "code", CLIENT_VERIFIER)
+
+    assert result == {
+        "success": False,
+        "error": "This sign-in is invalid or has expired",
+        "translation_key": "sign_in_expired",
+    }
+
+
+async def test_exchange_passes_on_a_refusal_of_the_provider(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """A user the provider refuses (e.g. a disabled one) gets the provider's error."""
+    oauth_provider.complete_authorization = AsyncMock(
+        side_effect=AuthenticationFailed(
+            "User account is disabled", translation_key="user_account_disabled"
+        )
+    )
+    pending = _start_app_sign_in(auth_manager)
+
+    result = await auth_manager.exchange_authorization_code(
+        pending.state, "idp_code", CLIENT_VERIFIER
+    )
+
+    assert result == {
+        "success": False,
+        "error": "User account is disabled",
+        "translation_key": "user_account_disabled",
+    }
+
+
+async def test_failed_exchanges_are_rate_limited_per_connection(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """After repeated failures a connection is throttled, while other connections are not."""
+    user = await auth_manager.create_user(username="remote")
+    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    set_current_client_id("connection-a")
+    try:
+        for _ in range(3):
+            await auth_manager.exchange_authorization_code("w.unknown", "code", CLIENT_VERIFIER)
+        pending = _start_app_sign_in(auth_manager)
+        throttled = await auth_manager.exchange_authorization_code(
+            pending.state, "idp_code", CLIENT_VERIFIER
+        )
+        set_current_client_id("connection-b")
+        other = await auth_manager.exchange_authorization_code(
+            pending.state, "idp_code", CLIENT_VERIFIER
+        )
+    finally:
+        set_current_client_id(None)
+
+    assert throttled["success"] is False
+    assert throttled["translation_key"] == "rate_limited"
+    # the throttled attempt left the sign-in for a retry
+    assert other["success"] is True
+
+
+def _start_app_sign_in(auth_manager: AuthenticationManager) -> PendingLogin:
+    """
+    Start a sign-in for the "oauth" provider that returns to the remote app.
+
+    :param auth_manager: The authentication manager to start the sign-in on.
+    """
+    return auth_manager.pending_logins.start(
+        "oauth",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        redirect_target="app",
+        client_code_challenge=CLIENT_CHALLENGE,
+        idp_code_verifier="idp_verifier",
+    )
+
+
+def _started_login(provider: MagicMock) -> PendingLogin:
+    """
+    Return the sign-in the stub login provider built its authorization URL for.
+
+    :param provider: The stub login provider.
+    """
+    provider.build_authorization_url.assert_awaited_once()
+    assert provider.build_authorization_url.await_args is not None
+    pending: PendingLogin = provider.build_authorization_url.await_args.args[0]
+    return pending
+
+
+@contextmanager
+def _webserver_urls(external_url: str | None) -> Iterator[None]:
+    """
+    Make the webserver report a LAN base URL and the given External URL.
+
+    :param external_url: The External URL the webserver reports.
+    """
     with (
         patch.object(
             WebserverController,
@@ -1514,88 +1905,50 @@ async def test_get_authorization_url_picks_callback_base(
             return_value=external_url,
         ),
     ):
-        await auth_manager.get_authorization_url("oauth", return_url)
-
-    oauth_provider.get_authorization_url.assert_awaited_once_with(
-        f"{expected_callback_base}/auth/callback?provider_id=oauth", return_url
-    )
+        yield
 
 
-@pytest.mark.parametrize(
-    ("external_url", "path", "headers", "expected_callback_base"),
-    [
-        (
-            "https://ma.example.com",
-            "/ws",
-            {"Host": "192.168.1.10:8095"},
-            "http://192.168.1.10:8095",
-        ),
-        ("https://ma.example.com", "/ws", {"Host": "ma.example.com"}, "https://ma.example.com"),
-        (
-            "https://ma.example.com",
-            "/ws",
-            {"Host": "127.0.0.1:8095", "X-Forwarded-Host": "MA.example.com"},
-            "https://ma.example.com",
-        ),
-        (
-            "https://ma.example.com",
-            "/ws?webrtc_session_id=abc",
-            {"Host": "127.0.0.1:8095"},
-            "https://ma.example.com",
-        ),
-        (None, "/ws?webrtc_session_id=abc", {"Host": "127.0.0.1:8095"}, "http://192.168.1.10:8095"),
-    ],
-    ids=[
-        "local",
-        "external_url",
-        "external_url_forwarded_host",
-        "remote_access",
-        "remote_access_without_external_url",
-    ],
-)
-async def test_get_authorization_url_picks_callback_base_for_app(
-    auth_manager: AuthenticationManager,
-    oauth_provider: MagicMock,
-    external_url: str | None,
-    path: str,
-    headers: dict[str, str],
-    expected_callback_base: str,
-) -> None:
+@contextmanager
+def _remote_access_gateway(
+    auth_manager: AuthenticationManager, connect_ip: str, sessions: set[str]
+) -> Iterator[None]:
     """
-    Test that an app sign-in gets its callback on the External URL when it connected through it.
+    Run a stub remote access gateway that connects from the given address.
 
-    :param external_url: The configured External URL.
-    :param path: The websocket request path the app connected on.
+    :param auth_manager: The authentication manager whose webserver runs the gateway.
+    :param connect_ip: The address the gateway connects to the local websocket on.
+    :param sessions: The ids of the live gateway sessions.
+    """
+    gateway = MagicMock(local_ws_url=f"ws://{connect_ip}:8095/ws", sessions=dict.fromkeys(sessions))
+    with patch.object(auth_manager.webserver.remote_access, "gateway", gateway):
+        yield
+
+
+@contextmanager
+def _calling_client(
+    auth_manager: AuthenticationManager, path: str, headers: dict[str, str], peer_ip: str
+) -> Iterator[WebsocketClientHandler]:
+    """
+    Make the current command come in on a websocket connection with the given request.
+
+    :param auth_manager: The authentication manager whose webserver holds the connection.
+    :param path: The websocket request path.
     :param headers: The websocket request headers.
-    :param expected_callback_base: The server URL the callback is expected on.
+    :param peer_ip: The address the connection came from.
     """
-    return_url = "musicassistant://auth/callback"
-    request = make_mocked_request("GET", path, headers=headers, app=web.Application())
+    transport = MagicMock()
+    transport.get_extra_info.side_effect = {"peername": (peer_ip, 54321)}.get
+    request = make_mocked_request(
+        "GET", path, headers=headers, app=web.Application(), transport=transport
+    )
     client = WebsocketClientHandler(auth_manager.webserver, request)
     auth_manager.webserver.register_websocket_client(client)
     set_current_client_id(client.client_id)
     try:
-        with (
-            patch.object(
-                WebserverController,
-                "base_url",
-                new_callable=PropertyMock,
-                return_value="http://192.168.1.10:8095",
-            ),
-            patch.object(
-                WebserverController,
-                "external_url",
-                new_callable=PropertyMock,
-                return_value=external_url,
-            ),
-        ):
-            await auth_manager.get_authorization_url("oauth", return_url)
+        yield client
     finally:
         set_current_client_id(None)
-
-    oauth_provider.get_authorization_url.assert_awaited_once_with(
-        f"{expected_callback_base}/auth/callback?provider_id=oauth", return_url
-    )
+        auth_manager.webserver.unregister_websocket_client(client)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:

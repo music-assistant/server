@@ -23,6 +23,8 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateFactory,
     CandidateSpec,
+    EchoOutGenerator,
+    FilterOutGenerator,
     bars_ladder,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -371,6 +373,48 @@ class TestFinalizeSegue:
         plan = PlanAssembler(ctx, LOGGER).finalize(self._segue(ctx, "qsin", "qsin"))
 
         assert plan.fadeout_curve == "qsin"
+
+
+class TestFinalizeDressed:
+    """A dressed transition hands over without EQ; an echo out keeps the curves it was built with."""
+
+    def _built(self, ctx: TransitionContext) -> list[Candidate]:
+        factory = CandidateFactory(ctx, LOGGER)
+        specs = [*FilterOutGenerator().generate(ctx), *EchoOutGenerator().generate(ctx)]
+        built = [factory.build(spec) for spec in specs]
+        return [candidate for candidate in built if candidate is not None]
+
+    def test_a_bass_heavy_pair_ships_no_shelf(self) -> None:
+        """The incoming track enters at full range and the outgoing has only its own effect."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+        ctx = _ctx(out, inc)
+
+        for candidate in self._built(ctx):
+            eq = PlanAssembler(ctx, LOGGER).finalize(candidate).eq_plan
+            assert (eq.low_out, eq.low_in, eq.high_out, eq.high_in, eq.mid_out, eq.mid_in) == (
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+    def test_inside_a_mastered_fade_only_the_filter_out_drops_its_curve(self) -> None:
+        """The record's own fade replaces a filter out's volume fade; the echo keeps nofade."""
+        out, inc = _mastered_fade_pair()
+        inc.bpm = 150.0
+        # anchored at the audible end, inside the fade detected from 17s on
+        ctx = replace(_ctx(out, inc), default_anchor=43.0)
+        assert ctx.fade_onset is not None
+        assembler = PlanAssembler(ctx, LOGGER)
+        plans = {(c.plan.style, c.spec.bars): assembler.finalize(c) for c in self._built(ctx)}
+
+        assert plans[(TransitionStyle.FILTER_OUT, 4)].fadeout_curve == "nofade"
+        echo = plans[(TransitionStyle.ECHO_OUT, 1)]
+        assert (echo.fadeout_curve, echo.fadein_curve) == ("nofade", "nofade")
+        assert echo.echo is not None
 
 
 class TestFallbackCrossfadeOnUnreliableMasks:

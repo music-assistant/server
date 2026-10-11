@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -15,8 +15,13 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateSpec,
+    EchoOutGenerator,
+    FilterOutGenerator,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def build_test_candidate(  # noqa: PLR0913
@@ -55,6 +60,12 @@ def build_test_candidate(  # noqa: PLR0913
         rhythm_clash_bars=rhythm_clash,
     )
     return Candidate(spec=spec, plan=plan, metrics=metrics, ideal_bars=ideal)
+
+
+def disable_dressed_transitions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan as before the dressed transitions existed: neither generator emits a spec."""
+    for generator in (FilterOutGenerator, EchoOutGenerator):
+        monkeypatch.setattr(generator, "generate", lambda _self, _ctx: iter(()))
 
 
 def _envelope(value: float | list[float] | np.ndarray) -> list[float]:

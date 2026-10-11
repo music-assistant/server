@@ -136,6 +136,8 @@ POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays
 POST_MIN_HEAD_SECONDS = 1.0  # the break keeps at least this much before the record comes in
 # MA's lyrics lookup walks every metadata provider; past this budget the break plays whole
 POST_LYRICS_TIMEOUT = 8.0
+# loading the next record resolves its stream details with its provider; same budget
+POST_LOAD_TIMEOUT = 8.0
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays

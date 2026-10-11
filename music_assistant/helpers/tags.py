@@ -653,14 +653,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128trackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128trackgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygaintrackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygaintrackgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -672,14 +672,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128albumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128albumgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygainalbumgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygainalbumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygainalbumgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -1589,7 +1589,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
         return result
     except Exception as err:
-        LOGGER.debug(f"Error parsing mutagen tags for {input_file}: {err}")
+        LOGGER.debug("Error parsing mutagen tags for %s: %s", input_file, err)
         return result
 
 
