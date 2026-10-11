@@ -45,7 +45,10 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
 6. Build and push only `ghcr.io/music-assistant/server:$VERSION`. The image index must
    contain `linux/amd64` and `linux/arm64`, identify `source_sha` and the wheel digest,
    and produce one captured OCI digest. An existing exact tag is verified and never
-   overwritten.
+   overwritten. The `linux/amd64` image is then run without starting the server, and
+   `verify-build-info` requires that it reports the official build of this version,
+   `source_sha` and wheel digest; otherwise every install of the release would show the
+   unsupported installation warning.
 7. Revalidate the draft, recheck the immutable-release setting, and publish once.
 8. Require an immutable release, the tag at `source_sha`, matching release assets,
    successful release and asset attestations, and the same exact OCI digest.
@@ -130,11 +133,11 @@ branch recovery path.
 
 - **Before publication:** The matching draft remains mutable. Complete assets are
   downloaded and reused byte-for-byte; incomplete assets are replaced. If the exact
-  image already exists, its source, wheel digest, platforms, and OCI digest must match,
-  otherwise the rerun stops without overwriting it. Run-scoped build artifacts remain
-  available to GitHub's **Re-run failed jobs** path. A crash after exact tag creation but
-  before draft creation can resume only when the annotated tag has the workflow's exact
-  source marker and `github-actions[bot]` identity.
+  image already exists, its source, wheel digest, platforms, OCI digest, and official
+  build info must match, otherwise the rerun stops without overwriting it. Run-scoped
+  build artifacts remain available to GitHub's **Re-run failed jobs** path. A crash after
+  exact tag creation but before draft creation can resume only when the annotated tag has
+  the workflow's exact source marker and `github-actions[bot]` identity.
 - **After publication:** Tests, package builds, draft mutation, and publication are
   skipped. The immutable release, assets, attestations, tag, and exact image are verified
   again, then rolling aliases and downstream updates resume. If a newer release already
