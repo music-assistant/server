@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 CONF_METHOD = "method"
 METHOD_DEVICE = "device"
 METHOD_QR = "qr"
-METHOD_TOKEN = "token"
+METHOD_TOKEN = "token"  # noqa: S105 - auth method name
 
 _DEVICE_NAME = "Music Assistant"
 _AUTH_FLOW_TIMEOUT_SECONDS = 15 * 60

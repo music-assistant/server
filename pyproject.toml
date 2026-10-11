@@ -241,7 +241,6 @@ ignore = [
   "PTH123",
   "G004",
   "S104",
-  "S105",
   "S106",
   "SLF001",
   "SIM102",
@@ -265,6 +264,10 @@ select = ["ALL"]
 # Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
 # D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
 extend-select = ["D213"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests use made-up tokens and passwords as fixtures
+"tests/**" = ["S105"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
