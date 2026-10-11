@@ -1393,6 +1393,8 @@ async def test_synced_lyrics_time_the_post_when_the_analysis_has_nothing() -> No
         (2.0, "[00:07.00]Hello there", 6.6),
         # the analysis is later, but not by more than the lead: the lyrics still lead
         (7.0, "[00:04.00]Hello there", 3.6),
+        # exactly the lead later is not more than it: the lyrics still lead
+        (9.0, "[00:04.00]Hello there", 3.6),
         # the analysis is clearly later: it replaces the lyric onset
         (8.0, "[00:02.00]Hello there", 7.6),
     ],
@@ -1425,6 +1427,28 @@ async def test_the_analysis_times_the_post_when_the_lyrics_lookup_fails() -> Non
     _attach_queue(renderer, [clip])
     _, get_track_lyrics = _attach_post(renderer, _track_item(), analysis_onset=6.0)
     get_track_lyrics.side_effect = MusicAssistantError("lyrics provider unavailable")
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    get_track_lyrics.assert_awaited_once()
+
+
+async def test_the_analysis_times_the_post_when_the_lyrics_lookup_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lyrics lookup that outlasts its budget leaves the analysed onset to time the post."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _, get_track_lyrics = _attach_post(renderer, _track_item(), analysis_onset=6.0)
+
+    async def _slow_lookup(_track: Track) -> tuple[str | None, str | None]:
+        await asyncio.sleep(5)
+        raise AssertionError("the lookup should have been given up on")
+
+    get_track_lyrics.side_effect = _slow_lookup
+    monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.POST_LYRICS_TIMEOUT", 0.01)
 
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
