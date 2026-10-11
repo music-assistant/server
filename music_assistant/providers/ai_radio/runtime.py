@@ -545,7 +545,7 @@ class AIRadioRuntimeMixin:
         )
         return result
 
-    def _plan_sections(  # noqa: PLR0915
+    def _plan_sections(  # noqa: C901, PLR0912, PLR0915
         self,
         session_id: str,
         tracks: list[dict[str, Any]],

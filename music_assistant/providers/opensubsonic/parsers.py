@@ -69,7 +69,7 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(  # noqa: PLR0915
+def parse_track(  # noqa: C901, PLR0912, PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,

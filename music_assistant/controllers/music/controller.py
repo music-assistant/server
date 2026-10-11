@@ -1616,7 +1616,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
-    async def refresh_item(  # noqa: PLR0915
+    async def refresh_item(  # noqa: C901, PLR0912, PLR0915
         self,
         media_item: str | MediaItemType,
     ) -> MediaItemType | None:

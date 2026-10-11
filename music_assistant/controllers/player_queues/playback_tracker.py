@@ -478,7 +478,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # only a queue this server has can be evidence; anything else is unknown media
         return next((x for x in candidates if x and x in self._queue_data), None)
 
-    def _handle_end_of_queue(
+    def _handle_end_of_queue(  # noqa: C901
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
     ) -> None:
         """Check if the queue should be cleared after the current item."""

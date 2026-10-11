@@ -743,7 +743,7 @@ class SendspinPlaybackSession:
 
     # -- Playback pipeline -----------------------------------------------------
 
-    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: PLR0915
+    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: C901, PLR0915
         """
         Run the playback pipeline for a single media session.
 

@@ -119,7 +119,7 @@ def _generate_type_alias_description(type_alias: Any, alias_name: str) -> str:
     return f"Type alias for {alias_name.lower()} types. Can be {types_str}."
 
 
-def _get_type_schema(  # noqa: PLR0911, PLR0915
+def _get_type_schema(  # noqa: C901, PLR0911, PLR0912, PLR0915
     type_hint: Any, definitions: dict[str, Any]
 ) -> dict[str, Any]:
     """Convert a Python type hint to an OpenAPI schema."""

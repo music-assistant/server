@@ -542,7 +542,7 @@ class LocalFileSystemProvider(MusicProvider):
                     items[index] = library_track
         return items
 
-    async def sync_library(self, media_type: MediaType) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:  # noqa: C901, PLR0912
         """Run library sync for this provider."""
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync

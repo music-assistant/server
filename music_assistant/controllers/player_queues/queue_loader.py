@@ -739,7 +739,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
     @handle_play_action
-    async def _handle_play_media(
+    async def _handle_play_media(  # noqa: C901, PLR0912
         self,
         queue_id: str,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
