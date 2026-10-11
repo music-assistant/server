@@ -85,7 +85,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
@@ -1184,7 +1184,7 @@ class LocalFileSystemProvider(MusicProvider):
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         # filename = await self.resolve(f"{name}.m3u")
-        filename = f"{name}.m3u"
+        filename = f"{sanitize_playlist_filename(name)}.m3u"
         playlist_filename = self.get_absolute_path(filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")

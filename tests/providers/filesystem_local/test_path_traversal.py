@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Artist, ProviderMapping
 
@@ -249,3 +250,21 @@ async def test_artist_folder_leading_outside_is_skipped(linked_tree: Path) -> No
 
     assert artist.name == "elsewhere"
     assert not artist.metadata.images
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("AC/DC Mix", "AC_DC Mix.m3u"), ("../x", "_x.m3u")],
+)
+async def test_create_playlist_stays_inside_base_path(
+    music_tree: Path, name: str, expected: str
+) -> None:
+    """A playlist name with path characters creates one sanitized file inside the base folder."""
+    provider = _make_provider(str(music_tree))
+    provider.get_playlist = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.create_playlist(name, {MediaType.TRACK})
+
+    assert (music_tree / expected).read_text(encoding="utf-8") == "#EXTM3U\n"
+    provider.get_playlist.assert_awaited_once_with(expected)
+    assert not (music_tree.parent / "x.m3u").exists()

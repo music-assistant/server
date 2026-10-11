@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
@@ -92,6 +91,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u,
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
+    sanitize_playlist_filename,
 )
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
@@ -1783,7 +1783,7 @@ class BuiltinProvider(MusicProvider):
         :param entries: The initial playlist items to write.
         :param playlist_image_url: Optional playlist image URL to embed in the header.
         """
-        base_id = self._sanitize_playlist_id(name)
+        base_id = sanitize_playlist_filename(name)
         playlist_id = base_id
         counter = 1
         while True:
@@ -1961,15 +1961,6 @@ class BuiltinProvider(MusicProvider):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
         return media_item_to_playlist_item(full_item)
-
-    @staticmethod
-    def _sanitize_playlist_id(name: str) -> str:
-        """Sanitize a playlist name for use as a filename (without extension)."""
-        # replace invalid filename characters
-        sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
-        # remove leading/trailing spaces and dots
-        sanitized = sanitized.strip(" .")
-        return sanitized or "untitled"
 
     async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """
