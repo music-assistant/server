@@ -14,6 +14,9 @@ CONF_CONTENT_TYPE = "content_type"
 # Hidden conf: Do we still need to promote authors/ narrators to full artists?
 CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
 
+# Hidden conf: Do we still need to store the folder signature of multi-file audiobooks?
+CONF_CHAPTER_FOLDER_REPARSE_DONE = "chapter_folder_reparse_done"
+
 # Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
 AUTHOR_ID_PREFIX: Final[str] = "author:"
 NARRATOR_ID_PREFIX: Final[str] = "narrator:"
