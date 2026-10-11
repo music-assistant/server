@@ -14,6 +14,9 @@ CONF_CONTENT_TYPE = "content_type"
 # Hidden conf: Do we still need to promote authors/ narrators to full artists?
 CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
 
+# Hidden conf: Do we still need to store the folder signature of multi-file audiobooks?
+CONF_CHAPTER_FOLDER_REPARSE_DONE = "chapter_folder_reparse_done"
+
 # Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
 AUTHOR_ID_PREFIX: Final[str] = "author:"
 NARRATOR_ID_PREFIX: Final[str] = "narrator:"
@@ -65,15 +68,6 @@ def content_type_config_entry(content_type: str) -> ConfigEntry:
     # mirrored as the entry default so the other entries resolve their depends_on chain
     # against it without it ever being persisted back into the stored values
     return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
-
-
-def folder_config_entry(path: str) -> ConfigEntry:
-    """
-    Return the line on the options page that shows which folder a source reads from.
-
-    :param path: The folder of the source.
-    """
-    return ConfigEntry(key="folder", type=ConfigEntryType.LABEL, translation_params=[path])
 
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(

@@ -16,6 +16,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     SmartFade,
     SmartFadeNotApplicable,
     StandardCrossFade,
+    VoiceOverFade,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import detect_effective_audio_end
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -67,10 +68,21 @@ class SmartFadesMixer:
         :param fade_out_streamdetails: Stream details for the outgoing track.
         :param pcm_format: Audio format of both input buffers (and mix output).
         :param standard_crossfade_duration: Duration in seconds for standard crossfade.
-        :param mode: Smart fades mode (SMART_CROSSFADE or STANDARD_CROSSFADE).
+        :param mode: Smart fades mode (SMART_CROSSFADE, STANDARD_CROSSFADE or VOICE_OVER).
         :param fade_out_data: PCM buffer of the outgoing track's tail.
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
+        if mode == CrossfadeMode.VOICE_OVER:
+            # a declared transition: played as declared, never planned or degraded
+            voice_over = VoiceOverFade(logger=self.logger)
+            voice_over.build(len(fade_out_data), fade_in_bytes_len, pcm_format)
+            self.logger.debug(
+                "Built voice over: tail=%.2fs fade_in=%.2fs overlap=%.2fs",
+                len(fade_out_data) / pcm_format.pcm_sample_size,
+                fade_in_bytes_len / pcm_format.pcm_sample_size,
+                voice_over.timing_info.crossfade_duration,
+            )
+            return voice_over
         # degradation chain: smart-crossfade → standard; richer modes prepend their builder
         smart_fade: SmartFade | None = None
         fade_out_analysis: AudioAnalysisData | None = None

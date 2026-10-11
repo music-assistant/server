@@ -11,6 +11,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
     Radio,
+    Track,
 )
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -196,3 +197,32 @@ class TestGetRadioStreamStationImage:
         """No image is returned while the queue still reports another item as current."""
         ctrl = self._setup(_streamdetails())
         assert ctrl.get_radio_stream_station_image(_streamdetails()) is None
+
+
+class TestGetLibraryItemThumb:
+    """Tests for _get_library_item_thumb."""
+
+    async def test_prefers_the_album_image_of_a_library_track(self) -> None:
+        """A library track matched to the stream shows the image of its album."""
+        album_thumb = MediaItemImage(type=ImageType.THUMB, path="album.jpg", provider="fs")
+        track = Track(
+            item_id="1",
+            provider="library",
+            name="So What",
+            provider_mappings=set(),
+            album=ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id="2",
+                provider="library",
+                name="Kind of Blue",
+                image=album_thumb,
+            ),
+            metadata=MediaItemMetadata(
+                images=UniqueList(
+                    [MediaItemImage(type=ImageType.THUMB, path="track.jpg", provider="fs")]
+                )
+            ),
+        )
+        ctrl = _controller()
+        ctrl.get_image_url = MagicMock(side_effect=lambda img, **_: img.path)  # type: ignore[method-assign]
+        assert await ctrl._get_library_item_thumb(track) == album_thumb.path

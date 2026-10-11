@@ -37,7 +37,7 @@
       "description": "Each queue's player controls can still turn it on or off individually."
     },
     "crossfade_label": {
-      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions)."
+      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option picks a transition that suits each pair of tracks, such as a beatmatched blend or a long fade over a quiet ending)."
     },
     "crossfade_duration": {
       "label": "Standard crossfade duration",
@@ -45,10 +45,10 @@
     },
     "crossfade_mode": {
       "label": "Crossfade mode",
-      "description": "The crossfade type to use when crossfade is enabled. Smart crossfade beat-matches tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
+      "description": "The crossfade type to use when crossfade is enabled. Smart crossfade picks a transition that suits each pair of tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
       "options": {
         "standard_crossfade": "Standard crossfade",
-        "smart_crossfade": "Smart crossfade (beat-matched)",
+        "smart_crossfade": "Smart crossfade",
         "global": "Global"
       },
       "option_descriptions": {

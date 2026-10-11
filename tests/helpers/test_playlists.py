@@ -1460,6 +1460,35 @@ def test_media_item_to_playlist_item_ties_are_broken_deterministically() -> None
     assert result.path == "alpha://track/a1"
 
 
+def test_media_item_to_playlist_item_keeps_the_album_image_of_a_track() -> None:
+    """A track's entry holds the image of its album first, as that is the image it shows."""
+    album_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/folder.jpg", provider="fs_1")
+    track_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/track.mp3", provider="fs_1")
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="Album/track.mp3", provider_domain="filesystem", provider_instance="fs_1"
+            )
+        },
+        album=ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id="2",
+            provider="library",
+            name="Album",
+            image=album_thumb,
+        ),
+        metadata=MediaItemMetadata(images=UniqueList([track_thumb, album_thumb])),
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert [image.path for image in result.images] == [album_thumb.path, track_thumb.path]
+
+
 def test_radio_entries_round_trip() -> None:
     """Test that radio entries survive generation and parsing unchanged."""
     items = [

@@ -530,7 +530,8 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
 def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
-    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[], served_item_ids={"i1"})}
     return tracker
 
 

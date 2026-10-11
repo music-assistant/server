@@ -214,19 +214,6 @@
 
         function performRedirect() {
             const isPopup = window.opener !== null;
-            const isRemoteAuth = redirectUrl === 'about:blank';
-
-            if (isRemoteAuth) {
-                statusEl.textContent = 'Authentication Successful';
-                messageEl.textContent = 'Closing window...';
-                setTimeout(() => {
-                    attemptAutoClose();
-                    setTimeout(() => {
-                        showManualCloseButton();
-                    }, 300);
-                }, 100);
-                return;
-            }
 
             // PWA mode: OAuth flow on iOS PWAs opens in Safari, then redirects back to PWA
             // window.opener is null and localStorage is not shared between contexts

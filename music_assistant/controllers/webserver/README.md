@@ -158,6 +158,11 @@ Manages individual WebSocket connections:
 - Home Assistant OAuth provider
 - Rate limiting implementation
 
+**Sign-in flow ([helpers/login_flow.py](helpers/login_flow.py)):**
+- Pending sign-ins (`PendingLoginStore`): 10 minutes each, single use, at most 100 at once
+- How a client reaches the server (`AuthTransport`: direct, Remote Access or Ingress)
+- PKCE S256 helpers
+
 ## Authentication System
 
 ### First-Time Setup Flow
@@ -191,9 +196,16 @@ Manages individual WebSocket connections:
 ### Login Flow (Home Assistant OAuth)
 
 1. **Initiate OAuth**: GET `/auth/authorize?provider_id=homeassistant&return_url=...` (or the
-   `auth/authorization_url` command) answers with the Home Assistant `authorization_url`
-2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant
-3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state
+   `auth/authorization_url` command) starts a pending sign-in and answers with the Home Assistant
+   `authorization_url` (the command also returns its `state` and `expires_at`). A start while 100
+   sign-ins are pending is refused (HTTP 429 on the HTTP route)
+2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant. The
+   server sends its own PKCE pair to Home Assistant on every sign-in, and uses the origin of the
+   callback URL as `client_id`
+3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state, on the
+   External URL when the sign-in started there or over Remote Access (judged by the return URL,
+   or for a native app by how its websocket connection came in), else on the base URL
+   (`WebserverController.get_auth_callback_base`)
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
 6. **Token Generation**: A short-lived MA token is created and the callback answers with
@@ -201,11 +213,38 @@ Manages individual WebSocket connections:
    the `return_url` with the token appended as `code` parameter
 7. **Client Handling**: The page asks for consent first when `return_url` is valid but not
    trusted. Trusted are the same origin, localhost, a private network address, the configured
-   base URL and the allowlisted Home Assistant and app URLs (see `is_allowed_redirect_url` in
-   [redirect_validation.py](../../helpers/redirect_validation.py)). A popup whose `return_url`
-   is an absolute URL on the server's own origin posts the token to its opener (an
-   `oauth_success` message) and closes; otherwise the page navigates to `return_url` (`/` when
-   none or an invalid one was given), where the client reads the token from the `code` parameter
+   base URL and External URL, and the allowlisted Home Assistant and app URLs (see
+   `is_allowed_redirect_url` in [redirect_validation.py](../../helpers/redirect_validation.py)).
+   A popup whose `return_url` is an absolute URL on the server's own origin posts the token to
+   its opener (an `oauth_success` message) and closes; otherwise the page navigates to
+   `return_url` (`/` when none or an invalid one was given), where the client reads the token
+   from the `code` parameter
+
+### Login Flow (Home Assistant OAuth, remote app)
+
+The remote app (app.music-assistant.io, or the mobile app over Remote Access) can sign in with
+Home Assistant without an External URL. The login token never travels in a URL on this path.
+
+1. **Initiate OAuth**: Over its Remote Access connection the client calls
+   `auth/authorization_url` with `redirect_target: "app"`, a PKCE `code_challenge` and
+   `code_challenge_method: "S256"`. This is only allowed when the connection really comes from the
+   Remote Access gateway (it came from the gateway's connect address and its `webrtc_session_id`
+   is a live gateway session) and when the provider lists `supports_remote_app` in
+   `auth/providers`. For Home Assistant that is when it reports an external or Home Assistant
+   Cloud URL, or the configured `hass` URL is public: the user's browser must reach it
+2. **Authorize in HA**: The callback is `https://app.music-assistant.io/auth/callback/` (no
+   `provider_id`, the sign-in is found by its `state`) and the Home Assistant `client_id` is
+   `https://app.music-assistant.io`
+3. **Callback page**: HA redirects to that page, which hands `code` and `state` to the app window
+   or, for an `n.` state (a `musicassistant://` return URL), to the mobile app
+4. **Exchange**: The client calls `auth/exchange(state, code, code_verifier)` over its remote
+   connection. The server takes the pending sign-in (single use), checks the verifier against the
+   challenge, exchanges the code with Home Assistant using its own PKCE verifier, resolves the
+   user like the regular flow (self-registration and disabled users included) and answers like
+   `auth/login`. Failed exchanges are throttled per connection
+
+A client that sends no challenge keeps the regular flow, including the External URL callback
+over Remote Access.
 
 ### Ingress Authentication (Home Assistant Add-on)
 
@@ -469,8 +508,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 1. Create provider class inheriting from `LoginProvider` in [helpers/auth_providers.py](helpers/auth_providers.py)
 2. Implement the abstract members: the `provider_type` property (its `AuthProviderType`), the
    `requires_redirect` property and `authenticate(credentials)`, which returns an `AuthResult`
-3. Override the optional members where needed: `get_authorization_url(redirect_uri, return_url)`
-   and `handle_oauth_callback(code, state, redirect_uri)` for a redirect (OAuth) provider, and
+3. Override the optional members where needed: `build_authorization_url(pending)`,
+   `complete_authorization(pending, params)` and `supports_remote_app()` for a redirect (OAuth)
+   provider, and
    `allow_self_registration` (default `False`), which the provider checks itself before it
    creates an account for a user signing in for the first time
 4. Register provider in `AuthenticationManager._setup_login_providers()`, passing its
@@ -567,6 +607,7 @@ webserver/
 ├── helpers/
 │   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
 │   ├── auth_providers.py               # Authentication providers
+│   ├── login_flow.py                   # Pending sign-ins, transport and PKCE helpers
 │   └── ssl.py                          # SSL certificate helpers
 └── remote_access/
     ├── __init__.py                     # Remote access manager

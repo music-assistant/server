@@ -119,8 +119,7 @@ class StreamingProviderStubWithTracking:
         return
 
 
-# Minimal client-like object for kion_music de_json (library requires client, not None)
-DE_JSON_CLIENT = ClientAsync("fake_token")
+DE_JSON_CLIENT = ClientAsync()
 
 
 @pytest.fixture

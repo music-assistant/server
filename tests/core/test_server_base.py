@@ -63,6 +63,15 @@ async def test_server_info(mass: MusicAssistant) -> None:
     assert server_info.internal_url == mass.webserver.base_url
     assert server_info.external_url is None
     assert server_info.has_remote_access is False
+    # the test environment is not the official release image
+    assert server_info.unsupported_install is True
+
+
+async def test_server_info_reports_official_build(mass: MusicAssistant) -> None:
+    """Test that the official release image is reported as a supported installation."""
+    mass.build_info = {"version": "2.11.0"}
+
+    assert mass.get_server_info().unsupported_install is False
 
 
 async def test_events(mass: MusicAssistant) -> None:

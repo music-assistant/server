@@ -472,6 +472,9 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
         },
     )
 
+    if sonic_playlist.comment:
+        playlist.metadata.description = sonic_playlist.comment
+
     if sonic_playlist.cover_art:
         playlist.metadata.add_image(
             MediaItemImage(

@@ -86,7 +86,8 @@ async def _dispatch_open_connect(
 
     URL resolution order: (1) auto-detect from the active WS client's
     ingress-aware ``base_url``; (2) explicit ``connect_external_url`` config
-    override; (3) the server's advertised base URL; (4) a path-only fallback.
+    override; (3) the server's External URL; (4) the server's advertised base
+    URL; (5) a path-only fallback.
 
     :param mass: The Music Assistant instance.
     :param values: The effective MCP provider config values.
@@ -117,6 +118,10 @@ async def _dispatch_open_connect(
     if not external_base_url:
         external_base_url = _sanitize_external_base_url(
             str(values.get(CONF_CONNECT_EXTERNAL_URL) or "")
+        )
+    if not external_base_url:
+        external_base_url = _sanitize_external_base_url(
+            str(getattr(mass.webserver, "external_url", None) or "")
         )
     if not external_base_url:
         external_base_url = _sanitize_external_base_url(
