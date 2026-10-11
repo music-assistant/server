@@ -427,7 +427,7 @@ def random_pairs(
     :param out_pool: Draw the outgoing track from these only.
     :param in_pool: Draw the incoming track from these only.
     """
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311 - test data
     pairs: list[tuple[TrackKey, TrackKey]] = []
     seen: set[tuple[TrackKey, TrackKey]] = set()
     for _ in range(n * 50):

@@ -503,7 +503,7 @@ class AIRadioRuntimeMixin:
         if not station.get("shuffle_source_tracks", True) or not tracks:
             return tracks
         indices = list(range(len(tracks)))
-        random.Random().shuffle(indices)
+        random.Random().shuffle(indices)  # noqa: S311 - shuffle order
         result: list[dict[str, Any]] = []
         for new_index, old_index in enumerate(indices):
             updated = deepcopy(tracks[old_index])
@@ -573,7 +573,7 @@ class AIRadioRuntimeMixin:
         slots = build_slots(tracks)
         history = {section_id: list(events) for section_id, events in history_state.items()}
         selected: list[tuple[str, Slot, dict[str, str]]] = []
-        rng = random.Random()
+        rng = random.Random()  # noqa: S311 - track selection
 
         def slot_event(slot: Slot) -> tuple[int, float]:
             song_local = slot.next_index if slot.next_index is not None else len(tracks)
