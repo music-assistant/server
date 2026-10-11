@@ -342,7 +342,7 @@ class WebserverController(CoreController):
         routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
         frontend_dir = locate_frontend()
-        for filename in next(os.walk(frontend_dir))[2]:
+        for filename in await asyncio.to_thread(_list_files, frontend_dir):
             if filename.endswith(".py"):
                 continue
             filepath = os.path.join(frontend_dir, filename)
@@ -1503,3 +1503,12 @@ def _url_origin(url: str) -> str:
     """
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _list_files(directory: str) -> list[str]:
+    """
+    Return the names of the files directly inside a directory.
+
+    :param directory: The directory to list.
+    """
+    return next(os.walk(directory))[2]
