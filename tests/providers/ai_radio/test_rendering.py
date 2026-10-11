@@ -1323,6 +1323,51 @@ async def test_a_post_is_skipped_when_the_next_track_cannot_be_loaded(
     assert any("the next track could not be loaded" in r.getMessage() for r in caplog.records)
 
 
+async def test_a_post_is_skipped_when_loading_the_next_track_takes_too_long(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A load that outlasts its budget is given up on, so the clip can still air on time."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, get_track_lyrics = _attach_post(renderer, _track_item(), analysis_onset=6.0)
+
+    async def _slow_load(_queue_id: str, _item_id: str) -> QueueItem:
+        await asyncio.sleep(5)
+        raise AssertionError("the load should have been given up on")
+
+    mass = cast("Any", renderer).mass
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=_slow_load)
+    monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.POST_LOAD_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    get_track_lyrics.assert_not_awaited()
+    assert any("loading the next track took longer" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_post_is_skipped_when_the_item_that_plays_next_is_not_a_track(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When the queue moves past an unplayable track onto another clip, nothing is posted."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, _ = _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, load_next=_clip_item("sess_002")
+    )
+
+    with caplog.at_level(logging.INFO, logger="tests.ai_radio.rendering"):
+        streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap is None
+    get_vocal_onset.assert_not_awaited()
+    assert any("is not a track" in r.getMessage() for r in caplog.records)
+
+
 async def test_synced_lyrics_time_the_post_when_the_analysis_has_nothing() -> None:
     """Without an analysed onset, the first sung lyric line times the post."""
     renderer = DummyRenderer()
