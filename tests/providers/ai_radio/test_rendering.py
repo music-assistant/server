@@ -1248,7 +1248,7 @@ async def test_a_posting_clip_declares_its_overlap_from_the_stored_analysis() ->
     load_next_queue_item = cast("Any", renderer).mass.player_queues.load_next_queue_item
     load_next_queue_item.assert_awaited_once_with("player_a", "qi_sess_001")
     get_vocal_onset.assert_awaited_once_with("tidal_1", "tidal")
-    get_track_lyrics.assert_not_awaited()
+    get_track_lyrics.assert_awaited_once()
 
 
 async def test_the_analysis_is_read_for_the_copy_that_streams() -> None:
@@ -1381,6 +1381,54 @@ async def test_synced_lyrics_time_the_post_when_the_analysis_has_nothing() -> No
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.tail_overlap == TailOverlap(duration=3.6, next_queue_item_id="qi_track")
+    get_track_lyrics.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("analysis_onset", "lrc_lyrics", "overlap"),
+    [
+        # the analysis hears a voice at the very start: the lyrics lead, and the post airs
+        (0.0, "[00:07.00]Hello there", 6.6),
+        # the analysis is earlier than the lyrics: the lyrics lead
+        (2.0, "[00:07.00]Hello there", 6.6),
+        # the analysis is later, but not by more than the lead: the lyrics still lead
+        (7.0, "[00:04.00]Hello there", 3.6),
+        # the analysis is clearly later: it replaces the lyric onset
+        (8.0, "[00:02.00]Hello there", 7.6),
+    ],
+)
+async def test_the_lyric_onset_leads_unless_the_analysis_hears_the_vocal_clearly_later(
+    analysis_onset: float, lrc_lyrics: str, overlap: float
+) -> None:
+    """With both sources, the lyric onset times the post unless the analysis is clearly later."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    get_vocal_onset, get_track_lyrics = _attach_post(
+        renderer, _track_item(lrc_lyrics=lrc_lyrics), analysis_onset=analysis_onset
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(
+        duration=overlap, next_queue_item_id="qi_track"
+    )
+    get_vocal_onset.assert_awaited_once_with("tidal_1", "tidal")
+    # stored synced lyrics need no lookup
+    get_track_lyrics.assert_not_awaited()
+
+
+async def test_the_analysis_times_the_post_when_the_lyrics_lookup_fails() -> None:
+    """A failed lyrics lookup leaves the analysed onset to time the post."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _, get_track_lyrics = _attach_post(renderer, _track_item(), analysis_onset=6.0)
+    get_track_lyrics.side_effect = MusicAssistantError("lyrics provider unavailable")
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
     get_track_lyrics.assert_awaited_once()
 
 

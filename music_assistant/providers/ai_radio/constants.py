@@ -136,6 +136,10 @@ POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays
 POST_MIN_HEAD_SECONDS = 1.0  # the break keeps at least this much before the record comes in
 # MA's lyrics lookup walks every metadata provider; past this budget the break plays whole
 POST_LYRICS_TIMEOUT = 8.0
+# the analysed vocal onset replaces the lyric one only when it is this much later. In blind
+# listening on a real library, the analysis was early far more often than the lyrics were
+# late, and posts timed from the analysis this much later were preferred 9 times out of 10.
+POST_ANALYSIS_ONSET_LEAD = 5.0
 # loading the next record resolves its stream details with its provider; same budget
 POST_LOAD_TIMEOUT = 8.0
 
