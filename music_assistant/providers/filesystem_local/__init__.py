@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -844,7 +845,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        if not await self._album_folder_exists(prov_album_id):
+            msg = f"Album folder does not exist: {prov_album_id}"
+            raise MediaNotFoundError(msg)
         parsed_cue_paths: set[str] = set()
+        missing_file_error: FileNotFoundError | None = None
         # early returns below stop iterating this generator before it's exhausted; without an
         # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
         # reset) to whenever the event loop's async-generator finalizer happens to run, instead
@@ -869,11 +874,18 @@ class LocalFileSystemProvider(MusicProvider):
                             if isinstance(cue_track.album, Album):
                                 return cue_track.album
                         continue
-                    file_item = await self.resolve(prov_mapping.item_id)
+                    try:
+                        file_item = await self.resolve(prov_mapping.item_id)
+                    except FileNotFoundError as err:
+                        # a file moved away that the deletion pass has not unlinked yet
+                        missing_file_error = err
+                        continue
                     tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
+        if missing_file_error:
+            raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
@@ -2091,6 +2103,25 @@ class LocalFileSystemProvider(MusicProvider):
         # strict comparison: folder identity must not be granted on a fuzzy/near match (e.g.
         # "Artist 1" vs "Artist 2"), only an (almost) exact one after normalization
         return bool(nfo_name) and compare_strings(str(nfo_name), name)
+
+    async def _album_folder_exists(self, prov_album_id: str) -> bool:
+        """Return False when a library album's own folder is gone, raise when it can't be told."""
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        # an album not in the library is looked up on disk anyway, and one built from tags
+        # alone has no folder of its own
+        if db_album is None or not any(
+            x.provider_instance == self.instance_id and x.item_id == prov_album_id and x.url
+            for x in db_album.provider_mappings
+        ):
+            return True
+        if await self.exists(prov_album_id):
+            return True
+        if not await self._is_reachable():
+            msg = f"Storage of {self.base_path} is not available"
+            raise ProviderUnavailableError(msg)
+        return False
 
     async def _iter_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track]:
         """
