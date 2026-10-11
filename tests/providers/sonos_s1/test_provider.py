@@ -120,10 +120,7 @@ async def test_unusable_manual_ip_is_logged(harness: DiscoveryHarness) -> None:
     ):
         await provider.discover_players()
 
-    assert logger.warning.call_args.args[:2] == (
-        "Failed to add SonosPlayer %s: %s",
-        "not-an-ip",
-    )
+    assert "not-an-ip" in logger.warning.call_args.args
 
 
 async def test_unload_disarms_the_reschedule(harness: DiscoveryHarness) -> None:

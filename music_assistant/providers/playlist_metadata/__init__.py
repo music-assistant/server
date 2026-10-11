@@ -379,7 +379,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                         fresh.item_id, fresh, overwrite=True
                     )
 
-            # Collect paths still in use after cleanup (use fresh object if we updated it)
+            # Collect paths still in use after cleanup
             for img in fresh.metadata.images or []:
                 if self._is_our_image(img):
                     # Normalise to basename: path may be absolute or relative depending on
