@@ -40,6 +40,7 @@ class _Connection:
         """Initialize a connection without any write waiting yet."""
         self._pending: asyncio.Queue[None] = asyncio.Queue()
         self._verdicts: asyncio.Queue[bool] = asyncio.Queue()
+        self.protocol = Mock()
         self.writer = Mock()
         self.writer.write_headers = AsyncMock()
         self.writer.write = AsyncMock(side_effect=self._write)
@@ -54,8 +55,14 @@ class _Connection:
         """Let the waiting write reach the player."""
         self._verdicts.put_nowait(True)
 
+    def close(self) -> None:
+        """Close the connection, before the response notices it on its next write."""
+        # what aiohttp does as soon as it reads the player's close
+        self.protocol.transport = None
+
     def drop(self) -> None:
         """Break the connection off, as a player does when it gives up on the track."""
+        self.close()
         self._verdicts.put_nowait(False)
 
     async def _write(self, _data: bytes) -> None:
@@ -139,6 +146,7 @@ class _Harness:
                 "fmt": "flac",
             },
             writer=connection.writer,
+            protocol=connection.protocol,
         )
         task = asyncio.create_task(StreamsController.serve_queue_item_stream(self.ctrl, request))
         return task, connection
@@ -204,7 +212,12 @@ def _item(item_id: str, provider: str | None = None) -> QueueItem:
         return queue_item
     audio_buffer = MagicMock(spec=AudioBuffer)
     audio_buffer.is_buffering = True
-    audio_buffer.clear = AsyncMock()
+
+    async def _clear() -> None:
+        # clearing cancels the producer, so the buffer no longer fills
+        audio_buffer.is_buffering = False
+
+    audio_buffer.clear = AsyncMock(side_effect=_clear)
     queue_item.streamdetails = StreamDetails(
         provider=provider,
         item_id=item_id,
@@ -291,6 +304,26 @@ async def test_a_track_dropped_after_the_next_request_hands_its_slot_over() -> N
         await next_request
 
 
+async def test_a_closed_connection_hands_its_slot_over_when_the_next_request_arrives() -> None:
+    """A close the server has already read counts before the response fails its next write."""
+    dropped, upcoming = _item("dropped", LIMITED), _item("upcoming")
+    harness = _Harness(dropped, upcoming)
+    harness.details_released.set()
+    stream, player = harness.start("dropped")
+    await _stream_first_chunk(player)
+    player.close()
+
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming")[0]
+
+    # freed before the requested track resolves its own audio
+    assert harness.calls == ["release:dropped", "details:upcoming"]
+    player.drop()
+    await stream
+    await harness.settle()
+    _buffer(dropped).clear.assert_awaited_once()
+
+
 @pytest.mark.parametrize("asks_again_first", [False, True], ids=["after-drop", "before-drop"])
 async def test_asking_for_the_same_track_again_keeps_its_source(asks_again_first: bool) -> None:
     """A reconnect for the same track (range request, resume, seek) needs its source."""
@@ -336,12 +369,12 @@ async def test_fetching_the_next_track_early_keeps_the_playing_tracks_source() -
         await prefetch
     await harness.settle()
 
+    # the finished track is released too, which leaves a source that delivered everything alone
+    harness.release.assert_awaited_once_with(QUEUE_ID, "playing")
     _buffer(playing).clear.assert_not_awaited()
 
 
-async def test_breaking_off_an_early_fetch_keeps_its_source_while_the_playing_track_streams() -> (
-    None
-):
+async def test_a_broken_off_early_fetch_keeps_its_source() -> None:
     """Only a request that came in after the dropped one shows the player moved on."""
     playing, upcoming = _item("playing", LIMITED), _item("upcoming", LIMITED)
     harness = _Harness(playing, upcoming)
@@ -383,12 +416,18 @@ async def test_a_head_probe_for_another_track_releases_nothing() -> None:
     """A probe is not a request for audio, so it does not show the player moved on."""
     dropped, upcoming = _item("dropped", LIMITED), _item("upcoming")
     harness = _Harness(dropped, upcoming)
-    harness.details_released.set()
     stream, player = harness.start("dropped")
     await _stream_first_chunk(player)
+    # a probe that is still open when the playing track drops
+    probe, _ = harness.start("upcoming", method="HEAD")
+    await harness.details_waiting.wait()
     player.drop()
     await stream
+    harness.details_released.set()
+    with pytest.raises(web.HTTPNotFound):
+        await probe
 
+    # and one that arrives after the drop
     with pytest.raises(web.HTTPNotFound):
         await harness.start("upcoming", method="HEAD")[0]
     await harness.settle()

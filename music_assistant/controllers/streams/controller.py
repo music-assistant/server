@@ -837,9 +837,9 @@ class StreamsController(CoreController):
                 and (served_item_id := pq_data.last_served_item_id) is not None
                 and served_item_id not in self._requested_item_ids(queue_id, session_id)
             ):
-                # the player gave up on the track it was fetching and asks for another one:
-                # the dropped track's source may still be filling and hold the provider
-                # stream slot this request needs
+                # nothing streams the track the player fetched last any more (this request
+                # counts, so asking for that track again keeps it): if its source still fills,
+                # the player gave up on it and it may hold the stream slot this request needs
                 await self.mass.player_queues.release_failed_item_source(queue_id, served_item_id)
             if (
                 is_audio_source
@@ -1178,8 +1178,10 @@ class StreamsController(CoreController):
                 and newer_item_ids
                 and queue_item_id not in self._requested_item_ids(queue_id, session_id)
             ):
-                # the player gave up on this track and already asks for another one, which
-                # waits for the stream slot this track's source may still hold
+                # the player asked for another track after this one and nothing streams this
+                # one any more: if its source still fills, the player gave up on it and the
+                # newer request may wait for its stream slot. Released in the background, so a
+                # failing release cannot skip the source teardown below
                 self.mass.create_task(
                     self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
                     task_name=f"release_dropped_item_source_{queue_id}",
@@ -2448,19 +2450,23 @@ class StreamsController(CoreController):
         after: tuple[str, web.Request] | None = None,
     ) -> set[str]:
         """
-        Return the ids of the queue items that players have open stream requests for.
+        Return the ids of the queue items that players still have an open GET request for.
 
-        :param queue_id: The queue whose open stream requests to look at.
+        :param queue_id: The queue whose stream requests to look at.
         :param session_id: The playback session the requests must belong to.
         :param after: Only count the requests that came in after this registered one.
         """
         entries = self._open_item_streams.get(queue_id) or []
         if after is not None:
             entries = entries[entries.index(after) + 1 :] if after in entries else []
+        # a request whose player closed the connection no longer counts, even while its
+        # handler has yet to notice that on its next write
         return {
             request.match_info["queue_item_id"]
             for entry_session_id, request in entries
-            if entry_session_id == session_id and request.method == "GET"
+            if entry_session_id == session_id
+            and request.method == "GET"
+            and request.transport is not None
         }
 
     def _log_request(self, request: web.Request) -> None:
