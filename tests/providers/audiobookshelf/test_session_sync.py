@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import time
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from aioaudiobookshelf.exceptions import SessionSyncError as AbsSessionSyncError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import PodcastEpisode
@@ -123,3 +125,28 @@ async def test_fully_played_with_session_marks_finished(
         progress_seconds=600,
         is_finished=True,
     )
+
+
+@pytest.mark.parametrize("has_progress", [True, False])
+async def test_marked_unplayed_episode_gets_no_new_progress(
+    provider: Audiobookshelf, has_progress: bool
+) -> None:
+    """Marking an episode unplayed removes its progress, and never creates one at 0."""
+    _install_session(provider)
+    # without a session, the progress update falls back to the call that would create one
+    provider.sessions.clear()
+    progress = Mock(id_="progress1") if has_progress else None
+    provider._client.get_my_media_progress = AsyncMock(return_value=progress)  # type: ignore[method-assign]
+    remove_my_media_progress = AsyncMock()
+    provider._client.remove_my_media_progress = remove_my_media_progress  # type: ignore[method-assign]
+
+    await provider.on_played(
+        media_type=MediaType.PODCAST_EPISODE,
+        prov_item_id="pod1 ep1",
+        fully_played=False,
+        position=0,
+        media_item=_make_episode(),
+    )
+
+    assert remove_my_media_progress.await_count == int(has_progress)
+    cast("AsyncMock", provider._client.update_my_media_progress).assert_not_awaited()

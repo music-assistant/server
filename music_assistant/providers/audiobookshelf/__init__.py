@@ -1298,7 +1298,7 @@ for more details.
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
                     self.logger.debug(f"Removed media progress of {media_type.value}.")
-                    return
+                return
 
             duration = media_item.duration
             updated = False
