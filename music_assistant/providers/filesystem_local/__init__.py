@@ -88,6 +88,7 @@ from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
 from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.process import open_in_thread
 from music_assistant.helpers.tags import (
     AudioTags,
     async_parse_tags,
@@ -1270,7 +1271,7 @@ class LocalFileSystemProvider(MusicProvider):
         :raises MediaNotFoundError: If the file is gone or lies outside the folder of this source.
         """
         try:
-            return await asyncio.to_thread(self._open_file, path, os.O_RDONLY)
+            return await open_in_thread(self._open_file, path, os.O_RDONLY)
         except FileNotFoundError as err:
             raise MediaNotFoundError(f"Media file not found: {path}") from err
 
