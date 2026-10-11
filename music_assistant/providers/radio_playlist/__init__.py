@@ -240,7 +240,7 @@ class RadioPlaylistProvider(PluginProvider):
                 break
             # the walk deliberately ignores recency: a recently played track is still a valid
             # stepping stone, and when the mix is exhausted every direct neighbor is recent
-            walk_track = random.choice(similar)
+            walk_track = random.choice(similar)  # noqa: S311 - track selection
         return dynamic_tracks
 
     async def _resolve_seed(self, prov_playlist_id: str) -> MediaItemType:
