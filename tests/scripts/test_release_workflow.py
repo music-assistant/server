@@ -480,8 +480,10 @@ def test_release_workflow_verifies_the_build_info_of_the_exact_image() -> None:
 
     assert step_names.index("Verify exact image") < step_names.index("Verify official build info")
     step = _workflow_step(workflow, "exact_image", "Verify official build info")
-    # existing exact images, including already published ones, are checked as well
-    assert "if" not in step
+    # only skipped for a release source without the check, never for an existing image
+    guarded_path = "music_assistant/helpers/build_info.py"
+    assert step["if"] == f"hashFiles('source/{guarded_path}') != ''"
+    assert (ROOT / guarded_path).is_file()
     assert step["env"]["DIGEST"] == "${{ steps.verify.outputs.digest }}"
     run = str(step["run"])
     assert '--entrypoint python "$IMAGE_REPOSITORY@$DIGEST"' in run
