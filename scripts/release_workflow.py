@@ -15,6 +15,8 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +38,7 @@ CHANNEL_BRANCHES = {
 SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 OCI_REVISION_ANNOTATION = "org.opencontainers.image.revision"
 OCI_WHEEL_ANNOTATION = "io.music-assistant.wheel.sha256"
+APP_SECRETS_PATH = "music_assistant/helpers/app_secrets.json"
 FRONTEND_VERSION_PATTERN = re.compile(r"^(?P<base>\d+(?:\.\d+)+)(?:\.post(?P<post>\d+))?$")
 
 
@@ -424,6 +427,29 @@ def inspect_assets(
     return assets[expected_names[0]], assets[expected_names[1]]
 
 
+def verify_app_secrets(version: str, directory: Path) -> None:
+    """
+    Verify that the app secrets bundle ships in the wheel, but not in the source distribution.
+
+    :param version: Release version.
+    :param directory: Directory containing the built assets.
+    """
+    wheel_name, sdist_name = _expected_asset_names(version)
+    with zipfile.ZipFile(directory / wheel_name) as wheel:
+        if APP_SECRETS_PATH not in wheel.namelist():
+            raise ReleaseWorkflowError(f"{wheel_name} does not contain {APP_SECRETS_PATH}")
+        try:
+            bundle = json.loads(wheel.read(APP_SECRETS_PATH))
+        except ValueError:
+            bundle = None
+    # a download GitHub declines to serve raw comes back as its JSON metadata envelope instead
+    if not isinstance(bundle, dict) or not bundle.get("salt") or not bundle.get("secrets"):
+        raise ReleaseWorkflowError(f"{APP_SECRETS_PATH} in {wheel_name} is not a secrets bundle")
+    with tarfile.open(directory / sdist_name) as sdist:
+        if any(name.endswith(f"/{APP_SECRETS_PATH}") for name in sdist.getnames()):
+            raise ReleaseWorkflowError(f"{sdist_name} must not contain {APP_SECRETS_PATH}")
+
+
 def verify_oci_manifest(
     manifest: dict[str, Any],
     source_sha: str,
@@ -707,6 +733,12 @@ def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_compare_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--current", required=True)
+    parser.add_argument("--requested", required=True)
+    parser.add_argument("--github-output", type=Path)
+
+
 def _configure_addon_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version", required=True)
@@ -743,15 +775,8 @@ def _build_parser() -> argparse.ArgumentParser:
     current_parser.add_argument("--repository", type=Path, default=Path.cwd())
     current_parser.add_argument("--github-output", type=Path)
 
-    release_order_parser = subparsers.add_parser("compare-release-versions")
-    release_order_parser.add_argument("--current", required=True)
-    release_order_parser.add_argument("--requested", required=True)
-    release_order_parser.add_argument("--github-output", type=Path)
-
-    frontend_order_parser = subparsers.add_parser("compare-frontend-versions")
-    frontend_order_parser.add_argument("--current", required=True)
-    frontend_order_parser.add_argument("--requested", required=True)
-    frontend_order_parser.add_argument("--github-output", type=Path)
+    _configure_compare_parser(subparsers.add_parser("compare-release-versions"))
+    _configure_compare_parser(subparsers.add_parser("compare-frontend-versions"))
 
     _configure_release_parser(subparsers.add_parser("select-release"))
 
@@ -760,6 +785,10 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_parser.add_argument("--directory", type=Path)
     assets_parser.add_argument("--release-json", type=Path)
     assets_parser.add_argument("--github-output", type=Path)
+
+    secrets_parser = subparsers.add_parser("verify-app-secrets")
+    secrets_parser.add_argument("--version", required=True)
+    secrets_parser.add_argument("--directory", type=Path, required=True)
 
     manifest_parser = subparsers.add_parser("verify-manifest")
     manifest_parser.add_argument("--manifest-json", type=Path, required=True)
@@ -868,6 +897,8 @@ def main() -> int:
                 release_json=args.release_json,
             )
             _write_outputs(_asset_outputs(assets), args.github_output)
+        elif args.command == "verify-app-secrets":
+            verify_app_secrets(args.version, args.directory)
         elif args.command == "verify-manifest":
             manifest = json.loads(args.manifest_json.read_text(encoding="utf-8"))
             digest, runtime_digests = verify_oci_manifest(
