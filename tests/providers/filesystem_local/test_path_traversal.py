@@ -268,3 +268,16 @@ async def test_create_playlist_stays_inside_base_path(
     assert (music_tree / expected).read_text(encoding="utf-8") == "#EXTM3U\n"
     provider.get_playlist.assert_awaited_once_with(expected)
     assert not (music_tree.parent / "x.m3u").exists()
+
+
+async def test_create_playlist_keeps_an_existing_playlist(music_tree: Path) -> None:
+    """Creating a playlist whose file name is taken leaves the existing playlist intact."""
+    (music_tree / "AC_DC Mix.m3u").write_text("#EXTM3U\nsong.mp3\n", encoding="utf-8")
+    provider = _make_provider(str(music_tree))
+    provider.get_playlist = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.create_playlist("AC/DC Mix", {MediaType.TRACK})
+
+    assert (music_tree / "AC_DC Mix.m3u").read_text(encoding="utf-8") == "#EXTM3U\nsong.mp3\n"
+    assert (music_tree / "AC_DC Mix (1).m3u").read_text(encoding="utf-8") == "#EXTM3U\n"
+    provider.get_playlist.assert_awaited_once_with("AC_DC Mix (1).m3u")

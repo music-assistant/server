@@ -1184,11 +1184,20 @@ class LocalFileSystemProvider(MusicProvider):
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         # filename = await self.resolve(f"{name}.m3u")
-        filename = f"{sanitize_playlist_filename(name)}.m3u"
-        playlist_filename = self.get_absolute_path(filename)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write("#EXTM3U\n")
-        return await self.get_playlist(filename)
+        base_name = sanitize_playlist_filename(name)
+        filename = f"{base_name}.m3u"
+        counter = 1
+        while True:
+            try:
+                async with aiofiles.open(
+                    self.get_absolute_path(filename), "x", encoding="utf-8"
+                ) as _file:
+                    await _file.write("#EXTM3U\n")
+            except FileExistsError:
+                filename = f"{base_name} ({counter}).m3u"
+                counter += 1
+                continue
+            return await self.get_playlist(filename)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
