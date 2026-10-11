@@ -352,7 +352,8 @@ def get_parts_from_position(
         # the previous track. If we're within 2 second of the end, skip the current track
         if position + 2 >= part.duration:
             LOGGER.debug(
-                f"Skipping to the next part due to seek position being at the end: {position}",
+                "Skipping to the next part due to seek position being at the end: %s",
+                position,
             )
             if i + 1 < len(parts):
                 return parts[i + 1 :], 0
