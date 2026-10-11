@@ -77,7 +77,11 @@ from music_assistant.controllers.streams.announcements import (
     DEFAULT_RENDER_TIMEOUT,
     AnnouncementRenderer,
 )
-from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
+from music_assistant.controllers.streams.audio import (
+    StreamsAudio,
+    overlay_active,
+    overlay_mixed_in,
+)
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.audio_processing import (
     AudioProcessingManager,
@@ -910,12 +914,13 @@ class StreamsController(CoreController):
                 )
                 crossfade_mode = CrossfadeMode.DISABLED
 
+            mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
                 player=player,
                 streamdetails=queue_item.streamdetails,
                 crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
-                overlay_active=(queue_item.media_type == MediaType.RADIO and overlay_active(queue)),
+                overlay_active=mix_overlay,
             )
             output_format = await self.audio.get_output_format(
                 output_format_str=request.match_info["fmt"],
@@ -976,9 +981,7 @@ class StreamsController(CoreController):
                 queue=queue,
                 queue_item=queue_item,
                 pcm_format=pcm_format,
-                overlay_enabled=(
-                    queue_item.media_type == MediaType.RADIO and overlay_active(queue)
-                ),
+                overlay_enabled=mix_overlay,
                 session_id=session_id,
             )
 
@@ -1005,9 +1008,7 @@ class StreamsController(CoreController):
                     ),
                     session_id=session_id,
                 )
-            if queue_item.media_type == MediaType.RADIO and overlay_active(queue):
-                # radio plays as a single long-lived stream (never in flow mode),
-                # so mix the audio overlay in here
+            if mix_overlay:
                 audio_input = self.audio.get_overlay_mixed_stream(queue, audio_input, pcm_format)
             # stream the audio
             # this final ffmpeg process in the chain converts raw lossless PCM into
@@ -1331,6 +1332,7 @@ class StreamsController(CoreController):
             if start_queue_item.media_type == MediaType.TRACK
             else CrossfadeMode.DISABLED
         )
+        mix_overlay = overlay_mixed_in(queue, start_queue_item, flow_mode=True)
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
@@ -1342,7 +1344,7 @@ class StreamsController(CoreController):
                 start_queue_item.streamdetails is not None
                 and start_queue_item.streamdetails.tail_overlap is not None
             ),
-            overlay_active=overlay_active(queue),
+            overlay_active=mix_overlay,
         )
 
         # work out output format/details
@@ -1399,7 +1401,7 @@ class StreamsController(CoreController):
             queue=queue,
             queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
-            overlay_enabled=overlay_active(queue),
+            overlay_enabled=mix_overlay,
             session_id=session_id,
         )
         output_plan = self.audio.get_player_output_plan(
@@ -1428,7 +1430,7 @@ class StreamsController(CoreController):
             protocol_player=player,
             consumer_connected=lambda: request.transport is not None,
         )
-        if overlay_active(queue):
+        if mix_overlay:
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
         audio_bytes = get_ffmpeg_stream(
             audio_input=flow_stream,
@@ -1740,11 +1742,12 @@ class StreamsController(CoreController):
                 assert queue
                 start_queue_item = self._get_flow_start_item(queue, media.queue_item_id)
                 assert start_queue_item
+                mix_overlay = overlay_mixed_in(queue, start_queue_item, flow_mode=True)
                 self._update_audio_processing_context(
                     queue=queue,
                     queue_item=start_queue_item,
                     pcm_format=pcm_format,
-                    overlay_enabled=overlay_active(queue),
+                    overlay_enabled=mix_overlay,
                     session_id=queue_session_id,
                 )
                 flow_stream = self.audio.get_queue_flow_stream(
@@ -1754,7 +1757,7 @@ class StreamsController(CoreController):
                     session_id=queue_session_id,
                     protocol_player=protocol_player,
                 )
-                if overlay_active(queue):
+                if mix_overlay:
                     flow_stream = self.audio.get_overlay_mixed_stream(
                         queue, flow_stream, pcm_format
                     )
@@ -1762,20 +1765,19 @@ class StreamsController(CoreController):
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
+            assert queue  # the item was found in that queue's data, so the queue exists
             if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
                 self.logger.debug(
                     "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
                 )
-            if queue is not None:
-                self._update_audio_processing_context(
-                    queue=queue,
-                    queue_item=queue_item,
-                    pcm_format=pcm_format,
-                    overlay_enabled=(
-                        queue_item.media_type == MediaType.RADIO and overlay_active(queue)
-                    ),
-                    session_id=queue_session_id,
-                )
+            mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
+            self._update_audio_processing_context(
+                queue=queue,
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                overlay_enabled=mix_overlay,
+                session_id=queue_session_id,
+            )
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
@@ -1787,12 +1789,7 @@ class StreamsController(CoreController):
                 ),
                 session_id=queue_session_id,
             )
-            if (
-                queue is not None
-                and queue_item.media_type == MediaType.RADIO
-                and overlay_active(queue)
-            ):
-                # radio plays as a single long-lived stream, so mix the overlay in here
+            if mix_overlay:
                 inner_stream = self.audio.get_overlay_mixed_stream(queue, inner_stream, pcm_format)
             # mirror the on_source_selected/unselected lifecycle the HTTP route
             # fires, so direct-PCM consumers (AirPlay, Snapcast, UGP) honour the

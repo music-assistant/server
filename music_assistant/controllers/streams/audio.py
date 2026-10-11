@@ -307,6 +307,23 @@ def overlay_active(queue: PlayerQueue) -> bool:
     return queue.overlay_enabled and queue.overlay_source is not None
 
 
+def overlay_mixed_in(queue: PlayerQueue, queue_item: QueueItem, *, flow_mode: bool) -> bool:
+    """
+    Return True if the queue's audio overlay is mixed into the stream serving this item.
+
+    The overlay rides on the queue's continuous flow stream. Among per-item streams only
+    radio carries it, because a station never plays in flow mode and is one long-lived
+    stream of its own.
+
+    :param queue: The queue the item plays on.
+    :param queue_item: The item the stream serves.
+    :param flow_mode: Whether the stream is the queue's flow stream instead of a per-item one.
+    """
+    if not overlay_active(queue):
+        return False
+    return flow_mode or queue_item.media_type == MediaType.RADIO
+
+
 def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> int:
     """
     Return how many bytes of tail may be held back for a fade right now.
