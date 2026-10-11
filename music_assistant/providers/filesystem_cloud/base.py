@@ -276,6 +276,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         await self._scandir("", use_cache=False)
         return True
 
+    async def _unreachable_folders(self) -> list[str]:
+        """Return no folders: a cloud drive has no storage locations below its root."""
+        return []
+
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
         List the children of a cloud folder.

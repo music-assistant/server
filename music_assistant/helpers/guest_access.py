@@ -89,13 +89,15 @@ def build_join_url(mass: MusicAssistant, code: str) -> str:
     """
     Build the URL guests open to join with the given join code.
 
-    When remote access is enabled, returns a URL that works from anywhere via
-    WebRTC. Otherwise, returns a local URL that only works on the same network.
+    Prefers the configured external URL, then remote access (via WebRTC), which both work
+    from anywhere. Otherwise, returns a local URL that only works on the same network.
 
     :param mass: MusicAssistant instance.
     :param code: The join code to embed in the URL.
     :return: The guest join URL.
     """
+    if external_url := mass.webserver.external_url:
+        return f"{external_url}/?join={code}"
     remote_access = mass.webserver.remote_access
     if remote_access.is_enabled and remote_access.remote_id:
         return f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"

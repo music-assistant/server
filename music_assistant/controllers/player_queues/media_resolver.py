@@ -14,7 +14,7 @@ import random
 from types import NoneType
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ArtistType, MediaType
+from music_assistant_models.enums import ArtistType, MediaType, SortField
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -220,7 +220,7 @@ class MediaResolver:
             track_limit=25,
             album_limit=5,
             artist_limit=5,
-            order_by="random",
+            sort_field=SortField.RANDOM,
         )
 
         for genre_track in tracks:

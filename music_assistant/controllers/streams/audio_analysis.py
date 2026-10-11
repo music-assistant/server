@@ -45,6 +45,7 @@ from music_assistant.controllers.streams.constants import (
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
 )
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
@@ -644,13 +645,13 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
 
-        Provider mappings are tried best-quality first; per field the Smart Fades AA
-        provider is preferred over other AA providers.
+        Provider mappings are tried in the order playback would pick them; per field the
+        Smart Fades AA provider is preferred over other AA providers.
 
         :param track: The track to look up stored analysis data for.
         """
         priority = TRACK_EXPORT_AA_PRIORITY
-        for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
+        for mapping in rank_provider_mappings(track.provider_mappings):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
@@ -661,6 +662,29 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
             return AudioMetadata(bpm=analysis.bpm, musical_key=musical_key)
         return None
+
+    async def get_vocal_onset(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> float | None:
+        """
+        Return the second at which singing starts, from the stored analysis, or None when unknown.
+
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param media_type: The media type of the item.
+        """
+        # imported here: the smart_fades package imports this module
+        from music_assistant.controllers.streams.smart_fades.vocal import (  # noqa: PLC0415
+            first_vocal_onset,
+        )
+
+        analysis = await self.get_audio_analysis(
+            item_id, provider_instance_id_or_domain, media_type
+        )
+        return first_vocal_onset(analysis) if analysis is not None else None
 
     @api_command("audio_analysis/wave_form")
     async def get_wave_form(

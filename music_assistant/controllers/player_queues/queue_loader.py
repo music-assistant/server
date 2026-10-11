@@ -37,7 +37,6 @@ from music_assistant_models.media_items import (
     PlayableMediaItemType,
     PodcastEpisode,
     Track,
-    UniqueList,
     media_from_dict,
 )
 
@@ -79,7 +78,6 @@ from music_assistant.helpers.throttle_retry import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -366,15 +364,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             elif album:
                 # Restore original album if we have no better alternative from the library
                 queue_item.media_item.album = album
-            # prefer album image over track image
-            if queue_item.media_item.album and queue_item.media_item.album.image:
-                org_images: list[MediaItemImage] = queue_item.media_item.metadata.images or []
-                queue_item.media_item.metadata.images = UniqueList(
-                    [
-                        queue_item.media_item.album.image,
-                        *org_images,
-                    ]
-                )
         # decided once the album above is resolved: a queue item can hold a slim mapping of its
         # album, which carries none of the provider ids the enqueued album is matched on
         playing_album_tracks = self._plays_as_album_track(queue_item)

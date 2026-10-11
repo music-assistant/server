@@ -2,7 +2,7 @@ Developer docs
 ==================================
 
 ## 📝 Prerequisites
-* ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
+* ffmpeg (minimum version 7.0), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
 * libchromaprint, also at OS level. Install it if you want to run the `acoustid_lookup` provider: without libchromaprint AcoustID refuses to load. The test suite does not need it: the AcoustID tests drive a fake fingerprinter.

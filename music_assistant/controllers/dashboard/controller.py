@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 
+from music_assistant.constants import APP_MA_HOST
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_client_id,
     get_current_user,
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
 DASHBOARD_VIEWER_USERNAME = "dashboard_viewer"
 DASHBOARD_VIEWER_DISPLAY_NAME = "Dashboard Viewer"
 DASHBOARD_CODE_EXPIRY_HOURS = 1
-APP_MA_HOST = "https://app.music-assistant.io"
 # every real dashboard type, i.e. what a registration supports when not given explicitly
 ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.UNKNOWN)
 
@@ -310,18 +310,18 @@ class DashboardController(CoreController):
         """
         Build the fully-qualified URL a dashboard endpoint should load to show a dashboard.
 
-        By default an externally-reachable https base url (reverse-proxied server, same
-        origin) is preferred over remote access (the app.music-assistant.io signaling portal),
-        as required by cast receivers. With ``prefer_local`` the server's own base url is
-        always returned, plain http included: native apps on the LAN are not bound by the cast
-        receiver's https requirement. In-server consumers (e.g. the chromecast provider) call
-        this to resolve the url themselves.
+        By default an https base url or else an https external url (reverse-proxied server,
+        same origin) is preferred over remote access (the app.music-assistant.io signaling
+        portal), as cast receivers require https. With ``prefer_local`` the server's own base
+        url is always returned, plain http included: native apps on the LAN are not bound by
+        the cast receiver's https requirement. In-server consumers (e.g. the chromecast
+        provider) call this to resolve the url themselves.
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
         :param prefer_local: Return the plain local base url instead of the https/remote form.
-        :raises ActionUnavailable: If neither an https base url nor remote access is configured
-            (never raised when ``prefer_local`` is set).
+        :raises ActionUnavailable: If no https base url, https external url or remote access is
+            configured (never raised when ``prefer_local`` is set).
         """
         route = self._dashboard_route(dashboard, player_id)
         base_url = self.mass.webserver.base_url
@@ -330,9 +330,15 @@ class DashboardController(CoreController):
             query = {"dashboard": await self._get_dashboard_code(), "path": route}
             return f"{base_url}?{urlencode(query)}"
         remote_access = self.mass.webserver.remote_access
-        use_https_base = base_url.startswith("https://")
-        if not use_https_base and not (remote_access.is_enabled and remote_access.remote_id):
-            msg = "Remote access or an https base url is required to cast dashboards"
+        external_url = self.mass.webserver.external_url or ""
+        https_url = next(
+            (url for url in (base_url, external_url) if url.startswith("https://")), None
+        )
+        if not https_url and not (remote_access.is_enabled and remote_access.remote_id):
+            msg = (
+                "Remote access, an https base url or an https external url is required "
+                "to cast dashboards"
+            )
             raise ActionUnavailable(
                 msg,
                 translation_key="remote_access_required",
@@ -340,10 +346,10 @@ class DashboardController(CoreController):
             )
 
         dashboard_code = await self._get_dashboard_code()
-        if use_https_base:
+        if https_url:
             # same origin: the receiver talks straight to this server, no remote_id needed
             query = {"dashboard": dashboard_code, "path": route}
-            return f"{base_url}?{urlencode(query)}"
+            return f"{https_url}?{urlencode(query)}"
 
         query = {"remote_id": remote_access.remote_id, "dashboard": dashboard_code, "path": route}
         channel = self._frontend_channel()

@@ -9,6 +9,19 @@ import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
 
+# asendcmd applies a command at the next frame and raw PCM arrives in 4096-sample
+# (~93 ms) frames; re-chunked to 1024 samples and stepped every 25 ms, a 2-bar sweep
+# at 128 BPM moves the gain below the cutoff ~0.4 dB per step instead of ~1.5 dB
+HIGHPASS_SWEEP_FRAME_SAMPLES = 1024
+HIGHPASS_SWEEP_STEP_S = 0.025
+ECHO_DECAYS = (0.5, 0.25, 0.12, 0.06)
+ECHO_DECLICK_S = 0.015
+# Gain taken off the incoming track while the voice talks over it (0.6 is about -8 dB).
+VOICE_OVER_DUCK_DEPTH = 0.6
+# Ceiling of a mix that sums two streams at full level (a voice over music, an echo out's
+# taps over the next track): full-scale material would clip.
+MIX_CEILING_DB = -0.5
+
 
 class Filter(ABC):
     """Abstract base class for audio filters."""
@@ -247,6 +260,120 @@ class PeakFilter(Filter):
         return f"Peak({self.frequency}Hz {self.stream_type} {gains})"
 
 
+class HighPassSweepFilter(Filter):
+    """High-pass on the outgoing stream whose cutoff sweeps up over a window (asendcmd-driven)."""
+
+    output_fadeout_label: str = "fadeout_highpass"
+    output_fadein_label: str = "fadein_pt_highpass"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        start_s: float,
+        end_s: float,
+        *,
+        start_hz: float,
+        end_hz: float,
+    ) -> None:
+        """
+        Initialize high-pass sweep filter.
+
+        :param start_s: Time in seconds on the outgoing stream where the sweep starts;
+            the stream passes untouched before it.
+        :param end_s: Time in seconds where the sweep reaches ``end_hz``; the cutoff
+            holds there afterwards. Equal to ``start_s`` for an instant switch.
+        :param start_hz: Cutoff in Hz at the sweep start.
+        :param end_hz: Cutoff in Hz at and after the sweep end.
+        """
+        self.start_s = start_s
+        self.end_s = end_s
+        self.start_hz = start_hz
+        self.end_hz = end_hz
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate the swept high-pass on the outgoing stream and passthrough on the incoming."""
+        instance = "highpass@fadeout_hp"
+        cmd = "; ".join(f"{t:.3f} {instance} f {hz:.1f}" for t, hz in self._sweep_steps())
+        return [
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+            f"{input_fadeout_label}asetnsamples=n={HIGHPASS_SWEEP_FRAME_SAMPLES}:p=0,"
+            f"asendcmd=c='{cmd}',{instance}=f={self.start_hz:.1f}"
+            f":enable='gte(t,{self.start_s:.3f})'[{self.output_fadeout_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of HighPassSweepFilter."""
+        return (
+            f"HighPassSweep({self.start_hz:.0f}->{self.end_hz:.0f}Hz, "
+            f"{self.start_s:.2f}s->{self.end_s:.2f}s)"
+        )
+
+    def _sweep_steps(self) -> list[tuple[float, float]]:
+        """Return the (time_seconds, cutoff_hz) schedule, log-spaced over the sweep window."""
+        duration = max(0.0, self.end_s - self.start_s)
+        count = max(1, round(duration / HIGHPASS_SWEEP_STEP_S))
+        ratio = self.end_hz / self.start_hz
+        return [
+            (self.start_s + duration * k / count, self.start_hz * ratio ** (k / count))
+            for k in range(1, count + 1)
+        ]
+
+
+class EchoOutFilter(Filter):
+    """
+    Cut the outgoing stream at a downbeat and echo its last beat out.
+
+    The dry signal stops at the cut; the beat before it repeats at the outgoing
+    tempo with decaying taps, and the stream keeps its length (silence after
+    the last tap), so the blend can still position itself by sample count.
+    """
+
+    output_fadeout_label: str = "fadeout_echo"
+    output_fadein_label: str = "fadein_pt_echo"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        cut_s: float,
+        beat_s: float,
+    ) -> None:
+        """
+        Initialize echo-out filter.
+
+        :param cut_s: Time in seconds on the outgoing stream where the dry signal stops.
+        :param beat_s: Length of one beat in seconds: the repeated slice before the
+            cut and the spacing of the taps.
+        """
+        self.cut_s = cut_s
+        self.beat_s = beat_s
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate the echo out on the outgoing stream and passthrough on the incoming."""
+        cut = self.cut_s
+        delays = "|".join(f"{k * self.beat_s * 1000:.3f}" for k in range(1, len(ECHO_DECAYS) + 1))
+        decays = "|".join(f"{decay:g}" for decay in ECHO_DECAYS)
+        # the echoed slice is gated to the beat before the cut, with de-click edges
+        # inside it, so no audio from past the cut reaches the taps. aecho without
+        # its dry input (in_gain=0) is just the taps; its tail beyond the stream end
+        # is dropped by amix following the dry side's length.
+        return [
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+            f"{input_fadeout_label}asplit=2[echo_dry][echo_src]",
+            f"[echo_dry]afade=t=out:st={cut:.3f}:d={ECHO_DECLICK_S}[echo_cut]",
+            f"[echo_src]afade=t=in:st={max(0.0, cut - self.beat_s):.3f}:d={ECHO_DECLICK_S},"
+            f"afade=t=out:st={max(0.0, cut - ECHO_DECLICK_S):.3f}:d={ECHO_DECLICK_S},"
+            f"aecho=in_gain=0:out_gain=1:delays={delays}:decays={decays}[echo_wet]",
+            "[echo_cut][echo_wet]amix=inputs=2:duration=first:normalize=0"
+            f"[{self.output_fadeout_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of EchoOutFilter."""
+        return f"EchoOut(cut={self.cut_s:.2f}s, beat={self.beat_s:.3f}s, taps={len(ECHO_DECAYS)})"
+
+
 class StreamingCrossfadeFilter(Filter):
     """
     Crossfade that emits blended output while the fade-in input is still arriving.
@@ -275,6 +402,7 @@ class StreamingCrossfadeFilter(Filter):
         pre_crossfade_samples: int = 0,
         fadeout_curve: str = "qsin",
         fadein_curve: str = "qsin",
+        limit_db: float | None = None,
     ):
         """
         Initialize streaming crossfade filter.
@@ -284,11 +412,13 @@ class StreamingCrossfadeFilter(Filter):
             untouched before the overlap begins.
         :param fadeout_curve: afade curve applied to the outgoing stream.
         :param fadein_curve: afade curve applied to the incoming stream.
+        :param limit_db: Peak ceiling in dB the mix is limited to; None leaves it unlimited.
         """
         self.crossfade_samples = crossfade_samples
         self.pre_crossfade_samples = pre_crossfade_samples
         self.fadeout_curve = fadeout_curve
         self.fadein_curve = fadein_curve
+        self.limit_db = limit_db
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -300,13 +430,16 @@ class StreamingCrossfadeFilter(Filter):
         if pre:
             fadeout_chain += f",atrim=end_sample={pre + ns}"
             fadein_chain += f",adelay={pre}S:all=1"
+        mix = "[xfade_out][xfade_in]amix=inputs=2:normalize=0"
+        if self.limit_db is not None:
+            mix += f",alimiter=limit={self.limit_db}dB:level=false:latency=true"
         # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated
         # material. The final output stays unlabeled: this filter ends the chain and an
         # unconnected named output fails the whole graph.
         return [
             f"{input_fadeout_label}{fadeout_chain}[xfade_out]",
             f"{input_fadein_label}{fadein_chain}[xfade_in]",
-            "[xfade_out][xfade_in]amix=inputs=2:normalize=0",
+            mix,
         ]
 
     def __repr__(self) -> str:
@@ -316,3 +449,53 @@ class StreamingCrossfadeFilter(Filter):
                 f"StreamingCrossfade(pre={self.pre_crossfade_samples}, ns={self.crossfade_samples})"
             )
         return f"StreamingCrossfade(ns={self.crossfade_samples})"
+
+
+class VoiceOverMixFilter(Filter):
+    """
+    Mix the outgoing voice over the start of the incoming track, ducking the track under it.
+
+    The outgoing stream plays untouched. The incoming stream is held at the ducked level
+    for the overlap and ramps back to full level after it; the sum is limited to stay
+    clear of clipping.
+    """
+
+    output_fadeout_label: str = "voice_over"
+    output_fadein_label: str = "voice_over"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        overlap_seconds: float,
+        ramp_seconds: float,
+    ) -> None:
+        """
+        Initialize the voice over mix filter.
+
+        :param overlap_seconds: How long the voice plays over the incoming track.
+        :param ramp_seconds: How long the incoming track takes to return to full level
+            once the overlap has ended.
+        """
+        self.overlap_seconds = overlap_seconds
+        self.ramp_seconds = ramp_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the duck envelope, mix and limiter chain."""
+        overlap = self.overlap_seconds
+        ramp = self.ramp_seconds
+        # 1 - depth while the voice talks, a linear ramp back to 1 after it
+        envelope = (
+            f"1-{VOICE_OVER_DUCK_DEPTH}*max(0\\,min(1\\,({overlap:.3f}+{ramp:.3f}-t)/{ramp:.3f}))"
+        )
+        fadein_chain = f"volume=eval=frame:volume='{envelope}'"
+        # the final output stays unlabeled: this filter ends the chain
+        return [
+            f"{input_fadein_label}{fadein_chain}[voice_over_in]",
+            f"{input_fadeout_label}[voice_over_in]amix=inputs=2:normalize=0,"
+            f"alimiter=limit={MIX_CEILING_DB}dB:level=false:latency=true",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of VoiceOverMixFilter."""
+        return f"VoiceOverMix(overlap={self.overlap_seconds:.2f}s)"

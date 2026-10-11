@@ -1025,6 +1025,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
+            # a player still playing (or paused on) an item will report once more on it, so that
+            # one stays served; the rest of the old load is never heard from again, and an idle
+            # player has nothing left that could be
+            prev_state = queue_data.prev_state
+            playing_item_id = (
+                prev_state["current_item_id"]
+                if prev_state is not None
+                and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                else None
+            )
+            queue_data.served_item_ids.intersection_update(
+                {playing_item_id} if playing_item_id else ()
+            )
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
@@ -1158,7 +1171,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._set_transitioning(queue_id, False)
 
     @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
-    async def transfer_queue(
+    async def transfer_queue(  # noqa: PLR0915
         self,
         source_queue_id: str,
         target_queue_id: str,
@@ -1226,6 +1239,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        # so playback keeps ordering Smart Fades batches behind the same item there
+        self._queue_data[target_queue_id].fade_ordered_until = self._queue_data[
+            source_queue_id
+        ].fade_ordered_until
         # carry over the pinned overrides (or follow-global state) and re-resolve the target
         self._queue_data[target_queue_id].crossfade_override = self._queue_data[
             source_queue_id
@@ -1484,6 +1501,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         current_index = self.index_by_id(queue_id, item_id)
         queue.index_in_buffer = current_index
         self._queue_data[queue_id].last_served_item_id = item_id
+        self.mark_item_served(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
@@ -1491,6 +1509,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # clean up stale audio buffers for old queue items to prevent memory leaks
         if current_index is not None:
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
+
+    def mark_item_served(self, queue_id: str, item_id: str) -> None:
+        """
+        Record that audio of a queue item reached the player, so it can be reported as played.
+
+        :param queue_id: The queue the item belongs to.
+        :param item_id: The queue item whose first chunk of audio went out to the player.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is not None:
+            queue_data.served_item_ids.add(item_id)
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
@@ -1654,15 +1682,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue.items = len(self._queue_data[queue_id].items)
         current_item = queue.current_item
-        if (
-            current_item
-            and queue.index_in_buffer is not None
-            and self.index_by_id(queue_id, current_item.queue_item_id) is None
-        ):
-            # the item the queue is positioned on is no longer in it, so follow the index rather
-            # than keep pointing at an item the queue no longer holds. A replace clears the
-            # buffered index while it swaps the items and sets the position itself right after.
-            self._resync_position(queue_id)
+        if current_item and queue.index_in_buffer is not None:
+            current_index = self.index_by_id(queue_id, current_item.queue_item_id)
+            if current_index is None:
+                # the item the queue is positioned on is no longer in it, so follow the index rather
+                # than keep pointing at an item the queue no longer holds. A replace clears the
+                # buffered index while it swaps the items and sets the position itself right after.
+                self._resync_position(queue_id)
+            elif current_index != queue.current_index:
+                # the player moved on while these items were prepared, so the index still points
+                # into the previous list: follow the item to where it sits now
+                queue.current_index = current_index
+                queue.next_item = self.get_next_item(queue_id, current_index)
         self.signal_update(queue_id, True)
         self.update_next_item_on_player(queue_id)
 

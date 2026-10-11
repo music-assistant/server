@@ -27,6 +27,7 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
+from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
@@ -38,6 +39,8 @@ from .constants import (
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     CAST_PLAYER_CONFIG_ENTRIES,
+    CONF_DEFER_IDLE_VOLUME,
+    CONF_ENTRY_DEFER_IDLE_VOLUME,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
@@ -96,6 +99,8 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
         self._media_error_reported = False
+        # a volume set while idle, kept back until playback starts (see volume_set)
+        self._pending_volume: int | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -159,6 +164,7 @@ class ChromecastPlayer(Player):
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
+            CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
 
     async def stop(self) -> None:
@@ -214,7 +220,17 @@ class ChromecastPlayer(Player):
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
+        """Send VOLUME_SET command to given player, or keep it back while idle if so configured."""
+        if self.cc.app_id in (None, IDLE_APP_ID) and self.config.get_value(
+            CONF_DEFER_IDLE_VOLUME, False
+        ):
+            # the receiver would accept the volume but keep playing at the old level
+            # once an app starts, so keep it back until playback starts
+            self._pending_volume = volume_level
+            self._attr_volume_level = volume_level
+            self.update_state()
+            return
+        self._pending_volume = None
         # Round to 2 decimal places to avoid floating-point precision issues
         await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
@@ -237,6 +253,12 @@ class ChromecastPlayer(Player):
         # send queue info to the CC
         media_controller = self.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
+        if (volume_level := self._pending_volume) is not None:
+            # the media is loaded but no audio is out yet, so a volume kept back while
+            # idle lands before the first sample instead of after it. sent as a task, so
+            # a receiver slow to acknowledge it cannot hold up the playback start
+            self._pending_volume = None
+            self.mass.create_task(self._send_kept_back_volume(volume_level))
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -569,6 +591,17 @@ class ChromecastPlayer(Player):
         self.app_quit_sent = True
         await asyncio.to_thread(self.cc.quit_app)
 
+    async def _send_kept_back_volume(self, volume_level: int) -> None:
+        """
+        Send a volume that was kept back while idle, now that playback has started.
+
+        :param volume_level: The volume level (0..100) to send.
+        """
+        try:
+            await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
+        except PyChromecastError as err:
+            self.logger.warning("Could not apply the volume on %s: %s", self.display_name, err)
+
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
         if self.mass.closing:
@@ -610,11 +643,13 @@ class ChromecastPlayer(Player):
         # device that is a player in its own right always reports its own volume.
         volume_level = round(status.volume_level * 100)
         cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
-        self._attr_volume_level = (
-            None
-            if cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL
-            else volume_level
-        )
+        if cast_idle and self._pending_volume is not None:
+            # the device keeps reporting its old level while a volume set is kept back
+            self._attr_volume_level = self._pending_volume
+        elif cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL:
+            self._attr_volume_level = None
+        else:
+            self._attr_volume_level = volume_level
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import secrets
+import time
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
@@ -21,11 +21,14 @@ from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.util import join_task
+from music_assistant.helpers.util import is_public_url, join_task
+
+from .login_flow import pkce_challenge
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.webserver.auth import AuthenticationManager
+    from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
@@ -38,6 +41,9 @@ DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 PRUNE_THRESHOLD: Final = 128
 # Salt for the password hash of a login with an unknown username
 UNKNOWN_USER_ID: Final = "unknown-user"
+# Seconds the URLs Home Assistant reports for itself are reused, and after a failed lookup
+HA_NETWORK_URLS_TTL: Final = 300
+HA_NETWORK_URLS_RETRY: Final = 30
 
 
 def normalize_username(username: str) -> str:
@@ -415,26 +421,29 @@ class LoginProvider(ABC):
         :param credentials: Provider-specific credentials (username/password, OAuth code, etc).
         """
 
-    async def get_authorization_url(
-        self, redirect_uri: str, return_url: str | None = None
-    ) -> str | None:
-        """
-        Get OAuth authorization URL if applicable.
+    async def supports_remote_app(self) -> bool:
+        """Return whether a sign-in can return to the remote app (app.music-assistant.io)."""
+        return False
 
-        :param redirect_uri: The callback URL for OAuth flow.
-        :param return_url: Optional URL to redirect to after successful login.
+    async def build_authorization_url(self, pending: PendingLogin) -> str | None:
+        """
+        Return the URL the browser opens to sign in, or None when the provider is unreachable.
+
+        :param pending: The started sign-in.
         """
         return None
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
         """
-        Handle OAuth callback if applicable.
+        Complete a sign-in with the parameters the browser returned with and return its user.
 
-        :param code: OAuth authorization code.
-        :param state: OAuth state parameter for CSRF protection.
-        :param redirect_uri: The callback URL.
+        :param pending: The started sign-in.
+        :param params: The query parameters of the callback.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
         """
-        return AuthResult(success=False, error="OAuth not supported by this provider")
+        raise AuthenticationFailed("OAuth not supported by this provider")
 
 
 class BuiltinLoginProvider(LoginProvider):
@@ -619,8 +628,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # Store OAuth state -> return_url mapping to support concurrent sessions
-        self._oauth_sessions: dict[str, str | None] = {}
+        self._network_urls: dict[str, str | None] = {}
+        self._network_urls_expires_at = 0.0
+        self._network_urls_lock = asyncio.Lock()
 
     @property
     def allow_self_registration(self) -> bool:
@@ -639,92 +649,69 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
     async def authenticate(self, credentials: dict[str, Any]) -> AuthResult:
         """
-        Not used for OAuth providers - use handle_oauth_callback instead.
+        Not used for OAuth providers - use complete_authorization instead.
 
         :param credentials: Not used.
         """
         return AuthResult(success=False, error="Use OAuth flow for Home Assistant authentication")
 
-    async def get_authorization_url(
-        self, redirect_uri: str, return_url: str | None = None
-    ) -> str | None:
-        """
-        Get Home Assistant OAuth authorization URL using hass_client.
+    async def supports_remote_app(self) -> bool:
+        """Return whether Home Assistant is reachable from outside the home network."""
+        return await self._get_public_ha_url() is not None
 
-        :param redirect_uri: The callback URL.
-        :param return_url: Optional URL to redirect to after successful login.
+    async def build_authorization_url(self, pending: PendingLogin) -> str | None:
         """
-        # Get the correct HA URL (external URL if running as add-on)
-        ha_url = await self._get_external_ha_url()
+        Return the Home Assistant URL the browser opens to sign in.
+
+        Returns None when Home Assistant is not reachable from where the browser returns to.
+
+        :param pending: The started sign-in.
+        """
+        if pending.redirect_target == "app":
+            # the remote browser opens this URL, so it must reach Home Assistant from anywhere
+            ha_url = await self._get_public_ha_url()
+        else:
+            ha_url = await self._get_server_target_ha_url()
         if not ha_url:
             return None
-
-        # If HA URL is still the internal supervisor URL (no external_url in HA config),
-        # infer from redirect_uri (the URL user is accessing MA from)
-        if "supervisor" in ha_url.lower():
-            # Extract scheme and host from redirect_uri to build external HA URL
-            parsed = urlparse(redirect_uri)
-            # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
-            if parsed.scheme == "https":
-                # HTTPS - use default port 443 (no port in URL)
-                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
-            else:
-                # HTTP - assume HA runs on default port 8123
-                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
-
-            self.logger.debug(
-                "HA external_url not configured, inferring from callback URL: %s",
-                inferred_ha_url,
-            )
-            ha_url = inferred_ha_url
-
-        state = secrets.token_urlsafe(32)
-        # Store return_url keyed by state to support concurrent OAuth sessions
-        # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = return_url
-
         # Use base_url of callback as client_id (same as HA provider does)
-        client_id = base_url(redirect_uri)
-
-        # Use hass_client's get_auth_url utility
         return cast(
             "str",
             get_auth_url(
                 ha_url,
-                redirect_uri,
-                client_id=client_id,
-                state=state,
+                pending.redirect_uri,
+                client_id=base_url(pending.redirect_uri),
+                state=pending.state,
+                code_challenge=pkce_challenge(pending.idp_code_verifier),
             ),
         )
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
         """
-        Handle Home Assistant OAuth callback using hass_client.
+        Exchange the Home Assistant code of a sign-in and return the user it signs in.
 
-        :param code: OAuth authorization code.
-        :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
+        :param pending: The started sign-in.
+        :param params: The query parameters of the callback, with the authorization code.
+        :raises AuthenticationFailed: If the sign-in can not be completed or the user may not
+            sign in.
         """
-        # Verify state and retrieve return_url from session
-        if state not in self._oauth_sessions:
-            return AuthResult(success=False, error="Invalid or expired state parameter")
-
-        # Retrieve and remove the return_url for this session (cleanup)
-        return_url = self._oauth_sessions.pop(state)
-
-        # Get the correct HA URL (external URL if running as add-on)
-        # This must be the same URL used in get_authorization_url
+        if not (code := params.get("code")):
+            raise AuthenticationFailed("No authorization code received")
         ha_url = await self._get_external_ha_url()
         if not ha_url:
-            return AuthResult(success=False, error="Home Assistant URL not configured")
+            raise AuthenticationFailed("Home Assistant URL not configured")
 
         try:
             # Use base_url of callback as client_id (same as HA provider does)
-            client_id = base_url(redirect_uri)
+            client_id = base_url(pending.redirect_uri)
 
             # Use hass_client's get_token utility - no client_secret needed!
             try:
-                token_details = await get_token(ha_url, code, client_id=client_id)
+                token_details = await get_token(
+                    ha_url, code, client_id=client_id, code_verifier=pending.idp_code_verifier
+                )
             except Exception as token_error:
                 self.logger.error(
                     "Failed to get token from HA: %s (client_id: %s, ha_url: %s)",
@@ -732,21 +719,18 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     client_id,
                     ha_url,
                 )
-                return AuthResult(
-                    success=False, error=f"Failed to exchange OAuth code: {token_error}"
-                )
+                raise AuthenticationFailed(
+                    "Home Assistant did not accept the sign-in"
+                ) from token_error
 
             access_token = token_details.get("access_token")
             if not access_token:
-                return AuthResult(success=False, error="No access token received from HA")
+                raise AuthenticationFailed("No access token received from HA")
 
             # Get the HA user ID from the OAuth token via WebSocket
             ha_user_id = await self._fetch_ha_user_id_via_websocket(ha_url, access_token)
             if not ha_user_id:
-                return AuthResult(
-                    success=False,
-                    error="Failed to get user ID from Home Assistant",
-                )
+                raise AuthenticationFailed("Failed to get user ID from Home Assistant")
 
             # Get username, display name and avatar from HA provider (has admin access)
             username, display_name, avatar_url = await get_ha_user_details(self.mass, ha_user_id)
@@ -758,20 +742,55 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
             # Get or create user
             user = await self._get_or_create_user(username, display_name, ha_user_id, avatar_url)
-
-            if not user:
-                return AuthResult(
-                    success=False,
-                    error="Self-registration is disabled. Please contact an administrator.",
-                )
-            if not user.enabled:
-                return AuthResult(success=False, error="User account is disabled")
-
-            return AuthResult(success=True, user=user, return_url=return_url)
-
-        except Exception as e:
+        except AuthenticationFailed:
+            raise
+        except Exception as err:
             self.logger.exception("Error during Home Assistant OAuth callback")
-            return AuthResult(success=False, error=str(e))
+            raise AuthenticationFailed("The Home Assistant sign-in could not be completed") from err
+
+        if not user:
+            raise AuthenticationFailed(
+                "Self-registration is disabled. Please contact an administrator.",
+                translation_key="self_registration_disabled",
+            )
+        if not user.enabled:
+            raise AuthenticationFailed(
+                "User account is disabled", translation_key="user_account_disabled"
+            )
+        return user
+
+    async def _get_server_target_ha_url(self) -> str | None:
+        """Return the Home Assistant URL for a sign-in that returns to this server."""
+        # Get the correct HA URL (external URL if running as add-on)
+        ha_url = await self._get_external_ha_url()
+        if not ha_url:
+            return None
+
+        # If HA URL is still the internal supervisor URL (no external_url in HA config),
+        # infer from MA's base URL (the add-on runs on the HA host)
+        if "supervisor" in ha_url.lower():
+            # Extract scheme and host from the base URL to build external HA URL
+            parsed = urlparse(self.mass.webserver.base_url)
+            # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
+            if parsed.scheme == "https":
+                # HTTPS - use default port 443 (no port in URL)
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
+            else:
+                # HTTP - assume HA runs on default port 8123
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
+
+            self.logger.debug(
+                "HA external_url not configured, inferring from base URL: %s",
+                inferred_ha_url,
+            )
+            ha_url = inferred_ha_url
+        return ha_url
+
+    async def _get_public_ha_url(self) -> str | None:
+        """Return a Home Assistant URL that is reachable from the internet, if any."""
+        network_urls = await self._get_network_urls()
+        candidates = (network_urls.get("external"), network_urls.get("cloud"), self._ha_url)
+        return next((url for url in candidates if url and is_public_url(url)), None)
 
     async def _get_external_ha_url(self) -> str | None:
         """
@@ -782,9 +801,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
         :return: External URL if available, otherwise None.
         """
-        ha_url = (
-            cast("str", self.config.get("ha_url")).strip() if self.config.get("ha_url") else None
-        )
+        ha_url = self._ha_url
         if not ha_url:
             return None
 
@@ -793,47 +810,61 @@ class HomeAssistantOAuthProvider(LoginProvider):
             # Not using internal URL, return as-is
             return ha_url
 
-        # We're using internal URL - try to get external URL from HA provider
-        ha_provider = self.mass.get_provider("hass")
-        if not ha_provider:
-            # No HA provider available, use configured URL
-            return ha_url
-
-        ha_provider = cast("HomeAssistantProvider", ha_provider)
-
-        try:
-            # Access the hass client from the provider
-            hass_client = ha_provider.hass
-            if not hass_client or not hass_client.connected:
-                return ha_url
-
-            # Get network URLs from Home Assistant using WebSocket API
-            # This command returns internal, external, and cloud URLs
-            network_urls = await hass_client.send_command("network/url")
-
-            if network_urls:
-                # Priority: external > cloud > internal
-                # External is the manually configured external URL
-                # Cloud is the Nabu Casa cloud URL
-                # Internal is the local network URL
-                external_url = network_urls.get("external")
-                cloud_url = network_urls.get("cloud")
-                internal_url = network_urls.get("internal")
-
-                # Use external URL first, then cloud, then internal
-                final_url = cast("str", external_url or cloud_url or internal_url).strip()
-                if final_url:
-                    self.logger.debug(
-                        "Using HA URL for OAuth: %s (from network/url, configured: %s)",
-                        final_url,
-                        ha_url,
-                    )
-                    return final_url
-        except Exception as err:
-            self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
+        # Priority: external > cloud > internal
+        # External is the manually configured external URL
+        # Cloud is the Nabu Casa cloud URL
+        # Internal is the local network URL
+        network_urls = await self._get_network_urls()
+        if final_url := (
+            network_urls.get("external")
+            or network_urls.get("cloud")
+            or network_urls.get("internal")
+        ):
+            self.logger.debug(
+                "Using HA URL for OAuth: %s (from network/url, configured: %s)",
+                final_url,
+                ha_url,
+            )
+            return final_url
 
         # Fallback to configured URL
         return ha_url
+
+    @property
+    def _ha_url(self) -> str | None:
+        """Return the Home Assistant URL the hass provider is configured with."""
+        ha_url = cast("str | None", self.config.get("ha_url"))
+        return ha_url.strip() if ha_url else None
+
+    async def _get_network_urls(self) -> dict[str, str | None]:
+        """Return the internal, external and cloud URLs Home Assistant reports for itself."""
+        if time.monotonic() < self._network_urls_expires_at:
+            return self._network_urls
+        ha_provider = self.mass.get_provider("hass")
+        if not ha_provider:
+            return {}
+        # the hass provider only creates its client during setup
+        hass_client = getattr(cast("HomeAssistantProvider", ha_provider), "hass", None)
+        if not hass_client or not hass_client.connected:
+            return {}
+        # auth/providers is public, so concurrent calls share one lookup
+        async with self._network_urls_lock:
+            if time.monotonic() < self._network_urls_expires_at:
+                return self._network_urls
+            try:
+                # Get network URLs from Home Assistant using WebSocket API
+                network_urls = await hass_client.send_command("network/url") or {}
+            except Exception as err:
+                self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
+                self._network_urls = {}
+                self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_RETRY
+                return {}
+            self._network_urls = {
+                key: url.strip() if isinstance(url, str) and url.strip() else None
+                for key, url in network_urls.items()
+            }
+            self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_TTL
+            return self._network_urls
 
     async def _fetch_ha_user_id_via_websocket(self, ha_url: str, access_token: str) -> str | None:
         """

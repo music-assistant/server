@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
@@ -104,17 +104,25 @@ from music_assistant.controllers.streams.constants import (
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    MIN_VOICE_OVER_DURATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
     STREAMDETAILS_INBAND_TITLE_KEY,
+    VOICE_OVER_RAMP,
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.stream_sources import (
+    DEFAULT_POLICY,
+    SourceCandidate,
+    rank_provider_mappings,
+    rank_stream_sources,
+)
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -139,8 +147,15 @@ from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
+    add_input_fflag,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
+)
+from music_assistant.helpers.mp3 import (
+    NO_SEEK_HINTS,
+    Mp3SeekHints,
+    ffmpeg_http_headers,
+    probe_mp3_seek_hints,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
@@ -204,6 +219,9 @@ FADE_WAIT_SLICE_MS = 250
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
+MP3_SEEK_HINTS_CACHE_SIZE = 64
+MP3_SEEK_PROBE_RETRY_SECONDS = 60
 
 # Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
 # multi-mirror reader treats these as the signal to fail over to the next URL.
@@ -287,6 +305,23 @@ async def _continue_mix(head: bytes, mix: AsyncGenerator[bytes]) -> AsyncGenerat
 def overlay_active(queue: PlayerQueue) -> bool:
     """Return True if the given queue has an audio overlay enabled and a source selected."""
     return queue.overlay_enabled and queue.overlay_source is not None
+
+
+def overlay_mixed_in(queue: PlayerQueue, queue_item: QueueItem, *, flow_mode: bool) -> bool:
+    """
+    Return True if the queue's audio overlay is mixed into the stream serving this item.
+
+    The overlay rides on the queue's continuous flow stream. Among per-item streams only
+    radio carries it, because a station never plays in flow mode and is one long-lived
+    stream of its own.
+
+    :param queue: The queue the item plays on.
+    :param queue_item: The item the stream serves.
+    :param flow_mode: Whether the stream is the queue's flow stream instead of a per-item one.
+    """
+    if not overlay_active(queue):
+        return False
+    return flow_mode or queue_item.media_type == MediaType.RADIO
 
 
 def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> int:
@@ -406,9 +441,15 @@ class _IncomingFadePrefetcher:
         next_item = self._audio.mass.player_queues.get_next_item(
             queue.queue_id, queue_item.queue_item_id
         )
+        tail_overlap = queue_item.streamdetails.tail_overlap if queue_item.streamdetails else None
         if (
             next_item is None
             or next_item.queue_item_id == queue_item.queue_item_id
+            # a declared overlap only ever plays into the item it was planned against
+            or (
+                tail_overlap is not None
+                and next_item.queue_item_id != tail_overlap.next_queue_item_id
+            )
             or next_item.media_type != MediaType.TRACK
             or (streamdetails := next_item.streamdetails) is None
             # without a duration the read below cannot be kept clear of the track's end
@@ -418,11 +459,13 @@ class _IncomingFadePrefetcher:
             or not audio_buffer.is_valid()
         ):
             return
-        overlap: float = (
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration
-        )
+        overlap: float
+        if tail_overlap is not None:
+            overlap = tail_overlap.duration + VOICE_OVER_RAMP
+        elif crossfade_mode == CrossfadeMode.SMART_CROSSFADE:
+            overlap = SMART_CROSSFADE_DURATION
+        else:
+            overlap = standard_crossfade_duration
         # never read a track to its end in the background: that would report it to its
         # provider as streamed before a single second of it has reached the player.
         # A track always plays at its own pace, so what is left of it after the seek is
@@ -575,6 +618,11 @@ class StreamsAudio:
         self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             WeakValueDictionary()
         )
+        # launches of the same URL reuse the probe instead of fetching it again,
+        # a failed probe only until its retry time
+        self._mp3_seek_hints: OrderedDict[
+            tuple[str, frozenset[tuple[str, str]]], tuple[Mp3SeekHints, float | None]
+        ] = OrderedDict()
         # serializes streamdetails resolution per queue item, so concurrent callers share
         # one result instead of each fetching details the others then overwrite
         self._stream_details_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
@@ -2457,7 +2505,13 @@ class StreamsAudio:
                     standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                         CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                     )
-                if item_crossfade_mode != crossfade_mode:
+                # the item before fades into this one as the queue is set; a declared
+                # overlap only concerns this item's own tail, into the item after it
+                incoming_mode = item_crossfade_mode
+                tail_overlap = queue_track.streamdetails.tail_overlap
+                if tail_overlap is not None:
+                    item_crossfade_mode = CrossfadeMode.VOICE_OVER
+                if item_crossfade_mode not in (crossfade_mode, CrossfadeMode.VOICE_OVER):
                     self.logger.debug(
                         "Crossfade mode for queue %s changed mid-session: %s -> %s",
                         queue.display_name,
@@ -2483,20 +2537,27 @@ class StreamsAudio:
                     "float", queue_track.extra_attributes.get("playback_speed", 1.0)
                 )
                 # calculate crossfade buffer size: the ceiling for this item's holdback
-                crossfade_buffer_duration = (
-                    SMART_CROSSFADE_DURATION
-                    if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-                    else standard_crossfade_duration
-                )
-                crossfade_buffer_duration = min(
-                    crossfade_buffer_duration,
-                    int(queue_track.streamdetails.duration / 2)
-                    if queue_track.streamdetails.duration
-                    else crossfade_buffer_duration,
-                )
-                # skip crossfade if buffer would be too small to be meaningful
-                if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
-                    crossfade_buffer_duration = 0
+                crossfade_buffer_duration: float
+                if tail_overlap is not None:
+                    # a declared overlap is held back exactly
+                    crossfade_buffer_duration = tail_overlap.duration
+                    if crossfade_buffer_duration < MIN_VOICE_OVER_DURATION:
+                        crossfade_buffer_duration = 0
+                else:
+                    crossfade_buffer_duration = (
+                        SMART_CROSSFADE_DURATION
+                        if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                        else standard_crossfade_duration
+                    )
+                    crossfade_buffer_duration = min(
+                        crossfade_buffer_duration,
+                        int(queue_track.streamdetails.duration / 2)
+                        if queue_track.streamdetails.duration
+                        else crossfade_buffer_duration,
+                    )
+                    # skip crossfade if buffer would be too small to be meaningful
+                    if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
+                        crossfade_buffer_duration = 0
                 # Ensure crossfade buffer size is aligned to frame boundaries
                 # Frame size = bytes_per_sample * channels
                 bytes_per_sample = pcm_format.bit_depth // 8
@@ -2520,7 +2581,18 @@ class StreamsAudio:
                 outgoing_queue_track = last_queue_track
                 if last_fadeout_part and last_streamdetails:
                     incoming_duration = 0.0
-                    if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
+                    # a tail overlap the outgoing item declared plays into the item it was
+                    # planned against, whatever the queue's crossfade setting
+                    requested_mode = incoming_mode
+                    if (declared := last_streamdetails.tail_overlap) is not None:
+                        requested_mode = (
+                            CrossfadeMode.VOICE_OVER
+                            if queue_track.queue_item_id == declared.next_queue_item_id
+                            else CrossfadeMode.DISABLED
+                        )
+                    if requested_mode == CrossfadeMode.VOICE_OVER or (
+                        crossfade_buffer_size > 0 and requested_mode != CrossfadeMode.DISABLED
+                    ):
                         # the incoming track's audio may still be on its way: make sure it
                         # is being prepared, and play the tail out plainly meanwhile. A
                         # pause here costs the player its lead, a shorter tail only costs
@@ -2546,7 +2618,7 @@ class StreamsAudio:
                         last_fadeout_part = last_fadeout_part[played_out:]
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
-                            item_crossfade_mode,
+                            requested_mode,
                             standard_crossfade_duration,
                             fade_out_seconds=len(last_fadeout_part) / pcm_sample_size,
                             playback_speed=track_playback_speed,
@@ -2662,7 +2734,7 @@ class StreamsAudio:
                                 queue.queue_id, queue_track.queue_item_id
                             )
 
-                        if item_crossfade_mode == CrossfadeMode.DISABLED:
+                        if item_crossfade_mode == CrossfadeMode.DISABLED and not last_fadeout_part:
                             # no cross/smart fade: yield chunks directly without intermediate buffer
                             yield chunk
                             bytes_written += len(chunk)
@@ -2738,8 +2810,10 @@ class StreamsAudio:
                             # leave the queue's position mapping on the wrong track
                             # for the whole (source-paced) duration of the blend. The
                             # pre-counted tail makes way for that live credit.
+                            fadeout_timing = crossfade_smart_fade.timing_info
                             fadeout_share_seconds = (
-                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
+                                fadeout_timing.pre_crossfade_duration
+                                + fadeout_timing.crossfade_duration
                             )
                             fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
                             fadeout_share = (fadeout_share // frame_size) * frame_size
@@ -2753,8 +2827,8 @@ class StreamsAudio:
                                 fade_out_part=last_fadeout_part,
                                 pcm_format=pcm_format,
                             )
+                            crossfade_bytes_written = 0
                             try:
-                                crossfade_bytes_written = 0
                                 # closed before item_stream on an aborted flow: its
                                 # teardown stops the feeder that still holds a read
                                 # on item_stream, which must not be closed mid-read
@@ -2906,7 +2980,14 @@ class StreamsAudio:
                     last_fadeout_part = b""
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
                 # armed late (or not at all) leaves less than that
-                min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_DURATION)
+                min_fade_out_size = int(
+                    pcm_sample_size
+                    * (
+                        MIN_VOICE_OVER_DURATION
+                        if item_crossfade_mode == CrossfadeMode.VOICE_OVER
+                        else MIN_CROSSFADE_DURATION
+                    )
+                )
                 if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
@@ -3047,6 +3128,23 @@ class StreamsAudio:
         next_sample_rate: int | None = None,
     ) -> bool:
         """Get the crossfade config for a queue item."""
+        if queue_item.streamdetails and (tail_overlap := queue_item.streamdetails.tail_overlap):
+            # a declared overlap plays only into the track it was planned against
+            next_item = next_queue_item or self.mass.player_queues.get_next_item(
+                queue_item.queue_id, queue_item.queue_item_id
+            )
+            if (
+                next_item is None
+                or next_item.queue_item_id != tail_overlap.next_queue_item_id
+                or next_item.media_type != MediaType.TRACK
+            ):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the next item is not the track it was "
+                    "planned against",
+                    queue_item.name,
+                )
+                return False
+            return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
         if not (self.mass.player_queues.get(queue_item.queue_id)):
@@ -3766,38 +3864,60 @@ class StreamsAudio:
         allowed: list[str] | None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
-        Return mapping candidates in steering, quality, and instance-fallback order.
+        Return the mapping candidates that may serve a stream, in the order to try them.
+
+        Every mapping is expanded to the instances that can resolve it; the stream source
+        ranking then orders the candidates.
 
         :param provider_mappings: Mappings attached to the media item.
-        :param preferred_providers: Provider instances tried before widening to the rest.
+        :param preferred_providers: Provider instances the playback user owns, tried first.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Ordered provider mapping candidates.
         """
-        ordered_mappings = sorted(
-            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
-        )
-        preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
-        fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
-        seen_candidates: set[tuple[str, str]] = set()
-        for mapping in ordered_mappings:
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], SourceCandidate] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
             for provider in self._get_mapping_providers(mapping, allowed):
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if (
-                    candidate_id in seen_candidates
-                    or provider.instance_id in excluded_provider_instances
-                ):
+                if provider.instance_id in excluded_provider_instances:
                     continue
-                seen_candidates.add(candidate_id)
-                candidate = (mapping, provider)
-                if provider.instance_id in preferred_providers:
-                    preferred_candidates.append(candidate)
-                else:
-                    fallback_candidates.append(candidate)
-        return [*preferred_candidates, *fallback_candidates]
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = SourceCandidate(
+                    mapping=mapping,
+                    provider=provider,
+                    is_streaming=isinstance(provider, MusicProvider)
+                    and provider.is_streaming_provider,
+                )
+        ranked = rank_stream_sources(
+            candidates.values(), pinned=None, preferred=preferred_providers, policy=DEFAULT_POLICY
+        )
+        if ranked and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "Stream source order: %s",
+                ", ".join(
+                    f"{candidate.provider.instance_id}/{candidate.mapping.item_id} "
+                    f"({candidate.reason})"
+                    for candidate in ranked
+                ),
+            )
+        return [(candidate.mapping, candidate.provider) for candidate in ranked]
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """
@@ -4120,9 +4240,13 @@ class StreamsAudio:
         ):
             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
-        # handle seek support
-        if seek_position and streamdetails.duration and streamdetails.allow_seek:
-            extra_input_args += ["-ss", str(int(seek_position))]
+        # skip a remote MP3's ID3 tag on every launch and handle seek support
+        if streamdetails.duration and streamdetails.allow_seek:
+            await self._add_remote_mp3_input_args(
+                streamdetails, audio_source, extra_input_args, seeking=bool(seek_position)
+            )
+            if seek_position:
+                extra_input_args += ["-ss", str(int(seek_position))]
 
         bytes_sent = 0
         finished = False
@@ -4417,13 +4541,15 @@ class StreamsAudio:
         The configured mode picks the fade; the held-back outgoing tail sizes its
         window, up to that mode's ceiling and to what the incoming track can supply.
         Too short a tail to blend at all means no fade rather than a different one.
+        A voice over takes the whole held-back tail as its window.
 
         :param streamdetails: Incoming track stream details.
         :param crossfade_mode: Requested crossfade mode.
         :param standard_crossfade_duration: Configured standard overlap in seconds.
         :param fade_out_seconds: Held-back outgoing tail in seconds.
         :param playback_speed: Incoming track playback-speed multiplier.
-        :return: Effective mode and fade-in duration in seconds.
+        :return: Effective mode and fade-in duration in seconds; for a voice over the
+            fade-in also covers the ramp back to full level after the window.
         """
         audio_buffer = streamdetails.buffer
         if crossfade_mode == CrossfadeMode.DISABLED or playback_speed <= 0:
@@ -4444,12 +4570,15 @@ class StreamsAudio:
 
         # The blend streams, so the incoming window does not have to be resident:
         # it arrives while the blend plays. The tail we held back is what bounds it.
-        window = min(
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration,
-            fade_out_seconds,
-        )
+        voice_over = crossfade_mode == CrossfadeMode.VOICE_OVER
+        window = fade_out_seconds
+        if not voice_over:
+            window = min(
+                SMART_CROSSFADE_DURATION
+                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                else standard_crossfade_duration,
+                window,
+            )
         if audio_buffer.eof:
             # the source is done, so what is resident is all there will ever be
             window = min(window, audio_buffer.duration_available / playback_speed)
@@ -4459,7 +4588,7 @@ class StreamsAudio:
             # window is stream time, the track's remaining audio is media time.
             remaining_media = max(0.0, streamdetails.duration - streamdetails.seek_position)
             window = min(window, remaining_media / playback_speed / 2)
-        if window < MIN_CROSSFADE_DURATION:
+        if window < (MIN_VOICE_OVER_DURATION if voice_over else MIN_CROSSFADE_DURATION):
             self.logger.debug(
                 "Not fading into %s: a %.1f second window is too short", streamdetails.uri, window
             )
@@ -4470,6 +4599,8 @@ class StreamsAudio:
             crossfade_mode.value,
             streamdetails.uri,
         )
+        if voice_over:
+            return crossfade_mode, window + VOICE_OVER_RAMP
         return crossfade_mode, window
 
     async def _resolve_media_stream_source(
@@ -5228,3 +5359,67 @@ class StreamsAudio:
             )
             return None
         return streamdetails.path
+
+    async def _add_remote_mp3_input_args(
+        self,
+        streamdetails: StreamDetails,
+        audio_source: str | AsyncGenerator[bytes],
+        extra_input_args: list[str],
+        *,
+        seeking: bool,
+    ) -> None:
+        """
+        Add the ffmpeg input args that speed up starting or seeking a remote MP3.
+
+        Skips a leading ID3 tag and, on a seek, lets ffmpeg jump by byte offset.
+        Leaves the args alone for anything that is not a plain remote MP3.
+
+        :param streamdetails: Details of the stream being launched.
+        :param audio_source: The resolved ffmpeg input.
+        :param extra_input_args: The ffmpeg input args collected so far, extended in place.
+        :param seeking: Whether this launch seeks into the stream.
+        """
+        if (
+            streamdetails.stream_type != StreamType.HTTP
+            or not isinstance(audio_source, str)
+            or not audio_source.startswith("http")
+            # a provider-set input format brings its own -i, or the input is fetched by POST
+            or "-f" in extra_input_args
+            or "-post_data" in extra_input_args
+        ):
+            return
+        audio_format = arriving_audio_format(streamdetails)
+        mp3_types = (ContentType.MP3, ContentType.MPEG)
+        is_mp3 = audio_format.content_type in mp3_types or (
+            # the probe itself rejects an unknown format that turns out not to be MPEG audio
+            audio_format.content_type == ContentType.UNKNOWN
+            and audio_format.codec_type in (*mp3_types, ContentType.UNKNOWN)
+        )
+        if not is_mp3:
+            return
+        headers = ffmpeg_http_headers(extra_input_args)
+        cache_key = (audio_source, frozenset(headers.items()))
+        cached = self._mp3_seek_hints.get(cache_key)
+        if cached is not None and (cached[1] is None or cached[1] > time.monotonic()):
+            hints = cached[0]
+            self._mp3_seek_hints.move_to_end(cache_key)
+        else:
+            probed = await probe_mp3_seek_hints(self.mass.http_session, audio_source, headers)
+            retry_at: float | None = None
+            if probed is None:
+                self.logger.debug("Could not probe %s for seek hints", streamdetails.uri)
+                retry_at = time.monotonic() + MP3_SEEK_PROBE_RETRY_SECONDS
+            hints = probed or NO_SEEK_HINTS
+            self._mp3_seek_hints[cache_key] = (hints, retry_at)
+            self._mp3_seek_hints.move_to_end(cache_key)
+            while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
+                self._mp3_seek_hints.popitem(last=False)
+        if hints.skip_bytes:
+            self.logger.debug(
+                "Skipping %s bytes of ID3 tag in %s", hints.skip_bytes, streamdetails.uri
+            )
+            extra_input_args += ["-skip_initial_bytes", str(hints.skip_bytes)]
+        if seeking and hints.fastseek:
+            # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
+            # CBR, while VBR lands seconds off with a TOC and can be minutes off without one
+            add_input_fflag(extra_input_args, "+fastseek")
