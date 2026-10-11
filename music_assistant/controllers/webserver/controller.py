@@ -20,9 +20,8 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
 from functools import partial
-from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import urlsplit
+from urllib.parse import urlparse
 
 import aiofiles
 from aiohttp import web
@@ -49,6 +48,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from yarl import URL
 
 from music_assistant.constants import (
+    APP_MA_HOST,
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
@@ -77,6 +77,7 @@ from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
     get_publish_ip_candidates,
+    is_public_url,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -94,6 +95,7 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
+from .helpers.login_flow import AuthTransport, RedirectTarget
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -254,6 +256,37 @@ class WebserverController(CoreController):
         connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
         protocol = "https" if self._ssl_active else "http"
         return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
+
+    def get_auth_callback_base(
+        self,
+        transport: AuthTransport,
+        *,
+        redirect_target: RedirectTarget = "server",
+        return_url: str | None = None,
+        request_host: str | None = None,
+    ) -> str:
+        """
+        Return the URL (without the callback path) a redirect sign-in returns the browser to.
+
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param redirect_target: Where the client asked the browser to return to; "app" is
+            only honoured over Remote Access.
+        :param return_url: The URL the client returns to after signing in, if any.
+        :param request_host: The host (and any port) the client used to reach the server.
+        """
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            return APP_MA_HOST
+        external_url = self.external_url
+        if not external_url:
+            return self.base_url
+        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
+            return external_url
+        # A native app returns to its own URL scheme, so look at how its connection came in
+        if transport is AuthTransport.REMOTE or (
+            request_host and request_host.lower() == urlparse(external_url).netloc.lower()
+        ):
+            return external_url
+        return self.base_url
 
     @property
     def internal_sendspin_url(self) -> str:
@@ -1181,13 +1214,13 @@ class WebserverController(CoreController):
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
-            auth_url = await self.auth.get_authorization_url(provider_id, return_url)
-            if not auth_url:
+            started = await self.auth.get_authorization_url(provider_id, return_url)
+            if not started:
                 return web.Response(
                     status=400, text="Provider does not support OAuth or is not configured"
                 )
 
-            return web.json_response({"authorization_url": auth_url})
+            return web.json_response({"authorization_url": started[0]})
         except RateLimited:
             return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
@@ -1459,21 +1492,14 @@ def _is_valid_external_url(value: ConfigValueType) -> bool:
     """Return whether a configured external URL is empty or an http(s) URL on a public host."""
     if not value:
         return True
-    if not isinstance(value, str):
-        return False
-    try:
-        parts = urlsplit(value)
-        # reading the port raises on a malformed one (e.g. :notaport)
-        _ = parts.port
-        host = (parts.hostname or "").rstrip(".")
-    except ValueError:
-        return False
-    # query or fragment (e.g. a copied frontend route like /#/home) breaks appended links
-    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
-        return False
-    try:
-        return ip_address(host).is_global
-    except ValueError:
-        pass
-    # single-label names (e.g. localhost) and mDNS names only resolve on the local network
-    return "." in host and not host.endswith(".local")
+    return isinstance(value, str) and is_public_url(value)
+
+
+def _url_origin(url: str) -> str:
+    """
+    Return the origin (scheme and host, including any port) of a URL.
+
+    :param url: The URL to get the origin of.
+    """
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
