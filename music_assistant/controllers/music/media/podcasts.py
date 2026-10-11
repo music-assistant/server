@@ -25,7 +25,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PODCASTS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.compare import (
@@ -336,7 +336,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             match["userid"] = user.user_id
         # without a userid filter several users can hold a row, the newest one wins
         rows = await self.mass.music.database.get_rows(
-            DB_TABLE_PLAYLOG, match=match, order_by="timestamp DESC", limit=1
+            DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp DESC", limit=1
         )
         row = rows[0] if rows else None
         if row is None:
@@ -449,7 +449,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             # sort also picks the newest row per item_id in the map below, where without a
             # userid filter several users can hold one
             rows = await self.mass.music.database.get_rows(
-                DB_TABLE_PLAYLOG, match=match, order_by="timestamp", limit=0
+                DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp", limit=0
             )
             return {row["item_id"]: row for row in rows}
 

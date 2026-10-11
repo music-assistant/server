@@ -64,7 +64,8 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
@@ -1013,9 +1014,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         else:
             provider_clause = f"p.provider IN {available_providers_str}"
-        query = (
-            f"SELECT p.* FROM {DB_TABLE_PLAYLOG} p WHERE {media_type_clause} AND {provider_clause} "
-        )
+        query = f"SELECT p.* FROM {DB_TABLE_MEDIA_PROGRESS} p WHERE {media_type_clause} AND {provider_clause} "
         if fully_played_only:
             query += "AND p.fully_played = 1 "
         if userid:
@@ -1066,7 +1065,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param userid: Restrict to this user (defaults to the current session user, else all users).
         """
         query = (
-            f"SELECT item_id, provider, name, image, artists FROM {DB_TABLE_PLAYLOG} "
+            f"SELECT item_id, provider, name, image, artists FROM {DB_TABLE_MEDIA_PROGRESS} "
             "WHERE media_type = 'track' AND fully_played = 1 "
             "AND timestamp >= :played_after_timestamp "
         )
@@ -1142,7 +1141,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         one_week_ago = int(utc_timestamp()) - (7 * 86400)
         query = (
             "SELECT p.item_id, p.media_type, p.name, p.image, p.provider "
-            f"FROM {DB_TABLE_PLAYLOG} p "
+            f"FROM {DB_TABLE_MEDIA_PROGRESS} p "
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
@@ -1219,7 +1218,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
+            f"SELECT * FROM {DB_TABLE_MEDIA_PROGRESS} "
             "WHERE media_type in ('audiobook', 'podcast_episode') "
             "AND provider in ('library', :provider_instance_id)"
         )
@@ -1804,6 +1803,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
+        play_history_written = False
         user_ids: list[str] = []
         # update generic playlog table (when not playing)
         if not is_playing:
@@ -1819,7 +1819,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 params["playback_speed"] = playback_speed
             for user_id in user_ids:
                 params["userid"] = user_id
+                recorded_play = await self._record_completed_play(
+                    params, user_is_resolved=user is not None
+                )
                 await self._upsert_playlog(params)
+                play_history_written = recorded_play or play_history_written
+            await self.database.commit()
             self._signal_playlog_updated(
                 reference,
                 fully_played=fully_played,
@@ -1850,7 +1855,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # also update playcount in library table (if fully played)
-        if not fully_played or is_playing:
+        if not fully_played or is_playing or not play_history_written:
             return
         try:
             ctrl = self.get_controller(media_item.media_type)
@@ -1936,28 +1941,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
-        # play_count only ever rose for a completed play, so note whether we remove one
-        counted_play_removed = False
         for user_id in user_ids:
             params["userid"] = user_id
-            if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
-                counted_play_removed = counted_play_removed or bool(row["fully_played"])
-            await self.database.delete(DB_TABLE_PLAYLOG, params)
+            await self.database.delete(DB_TABLE_MEDIA_PROGRESS, params)
         self._signal_playlog_updated(
             reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         self._forward_play_report(media_item, user, fully_played=False, position=0)
-        # also update playcount in library table
-        ctrl = self.get_controller(media_item.media_type)
-        db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if db_item and counted_play_removed:
-            await self.database.execute(
-                f"UPDATE {ctrl.db_table} SET play_count = MAX(play_count - 1, 0), "
-                f"last_played = 0 WHERE item_id = {db_item.item_id}"
-            )
-            await self.database.commit()
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -2110,7 +2102,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = userid
         elif user:
             params["userid"] = user.user_id
-        if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+        if db_entry := await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             # fully_played is a nullable column; treat an unknown (NULL) value as not played
             ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
@@ -2144,7 +2136,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # the speed is stored per user; without one we can't scope the lookup
                 return 1.0
         db_entry = await self.database.get_row(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "item_id": media_item.item_id,
                 "provider": media_item.provider,
@@ -2341,7 +2333,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # cleanup playlog table
         await self.mass.music.database.delete(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "provider": provider_instance,
             },
@@ -3516,18 +3508,52 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         columns = list(entry)
         updates = [
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+            f"user_initiated = {DB_TABLE_MEDIA_PROGRESS}.user_initiated OR excluded.user_initiated"
             if column == "user_initiated"
             else f"{column} = excluded.{column}"
             for column in columns
             if column not in PLAYLOG_CONFLICT_KEYS
         ]
-        await self.database.execute_write(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+        await self.database.execute(
+            f"INSERT INTO {DB_TABLE_MEDIA_PROGRESS} ({', '.join(columns)}) "
             f"VALUES ({', '.join(f':{column}' for column in columns)}) "
             f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
             entry,
         )
+
+    async def _record_completed_play(
+        self, progress: dict[str, Any], *, user_is_resolved: bool
+    ) -> bool:
+        """Append a completed queue play or a provider's transition to completed."""
+        if not user_is_resolved or not progress["fully_played"]:
+            return False
+
+        if progress["queue_id"] is None:
+            if progress["user_initiated"]:
+                return False
+            conflict_params = {key: progress[key] for key in PLAYLOG_CONFLICT_KEYS}
+            conflict_clause = " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
+            cursor = await self.database.execute(
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET fully_played = 1 "
+                f"WHERE {conflict_clause} AND COALESCE(fully_played, 0) = 0",
+                conflict_params,
+            )
+            try:
+                transitioned = cursor.rowcount > 0
+            finally:
+                await cursor.close()
+            if not transitioned:
+                return False
+
+        await self.database.execute(
+            f"INSERT INTO {DB_TABLE_PLAY_HISTORY} "
+            "(item_id, provider, media_type, userid, queue_id, timestamp, "
+            "user_initiated, name, image, artists) "
+            "VALUES (:item_id, :provider, :media_type, :userid, :queue_id, :timestamp, "
+            ":user_initiated, :name, :image, :artists)",
+            progress,
+        )
+        return True
 
     def _signal_playlog_updated(
         self,

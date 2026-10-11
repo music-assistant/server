@@ -25,7 +25,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
 )
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
@@ -170,7 +170,7 @@ async def _queue_ids_in_playlog(mass: MusicAssistant, queue_ids: list[str]) -> s
     params = {f"id_{index}": queue_id for index, queue_id in enumerate(queue_ids)}
     placeholders = ",".join(f":{name}" for name in params)
     rows = await mass.music.database.get_rows_from_query(
-        f"SELECT DISTINCT queue_id FROM {DB_TABLE_PLAYLOG} WHERE queue_id IN ({placeholders})",
+        f"SELECT DISTINCT queue_id FROM {DB_TABLE_MEDIA_PROGRESS} WHERE queue_id IN ({placeholders})",
         params,
         limit=0,
     )

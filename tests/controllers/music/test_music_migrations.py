@@ -16,7 +16,9 @@ from music_assistant.constants import (
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_LEGACY_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
@@ -71,7 +73,7 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     )
     # tests that exercise a specific playlog layout replace this stand-in
     await db.execute(
-        f"CREATE TABLE {DB_TABLE_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
+        f"CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
         "[playback_speed] REAL NOT NULL DEFAULT 1.0, "
         "UNIQUE(userid))"
     )
@@ -84,7 +86,7 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
 # 4-column unique constraint, so it raises IntegrityError on databases that still
 # carry the legacy 3-column constraint (issue #5754)
 PLAYLOG_UPSERT = (
-    f"INSERT INTO {DB_TABLE_PLAYLOG} "
+    f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} "
     "(item_id, provider, media_type, name, image, fully_played, "
     "seconds_played, timestamp, queue_id, user_initiated, userid) "
     "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
@@ -92,6 +94,7 @@ PLAYLOG_UPSERT = (
     "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
     "timestamp = excluded.timestamp"
 )
+MEDIA_PROGRESS_UPSERT = PLAYLOG_UPSERT.replace("playlog", "media_progress")
 
 
 def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
@@ -112,10 +115,10 @@ def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
 
 async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
     """Create the playlog table as it exists on pre-userid installs."""
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     # original table layout (schema version <= 22) with the 3-column UNIQUE constraint
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -128,18 +131,18 @@ async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
             UNIQUE(item_id, provider, media_type));"""
     )
     # columns + index added in-place by the later ALTER TABLE migrations
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT")
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN userid TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN queue_id TEXT")
     await database.execute(
-        f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
     )
     await database.execute(
-        f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
     )
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artists json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN artists json")
     await database.execute(
-        f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
-        f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
+        f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
     )
     await database.commit()
 
@@ -160,7 +163,7 @@ async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
     await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
     # a legacy row from before the userid column existed
     await database.execute(
-        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name) "
+        f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (item_id, provider, media_type, name) "
         "VALUES ('2', 'library', 'track', 'Legacy Track')"
     )
     await database.commit()
@@ -176,25 +179,25 @@ async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
     )
 
     # replaying the same item for the same user updates the existing row in place
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1", timestamp=200))
+    await database.execute(MEDIA_PROGRESS_UPSERT, _playlog_entry("user1", timestamp=200))
     # another user playing the same item gets their own row
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user2"))
-    rows = await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "1"})
+    await database.execute(MEDIA_PROGRESS_UPSERT, _playlog_entry("user2"))
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS, {"item_id": "1"})
     assert len(rows) == 2
     user1_row = next(row for row in rows if row["userid"] == "user1")
     assert user1_row["timestamp"] == 200
     assert user1_row["name"] == "Test Track"
     # legacy rows without a userid cannot be kept under the NOT NULL schema
-    assert not await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "2"})
+    assert not await database.get_rows(DB_TABLE_MEDIA_PROGRESS, {"item_id": "2"})
 
 
-async def test_migration_leaves_correct_playlog_untouched(
+async def test_migration_renames_current_playlog_and_keeps_unique_progress_state(
     database: DatabaseConnection,
 ) -> None:
-    """A playlog table that already has the 4-column constraint is not rebuilt."""
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    """A current playlog table is renamed without changing its progress constraint."""
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -212,11 +215,65 @@ async def test_migration_leaves_correct_playlog_untouched(
             UNIQUE(item_id, provider, media_type, userid));"""
     )
     await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
+    await database.execute(
+        f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_LEGACY_PLAYLOG}_userid_timestamp_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(userid,timestamp)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_LEGACY_PLAYLOG}_provider_media_type_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(provider,media_type,userid,timestamp)"
+    )
     await database.commit()
     table_sql_query = (
-        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_PLAYLOG}'"
+        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_LEGACY_PLAYLOG}'"
     )
     table_sql_before = (await database.get_rows_from_query(table_sql_query))[0]["sql"]
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=65,
+        create_tables=AsyncMock(),
+    )
+
+    progress_sql_query = (
+        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_MEDIA_PROGRESS}'"
+    )
+    progress_table_sql = (await database.get_rows_from_query(progress_sql_query))[0]["sql"]
+    assert "UNIQUE(item_id, provider, media_type, userid)" in progress_table_sql
+    assert DB_TABLE_LEGACY_PLAYLOG in table_sql_before
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS)
+    assert len(rows) == 1
+    assert not await database.get_row(
+        "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+    )
+    assert not await database.get_rows(DB_TABLE_PLAY_HISTORY)
+    indexes = {
+        row["name"]
+        for row in await database.get_rows_from_query(
+            "SELECT name FROM sqlite_master WHERE type = 'index'", limit=0
+        )
+    }
+    assert not any(name.startswith(f"{DB_TABLE_LEGACY_PLAYLOG}_") for name in indexes)
+
+
+async def test_migration_retries_interrupted_playlog_rename(
+    database: DatabaseConnection,
+) -> None:
+    """An older migration can resume when the table rename already happened."""
+    await _create_legacy_playlog_table(database)
+    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
+    await database.execute(
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_MEDIA_PROGRESS}"
+    )
+    await database.commit()
 
     mass = MagicMock()
     mass.cache.clear = AsyncMock()
@@ -228,9 +285,13 @@ async def test_migration_leaves_correct_playlog_untouched(
         create_tables=AsyncMock(),
     )
 
-    assert (await database.get_rows_from_query(table_sql_query))[0]["sql"] == table_sql_before
-    rows = await database.get_rows(DB_TABLE_PLAYLOG)
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS)
     assert len(rows) == 1
+    assert rows[0]["userid"] == "user1"
+    assert not await database.get_row(
+        "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+    )
+    assert await database.get_rows(DB_TABLE_PLAY_HISTORY) == []
 
 
 async def test_migrate_database_rejects_too_old_schema() -> None:
@@ -256,6 +317,15 @@ async def test_migrate_database_backfills_external_id_lookup(
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     await music._setup_database()
+    table_names = {
+        row["name"]
+        for row in await music.database.get_rows_from_query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'", limit=0
+        )
+    }
+    assert DB_TABLE_MEDIA_PROGRESS in table_names
+    assert DB_TABLE_PLAY_HISTORY in table_names
+    assert DB_TABLE_LEGACY_PLAYLOG not in table_names
     library_track = await music.tracks.add_item_to_library(create_track("spotify_1", "track_abc"))
     db_id = int(library_track.item_id)
     # revert the database to its v49 state: no lookup table, external ids stored
@@ -272,6 +342,9 @@ async def test_migrate_database_backfills_external_id_lookup(
     await music.database.execute(
         "UPDATE tracks SET external_ids = :external_ids WHERE item_id = :item_id",
         {"external_ids": f'[["isrc","{ISRC}"]]', "item_id": db_id},
+    )
+    await music.database.execute(
+        f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} RENAME TO {DB_TABLE_LEGACY_PLAYLOG}"
     )
     await music.database.insert_or_replace(
         DB_TABLE_SETTINGS, {"key": "version", "value": "49", "type": "str"}
@@ -502,9 +575,9 @@ async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
     # the stable branch numbers its schema versions independently: its v43 already has the
     # 4-column playlog constraint, but never got playback_speed or the playlist translation
     # columns, which this branch gates behind steps a v43 database no longer runs
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -532,7 +605,7 @@ async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
     )
 
     assert {"translation_key", "translation_params"} <= await _table_columns(database, "playlists")
-    assert "playback_speed" in await _table_columns(database, DB_TABLE_PLAYLOG)
+    assert "playback_speed" in await _table_columns(database, DB_TABLE_MEDIA_PROGRESS)
 
 
 async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConnection) -> None:
@@ -783,8 +856,8 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     database: DatabaseConnection, tmp_path: Path
 ) -> None:
     """The playlog forgets the collage of a played playlist, every other image stays."""
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN media_type TEXT")
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN image json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN media_type TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN image json")
     collage = _image("thumb", "/collage/abc_thumb.jpg", "builtin")
     remote = serialize_to_json(_image("thumb", "https://cdn.example.com/collage/a.jpg", "spotify"))
     foreign = serialize_to_json(_image("thumb", "/collage/cover.jpg", "filesystem_local"))
@@ -797,7 +870,7 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     }
     for userid, (media_type, image) in stored_images.items():
         await database.execute(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} (userid, media_type, image) "
+            f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (userid, media_type, image) "
             "VALUES (:userid, :media_type, :image)",
             {"userid": userid, "media_type": media_type, "image": image},
         )
@@ -809,7 +882,7 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     await migrate_database(mass, database, MagicMock(), prev_version=61, create_tables=AsyncMock())
 
     rows = await database.get_rows_from_query(
-        f"SELECT userid, image FROM {DB_TABLE_PLAYLOG}", limit=0
+        f"SELECT userid, image FROM {DB_TABLE_MEDIA_PROGRESS}", limit=0
     )
     assert {row["userid"]: row["image"] for row in rows} == {
         "user1": None,
@@ -831,7 +904,7 @@ async def test_migration_drops_images_without_a_path(
     """
     for table in ("radios", "tracks"):
         await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN image json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN image json")
     empty = _image("thumb", "", "radiobrowser--abc")
     tunein = _image("thumb", "https://cdn-radiotime-logos.tunein.com/s1.png", "tunein")
     stored_radios = {
@@ -856,7 +929,7 @@ async def test_migration_drops_images_without_a_path(
         ("user2", serialize_to_json(tunein)),
     ):
         await database.execute(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} (userid, image) VALUES (:userid, :image)",
+            f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (userid, image) VALUES (:userid, :image)",
             {"userid": userid, "image": image},
         )
     await database.commit()
@@ -880,7 +953,7 @@ async def test_migration_drops_images_without_a_path(
     track_rows = await database.get_rows_from_query("SELECT metadata FROM tracks", limit=0)
     assert json.loads(track_rows[0]["metadata"]) == {"images": [tunein]}
     playlog_rows = await database.get_rows_from_query(
-        f"SELECT userid, image FROM {DB_TABLE_PLAYLOG}", limit=0
+        f"SELECT userid, image FROM {DB_TABLE_MEDIA_PROGRESS}", limit=0
     )
     assert {row["userid"]: row["image"] for row in playlog_rows} == {
         "user1": None,

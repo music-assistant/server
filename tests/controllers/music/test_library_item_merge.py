@@ -24,7 +24,7 @@ from music_assistant.constants import (
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
@@ -126,7 +126,7 @@ async def _add_playlog(
 ) -> None:
     """Insert a playlog row for merge coverage."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": provider,
@@ -440,7 +440,7 @@ async def test_audiobook_merge_keeps_per_user_resume_state(mass: MusicAssistant)
     assert isinstance(set_playlog, AsyncMock)
     set_playlog.assert_not_awaited()
     playlog = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": target.item_id,
             "provider": "library",
@@ -858,7 +858,7 @@ async def _assert_album_merge_result(
         },
     )
     playlog = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": target.item_id,
             "provider": "library",
@@ -871,7 +871,7 @@ async def _assert_album_merge_result(
     assert playlog["seconds_played"] == 30
     assert playlog["user_initiated"] == 1
     assert await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": "source-album",
             "provider": "source_instance",
