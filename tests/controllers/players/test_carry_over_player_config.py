@@ -1,6 +1,7 @@
 """Tests for handing a player's stored config over to the player that replaces it."""
 
 import logging
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
@@ -13,6 +14,9 @@ from music_assistant.constants import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import DeviceInfo, Player
+
+if TYPE_CHECKING:
+    from music_assistant.providers.universal_player import UniversalPlayerProvider
 
 OLD_ID = "20:F8:3B:09:42:05"
 NEW_ID = "new-client-id"
@@ -173,18 +177,19 @@ async def test_previous_parent_no_longer_lists_the_replacement(mass: MusicAssist
 async def test_replacement_takes_the_place_of_a_still_registered_player(
     mass: MusicAssistant,
 ) -> None:
-    """The replacement links to the parent right away, also when the old player was registered."""
-    parent_provider = _TestProvider(mass, "sonos")
+    """The replacement joins the wrapper right away, also when the old player was registered."""
     sendspin_provider = _TestProvider(mass, "sendspin")
-    for provider in (parent_provider, sendspin_provider):
-        mass._providers[provider.instance_id] = provider  # type: ignore[assignment]
-        mass._provider_manifests[provider.domain] = provider.manifest
-    parent = _TestPlayer(parent_provider, "native_parent", PlayerType.PLAYER)
-    await mass.players.register(parent)
+    mass._providers[sendspin_provider.instance_id] = sendspin_provider  # type: ignore[assignment]
+    universal_provider = cast("UniversalPlayerProvider", mass.get_provider("universal_player"))
+    wrapper = await universal_provider.create_universal_player(
+        player_id="up_original",
+        name="Kitchen",
+        device_info=DeviceInfo(),
+        protocol_player_ids=[OLD_ID],
+    )
     old_player = _TestPlayer(sendspin_provider, OLD_ID, PlayerType.PROTOCOL)
-    mass.config.set(f"{CONF_PLAYERS}/{OLD_ID}/values/{CONF_PROTOCOL_PARENT_ID}", "native_parent")
     await mass.players.register(old_player)
-    assert old_player.protocol_parent_id == "native_parent"
+    assert old_player.protocol_parent_id == "up_original"
 
     await mass.players.unregister(OLD_ID)
     mass.players.carry_over_player_config(OLD_ID, NEW_ID)
@@ -192,5 +197,8 @@ async def test_replacement_takes_the_place_of_a_still_registered_player(
     await mass.players.register(new_player)
     mass.players.delete_player_config(OLD_ID, replacement_player_id=NEW_ID)
 
-    assert new_player.protocol_parent_id == "native_parent"
-    assert [link.output_protocol_id for link in parent.linked_output_protocols] == [NEW_ID]
+    assert new_player.protocol_parent_id == "up_original"
+    assert [link.output_protocol_id for link in wrapper.linked_output_protocols] == [NEW_ID]
+    assert mass.config.get(f"{CONF_PLAYERS}/up_original/values/{CONF_LINKED_PROTOCOL_IDS}") == [
+        NEW_ID
+    ]
