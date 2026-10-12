@@ -52,9 +52,11 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     SoundEffect,
     Track,
+    media_from_dict,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
 from music_assistant_models.playlog_update import PlaylogUpdate
@@ -102,7 +104,12 @@ from music_assistant.controllers.music.helpers import (
     sibling_instance_mappings,
     sort_search_result,
 )
-from music_assistant.controllers.music.listing_cache import invalidate_listings
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import (
+    Listing,
+    cached_listing,
+    invalidate_listings,
+)
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
@@ -208,6 +215,34 @@ def _album_title_match(base: str, other: str) -> str:
             f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
         )
     return " OR ".join(matches)
+
+
+async def _browse_folder(provider: MusicProvider, path: str) -> Listing[Any]:
+    """
+    Return a provider's folder as the provider lists it.
+
+    :param provider: The provider the folder belongs to.
+    :param path: The path of the folder.
+    """
+    # a folder holds browse folders and item mappings next to its media items
+    return Listing(list(await provider.browse(path=path)))
+
+
+class _BrowseItem:
+    """The items of a cached browse listing, rebuilt as the kind each was stored as."""
+
+    @staticmethod
+    def from_dict(raw: dict[str, Any]) -> MediaItemType | ItemMapping | BrowseFolder:
+        """
+        Return the browse item a stored dict holds.
+
+        :param raw: The item as the cache stored it.
+        """
+        if raw.get("media_type") == MediaType.FOLDER:
+            # only a recommendation folder carries the items of its row
+            folder_cls = RecommendationFolder if "items" in raw else BrowseFolder
+            return folder_cls.from_dict(raw)
+        return media_from_dict(raw)
 
 
 # Selects pairs of library track rows that are likely the same recording held twice,
@@ -839,15 +874,55 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
-        self, path: str | None = None, *, player_id: str | None = None
+        self,
+        path: str | None = None,
+        *,
+        player_id: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Browse Music providers.
+        Browse Music providers, searched, sorted and paged.
+
+        A streaming provider's folder is browsed once and served from the cache for a while.
+        The entry that leads back up a level always comes first.
 
         :param path: The path to browse; None or "root" for the root level.
         :param player_id: Scope audio-source listings to the sources bound to this
             player (sources of player-unbound plugins are always included).
+        :param search: Only list the items whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the order of the folder (ORIGINAL) when omitted; sorted
+            by name, the folders come before the other items.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of items to return; 0 returns them all.
+        :param offset: Number of items to skip.
+        :raises InvalidDataError: When the sort field is not offered for browsing.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.BROWSE, sort_field, sort_direction
+        )
+
+        def _listed(
+            back_items: Sequence[BrowseFolder],
+            items: Sequence[MediaItemType | ItemMapping | BrowseFolder],
+        ) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+            listed = apply_listing(
+                items,
+                ListingType.BROWSE,
+                search=search,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+            )
+            if sort_field == SortField.NAME:
+                # the folders come before the other items, as in a file browser
+                listed.sort(key=lambda item: not isinstance(item, BrowseFolder))
+            listing = [*back_items, *listed]
+            return listing[offset : offset + limit] if limit else listing[offset:]
+
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[MediaItemType | BrowseFolder] = []
@@ -892,7 +967,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                             name=prov.name,
                         )
                     )
-            return root_items
+            return _listed([], root_items)
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -906,7 +981,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
             if not browse_prov:
-                return prepend_items
+                return _listed(prepend_items, [])
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
@@ -927,10 +1002,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for source in await self._get_plugin_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
-            return [*prepend_items, *initiable_items]
-        # limit -1 to account for the prepended items
-        prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
-        return [*prepend_items, *prov_items]
+            return _listed(prepend_items, initiable_items)
+        if isinstance(browse_prov, MusicProvider) and browse_prov.is_streaming_provider:
+            # a streaming service is browsed once for all the pages, sorts and searches of a
+            # folder; a local source is read anew, so a change on disk shows right away
+            prov_items: Sequence[MediaItemType | ItemMapping | BrowseFolder] = await cached_listing(
+                self.mass,
+                ListingType.BROWSE,
+                path,
+                lambda: _browse_folder(browse_prov, path),
+                item_type=_BrowseItem,
+            )
+        else:
+            prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
+        return _listed(prepend_items, prov_items)
 
     @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
     def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
