@@ -23,6 +23,7 @@ from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ContentType, MediaType, ProviderSharing, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
+    Audiobook,
     AudioFormat,
     ItemMapping,
     ProviderMapping,
@@ -335,6 +336,35 @@ async def test_an_excluded_pinned_instance_is_passed_over() -> None:
 
     assert streamdetails.provider == other_instance
     pinned.get_stream_details.assert_not_awaited()
+
+
+async def test_an_audiobook_plays_from_the_account_it_was_started_from() -> None:
+    """Of two equal accounts of one service, the one the audiobook was started from plays."""
+    first_instance = "spotify--first"
+    second_instance = "spotify--second"
+    first = _music_provider(first_instance)
+    second = _music_provider(second_instance)
+    audio = _audio({first_instance: first, second_instance: second})
+    audiobook = Audiobook(
+        item_id="7",
+        provider="library",
+        name="Dune",
+        provider_mappings={_mapping(first_instance), _mapping(second_instance)},
+    )
+    queue_item = QueueItem(
+        queue_id="q1",
+        queue_item_id="qi1",
+        name="Dune",
+        duration=None,
+        media_item=audiobook,
+        origin=QueueItemOrigin(provider_instance=second_instance, item_id=ITEM_ID),
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    # without the pin the first account would win the tie-break on its instance id
+    assert streamdetails.provider == second_instance
+    first.get_stream_details.assert_not_awaited()
 
 
 async def test_mapping_falls_back_to_compatible_streaming_provider_instance() -> None:

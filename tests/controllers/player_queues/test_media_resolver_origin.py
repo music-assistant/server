@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 
@@ -217,6 +218,59 @@ async def test_a_podcast_pins_its_episodes_to_the_podcasts_provider() -> None:
     resolved = await resolver._resolve_media_items(podcast)
 
     assert _container(resolved[0]) == ItemMapping.from_item(podcast)
+    assert _pin(resolved[0]) == (GPODDER, "ep1")
+
+
+def _episode(provider: str) -> PodcastEpisode:
+    """Build an episode of a gPodder podcast, as the given provider lists it."""
+    podcast = Podcast(
+        item_id="show", provider=GPODDER, name="Show", provider_mappings={_mapping(GPODDER, "show")}
+    )
+    return PodcastEpisode(
+        item_id="ep1",
+        provider=provider,
+        name="Episode 1",
+        provider_mappings={_mapping(GPODDER, "ep1")},
+        position=1,
+        podcast=podcast,
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "origin"),
+    [
+        (GPODDER, QueueItemOrigin(provider_instance=GPODDER, item_id="ep1")),
+        ("library", None),
+    ],
+    ids=["provider episode", "library episode"],
+)
+async def test_an_episode_played_on_its_own_plays_from_its_provider(
+    provider: str, origin: QueueItemOrigin | None
+) -> None:
+    """An episode played on its own keeps the provider copy it was started from."""
+    resolver = _resolver()
+    episode = _episode(provider)
+    resolver.get_next_podcast_episodes = AsyncMock(return_value=UniqueList([episode]))  # type: ignore[method-assign]
+
+    resolved = await resolver._resolve_media_items(episode)
+
+    assert resolved == [ResolvedItem(episode, origin)]
+
+
+async def test_an_episode_in_a_folder_is_played_from_the_folder() -> None:
+    """An episode the folder lists records the folder, pinned to the episode's own copy."""
+    resolver = _resolver()
+    folder = BrowseFolder(item_id="Up next", provider=GPODDER, name="Up next", is_playable=True)
+    episode = _episode(GPODDER)
+    resolver.mass.music.browse = AsyncMock(return_value=[episode])  # type: ignore[method-assign]
+    resolver.get_next_podcast_episodes = AsyncMock(return_value=UniqueList([episode]))  # type: ignore[method-assign]
+
+    resolved = await resolver._resolve_media_items(folder)
+
+    assert (_container(resolved[0]).media_type, _container(resolved[0]).item_id) == (
+        MediaType.FOLDER,
+        "Up next",
+    )
     assert _pin(resolved[0]) == (GPODDER, "ep1")
 
 

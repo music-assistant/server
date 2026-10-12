@@ -39,6 +39,7 @@ from music_assistant_models.media_items import (
     Track,
     media_from_dict,
 )
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.music.favorites import without_disliked_tracks
@@ -76,6 +77,7 @@ from music_assistant.helpers.throttle_retry import (
     set_request_priority,
     with_request_priority,
 )
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -845,6 +847,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
+                # an audiobook keeps the account it was started from, which the library item
+                # that can take its place no longer names
+                played_copy = (
+                    await self._played_copy(item if isinstance(item, str) else media_item)
+                    if media_item.media_type == MediaType.AUDIOBOOK
+                    else None
+                )
+
                 if isinstance(media_item, ItemMapping):
                     # Resolve any ItemMapping to its full media item, exactly as the str-uri
                     # form above already does. Everything below needs the real object: the
@@ -982,6 +992,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         # whole playlist/album (chosen track first) instead of dropping everything
                         # before it - the chosen track is pinned in front of the shuffled rest
                         keep_preceding_items=queue.shuffle_enabled,
+                        played_copy=played_copy,
                     )
                     media_items += resolved_items
                     if finite_parent is not None and resolved_items:
@@ -1052,6 +1063,27 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self._enqueue_with_option(
             queue_id, queue_items, option, pin_first=start_item is not None
         )
+
+    async def _played_copy(
+        self, requested: str | MediaItemType | ItemMapping | BrowseFolder
+    ) -> QueueItemOrigin | None:
+        """
+        Return the origin pinning an item played on its own to the copy the play request named.
+
+        A library item names no copy, so it has no such origin.
+
+        :param requested: The uri or the item the play request named.
+        """
+        if isinstance(requested, str):
+            _, provider, item_id = await parse_uri(requested)
+        else:
+            provider, item_id = requested.provider, requested.item_id
+        if provider == "library":
+            return None
+        # a uri can name the service rather than one of its accounts
+        if (instance := self.mass.get_provider(provider)) is None:
+            return None
+        return QueueItemOrigin(provider_instance=instance.instance_id, item_id=item_id)
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """

@@ -753,13 +753,15 @@ class MediaResolver:
         sort_by: str | None = None,
         start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
+        played_copy: QueueItemOrigin | None = None,
     ) -> list[ResolvedItem]:
         """
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
 
         An item played from a container records that container; one listed by a playlist,
-        podcast or folder is also pinned to the copy that listing had for it. A single item
-        played on its own has no origin.
+        podcast or folder is also pinned to the copy that listing had for it. An audiobook or
+        podcast episode played on its own keeps the provider copy it was started from, a single
+        track or radio played on its own has no origin.
 
         :param media_item: The media item to resolve into playable items.
         :param start_item: Optional item to start a playlist/album/genre from, or the chapter
@@ -771,6 +773,8 @@ class MediaResolver:
         :param keep_preceding_items: For a playlist/album, move the tracks before start_item
             behind the rest instead of dropping them, so the full item is returned with
             start_item first.
+        :param played_copy: For an audiobook played on its own, the origin naming the copy the
+            play request named, which the library item it resolved to no longer names.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -819,7 +823,7 @@ class MediaResolver:
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
                 media_item, start_item, userid=userid
             )
-            return [ResolvedItem(media_item)]
+            return [ResolvedItem(media_item, played_copy)]
         if media_item.media_type == MediaType.COLLECTION:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
                 media_item.item_id
@@ -857,7 +861,7 @@ class MediaResolver:
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
             return [
-                ResolvedItem(episode)
+                ResolvedItem(episode, self._own_copy(episode))
                 for episode in await self.get_next_podcast_episodes(
                     None, media_item, userid=userid, start_from_beginning=start_from_beginning
                 )
@@ -916,11 +920,12 @@ class MediaResolver:
                 # checked after resolving, as an ItemMapping child only reveals it once resolved.
                 if isinstance(entry.item, Radio) and entry.item.is_dynamic:
                     continue
-                # a subfolder or a playlist in the folder already recorded itself as the origin
-                # of its own entries; the folder's direct entries are played from the folder
+                # a subfolder or a playlist in the folder already recorded itself as the
+                # container of its own entries; the folder's direct entries are played from the
+                # folder
                 items.append(
                     entry
-                    if entry.origin is not None
+                    if entry.origin is not None and entry.origin.container is not None
                     else ResolvedItem(entry.item, self._folder_origin(folder, container, item))
                 )
         return items
@@ -1040,3 +1045,16 @@ class MediaResolver:
             provider_instance=copies[0].provider_instance,
             item_id=copies[0].item_id,
         )
+
+    @staticmethod
+    def _own_copy(item: MediaItemType) -> QueueItemOrigin | None:
+        """
+        Return the origin pinning an item played on its own to its own provider copy.
+
+        A library item names no copy, so it has no such origin.
+
+        :param item: The item that is played on its own.
+        """
+        if item.provider == "library":
+            return None
+        return QueueItemOrigin(provider_instance=item.provider, item_id=item.item_id)
