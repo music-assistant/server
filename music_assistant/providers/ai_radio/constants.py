@@ -74,6 +74,12 @@ AI_QUERY_TIMEOUT_SECONDS = 180
 # ffprobe reports no status code, so its message is all we have to spot a failed render
 TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")
 
+# a session whose renders (an AI query or a TTS call) fail this many times in a row stops
+# asking the engines for RENDER_COOLDOWN_SECONDS: an engine that is out of quota or down
+# fails every clip, and each attempt costs a request against that same quota
+RENDER_FAILURES_BEFORE_COOLDOWN = 3
+RENDER_COOLDOWN_SECONDS = 15 * 60
+
 DEFAULT_TTS_LOUDNESS_BOOST = 3
 
 # speech carries ~16 dB between its average level and its peaks, so a plain gain that

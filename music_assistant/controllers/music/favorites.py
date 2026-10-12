@@ -32,6 +32,8 @@ from music_assistant.helpers.provider_access import (
 from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.media_items import ItemMapping, Track
@@ -298,34 +300,38 @@ class FavoritesStore:
         return self._users[1]
 
 
-async def with_user_favorites(
-    mass: MusicAssistant, user: User | None, tracks: list[Track]
-) -> list[Track]:
+async def with_user_favorites[ItemT: MediaItem](
+    mass: MusicAssistant, user: User | None, items: Sequence[ItemT]
+) -> list[ItemT]:
     """
-    Return the given tracks carrying the favorite state of the given user.
+    Return the given items carrying the favorite state of the given user.
 
     For a cached list somebody else filled: the state it carries is theirs. The library
-    tracks in the list are updated in place.
+    items in the list are updated in place.
 
     :param mass: The MusicAssistant instance.
-    :param user: The user asking; without one the tracks carry no state at all.
-    :param tracks: The tracks to update.
+    :param user: The user asking; without one the items carry no state at all.
+    :param items: The items to update, of any media type.
     """
-    if not tracks:
-        return tracks
-    states: dict[int, bool | None] = {}
-    if user:
+    library_items = [item for item in items if item.provider == "library"]
+    states: dict[tuple[str, int], bool | None] = {}
+    if user and library_items:
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT item_id, favorite FROM {DB_TABLE_FAVORITES} "
-            "WHERE user_id = :user_id AND media_type = :media_type",
-            {"user_id": user.user_id, "media_type": MediaType.TRACK.value},
+            f"SELECT media_type, item_id, favorite FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND media_type IN :media_types",
+            {
+                "user_id": user.user_id,
+                "media_types": sorted({item.media_type.value for item in library_items}),
+            },
             limit=0,
         )
-        states = {row["item_id"]: parse_optional_bool(row["favorite"]) for row in rows}
-    for track in tracks:
-        if track.provider == "library":
-            track.favorite = states.get(int(track.item_id))
-    return tracks
+        states = {
+            (row["media_type"], row["item_id"]): parse_optional_bool(row["favorite"])
+            for row in rows
+        }
+    for item in library_items:
+        item.favorite = states.get((item.media_type.value, int(item.item_id)))
+    return list(items)
 
 
 async def without_disliked_tracks(
