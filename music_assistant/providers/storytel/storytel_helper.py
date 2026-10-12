@@ -133,6 +133,7 @@ class StorytelHelper:
         self._kids_mode = kids_mode
         self._languages = languages or {}
         self._available_languages: dict[str, str] = {}
+        self._default_languages: dict[str, str] = {}
         self._resource_version: str | None = None
         self._revalidate_lock = Lock()
         self.logger = logger or logging.getLogger("storytel_helper")
@@ -173,6 +174,17 @@ class StorytelHelper:
         login/revalidation. Empty until the first successful authentication.
         """
         return self._available_languages
+
+    @property
+    def default_languages(self) -> dict[str, str]:
+        """
+        Return the account's own default-checked content languages, mapping name to ISO value.
+
+        Mirrors the languages the Storytel app itself checks by default for this account.
+        Only populated on login (not on revalidation), since it is only consulted for a
+        provider instance's initial setup.
+        """
+        return self._default_languages
 
     @property
     def kids_mode_query(self) -> str:
@@ -236,7 +248,7 @@ class StorytelHelper:
             msg = data.get("message") or "Invalid credentials"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
-        self._available_languages = self._parse_available_languages(acc)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
         return self._auth
 
     async def revalidate_account(self) -> StorytelAuth:
@@ -263,7 +275,7 @@ class StorytelHelper:
             msg = data.get("message") or "Revalidation failed"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
-        self._available_languages = self._parse_available_languages(acc)
+        self._available_languages, _ = self._parse_languages(acc)
         return self._auth
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1077,21 +1089,29 @@ class StorytelHelper:
         return enc.hex()
 
     @staticmethod
-    def _parse_available_languages(acc: dict[str, Any]) -> dict[str, str]:
+    def _parse_languages(acc: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
         """
-        Parse the content languages available to the account from a login/revalidation response.
+        Parse the account's language lists from a login/revalidation response.
+
+        Returns a ``(available, default)`` pair, each mapping name to ISO value: every
+        language the account has access to, and the subset it checks by default (mirroring
+        the official app's own defaults).
 
         :param acc: the ``accountInfo`` dict from a login or revalidation response.
         """
-        languages: dict[str, str] = {}
+        available: dict[str, str] = {}
+        default: dict[str, str] = {}
         for entry in acc.get("allLanguageObjects") or []:
             if not isinstance(entry, dict):
                 continue
             name = entry.get("name")
             iso_value = entry.get("isoValue")
-            if isinstance(name, str) and name and isinstance(iso_value, str) and iso_value:
-                languages[name] = iso_value
-        return languages
+            if not (isinstance(name, str) and name and isinstance(iso_value, str) and iso_value):
+                continue
+            available[name] = iso_value
+            if entry.get("checkedByDefault"):
+                default[name] = iso_value
+        return available, default
 
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:

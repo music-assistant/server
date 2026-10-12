@@ -1,4 +1,4 @@
-"""Tests for Storytel podcast episode parsing."""
+"""Tests for the Storytel helper's content parsing and authentication."""
 
 from __future__ import annotations
 
@@ -63,20 +63,36 @@ async def test_zero_order_in_series_does_not_show_as_episode_zero(
     assert episode.episode_number is None
 
 
-def test_parse_available_languages_maps_name_to_iso_value() -> None:
-    """AllLanguageObjects entries become a name -> isoValue mapping."""
+def test_parse_languages_maps_name_to_iso_value() -> None:
+    """AllLanguageObjects entries become a name -> isoValue mapping, split by checkedByDefault."""
     acc = {
         "allLanguageObjects": [
-            {"id": 6, "isoValue": "nn", "name": "Norwegian", "localizedName": "Norsk"},
-            {"id": 2, "isoValue": "en", "name": "English", "localizedName": "Engelsk"},
-            {"id": 1, "isoValue": "sv", "name": "Swedish", "localizedName": "Svensk"},
+            {
+                "id": 6,
+                "isoValue": "nn",
+                "name": "Norwegian",
+                "localizedName": "Norsk",
+                "checkedByDefault": True,
+            },
+            {
+                "id": 2,
+                "isoValue": "en",
+                "name": "English",
+                "localizedName": "Engelsk",
+                "checkedByDefault": True,
+            },
+            {
+                "id": 1,
+                "isoValue": "sv",
+                "name": "Swedish",
+                "localizedName": "Svensk",
+                "checkedByDefault": False,
+            },
         ]
     }
-    assert StorytelHelper._parse_available_languages(acc) == {
-        "Norwegian": "nn",
-        "English": "en",
-        "Swedish": "sv",
-    }
+    available, default = StorytelHelper._parse_languages(acc)
+    assert available == {"Norwegian": "nn", "English": "en", "Swedish": "sv"}
+    assert default == {"Norwegian": "nn", "English": "en"}
 
 
 @pytest.mark.parametrize(
@@ -91,6 +107,60 @@ def test_parse_available_languages_maps_name_to_iso_value() -> None:
         {"allLanguageObjects": [{"id": 1, "name": "Swedish"}]},
     ],
 )
-def test_parse_available_languages_ignores_malformed_entries(acc: dict[str, Any]) -> None:
+def test_parse_languages_ignores_malformed_entries(acc: dict[str, Any]) -> None:
     """Missing, malformed or empty entries are skipped rather than raising."""
-    assert StorytelHelper._parse_available_languages(acc) == {}
+    assert StorytelHelper._parse_languages(acc) == ({}, {})
+
+
+async def test_login_populates_available_and_default_languages(helper: StorytelHelper) -> None:
+    """A successful login records both the account's available and default-checked languages."""
+    helper._request_json = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "accountInfo": {
+                "jwt": "jwt-token",
+                "singleSignToken": "sso-token",
+                "allLanguageObjects": [
+                    {"isoValue": "nn", "name": "Norwegian", "checkedByDefault": True},
+                    {"isoValue": "sv", "name": "Swedish", "checkedByDefault": False},
+                ],
+            }
+        }
+    )
+    await helper.login("user", "pass")
+    assert helper.available_languages == {"Norwegian": "nn", "Swedish": "sv"}
+    assert helper.default_languages == {"Norwegian": "nn"}
+
+
+async def test_revalidate_account_does_not_overwrite_default_languages(
+    helper: StorytelHelper,
+) -> None:
+    """Revalidation refreshes available languages but leaves the account's defaults untouched."""
+    helper._request_json = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "accountInfo": {
+                "jwt": "jwt-token",
+                "singleSignToken": "sso-token",
+                "allLanguageObjects": [
+                    {"isoValue": "nn", "name": "Norwegian", "checkedByDefault": True},
+                ],
+            }
+        }
+    )
+    await helper.login("user", "pass")
+    assert helper.default_languages == {"Norwegian": "nn"}
+
+    helper._request_json = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "accountInfo": {
+                "jwt": "jwt-token-2",
+                "singleSignToken": "sso-token",
+                "allLanguageObjects": [
+                    {"isoValue": "nn", "name": "Norwegian", "checkedByDefault": False},
+                    {"isoValue": "en", "name": "English", "checkedByDefault": True},
+                ],
+            }
+        }
+    )
+    await helper.revalidate_account()
+    assert helper.available_languages == {"Norwegian": "nn", "English": "en"}
+    assert helper.default_languages == {"Norwegian": "nn"}
