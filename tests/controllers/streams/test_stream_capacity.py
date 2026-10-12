@@ -683,7 +683,8 @@ async def test_a_consumer_that_left_gets_no_source_opened(
 ) -> None:
     """Audio prepared for a consumer that disconnected meanwhile is never started."""
     queue_item = _queue_item(_mapping(BUSY_INSTANCE))
-    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = details
     mass = _mass()
     audio = StreamsAudio(mass)
     get_buffer = AsyncMock()
@@ -696,7 +697,7 @@ async def test_a_consumer_that_left_gets_no_source_opened(
     assert result is None
     get_buffer.assert_not_awaited()
     # the item keeps its details, and no paused queue is stopped on its behalf
-    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails is details
     mass.player_queues.has_paused_stream_slot_holder.assert_not_called()
 
 

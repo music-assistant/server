@@ -93,3 +93,5 @@ async def test_crossfade_item_stream_skips_the_boundary_when_its_consumer_left()
     mass.player_queues.load_next_queue_item.assert_not_awaited()
     assert queue.index_in_buffer == 0
     assert audio._crossfade_pending == {}
+    # the empty stream is not written back as the item's length
+    assert queue_item.streamdetails.duration == 180

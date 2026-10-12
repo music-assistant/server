@@ -2050,7 +2050,8 @@ class StreamsAudio:
 
         if consumer_connected is not None and not consumer_connected():
             # the boundary work below loads the next item and claims its fade on behalf of
-            # this stream, which one that lost its consumer must not do
+            # this stream, and the bookkeeping after it would write the empty stream back
+            # as the item's duration: neither is for a stream that lost its consumer
             return
 
         #### HANDLE END OF TRACK
