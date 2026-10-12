@@ -81,7 +81,7 @@ class MusicCastProvider(PlayerProvider):
     """MusicCast Player Provider."""
 
     # poll upnp playback information, but not too often. see "_update_player_attributes"
-    # player_id: UpnpUpdateHelper
+    # keyed by player_id
     upnp_update_helper: ClassVar[dict[str, UpnpUpdateHelper]] = {}
 
     # str here is the device id, NOT the player_id

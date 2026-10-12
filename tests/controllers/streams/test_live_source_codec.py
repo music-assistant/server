@@ -24,6 +24,7 @@ def _controller(output_codec: str, prefer_wav_for_live_sources: bool) -> Streams
     """Return a streams controller with one configured HTTP player."""
     controller = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
+    controller._flow_mode_owners = {}
     controller.mass = mass = MagicMock()
     player = MagicMock()
     values = {

@@ -162,7 +162,7 @@ class DemoSendspinClientsProvider(PlayerProvider):
     def _server_url(self) -> str:
         """Return the WebSocket URL of this server's own Sendspin endpoint."""
         bind_ip = self.mass.streams.bind_ip
-        if not bind_ip or bind_ip == "0.0.0.0":
+        if not bind_ip or bind_ip == "0.0.0.0":  # noqa: S104 - comparison, not a bind
             host = "127.0.0.1"
         elif bind_ip == "::":
             # an IPv6 wildcard bind may not accept IPv4-mapped connections at all

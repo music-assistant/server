@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlencode
 
-import pkce
 from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
@@ -25,6 +24,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.spotify_connect.soloist import (
@@ -77,7 +77,7 @@ LOGGER = logging.getLogger(__name__)
 ACCOUNT_LOOKUP_TIMEOUT = 30
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
-TOKEN_URL = "https://accounts.spotify.com/api/token"
+TOKEN_URL = "https://accounts.spotify.com/api/token"  # noqa: S105 - URL
 
 # the developer client id is a public OAuth identifier (not a secret), so it is a plain
 # STRING that can be prefilled on reconfigure
@@ -711,7 +711,7 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
     :param session: The setup session driving the flow.
     :param librespot_bin: Path to the librespot binary.
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     params = {
         "response_type": "code",
         "client_id": KEYMASTER_CLIENT_ID,
@@ -764,7 +764,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
     :param client_id: The Spotify client id to authenticate with.
     :param step_id: The external step id (also the i18n key segment).
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     redirect_uri, state = hosted_bounce_redirect(session.callback_url)
     params = {
         "response_type": "code",

@@ -114,6 +114,18 @@ class MediaCatalogMixin(Provider):
         """
         raise NotImplementedError
 
+    async def get_radio_tracks(self, prov_radio_id: str, page: int = 0) -> list[Track]:
+        """
+        Return one page of a tracklisted radio station's finite tracklist.
+
+        Only called for a Radio with ``is_endless`` and ``is_dynamic`` both unset. Return an
+        empty page to signal the end of the listing.
+
+        :param prov_radio_id: Provider-scoped radio id.
+        :param page: Zero-based page index for paginated results.
+        """
+        raise NotImplementedError
+
 
 class RecommendationsMixin(Provider):
     """Methods of a provider that contributes recommendation rows."""

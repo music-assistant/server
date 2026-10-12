@@ -26,6 +26,7 @@ from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import db_ramp
 from music_assistant.controllers.streams.smart_fades.models import (
     BAND_RMS_BANDS,
+    DRESSED_STYLES,
     EqPlan,
     ShelfSchedule,
     TempoPlan,
@@ -146,21 +147,25 @@ class PlanAssembler:
         selected winner is computed and folded in.
         """
         plan = candidate.plan
-        # a segue's factory already picked both curves
-        if plan.style is not TransitionStyle.SEGUE:
+        # a segue's and an echo out's factory already picked both curves
+        if plan.style not in (TransitionStyle.SEGUE, TransitionStyle.ECHO_OUT):
             plan = replace(plan, fadeout_curve=_choose_fadeout_curve(self._ctx, plan))
         # the winner's metrics ride along: consumers read them off the plan
         return replace(plan, eq_plan=self._choose_eq(plan), metrics=candidate.metrics)
 
     def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
-        # an unsynced cut has no beatmatched handover to stage: shelving the decks
-        # would only bury the incoming track's entry; nor does a segue with a quiet
-        # edge, which plays as recorded. A segue that fades both sides equal-power
-        # keeps its handover EQ
-        if plan.style is TransitionStyle.CUT or (
-            plan.style is TransitionStyle.SEGUE
-            and "nofade" in (plan.fadeout_curve, plan.fadein_curve)
+        # an unsynced cut, dressed or not, has no beatmatched handover to stage:
+        # shelving the decks would only bury the incoming track's entry; nor does a
+        # segue with a quiet edge, which plays as recorded. A segue that fades both
+        # sides equal-power keeps its handover EQ
+        if (
+            plan.style is TransitionStyle.CUT
+            or plan.style in DRESSED_STYLES
+            or (
+                plan.style is TransitionStyle.SEGUE
+                and "nofade" in (plan.fadeout_curve, plan.fadein_curve)
+            )
         ):
             return EqPlan.neutral(swap_at=0.6 * plan.crossfade_duration)
         ctx = self._ctx

@@ -56,14 +56,16 @@ def _controller(queue_item: QueueItem) -> tuple[StreamsController, dict[str, Any
     """
     Build a streams controller that records the kwargs of the single item stream call.
 
-    The queue itself is absent, which keeps the request on the non-flow (single item)
-    branch: crossfade and audio overlay both need a queue to force flow mode.
+    The queue has neither crossfade nor an audio overlay, which keeps the request on the
+    non-flow (single item) branch.
 
     :param queue_item: The item the controller resolves the stream request to.
     """
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
-    mass.player_queues.get.return_value = None
+    mass.player_queues.get.return_value = PlayerQueue(
+        queue_id=QUEUE_ID, active=True, display_name="Player", available=True, items=1
+    )
     mass.player_queues.get_item.return_value = queue_item
     controller = StreamsController(mass)
     call_kwargs: dict[str, Any] = {}
@@ -73,6 +75,7 @@ def _controller(queue_item: QueueItem) -> tuple[StreamsController, dict[str, Any
         return object()
 
     controller.audio = MagicMock()
+    controller.audio_processing = MagicMock()
     controller.audio.get_queue_item_stream.side_effect = _record
     return controller, call_kwargs
 

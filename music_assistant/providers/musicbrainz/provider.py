@@ -304,7 +304,7 @@ class MusicbrainzProvider(MetadataProvider):
                     else:
                         continue
                     # if we reach this point, we got a match on recording,
-                    # artist and release(group)
+                    # artist and release group
                     recording = MusicBrainzRecording.from_raw(item)
                     return (artist_match, album_match, recording)
 

@@ -279,7 +279,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         return True
 
     # -------------------
-    # Library: Audiobooks
+    # Library - Audiobooks
     # -------------------
 
     @handle_login_failed_generator

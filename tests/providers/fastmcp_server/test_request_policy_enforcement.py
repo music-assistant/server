@@ -11,9 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import Client, Context, FastMCP
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import McpError, ToolError
 from fastmcp.server.auth import AccessToken
-from mcp.shared.exceptions import McpError
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
@@ -439,6 +438,50 @@ async def test_confirmation_decline_and_unsupported_errors_are_exact_and_actiona
     assert called is False
 
 
+async def test_confirmation_on_sessionless_connection_is_actionable() -> None:
+    """A client on a protocol without server-initiated elicitation gets the operator remedy."""
+    called = False
+
+    async def search() -> None:
+        nonlocal called
+        called = True
+
+    records: list[Any] = []
+    token = AccessToken(token="confirm", client_id="id-confirm", scopes=[])
+    adapter = _adapter(
+        [_handler("music/search", search)],
+        current_token=[token],
+        policies={"confirm": _custom(query__library=PolicyMode.CONFIRM)},
+        audit_sink=records.append,
+    )
+    sessionless = SimpleNamespace(
+        elicit=AsyncMock(
+            side_effect=ToolError(
+                "elicitation via server-initiated requests is unavailable on 2026-07-28 "
+                "connections."
+            )
+        )
+    )
+    with pytest.raises(ToolError) as exc_info:
+        await adapter.call(
+            "ma_api:music/search",
+            {},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=cast("Context", sessionless),
+        )
+    message = str(exc_info.value)
+    assert "query:library" in message
+    assert "Allow" in message
+    assert "elicitation-capable client" in message
+    assert called is False
+    assert [record.outcome for record in records] == [
+        "confirmation.requested",
+        "confirmation.unsupported",
+    ]
+
+
 @pytest.mark.parametrize("revoked", ["policy", "scope", "target"])
 async def test_revocation_during_confirmation_blocks_execution(revoked: str) -> None:
     """Accepted elicitation cannot outrun policy, scope, or target-filter changes."""
@@ -539,7 +582,7 @@ async def test_resource_confirm_is_hidden_and_direct_reads_follow_policy_changes
     async with Client(mcp) as client:
         await client.read_resource("library://track/17")
         policy[0] = _custom(query__library=PolicyMode.CONFIRM)
-        templates = {str(item.uriTemplate) for item in await client.list_resource_templates()}
+        templates = {str(item.uri_template) for item in await client.list_resource_templates()}
         assert "library://track/{track_id}" not in templates
         with pytest.raises(McpError):
             await client.read_resource("library://track/17")

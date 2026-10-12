@@ -4,7 +4,7 @@
 # Kept as-is from the previous implementation so existing setups keep working.
 
 CONF_SXM_USERNAME = "sxm_email_address"
-CONF_SXM_PASSWORD = "sxm_password"
+CONF_SXM_PASSWORD = "sxm_password"  # noqa: S105 - config key
 CONF_BITRATE = "bitrate"
 
 # -- Streaming --

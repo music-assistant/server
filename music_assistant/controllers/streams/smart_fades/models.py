@@ -13,6 +13,7 @@ is buffered.
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass, field, replace
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
@@ -61,6 +62,16 @@ class TransitionStyle(StrEnum):
     SEGUE = "segue"
     # unsynced short volume fade
     CUT = "cut"
+    # short fade whose outgoing low end is swept away by a rising high-pass
+    FILTER_OUT = "filter_out"
+    # the outgoing track stops on a downbeat and its last beat echoes out
+    ECHO_OUT = "echo_out"
+
+
+# the short styles that dress a cut with an effect on the outgoing track
+DRESSED_STYLES: frozenset[TransitionStyle] = frozenset(
+    {TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT}
+)
 
 
 class QuickFadeTrigger(StrEnum):
@@ -249,6 +260,40 @@ class EqPlan:
         return replace(self, low_out=low_out, low_in=low_in)
 
 
+@dataclass(frozen=True, slots=True)
+class HighPassSweep:
+    """A high-pass on the outgoing track whose cutoff rises log-spaced over a window."""
+
+    # outgoing buffer-local seconds
+    start_s: float
+    end_s: float
+    start_hz: float
+    end_hz: float
+
+    def time_at(self, hz: float) -> float:
+        """
+        Buffer-local second where the cutoff reaches a frequency, clamped to the window.
+
+        :param hz: The cutoff frequency in Hz.
+        """
+        if hz <= self.start_hz or self.end_s <= self.start_s:
+            return self.start_s
+        if hz >= self.end_hz:
+            return self.end_s
+        share = math.log(hz / self.start_hz) / math.log(self.end_hz / self.start_hz)
+        return self.start_s + share * (self.end_s - self.start_s)
+
+
+@dataclass(frozen=True, slots=True)
+class EchoOut:
+    """The outgoing track's dry signal stops at a cut and its last beat echoes out."""
+
+    # outgoing buffer-local second where the dry signal stops
+    cut_s: float
+    # one outgoing beat: the echoed slice before the cut and the tap spacing
+    beat_s: float
+
+
 @dataclass(slots=True)
 class FadeOutTrim:
     """Where the outgoing track's audible content ends and how much was dropped."""
@@ -316,4 +361,12 @@ class TransitionPlan:
     fadein_trim_start: float | None = None
     fadeout_curve: str = "qsin"
     fadein_curve: str = "qsin"
+    # outgoing-side effects of a dressed transition
+    highpass: HighPassSweep | None = None
+    echo: EchoOut | None = None
     metrics: PlanMetrics = field(default_factory=PlanMetrics)
+
+    @property
+    def outgoing_end(self) -> float:
+        """Buffer-local end of the outgoing track's own signal: the anchor, or an echo's cut."""
+        return self.echo.cut_s if self.echo is not None else self.fade_out_window
