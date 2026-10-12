@@ -285,7 +285,7 @@ class AirPlayStreamSession:
                 *[self._flush_member(player) for player in self.sync_clients]
             )
             if not all(flushed):
-                raise PlayerCommandFailed("warm flush was not acknowledged")
+                raise PlayerCommandFailed("warm flush was not acknowledged")  # noqa: TRY301 - triggers cold restart fallback
             for player in self.sync_clients:
                 stream = player.stream
                 assert stream

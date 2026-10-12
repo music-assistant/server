@@ -1656,7 +1656,7 @@ class StreamsAudio:
                 if streamdetails.buffer is not prepared_buffer or not prepared_buffer.is_valid(
                     seek_position_ms
                 ):
-                    raise AudioError("Prepared crossfade buffer is no longer available")
+                    raise AudioError("Prepared crossfade buffer is no longer available")  # noqa: TRY301 - handled by except below
                 audio_buffer = prepared_buffer
             else:
                 audio_buffer = await self.get_audio_buffer(
@@ -4337,13 +4337,13 @@ class StreamsAudio:
             # a nested source raises through the stdin feeder, where ffmpeg's own exit
             # would otherwise flatten it into a generic AudioError
             if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-                raise feeder_exception
+                raise feeder_exception  # noqa: TRY301 - handled by except below
             if ffmpeg_proc.returncode not in (0, None):
                 log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
-                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
+                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")  # noqa: TRY301 - handled by except below
             if bytes_sent == 0:
                 # edge case: no audio data was received at all
-                raise AudioError("No audio was received")
+                raise AudioError("No audio was received")  # noqa: TRY301 - handled by except below
             finished = True
         except (Exception, GeneratorExit, asyncio.CancelledError) as err:
             if isinstance(err, asyncio.CancelledError | GeneratorExit):
@@ -5325,7 +5325,7 @@ class StreamsAudio:
         try:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
-                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
+                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")  # noqa: TRY301 - handled by except below
             stream_prov = cast("AudioStreamMixin", provider)
             with request_priority(RequestPriority.HIGH):
                 streamdetails = await stream_prov.get_stream_details(

@@ -66,7 +66,7 @@ async def run_setup(session: SetupSession) -> None:
         stored_secret = client_secret
         try:
             if not client_secret:
-                raise SetupFlowError("A client secret is required", translation_key="required")
+                raise SetupFlowError("A client secret is required", translation_key="required")  # noqa: TRY301 - shown as form error
             setup_data[CONF_REFRESH_TOKEN] = await _authorize(session, client_id, client_secret)
             await session.finish(setup_data)
             return
