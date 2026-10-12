@@ -522,10 +522,13 @@ class AIRadioRenderMixin:
         self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
 
     def _render_health(self, queue_item: QueueItem) -> RenderHealth | None:
-        """Return the failure bookkeeping of the DJ on the clip's queue, or None without one."""
-        # a clip left behind by an earlier DJ session (a restart re-arms with a fresh session
-        # id and keeps the queue) talks through the same engines, so it counts as well
-        if (state := self._dj_queues.get(queue_item.queue_id)) is None:
+        """Return the failure bookkeeping of the DJ the clip speaks for, or None without one."""
+        # the host decides which engines speak, so a clip counts against the DJ as long as it
+        # is that host's: also one left behind by an earlier session of the same host (a
+        # restart re-arms with a fresh session id and keeps the queue), but not a clip of a
+        # host that was switched away while the clip was still rendering
+        state = self._dj_queues.get(queue_item.queue_id)
+        if state is None or state.host_id != queue_item.extra_attributes.get(ATTR_HOST_ID):
             return None
         return state.render_health
 

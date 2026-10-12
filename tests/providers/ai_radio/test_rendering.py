@@ -626,8 +626,11 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def _dj_clip_item(session_id: str, index: int, **overrides: Any) -> QueueItem:
-    """Build a queue item for a pending clip of the given queue DJ session."""
-    item = _clip_item(f"{session_id}_{index:03d}", **{ATTR_SESSION_ID: session_id, **overrides})
+    """Build a queue item for a pending clip of the given queue DJ session, hosted by rick."""
+    item = _clip_item(
+        f"{session_id}_{index:03d}",
+        **{ATTR_SESSION_ID: session_id, ATTR_HOST_ID: "rick", **overrides},
+    )
     item.extra_attributes[ATTR_QUEUE_DJ] = True
     return item
 
@@ -836,6 +839,20 @@ async def test_a_clip_left_by_an_earlier_dj_session_counts_against_the_live_dj()
 
     assert state.render_health.cooling_down(asyncio.get_running_loop().time())
     assert renderer.paused == [("player_a", "qi_djold_003")]
+
+
+async def test_a_clip_of_a_host_switched_away_mid_render_counts_nowhere() -> None:
+    """A clip of the previous host, still rendering after a switch, leaves the new host alone."""
+    renderer, state = _failing_dj_renderer(0)
+    _attach_queue(
+        renderer,
+        [_dj_clip_item("djold", index, **{ATTR_HOST_ID: "daisy"}) for index in range(1, 4)],
+    )
+
+    await _fail_renders(renderer, "djold_001", "djold_002", "djold_003")
+
+    assert state.render_health.failures == 0
+    assert renderer.paused == []
 
 
 async def test_a_clip_on_a_queue_without_a_dj_counts_nowhere() -> None:
