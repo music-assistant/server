@@ -157,6 +157,11 @@ _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
 # and then sits there until the startup budget runs out. The engine reports no
 # other way that a stored session is gone.
 _UNPAIRED_MARKER: Final[str] = "waiting for login"
+# A stored session whose sign-in Spotify turns down leaves the daemon running
+# and silent, with no event and no exit - the line is the only report. Seen as a
+# one-off that the very next daemon did not repeat, so it fails the item, not
+# the pairing.
+_LOGIN_FAILED_MARKER: Final[str] = "login failed"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 
@@ -930,12 +935,14 @@ class _SingleTrackRun:
 
     def _raise_startup_error(self, detail: str) -> NoReturn:
         """Raise the most specific startup failure for the requested item."""
-        # a pairing that never logged in is checked first: it also fails the
-        # run, and its recovery (back through the setup flow) beats failing
-        # every track with a generic error
-        if self._unpaired or self._logged_in is False:
-            # the stored session no longer logs in: route the user through the
-            # setup flow instead of failing every item (mirrors librespot's
+        # a lost pairing is checked first: it also fails the run, and its
+        # recovery (back through the setup flow) beats failing every track with
+        # a generic error. Only the confirmed loss counts: a sign-in that never
+        # arrived looks the same when Spotify is slow or another player took
+        # the account over, and pairing again cures neither
+        if self._unpaired:
+            # the stored session is gone: route the user through the setup
+            # flow instead of failing every item (mirrors librespot's
             # INVALID_CREDENTIALS handling)
             error = LoginFailed(
                 "Spotify Soloist pairing lost",
@@ -991,6 +998,11 @@ class _SingleTrackRun:
                 self._data_dir_busy = True
             if _UNPAIRED_MARKER in text and not self._unpaired:
                 await self._check_pairing_lost()
+            if _LOGIN_FAILED_MARKER in text and not self._logged_in:
+                self._fail(
+                    "Spotify sign-in failed while starting this track; "
+                    "the next track starts a fresh session"
+                )
             self.logger.debug("[soloist] %s", text)
 
     async def _check_pairing_lost(self) -> None:

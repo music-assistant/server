@@ -364,6 +364,16 @@ async def _collect(run: _SingleTrackRun) -> bytes:
     return bytes(collected)
 
 
+def _daemon_saying(*lines: str) -> MagicMock:
+    """Return a process whose captured output is the given lines."""
+
+    async def _iter_stdout() -> AsyncGenerator[str]:
+        for line in lines:
+            yield line
+
+    return MagicMock(iter_stdout=_iter_stdout, returncode=None)
+
+
 def test_scrub_leaves_mid_track_silence_alone(tmp_path: Path) -> None:
     """A quiet passage outside the tail zone is content (the shaper owns the lead)."""
     run = _make_run(tmp_path)
@@ -676,6 +686,53 @@ def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> 
     run.mass.create_task = MagicMock()  # type: ignore[method-assign]
     run._observe_item(TRACK_B, 100_000)
     assert run._error is not None
+
+
+async def test_a_failed_sign_in_fails_the_run_at_once(tmp_path: Path) -> None:
+    """The engine's failed-login line ends the run; the daemon itself only sits there."""
+    run = _make_run(tmp_path)
+    run._logged_in = False
+    run.backend.provider.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    await run._log_output(_daemon_saying("login failed: make sure --api-key is valid"))
+    assert run._error is not None
+    assert "sign-in failed" in run._error
+    # a sign-in turned down once is not a lost pairing: the item fails, the
+    # provider stays up and the next track signs in afresh
+    assert run._unpaired is False
+    with pytest.raises(AudioError, match="sign-in failed"):
+        run._raise_startup_error("did not start up correctly")
+    run.backend.provider.unload_with_error.assert_not_called()
+
+
+async def test_a_login_complaint_after_signing_in_is_left_to_the_engine(
+    tmp_path: Path,
+) -> None:
+    """Once signed in, a later login complaint is the engine's own to recover from."""
+    run = _make_run(tmp_path)
+    await run._log_output(_daemon_saying("login failed: make sure --api-key is valid"))
+    assert run._error is None
+
+
+def test_a_sign_in_that_never_arrived_is_not_a_lost_pairing(tmp_path: Path) -> None:
+    """Timing out on the login fails the item and leaves the provider in service."""
+    run = _make_run(tmp_path)
+    run._logged_in = False
+    run.backend.provider.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    with pytest.raises(AudioError, match="could not connect and sign in"):
+        run._raise_startup_error("could not connect and sign in")
+    run.backend.provider.unload_with_error.assert_not_called()
+
+
+def test_a_confirmed_lost_pairing_sends_the_user_back_through_setup(tmp_path: Path) -> None:
+    """A stored session that is gone takes the provider out of service, pointing at setup."""
+    run = _make_run(tmp_path)
+    run._logged_in = False
+    run._unpaired = True
+    run.backend.provider.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    with pytest.raises(LoginFailed) as err:
+        run._raise_startup_error("could not connect and sign in")
+    assert err.value.translation_key == "soloist_pairing_required"
+    run.backend.provider.unload_with_error.assert_called_once()
 
 
 async def test_a_seek_replaces_the_held_run(tmp_path: Path) -> None:
