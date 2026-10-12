@@ -86,6 +86,14 @@ def _make_png_file(tmp_path: Path, name: str = "art.png") -> str:
     return str(filepath)
 
 
+def _make_jpeg_bytes(color: tuple[int, int, int] = (30, 30, 200), size: int = 400) -> bytes:
+    """Create raw JPEG bytes of a solid-color square."""
+    img = Image.new("RGB", (size, size), color)
+    buf = BytesIO()
+    img.save(buf, "JPEG")
+    return buf.getvalue()
+
+
 async def test_multiple_thumb_sizes_fetch_source_once(
     mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
 ) -> None:
@@ -100,6 +108,32 @@ async def test_multiple_thumb_sizes_fetch_source_once(
     assert thumb_256
     assert jpeg_flat
     assert fetch_calls == [("builtin", image_path)]
+
+
+async def test_original_size_in_source_format_passes_bytes_through(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An original-size request in the source's own format returns the source bytes untouched."""
+    jpeg_data = _make_jpeg_bytes()
+    png_data = _make_png_bytes()
+    jpeg_path = tmp_path / "art.jpg"
+    jpeg_path.write_bytes(jpeg_data)
+    png_path = tmp_path / "art.png"
+    png_path.write_bytes(png_data)
+
+    def unexpected_decode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("source image was decoded")
+
+    monkeypatch.setattr(Image, "open", unexpected_decode)
+    jpeg_result = await get_image_thumb(
+        mass_minimal, str(jpeg_path), 0, "builtin", image_format="JPEG"
+    )
+    png_result = await get_image_thumb(
+        mass_minimal, str(png_path), 0, "builtin", image_format="PNG"
+    )
+
+    assert jpeg_result == jpeg_data
+    assert png_result == png_data
 
 
 async def test_thumb_path_reuses_existing_cache_file(
