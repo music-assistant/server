@@ -21,6 +21,7 @@ from .constants import (
     ATTR_SESSION_ID,
     EVENT_QUEUE_DJ_UPDATED,
     FALLBACK_TRACK_SECONDS,
+    RENDER_COOLDOWN_SECONDS,
 )
 from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection
@@ -54,6 +55,7 @@ class AIRadioQueueDJMixin:
         _stations: dict[str, dict[str, Any]]
         _dj_queues: dict[str, DJQueueState]
         _armed_show_queues: dict[str, str]
+        _sections: dict[str, dict[str, Any]]
         _dj_file: Path
         _dj_lock: asyncio.Lock
         _unloading: bool
@@ -77,6 +79,7 @@ class AIRadioQueueDJMixin:
             async with self._dj_lock:
                 if host_id is None:
                     self._dj_queues.pop(queue_id, None)
+                    self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
                 else:
                     host_id = str(host_id).strip()
                     if host_id not in self._hosts:
@@ -86,6 +89,10 @@ class AIRadioQueueDJMixin:
                     if previous is not None:
                         # a mid-show host switch keeps the show binding
                         armed.station_id = previous.station_id
+                        if armed.station_id:
+                            self.mass.streams.set_boundary_mix_required(
+                                queue_id, self.instance_id, self._host_posts(host_id)
+                            )
                 await self._write_queue_dj()
             # stale clips carry the old host's persona, so they must go before a replan
             # can reuse the gaps they occupy
@@ -198,7 +205,16 @@ class AIRadioQueueDJMixin:
                 "Not arming the DJ for show %s: host %s no longer exists", station_id, host_id
             )
             return
-        await self.set_queue_dj(queue_id, host_id)
+        if self._host_posts(host_id):
+            # the show's breaks carry over the next track: the server mixes them between
+            # the item streams of a player that plays gapless and streams any other player
+            # in flow mode, decided at the play start this arm precedes
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, True)
+        try:
+            await self.set_queue_dj(queue_id, host_id)
+        except Exception:
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
+            raise
         if (state := self._dj_queues.get(queue_id)) is None:
             return
         state.station_id = station_id
@@ -292,6 +308,14 @@ class AIRadioQueueDJMixin:
                 # planning now would mark their gaps served. the switch replans once ready
                 self.logger.debug("Queue %s is waiting for its DJ switch cleanup", queue_id)
                 return
+            if state.render_health.cooling_down(asyncio.get_running_loop().time()):
+                # the engines keep failing, so no break is planned until the cool-down ends;
+                # _pause_queue_dj booked the pass that runs then
+                self.logger.debug(
+                    "Queue %s DJ is paused after repeated render failures, skipping replan",
+                    queue_id,
+                )
+                return
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
                 # usually the queue just hasn't registered yet (players appear seconds after
@@ -340,9 +364,13 @@ class AIRadioQueueDJMixin:
             ]
             program = self._build_program({"id": "", "name": f"AI DJ {host['name']}"}, host)
             runtime_tokens = await self._prepare_runtime_tokens(program)
-            if self._dj_queues.get(queue_id) is not state:
+            if self._dj_queues.get(queue_id) is not state or state.render_health.cooling_down(
+                asyncio.get_running_loop().time()
+            ):
                 # a switch or disable replaced this queue's state while the fetch above
-                # was in flight, so the session this pass planned for is gone
+                # was in flight, so the session this pass planned for is gone; or the
+                # engines failed once too often meanwhile and _pause_queue_dj took the
+                # pending clips out, so this pass must not put new ones in
                 return
             # every gap the planner is about to evaluate, so gaps where chance or a guard
             # picks nothing count as decided too instead of being rolled again next pass
@@ -516,6 +544,56 @@ class AIRadioQueueDJMixin:
         self.mass.player_queues.update_items(queue_id, kept)
         self.logger.debug("Removed %s pending DJ clip(s) from queue %s", removed, queue_id)
 
+    def _pause_queue_dj(self, queue_id: str, failed_item_id: str) -> None:
+        """
+        Take the queue's pending DJ clips out and plan again once the render cool-down ends.
+
+        :param queue_id: The queue whose DJ pauses.
+        :param failed_item_id: The queue item id of the clip whose render failed last.
+        """
+        if (state := self._dj_queues.get(queue_id)) is None:
+            return
+        if (queue := self.mass.player_queues.get(queue_id)) is not None:
+            guard_index = self._dj_guard_index(queue)
+            items = self._dj_queue_items(queue_id)
+            # the failed clip is the one the queue is loading while this runs, and the slot
+            # right after the guard may be handed to the player at any moment: both stay (the
+            # clip marked unplayable), since taking either out would shift the indexes the
+            # queue's load walks. everything beyond them goes
+            failed_index = next(
+                (index for index, item in enumerate(items) if item.queue_item_id == failed_item_id),
+                guard_index + 1,
+            )
+            removed = [
+                item
+                for item in items[max(guard_index + 1, failed_index) + 1 :]
+                if item.extra_attributes.get(ATTR_QUEUE_DJ)
+            ]
+            removed_ids = {item.queue_item_id for item in removed}
+            kept = [item for item in items if item.queue_item_id not in removed_ids]
+            if removed:
+                self.mass.player_queues.update_items(queue_id, kept)
+                # the gaps of the breaks taken out are open again
+                for item in removed:
+                    if (gap_next_id := item.extra_attributes.get(ATTR_GAP_NEXT_ID)) is not None:
+                        state.decided_gap_ids.discard(str(gap_next_id))
+                self.logger.debug(
+                    "Removed %s pending DJ clip(s) from paused queue %s", len(removed), queue_id
+                )
+            # neither the failed break nor the ones taken out ever aired, so their guard history
+            # must not hold the planner back once it resumes. the window start it measures from
+            # is the last full pass's, so a break that aired since may be forgotten with them,
+            # which costs at most one early break after the pause
+            self._drop_unaired_dj_history(state, kept, guard_index)
+        # a queue that only plays music raises no items event, so the end of the cool-down has
+        # to request the replan itself
+        self.mass.call_later(
+            RENDER_COOLDOWN_SECONDS,
+            self._schedule_replan,
+            queue_id,
+            task_id=f"ai_radio_dj_cooldown_{queue_id}",
+        )
+
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""
         # the player owns the current and the already buffered item, and the slot right
@@ -674,6 +752,14 @@ class AIRadioQueueDJMixin:
             "duration": item.duration,
             "media_item": None,
         }
+
+    def _host_posts(self, host_id: str) -> bool:
+        """Return whether any section of the host lets its break carry over the next track."""
+        host = self._hosts.get(host_id) or {}
+        return any(
+            bool(self._sections.get(str(section_id), {}).get("allow_post", False))
+            for section_id in host.get("section_ids", [])
+        )
 
     def _queue_show_station(self, queue_id: str) -> str | None:
         """Return the station id of the show in the queue's sources, if any."""

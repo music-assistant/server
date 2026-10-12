@@ -1201,17 +1201,21 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next"))
 
     # nothing being mixed: the caller is told so straight away
-    assert await audio._await_pending_crossfade(queue, item) is None
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
 
     # a fade being mixed for a different item is not this item's to wait for
     audio._crossfade_pending["queue-1"] = ("other", asyncio.Event())
-    assert await audio._await_pending_crossfade(queue, item) is None
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
 
     # a fade being mixed for this item is waited for, and picked up when it lands
     handoff = asyncio.Event()
     audio._crossfade_pending["queue-1"] = ("next", handoff)
     expected = CrossfadeHandover(
-        stream=None, fade_in_media_duration=0.0, pcm_format=pcm_format, queue_item_id="next"
+        stream=None,
+        fade_in_media_duration=0.0,
+        pcm_format=pcm_format,
+        queue_item_id="next",
+        session_id="session-1",
     )
 
     async def _land_it() -> None:
@@ -1220,14 +1224,14 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
         handoff.set()
 
     task = asyncio.create_task(_land_it())
-    assert await audio._await_pending_crossfade(queue, item) is expected
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is expected
     await task
 
     # a mix that never finishes costs the fade, not the stream
     audio._crossfade_handover.pop("queue-1", None)
     audio._crossfade_pending["queue-1"] = ("next", asyncio.Event())
     started = asyncio.get_event_loop().time()
-    assert await audio._await_pending_crossfade(queue, item) is None
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
     assert asyncio.get_event_loop().time() - started >= 0.2
 
 
@@ -2145,6 +2149,7 @@ def _single_item_handler(
 
     audio = MagicMock()
     audio.select_pcm_format = _select_pcm_format
+    audio.fade_into_pending = MagicMock(return_value=False)
     controller = cast("Any", object.__new__(StreamsController))
     controller.mass = mass
     controller.audio = audio
@@ -2247,6 +2252,29 @@ async def test_single_item_handler_paces_by_source(
     assert seen["extra_input_args"] == output_pacing_args(profile)
 
 
+@pytest.mark.parametrize("crossfade", [True, False], ids=["crossfade", "plain"])
+async def test_single_item_handler_reports_its_player_connection(
+    monkeypatch: pytest.MonkeyPatch, crossfade: bool
+) -> None:
+    """The item stream is told, from the request's transport, whether the player is still there."""
+    controller, request, _seen = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    if not crossfade:
+        controller.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_item_stream(request)
+
+    stream_call = (
+        controller.audio.get_queue_item_stream_with_smartfade.call_args
+        if crossfade
+        else controller.audio.get_queue_item_stream.call_args
+    )
+    connected = stream_call.kwargs["consumer_connected"]
+    assert connected() is True
+    request.transport = None
+    assert connected() is False
+
+
 def _flow_handler(
     monkeypatch: pytest.MonkeyPatch, *, is_realtime: bool
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
@@ -2302,6 +2330,7 @@ def _flow_handler(
     controller._open_item_streams = {}
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.DISABLED)
 
     seen: dict[str, Any] = {}
@@ -2397,6 +2426,7 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
 
     async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
         yield b"\x01" * 64
