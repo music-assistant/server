@@ -25,7 +25,8 @@ class _TestProvider:
         """Initialize the test provider."""
         self.mass = mass
         self.domain = domain
-        self.instance_id = domain
+        # keeps the real provider of this domain registered, so it still unloads
+        self.instance_id = f"{domain}--test"
         self.translation_owner = f"provider.{domain}"
         self.name = domain
         self.available = True
