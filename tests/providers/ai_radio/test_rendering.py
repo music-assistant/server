@@ -789,7 +789,10 @@ def test_a_late_result_during_the_cool_down_leaves_it_alone() -> None:
     # success lifts it
     assert paused_until is not None
     assert health.record_failure(paused_until) is True
-    health.record_success(paused_until)
+    restarted_until = health.cooldown_until
+    assert restarted_until is not None
+    assert restarted_until > paused_until
+    health.record_success(restarted_until)
     assert health.failures == 0
     assert health.cooldown_until is None
 
