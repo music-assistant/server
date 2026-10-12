@@ -1842,6 +1842,27 @@ async def test_pausing_keeps_a_failed_clip_that_sits_past_the_guard_slot(tmp_pat
     }
 
 
+async def test_pausing_forgets_the_failed_breaks_history_without_later_clips(
+    tmp_path: Path,
+) -> None:
+    """A failed break with nothing pending behind it still loses its guard weight."""
+    tracks = [_track(index) for index in range(5)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    *_aired, failed = [item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
+    state = dummy._dj_queues["queue-1"]
+    failed_song = max(song for song, _minute in state.history["Song_Transition"])
+    # the player is on the track right before the last break, which is the one that fails
+    queues._queue.current_index = queues._items.index(failed) - 1
+    queues._queue.index_in_buffer = queues._queue.current_index
+
+    dummy._pause_queue_dj("queue-1", failed.queue_item_id)
+
+    assert queues.deleted == []
+    assert failed_song not in [song for song, _minute in state.history["Song_Transition"]]
+
+
 async def test_a_pass_in_flight_when_the_pause_starts_injects_nothing(tmp_path: Path) -> None:
     """A replan suspended on its token fetch while the DJ pauses puts no breaks back."""
     dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])

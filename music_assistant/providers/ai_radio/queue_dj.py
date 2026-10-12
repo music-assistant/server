@@ -554,19 +554,22 @@ class AIRadioQueueDJMixin:
                 for item in items[max(guard_index + 1, failed_index) + 1 :]
                 if item.extra_attributes.get(ATTR_QUEUE_DJ)
             ]
+            removed_ids = {item.queue_item_id for item in removed}
+            kept = [item for item in items if item.queue_item_id not in removed_ids]
             if removed:
-                removed_ids = {item.queue_item_id for item in removed}
-                kept = [item for item in items if item.queue_item_id not in removed_ids]
                 self.mass.player_queues.update_items(queue_id, kept)
-                # the breaks never aired: their gaps are open again and their guard history
-                # must not hold the planner back once it resumes
+                # the gaps of the breaks taken out are open again
                 for item in removed:
                     if (gap_next_id := item.extra_attributes.get(ATTR_GAP_NEXT_ID)) is not None:
                         state.decided_gap_ids.discard(str(gap_next_id))
-                self._drop_unaired_dj_history(state, kept, guard_index)
                 self.logger.debug(
                     "Removed %s pending DJ clip(s) from paused queue %s", len(removed), queue_id
                 )
+            # neither the failed break nor the ones taken out ever aired, so their guard history
+            # must not hold the planner back once it resumes. the window start it measures from
+            # is the last full pass's, so a break that aired since may be forgotten with them,
+            # which costs at most one early break after the pause
+            self._drop_unaired_dj_history(state, kept, guard_index)
         # a queue that only plays music raises no items event, so the end of the cool-down has
         # to request the replan itself
         self.mass.call_later(
