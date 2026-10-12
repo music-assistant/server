@@ -469,6 +469,23 @@ async def test_album_tracks_are_not_backfilled_from_another_account(
     shared_spotify.get_album.assert_not_called()
 
 
+async def test_album_tracks_of_an_account_dropping_before_the_fill_are_not_cached(
+    music: MusicController,
+) -> None:
+    """An account dropping between its resolution and the fill raises, not an empty listing."""
+    my_spotify = _add_my_spotify(music)
+
+    async def _read_and_drop(*_: object, **__: object) -> None:
+        my_spotify.available = False
+
+    music.mass.cache.get = AsyncMock(side_effect=_read_and_drop)  # type: ignore[method-assign]
+
+    with _as_user(MEMBER), pytest.raises(ProviderUnavailableError):
+        await music.albums.tracks("a1", THEIRS)
+
+    music.mass.cache.set.assert_not_called()  # type: ignore[attr-defined]
+
+
 async def test_album_tracks_of_a_hidden_library_album_come_from_the_users_account(
     music: MusicController,
 ) -> None:
