@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
@@ -1039,7 +1040,20 @@ async def _probe_source_format(
             except Exception as err:
                 LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
                 return
-        stream_info = await probe_audio_stream(input_path, streamdetails.extra_input_args)
+        try:
+            inputs, pass_fds = await mass.streams.audio.open_local_files(
+                streamdetails, [input_path]
+            )
+        except AudioError as err:
+            LOGGER.debug("Unable to open %s to detect its format: %s", streamdetails.uri, err)
+            return
+        try:
+            stream_info = await probe_audio_stream(
+                inputs[0], streamdetails.extra_input_args, pass_fds=pass_fds
+            )
+        finally:
+            for fd in pass_fds:
+                os.close(fd)
     if stream_info is None:
         LOGGER.debug("Unable to detect the audio format of %s", streamdetails.uri)
         return
