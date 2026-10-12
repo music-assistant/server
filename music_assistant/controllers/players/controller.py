@@ -4335,14 +4335,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         except TypeError, ValueError:
             return
         level = max(0, min(100, level))
-        try:
-            await player.volume_set(level)
-        except Exception:
-            self.logger.exception(
-                "Failed to apply native volume pin (%s) on player %s",
-                level,
-                player.display_name,
-            )
+        # Serialize with cmd_volume_set / member volume so an in-flight VOLUME
+        # command cannot overwrite the Softvol pin (and vice versa).
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
+            try:
+                await player.volume_set(level)
+            except Exception:
+                self.logger.exception(
+                    "Failed to apply native volume pin (%s) on player %s",
+                    level,
+                    player.display_name,
+                )
 
     async def _handle_cmd_volume_set(
         self, player_id: str, volume_level: int, *, record_target: bool = True
