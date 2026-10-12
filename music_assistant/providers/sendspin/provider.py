@@ -1166,11 +1166,12 @@ class SendspinProvider(PlayerProvider):
         natively, but that capability is only reachable through the HA API.
         Players are correlated by the MAC address they report.
         """
-        mac_players = [
-            (player, mac_address)
-            for player in players
-            if (mac_address := _reported_mac_address(player))
-        ]
+        mac_players: list[tuple[SendspinBasePlayer, str]] = []
+        for player in players:
+            if mac_address := _reported_mac_address(player):
+                mac_players.append((player, mac_address))
+            elif isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(None)
         if not mac_players:
             return
         hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
