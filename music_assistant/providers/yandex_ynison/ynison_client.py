@@ -937,7 +937,7 @@ class YnisonClient:
                     if self._external_session is not None:
                         if self._external_session.closed:
                             msg = "External HTTP session is closed"
-                            raise ResourceTemporarilyUnavailable(msg)
+                            raise ResourceTemporarilyUnavailable(msg)  # noqa: TRY301 - handled by except below
                         self._session = self._external_session
                     else:
                         self._session = aiohttp.ClientSession()
