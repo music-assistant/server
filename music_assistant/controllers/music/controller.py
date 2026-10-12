@@ -74,6 +74,7 @@ from music_assistant.constants import (
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.music.constants import (
+    BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
@@ -221,11 +222,15 @@ async def _browse_folder(provider: MusicProvider, path: str) -> Listing[Any]:
     """
     Return a provider's folder as the provider lists it.
 
+    A folder of library items, such as a service's own library folders, is not kept.
+
     :param provider: The provider the folder belongs to.
     :param path: The path of the folder.
     """
-    # a folder holds browse folders and item mappings next to its media items
-    return Listing(list(await provider.browse(path=path)))
+    # typed loosely: a folder holds browse folders and item mappings next to its media items
+    items = list(await provider.browse(path=path))
+    # library items come from the database, which a later page reads just as cheaply
+    return Listing(items, complete=not any(item.provider == "library" for item in items))
 
 
 class _BrowseItem:
@@ -1003,15 +1008,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if source.can_initiate
             ]
             return _listed(prepend_items, initiable_items)
-        if isinstance(browse_prov, MusicProvider) and browse_prov.is_streaming_provider:
-            # a streaming service is browsed once for all the pages, sorts and searches of a
-            # folder; a local source is read anew, so a change on disk shows right away
+        if (
+            isinstance(browse_prov, MusicProvider)
+            and browse_prov.is_streaming_provider
+            # not when another account of the service answers for an unavailable one
+            and browse_prov.instance_id == provider_instance
+        ):
+            # a streaming service is browsed once for the pages, sorts and searches of a
+            # folder; a local or own-server source is read anew, so a change shows right away
             prov_items: Sequence[MediaItemType | ItemMapping | BrowseFolder] = await cached_listing(
                 self.mass,
                 ListingType.BROWSE,
                 path,
                 lambda: _browse_folder(browse_prov, path),
                 item_type=_BrowseItem,
+                expiration=BROWSE_CACHE_EXPIRATION,
             )
         else:
             prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)

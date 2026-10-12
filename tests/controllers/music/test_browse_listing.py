@@ -9,8 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, Playlist, ProviderMapping
+from music_assistant_models.media_items import (
+    BrowseFolder,
+    ItemMapping,
+    Playlist,
+    ProviderMapping,
+    RecommendationFolder,
+    UniqueList,
+)
 
+from music_assistant.controllers.music.constants import BROWSE_CACHE_EXPIRATION
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -103,6 +111,69 @@ async def test_streaming_folder_is_browsed_once(mass: MusicAssistant) -> None:
     ]
     assert isinstance(items[2], BrowseFolder)
     assert items[2].path == f"{PATH}/mango"
+
+
+async def test_cached_folder_keeps_every_kind_of_item(mass: MusicAssistant) -> None:
+    """A folder served from the cache holds the same kinds of items, with all they carry."""
+    mix = RecommendationFolder(
+        item_id="mix",
+        provider="qobuz_1",
+        name="Mix",
+        items=UniqueList(
+            [ItemMapping(media_type=MediaType.TRACK, item_id="t1", provider="qobuz_1", name="One")]
+        ),
+    )
+    albums = BrowseFolder(
+        item_id="albums",
+        provider="qobuz_1",
+        path=f"{PATH}/albums",
+        name="",
+        translation_key="albums",
+    )
+    provider = _provider()
+    provider.browse = AsyncMock(return_value=[mix, albums])
+    with patch.object(mass, "get_provider", return_value=provider):
+        await mass.music.browse(PATH)
+        items = await mass.music.browse(PATH)
+    provider.browse.assert_awaited_once()
+    assert isinstance(items[1], RecommendationFolder)
+    assert _names(items[1].items) == ["One"]
+    assert isinstance(items[2], BrowseFolder)
+    assert items[2].translation_key == "albums"
+
+
+async def test_streaming_folder_is_kept_just_long_enough_to_page(mass: MusicAssistant) -> None:
+    """A folder can show what is live right now, so it is kept for a short while only."""
+    with (
+        patch.object(mass, "get_provider", return_value=_provider()),
+        patch.object(mass.cache, "set", AsyncMock()) as cache_set,
+    ):
+        await mass.music.browse(PATH)
+    assert cache_set.await_args is not None
+    assert cache_set.await_args.kwargs["expiration"] == BROWSE_CACHE_EXPIRATION
+
+
+async def test_library_folder_of_a_streaming_provider_is_browsed_every_time(
+    mass: MusicAssistant,
+) -> None:
+    """A service's own library folder comes from the database, so it is read anew."""
+    saved = Playlist(item_id="1", provider="library", name="Saved", provider_mappings=set())
+    provider = _provider()
+    provider.browse = AsyncMock(return_value=[saved])
+    with patch.object(mass, "get_provider", return_value=provider):
+        for _ in range(2):
+            assert _names(await mass.music.browse(PATH)) == ["..", "Saved"]
+    assert provider.browse.await_count == 2
+
+
+async def test_folder_another_account_answers_for_is_not_kept(mass: MusicAssistant) -> None:
+    """While the requested account is unavailable, the folder another account lists is not kept."""
+    provider = _provider()
+    provider.instance_id = "qobuz_2"
+    with patch.object(mass, "get_provider", return_value=provider):
+        for _ in range(2):
+            await mass.music.browse(PATH)
+    assert provider.browse.await_count == 2
 
 
 async def test_local_folder_is_browsed_every_time(mass: MusicAssistant) -> None:
