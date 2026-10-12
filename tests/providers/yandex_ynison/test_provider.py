@@ -756,6 +756,33 @@ class TestYnisonStateHandling:
             repeat_mode=RepeatMode.ONE,
         )
 
+    async def test_omitted_repeat_mode_resets_source_option_to_off(self) -> None:
+        """A peer that omits repeat_mode resets a previously mirrored repeat option."""
+        provider = _make_provider()
+        provider._in_use_by_player = "player1"
+        provider._last_repeat_mode = RepeatMode.ONE
+        state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": True, "progress_ms": 0, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "options": {},
+                },
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "player1",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=False,
+            repeat_mode=RepeatMode.OFF,
+        )
+
     async def test_other_device_state_does_not_publish_source_options(self) -> None:
         """A remote player cannot mutate options for Music Assistant's old session."""
         provider = _make_provider()

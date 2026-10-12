@@ -1834,7 +1834,7 @@ class YandexYnisonProvider(PluginProvider):
     def _remember_and_publish_source_options(self, queue: dict[str, Any]) -> None:
         """Store Ynison queue options and mirror them to the active source session."""
         self._last_shuffle_enabled = YnisonQueueView(queue).shuffle_enabled
-        repeat_value = queue.get("options", {}).get("repeat_mode")
+        repeat_value = queue.get("options", {}).get("repeat_mode", "NONE")
         self._last_repeat_mode = {
             "NONE": RepeatMode.OFF,
             "ONE": RepeatMode.ONE,

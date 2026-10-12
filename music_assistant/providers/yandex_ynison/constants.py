@@ -34,8 +34,8 @@ LEGACY_AUTH_KEYS: Final[tuple[str, ...]] = (
 )
 
 # yandex_music provider config keys
-YANDEX_MUSIC_CONF_TOKEN: Final[str] = "token"
-YANDEX_MUSIC_CONF_X_TOKEN: Final[str] = "x_token"
+YANDEX_MUSIC_CONF_TOKEN: Final[str] = "token"  # noqa: S105 - config key
+YANDEX_MUSIC_CONF_X_TOKEN: Final[str] = "x_token"  # noqa: S105 - config key
 YANDEX_MUSIC_LOSSLESS_QUALITIES: Final[frozenset[str]] = frozenset({"superb", "lossless"})
 
 # Defaults

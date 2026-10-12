@@ -1702,6 +1702,20 @@ class TestMessageLoop:
 
         client._logger.warning.assert_called()
 
+    async def test_text_message_non_object_json_is_skipped(
+        self, client: YnisonClient, mock_state_callback: AsyncMock
+    ) -> None:
+        """A JSON value that is not an object is skipped like invalid JSON."""
+        bad_msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, "[1, 2]")
+        valid_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"player_state": {"status": {"paused": True}}}),
+        )
+        await self._run_loop_with_messages(client, [bad_msg, valid_msg])
+
+        client._logger.warning.assert_called()
+        mock_state_callback.assert_awaited_once()
+
     async def test_callback_exception_continues(
         self,
         client: YnisonClient,

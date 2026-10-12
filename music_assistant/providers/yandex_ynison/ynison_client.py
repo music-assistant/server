@@ -753,6 +753,8 @@ class YnisonClient:
                     try:
                         data = json.loads(msg.data)
                     except json.JSONDecodeError:
+                        data = None
+                    if not isinstance(data, dict):
                         self._logger.warning(
                             "Failed to parse Ynison message: %s",
                             msg.data[:200] if msg.data else "<empty>",
