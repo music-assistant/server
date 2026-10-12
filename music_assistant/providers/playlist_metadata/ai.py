@@ -1,7 +1,7 @@
 """
-AI Artwork Provider for Music Assistant.
+AI generated playlist covers and descriptions for the Playlist Metadata provider.
 
-Generates playlist covers with an image generation engine exposed by an AI plugin (such as a
+Covers are generated with an image generation engine exposed by an AI plugin (such as a
 Home Assistant AI Task entity or an image model behind the OpenAI Compatible plugin), in one of
 a few style presets or a custom prompt.
 
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ImageType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, ImageType
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.media_items import MediaItemImage, Playlist, Track
 from music_assistant_models.unique_list import UniqueList
@@ -41,9 +41,8 @@ from music_assistant.helpers.plugin_engines import (
     select_ai_engine,
     select_image_engine,
 )
-from music_assistant.models.metadata_provider import MetadataProvider
 
-from .constants import (
+from .ai_constants import (
     BASE_PROMPT,
     CACHE_CATEGORY_DESCRIPTIONS,
     CACHE_KEEP_SECONDS,
@@ -60,7 +59,6 @@ from .constants import (
     CONF_DESCRIPTIONS,
     CONF_EXTRA_PLAYLISTS,
     CONF_IMAGE_ENGINE,
-    CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
     CONF_PREVIEW_CUSTOM_PROMPT,
@@ -79,8 +77,8 @@ from .constants import (
     DESCRIPTION_PROMPT,
     FULL_BLEED,
     IMAGE_EXTENSION,
+    IMAGE_PREFIX,
     IMAGE_TIMEOUT_SECONDS,
-    IMAGES_DIR,
     MAX_CONCEPT_CHARS,
     MAX_CONTEXT_GENRES,
     MAX_CONTEXT_ITEMS,
@@ -90,41 +88,27 @@ from .constants import (
     MAX_TITLE_LINES,
     MIN_TITLE_SCALE,
     NO_TEXT_RULES,
-    ORPHAN_GRACE_SECONDS,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
     PREVIEW_SIZE,
     PROMPT_TIMEOUT_SECONDS,
-    REPLACEABLE_IMAGE_DOMAINS,
     SEED_SEPARATOR,
     STYLE_PRESETS,
+    TEMPLATE_AI,
     TITLE_RULES,
     Style,
     TitleLayout,
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant.mass import MusicAssistant
-    from music_assistant.models import ProviderInstanceType
     from music_assistant.models.plugin import AIEngine, ImageEngine
     from music_assistant.providers.smart_playlist import SmartPlaylistProvider
 
-SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.PLAYLIST_METADATA}
+    from . import PlaylistMetadataProvider
 
 SMART_PLAYLIST_DOMAIN: Final = "smart_playlist"
 BUILTIN_DOMAIN: Final = "builtin"
 THROTTLE_WINDOW_SECONDS: Final = 3600
-
-
-async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration."""
-    return AIArtworkProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
 
 # the settings only read by the preview button, saved as soon as they are changed
 PREVIEW_KEYS: Final = frozenset(
@@ -167,10 +151,9 @@ class PlaylistContext:
         return text
 
 
-class AIArtworkProvider(MetadataProvider):
-    """Metadata provider that generates playlist covers with an AI image engine."""
+class AIArtwork:
+    """The AI generated covers and descriptions of the Playlist Metadata provider."""
 
-    _images_dir: str
     _lock: asyncio.Lock
     _description_lock: asyncio.Lock
     # when each cover and description of the last hour was generated, to enforce the hourly limit
@@ -179,145 +162,85 @@ class AIArtworkProvider(MetadataProvider):
     # bumped by the regenerate action, so every cover and description is keyed anew
     _generation: int
 
-    @property
-    def priority(self) -> int:
-        """Priority for this provider (lower = more preferred)."""
-        # ahead of the playlist_metadata collage, which stays behind the cover as a fallback
-        return 80
-
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return the (options) config entries to configure this provider instance."""
-        return await self._config_entries()
-
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    def __init__(self, provider: PlaylistMetadataProvider) -> None:
         """
-        Regenerate all covers and descriptions, or preview the cover of one playlist.
+        Initialize the AI artwork of the provider.
 
-        The current covers and descriptions stay in place until their replacement is ready.
-        A preview is only shown on the settings page and never replaces a cover.
-
-        :param action: The action id of the pressed button.
+        :param provider: The Playlist Metadata provider the covers and descriptions belong to.
         """
-        if action == CONF_ACTION_PREVIEW:
-            return await self._config_entries(preview=await self._preview())
-        if action != CONF_ACTION_REGENERATE:
-            raise ActionUnavailable(f"Unknown action: {action}")
-        self._generation = int(time.time())
-        await self.mass.cache.set(
-            CACHE_KEY_GENERATION,
-            self._generation,
-            expiration=CACHE_KEEP_SECONDS,
-            provider=self.instance_id,
-            persistent=True,
-        )
-        self.logger.info("Regenerating all covers and descriptions")
-        self.mass.create_task(
-            self._refresh_covers(),
-            task_id=f"{self.instance_id}_regenerate",
-            abort_existing=True,
-        )
-        return None
-
-    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
-        """
-        Handle a config update, reloading unless only the preview settings changed.
-
-        :param config: The updated provider config.
-        :param changed_keys: The keys of the config that changed.
-        """
-        if changed_keys and changed_keys <= {f"values/{key}" for key in PREVIEW_KEYS}:
-            # saved on their own as soon as they change, and only read by the preview button
-            self.config = config
-            return
-        await super().update_config(config, changed_keys)
-
-    async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
-        self._images_dir = os.path.join(self.mass.storage_path, IMAGES_DIR)
-        await asyncio.to_thread(os.makedirs, self._images_dir, exist_ok=True)
+        self.provider = provider
+        self.mass = provider.mass
+        self.logger = provider.logger
         self._lock = asyncio.Lock()
         self._description_lock = asyncio.Lock()
+        self._generated_at = deque()
+        self._described_at = deque()
+        self._generation = 0
+
+    @property
+    def covers_enabled(self) -> bool:
+        """Return whether covers are generated with AI."""
+        return self.provider.config.get_value(self.provider.template_key) == TEMPLATE_AI
+
+    @property
+    def descriptions_enabled(self) -> bool:
+        """Return whether descriptions are written with AI."""
+        return bool(self.provider.config.get_value(CONF_DESCRIPTIONS))
+
+    async def setup(self) -> None:
+        """Restore the state kept across reloads and schedule the catch-up."""
         self._generated_at = await self._load_timestamps(CACHE_KEY_GENERATED_AT)
         self._described_at = await self._load_timestamps(CACHE_KEY_DESCRIBED_AT)
         generation = await self.mass.cache.get(
-            CACHE_KEY_GENERATION, provider=self.instance_id, default=0
+            CACHE_KEY_GENERATION, provider=self.provider.instance_id, default=0
         )
         self._generation = generation if isinstance(generation, int) else 0
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        # covers are otherwise only made on a playlist's (infrequent) metadata refresh, so
-        # this catches up on the playlists in scope that have none yet
-        self.mass.tasks.register_scheduled_task(
-            task_id=f"{self.instance_id}_refresh",
-            name="AI playlist artwork",
-            handler=self._refresh_covers,
-            schedule=TaskSchedule.hourly(),
-            initial_delay=CATCH_UP_DELAY_SECONDS,
-        )
+        if self.covers_enabled or self.descriptions_enabled:
+            # covers are otherwise only made on a playlist's (infrequent) metadata refresh, so
+            # this catches up on the playlists in scope that have none yet
+            self.mass.tasks.register_scheduled_task(
+                task_id=f"{self.provider.instance_id}_ai_refresh",
+                name="AI playlist artwork",
+                handler=self.refresh,
+                schedule=TaskSchedule.hourly(),
+                initial_delay=CATCH_UP_DELAY_SECONDS,
+            )
         # the schedule keeps its hourly rhythm across restarts and reloads, so changed settings
-        # (which reload the provider) would otherwise wait for the next hourly run
+        # (which reload the provider) would otherwise wait for the next hourly run. This also
+        # swaps the generated covers out once AI is turned off.
         self.mass.call_later(
             CATCH_UP_DELAY_SECONDS,
-            self._refresh_covers,
-            task_id=f"{self.instance_id}_catch_up",
+            self.refresh,
+            task_id=f"{self.provider.instance_id}_ai_catch_up",
         )
 
-    async def unload(self, is_removed: bool = False) -> None:
+    def stop(self, is_removed: bool = False) -> None:
         """
-        Handle unload/close of the provider.
+        Stop the regular catch-up.
 
         :param is_removed: Whether the provider is being removed rather than reloaded.
         """
-        self.mass.cancel_timer(f"{self.instance_id}_catch_up")
+        self.mass.cancel_timer(f"{self.provider.instance_id}_ai_catch_up")
         self.mass.tasks.unregister_scheduled_task(
-            f"{self.instance_id}_refresh", clear_persisted_state=is_removed
+            f"{self.provider.instance_id}_ai_refresh", clear_persisted_state=is_removed
         )
 
-    async def resolve_image(self, path: str) -> bytes:
-        """
-        Return the bytes of a generated cover.
-
-        :param path: The file name of the cover, as stored on the image.
-        """
-        real_images_dir = os.path.realpath(self._images_dir)
-        real_file_path = os.path.realpath(os.path.join(self._images_dir, path))
-        # the path comes from the library, so it must never reach outside our directory
-        if not real_file_path.startswith(real_images_dir + os.sep):
-            msg = f"Invalid image path: {path}"
-            raise FileNotFoundError(msg)
-        if not await asyncio.to_thread(os.path.isfile, real_file_path):
-            msg = f"AI artwork not found: {path}"
-            raise FileNotFoundError(msg)
-        return await asyncio.to_thread(Path(real_file_path).read_bytes)
-
-    async def get_playlist_metadata(self, playlist: Playlist) -> None:
-        """
-        Give the playlist its generated cover and description, generating them when needed.
-
-        Both are set on the playlist directly: returning them would merge the cover in behind
-        the images the playlist already has (while the first one is the one shown), and leave
-        a description the playlist already has in place.
-
-        :param playlist: The (library) playlist to generate the cover and description for.
-        """
-        if not self._in_scope(playlist):
-            self._remove_own_images(playlist)
-            return
-        await self._apply_cover(playlist)
-        await self._apply_description(playlist)
-
-    async def _config_entries(
+    async def config_entries(
         self, preview: tuple[ConfigEntry, ...] = ()
     ) -> tuple[ConfigEntry, ...]:
         """
-        Return the options config entries, with a preview below the preview button.
+        Return the config entries of the AI covers and descriptions.
 
-        :param preview: The entries showing the preview covers and description.
+        :param preview: The entries showing the preview covers and description, if any.
         """
+        template_key = self.provider.template_key
         return (
             *await create_image_engine_config_entries(
-                self.mass, CONF_IMAGE_ENGINE, category="generic"
+                self.mass,
+                CONF_IMAGE_ENGINE,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
+                category="generic",
             ),
             ConfigEntry(
                 key=CONF_STYLE,
@@ -325,6 +248,8 @@ class AIArtworkProvider(MetadataProvider):
                 required=True,
                 default_value=Style.MUSIC_ASSISTANT.value,
                 options=[ConfigValueOption(value=style.value) for style in Style],
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
             ),
             ConfigEntry(
                 key=CONF_CUSTOM_PROMPT,
@@ -339,12 +264,14 @@ class AIArtworkProvider(MetadataProvider):
                 type=ConfigEntryType.BOOLEAN,
                 required=False,
                 default_value=False,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
                 advanced=True,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_PLAYLIST,
                 type=ConfigEntryType.STRING,
-                category="preview",
+                category="ai_preview",
                 required=False,
                 default_value=None,
                 options=await self._preview_playlist_options(),
@@ -353,7 +280,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_PREVIEW_STYLE,
                 type=ConfigEntryType.STRING,
-                category="preview",
+                category="ai_preview",
                 multi_value=True,
                 required=False,
                 default_value=[style.value for style in Style if style != Style.CUSTOM],
@@ -363,7 +290,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_PREVIEW_CUSTOM_PROMPT,
                 type=ConfigEntryType.STRING,
-                category="preview",
+                category="ai_preview",
                 required=False,
                 default_value=DEFAULT_CUSTOM_PROMPT,
                 immediate_apply=True,
@@ -371,15 +298,23 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_ACTION_PREVIEW,
                 type=ConfigEntryType.ACTION,
-                category="preview",
+                category="ai_preview",
                 action=CONF_ACTION_PREVIEW,
                 required=False,
             ),
             *preview,
             ConfigEntry(
+                key=CONF_DESCRIPTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                category="ai",
+                required=False,
+                # off by default: it spends AI requests as soon as an engine is connected
+                default_value=False,
+            ),
+            ConfigEntry(
                 key=CONF_PLAYLISTS,
                 type=ConfigEntryType.STRING,
-                category="playlists",
+                category="ai",
                 required=True,
                 default_value=PLAYLISTS_SMART,
                 options=[
@@ -390,7 +325,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_EXTRA_PLAYLISTS,
                 type=ConfigEntryType.STRING,
-                category="playlists",
+                category="ai",
                 multi_value=True,
                 required=False,
                 default_value=[],
@@ -398,28 +333,12 @@ class AIArtworkProvider(MetadataProvider):
                 depends_on=CONF_PLAYLISTS,
                 depends_on_value=PLAYLISTS_SMART,
             ),
-            ConfigEntry(
-                key=CONF_KEEP_EXISTING_ARTWORK,
-                type=ConfigEntryType.BOOLEAN,
-                category="playlists",
-                required=False,
-                default_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_DESCRIPTIONS,
-                type=ConfigEntryType.BOOLEAN,
-                category="descriptions",
-                required=False,
-                default_value=True,
-            ),
             # writes the descriptions and, when asked, the visual concept of the covers
-            *await create_ai_engine_config_entries(
-                self.mass, CONF_TEXT_ENGINE, category="descriptions"
-            ),
+            *await create_ai_engine_config_entries(self.mass, CONF_TEXT_ENGINE, category="ai"),
             ConfigEntry(
                 key=CONF_USE_PROMPT_ENGINE,
                 type=ConfigEntryType.BOOLEAN,
-                category="descriptions",
+                category="ai",
                 required=False,
                 default_value=False,
                 advanced=True,
@@ -427,7 +346,7 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_MAX_PER_HOUR,
                 type=ConfigEntryType.INTEGER,
-                category="usage",
+                category="ai",
                 required=False,
                 default_value=DEFAULT_MAX_PER_HOUR,
                 range=(1, 100),
@@ -436,40 +355,135 @@ class AIArtworkProvider(MetadataProvider):
             ConfigEntry(
                 key=CONF_ACTION_REGENERATE,
                 type=ConfigEntryType.ACTION,
-                category="usage",
+                category="ai",
                 action=CONF_ACTION_REGENERATE,
                 required=False,
                 advanced=True,
             ),
         )
 
-    async def _apply_cover(self, playlist: Playlist) -> None:
-        """Put the playlist's generated cover in front of its images."""
-        image_engine = await select_image_engine(self, CONF_IMAGE_ENGINE)
-        if image_engine is None or not await self._wants_cover(playlist):
-            self._remove_own_images(playlist)
-            return
+    async def preview(self) -> tuple[ConfigEntry, ...]:
+        """Return the entries showing the picked playlist's covers and description, unstored."""
+        playlist_id = self.provider.config.get_value(CONF_PREVIEW_PLAYLIST)
+        if not playlist_id:
+            raise ActionUnavailable("Pick a playlist to preview first")
+        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        if image_engine is None:
+            raise ActionUnavailable("Pick an image engine first")
+        text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
+        looks = self._preview_looks()
+        self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
+        description, results = await asyncio.gather(
+            self._preview_description(playlist, text_engine),
+            asyncio.gather(
+                *(self._render(playlist, image_engine, look) for look in looks),
+                return_exceptions=True,
+            ),
+        )
+        entries: list[ConfigEntry] = []
+        for look, result in zip(looks, results, strict=True):
+            if isinstance(result, BaseException):
+                # the other styles are still worth showing
+                self.logger.warning(
+                    "Could not generate a %s preview for '%s': %s",
+                    look.style.value,
+                    playlist.name,
+                    result,
+                )
+                continue
+            entries.append(
+                ConfigEntry(
+                    key=f"{CONF_PREVIEW_IMAGE}_{look.style.value}",
+                    type=ConfigEntryType.IMAGE,
+                    translation_key=CONF_PREVIEW_IMAGE,
+                    category="ai_preview",
+                    required=False,
+                    value=await asyncio.to_thread(
+                        _preview_data_url, _style_name(look.style), result
+                    ),
+                )
+            )
+        if not entries:
+            raise next(result for result in results if isinstance(result, BaseException))
+        if description:
+            entries.append(
+                ConfigEntry(
+                    key=CONF_PREVIEW_DESCRIPTION,
+                    type=ConfigEntryType.LABEL,
+                    category="ai_preview",
+                    translation_params=[description],
+                )
+            )
+        return tuple(entries)
+
+    async def regenerate(self) -> None:
+        """
+        Regenerate all covers and descriptions.
+
+        The current covers and descriptions stay in place until their replacement is ready.
+        """
+        self._generation = int(time.time())
+        await self.mass.cache.set(
+            CACHE_KEY_GENERATION,
+            self._generation,
+            expiration=CACHE_KEEP_SECONDS,
+            provider=self.provider.instance_id,
+            persistent=True,
+        )
+        self.logger.info("Regenerating all AI covers and descriptions")
+        self.mass.create_task(
+            self.refresh(),
+            task_id=f"{self.provider.instance_id}_ai_regenerate",
+            abort_existing=True,
+        )
+
+    async def cover(self, playlist: Playlist) -> MediaItemImage | None:
+        """
+        Return the playlist's generated cover, generating it when needed.
+
+        Returns None when the playlist gets no generated cover. When a new cover can not be
+        generated right now, the playlist keeps the generated cover it has, if any.
+
+        :param playlist: The (library) playlist to return the cover for.
+        """
+        if (
+            not self.covers_enabled
+            or not self.in_scope(playlist)
+            or await self._has_own_artwork(playlist)
+        ):
+            return None
+        current = next(iter(self.own_images(playlist)), None)
+        if current is not None and not await asyncio.to_thread(
+            os.path.isfile, os.path.join(self._images_dir, current.path)
+        ):
+            current = None
+        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        if image_engine is None:
+            return current
         file_name = await self._file_name(playlist, image_engine)
         if not await asyncio.to_thread(os.path.isfile, os.path.join(self._images_dir, file_name)):
             if not await self._generate(playlist, image_engine, file_name):
-                return
-        cover = MediaItemImage(
+                return current
+        return MediaItemImage(
             type=ImageType.THUMB,
             path=file_name,
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             remotely_accessible=False,
         )
-        previous = [img.path for img in self._own_images(playlist) if img.path != file_name]
-        self._remove_own_images(playlist)
-        playlist.metadata.images = UniqueList([cover, *(playlist.metadata.images or [])])
-        for path in previous:
-            await self._delete_file(path)
 
-    async def _apply_description(self, playlist: Playlist) -> None:
-        """Set the playlist's generated description, generating it when it has none yet."""
-        if not self.config.get_value(CONF_DESCRIPTIONS):
+    async def apply_description(self, playlist: Playlist) -> None:
+        """
+        Set the playlist's generated description, generating it when it has none yet.
+
+        It is set on the playlist directly, as a returned description would not replace the
+        one the playlist already has.
+
+        :param playlist: The (library) playlist to set the description of.
+        """
+        if not self.descriptions_enabled or not self.in_scope(playlist):
             return
-        text_engine = await select_ai_engine(self, CONF_TEXT_ENGINE)
+        text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
         if text_engine is None:
             return
         description = await self._stored_description(playlist, text_engine)
@@ -478,7 +492,7 @@ class AIArtworkProvider(MetadataProvider):
         if description is not None:
             playlist.metadata.description = description
 
-    def _in_scope(self, playlist: Playlist) -> bool:
+    def in_scope(self, playlist: Playlist) -> bool:
         """Return whether the playlist gets a generated cover and description."""
         mappings = playlist.provider_mappings
         if any(m.provider_domain == BUILTIN_DOMAIN for m in mappings) and not playlist.is_editable:
@@ -486,20 +500,78 @@ class AIArtworkProvider(MetadataProvider):
             return False
         return (
             any(m.provider_domain == SMART_PLAYLIST_DOMAIN for m in mappings)
-            or self.config.get_value(CONF_PLAYLISTS) == PLAYLISTS_ALL
+            or self.provider.config.get_value(CONF_PLAYLISTS) == PLAYLISTS_ALL
             or str(playlist.item_id) in self._extra_playlists()
         )
 
-    async def _wants_cover(self, playlist: Playlist) -> bool:
-        """Return whether the (in scope) playlist has no artwork worth keeping."""
-        if not self.config.get_value(CONF_KEEP_EXISTING_ARTWORK):
-            return True
+    def is_own_image(self, img: MediaItemImage) -> bool:
+        """Return whether an image is a cover generated with AI."""
+        return img.provider == self.provider.instance_id and Path(img.path).name.startswith(
+            IMAGE_PREFIX
+        )
+
+    def own_images(self, playlist: Playlist) -> list[MediaItemImage]:
+        """Return the generated covers of the playlist."""
+        return [img for img in playlist.metadata.images or [] if self.is_own_image(img)]
+
+    def remove_own_images(self, playlist: Playlist) -> None:
+        """Take the generated covers off the playlist, leaving the files to the cleanup."""
+        if not self.own_images(playlist):
+            return
+        playlist.metadata.images = UniqueList(
+            [img for img in playlist.metadata.images or [] if not self.is_own_image(img)]
+        )
+
+    async def refresh(self) -> None:
+        """
+        Refresh the playlists that lack their generated cover or description, or lost them.
+
+        This also puts back a description something else replaced, such as the smart playlist
+        provider when its rules are edited, and swaps generated covers that are no longer
+        wanted for the collage.
+        """
+        image_engine = (
+            await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+            if self.covers_enabled
+            else None
+        )
+        text_engine = (
+            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+            if self.descriptions_enabled
+            else None
+        )
+        async for playlist in self.mass.music.playlists.iter_library_items():
+            in_scope = self.in_scope(playlist)
+            if self.own_images(playlist) and (not self.covers_enabled or not in_scope):
+                # the metadata refresh puts the collage back in its place
+                await self.mass.metadata.update_metadata(playlist, force_refresh=True)
+                continue
+            if not in_scope:
+                continue
+            file_name: str | None = None
+            if image_engine is not None and not await self._has_own_artwork(playlist):
+                file_name = await self._file_name(playlist, image_engine)
+                current = playlist.image
+                if current and self.is_own_image(current) and current.path == file_name:
+                    file_name = None
+            needs_description = text_engine is not None and (
+                playlist.metadata.description is None
+                or playlist.metadata.description
+                != await self._stored_description(playlist, text_engine)
+            )
+            if file_name is None and not needs_description:
+                continue
+            # the metadata refresh generates them and stores the result in the library
+            await self.mass.metadata.update_metadata(playlist, force_refresh=True)
+
+    async def _has_own_artwork(self, playlist: Playlist) -> bool:
+        """Return whether the playlist has a cover of its own, which is never replaced."""
         for img in playlist.metadata.images or []:
-            if img.type != ImageType.THUMB or self._is_replaceable(img):
+            if img.type != ImageType.THUMB or self.provider._is_our_image(img):
                 continue
             if not await self._is_unservable(img):
-                return False
-        return True
+                return True
+        return False
 
     async def _generate(self, playlist: Playlist, engine: ImageEngine, file_name: str) -> bool:
         """Generate and store the playlist's cover, returning whether that succeeded."""
@@ -518,7 +590,7 @@ class AIArtworkProvider(MetadataProvider):
                     self.mass.metadata.update_metadata,
                     playlist.uri,
                     force_refresh=True,
-                    task_id=f"{self.instance_id}_retry_{playlist.item_id}",
+                    task_id=f"{self.provider.instance_id}_ai_retry_{playlist.item_id}",
                 )
                 return False
             await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
@@ -548,61 +620,6 @@ class AIArtworkProvider(MetadataProvider):
         async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
             image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
-
-    async def _preview(self) -> tuple[ConfigEntry, ...]:
-        """Return the entries showing the picked playlist's covers and description, unstored."""
-        playlist_id = self.config.get_value(CONF_PREVIEW_PLAYLIST)
-        if not playlist_id:
-            raise ActionUnavailable("Pick a playlist to preview first")
-        image_engine = await select_image_engine(self, CONF_IMAGE_ENGINE)
-        if image_engine is None:
-            raise ActionUnavailable("Pick an image engine first")
-        text_engine = await select_ai_engine(self, CONF_TEXT_ENGINE)
-        playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
-        looks = self._preview_looks()
-        self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
-        description, results = await asyncio.gather(
-            self._preview_description(playlist, text_engine),
-            asyncio.gather(
-                *(self._render(playlist, image_engine, look) for look in looks),
-                return_exceptions=True,
-            ),
-        )
-        entries: list[ConfigEntry] = []
-        for look, result in zip(looks, results, strict=True):
-            if isinstance(result, BaseException):
-                # the other styles are still worth showing
-                self.logger.warning(
-                    "Could not generate a %s preview for '%s': %s",
-                    look.style.value,
-                    playlist.name,
-                    result,
-                )
-                continue
-            entries.append(
-                ConfigEntry(
-                    key=f"{CONF_PREVIEW_IMAGE}_{look.style.value}",
-                    type=ConfigEntryType.IMAGE,
-                    translation_key=CONF_PREVIEW_IMAGE,
-                    category="preview",
-                    required=False,
-                    value=await asyncio.to_thread(
-                        _preview_data_url, _style_name(look.style), result
-                    ),
-                )
-            )
-        if not entries:
-            raise next(result for result in results if isinstance(result, BaseException))
-        if description:
-            entries.append(
-                ConfigEntry(
-                    key=CONF_PREVIEW_DESCRIPTION,
-                    type=ConfigEntryType.LABEL,
-                    category="preview",
-                    translation_params=[description],
-                )
-            )
-        return tuple(entries)
 
     async def _generate_description(self, playlist: Playlist, engine: AIEngine) -> str | None:
         """Write and store the playlist's description, returning None when that failed."""
@@ -634,7 +651,7 @@ class AIArtworkProvider(MetadataProvider):
                 self._description_key(playlist),
                 description,
                 expiration=CACHE_KEEP_SECONDS,
-                provider=self.instance_id,
+                provider=self.provider.instance_id,
                 category=CACHE_CATEGORY_DESCRIPTIONS,
                 checksum=self._description_checksum(playlist, engine),
                 persistent=True,
@@ -674,7 +691,7 @@ class AIArtworkProvider(MetadataProvider):
         """Return the description written earlier for the playlist as it is now."""
         description = await self.mass.cache.get(
             self._description_key(playlist),
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             category=CACHE_CATEGORY_DESCRIPTIONS,
             checksum=self._description_checksum(playlist, engine),
         )
@@ -734,9 +751,9 @@ class AIArtworkProvider(MetadataProvider):
 
     async def _concept(self, playlist: Playlist, context: PlaylistContext) -> str:
         """Return the visual concept sentence, written by the prompt engine when one is used."""
-        if not self.config.get_value(CONF_USE_PROMPT_ENGINE):
+        if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
-        engine = await select_ai_engine(self, CONF_TEXT_ENGINE)
+        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
         if engine is None:
             return DEFAULT_CONCEPT
         query = CONCEPT_PROMPT.format(name=playlist.name, context=context.describe())
@@ -816,8 +833,8 @@ class AIArtworkProvider(MetadataProvider):
         """Return the cover's file name, which changes with everything that shapes the cover."""
         style = self._style()
         prompt_engine = (
-            str(self.config.get_value(CONF_TEXT_ENGINE) or "")
-            if self.config.get_value(CONF_USE_PROMPT_ENGINE)
+            str(self.provider.config.get_value(CONF_TEXT_ENGINE) or "")
+            if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE)
             else ""
         )
         key = json_dumps(
@@ -825,21 +842,21 @@ class AIArtworkProvider(MetadataProvider):
                 str(playlist.item_id),
                 playlist.name,
                 style.value,
-                str(self.config.get_value(CONF_CUSTOM_PROMPT) or "")
+                str(self.provider.config.get_value(CONF_CUSTOM_PROMPT) or "")
                 if style == Style.CUSTOM
                 else "",
-                bool(self.config.get_value(CONF_TITLE_OVERLAY)),
+                bool(self.provider.config.get_value(CONF_TITLE_OVERLAY)),
                 image_engine.uid,
                 prompt_engine,
                 self._generation,
             ]
         )
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()
-        return f"{playlist.item_id}_{digest[:16]}{IMAGE_EXTENSION}"
+        return f"{IMAGE_PREFIX}{playlist.item_id}_{digest[:16]}{IMAGE_EXTENSION}"
 
     async def _load_timestamps(self, key: str) -> deque[float]:
         """Return the stored times of the generations of one kind within the last hour."""
-        stored = await self.mass.cache.get(key, provider=self.instance_id, default=[])
+        stored = await self.mass.cache.get(key, provider=self.provider.instance_id, default=[])
         now = time.time()
         return deque(
             sorted(
@@ -856,7 +873,7 @@ class AIArtworkProvider(MetadataProvider):
             key,
             list(timestamps),
             expiration=THROTTLE_WINDOW_SECONDS,
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             persistent=True,
         )
 
@@ -869,7 +886,7 @@ class AIArtworkProvider(MetadataProvider):
         now = time.time()
         while timestamps and now - timestamps[0] >= THROTTLE_WINDOW_SECONDS:
             timestamps.popleft()
-        limit = self.config.get_value(CONF_MAX_PER_HOUR)
+        limit = self.provider.config.get_value(CONF_MAX_PER_HOUR)
         limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
         if len(timestamps) < limit:
             return None
@@ -878,7 +895,7 @@ class AIArtworkProvider(MetadataProvider):
     def _style(self) -> Style:
         """Return the configured style."""
         try:
-            return Style(str(self.config.get_value(CONF_STYLE)))
+            return Style(str(self.provider.config.get_value(CONF_STYLE)))
         except ValueError:
             return Style.MUSIC_ASSISTANT
 
@@ -886,18 +903,18 @@ class AIArtworkProvider(MetadataProvider):
         """Return the configured look of the covers."""
         return CoverLook(
             style=self._style(),
-            custom_prompt=str(self.config.get_value(CONF_CUSTOM_PROMPT) or ""),
-            title_overlay=bool(self.config.get_value(CONF_TITLE_OVERLAY)),
+            custom_prompt=str(self.provider.config.get_value(CONF_CUSTOM_PROMPT) or ""),
+            title_overlay=bool(self.provider.config.get_value(CONF_TITLE_OVERLAY)),
         )
 
     def _preview_looks(self) -> list[CoverLook]:
         """Return a look per style picked to preview, every preset when none is picked."""
-        value = self.config.get_value(CONF_PREVIEW_STYLE)
+        value = self.provider.config.get_value(CONF_PREVIEW_STYLE)
         picked = {str(item) for item in value} if isinstance(value, list) else {str(value or "")}
         styles = [style for style in Style if style.value in picked]
         if not styles:
             styles = [style for style in Style if style != Style.CUSTOM]
-        custom_prompt = str(self.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or "")
+        custom_prompt = str(self.provider.config.get_value(CONF_PREVIEW_CUSTOM_PROMPT) or "")
         title_overlay = self._look().title_overlay
         return [
             CoverLook(style=style, custom_prompt=custom_prompt, title_overlay=title_overlay)
@@ -906,7 +923,7 @@ class AIArtworkProvider(MetadataProvider):
 
     def _extra_playlists(self) -> set[str]:
         """Return the library ids of the playlists opted in on top of the smart playlists."""
-        value = self.config.get_value(CONF_EXTRA_PLAYLISTS)
+        value = self.provider.config.get_value(CONF_EXTRA_PLAYLISTS)
         return {str(item) for item in value} if isinstance(value, list) else set()
 
     async def _extra_playlist_options(self) -> list[ConfigValueOption]:
@@ -929,7 +946,7 @@ class AIArtworkProvider(MetadataProvider):
 
     async def _preview_playlist_options(self) -> list[ConfigValueOption]:
         """Return the library playlists that can be previewed, keeping the current selection."""
-        selected = self.config.get_value(CONF_PREVIEW_PLAYLIST)
+        selected = self.provider.config.get_value(CONF_PREVIEW_PLAYLIST)
         options: list[ConfigValueOption] = []
         try:
             async for playlist in self.mass.music.playlists.iter_library_items():
@@ -940,13 +957,6 @@ class AIArtworkProvider(MetadataProvider):
         if selected and str(selected) not in {option.value for option in options}:
             options.append(ConfigValueOption(str(selected)))
         return options
-
-    def _is_replaceable(self, img: MediaItemImage) -> bool:
-        """Return whether an image is generated artwork a new cover may go in front of."""
-        if img.provider == self.instance_id:
-            return True
-        provider = self.mass.get_provider(img.provider)
-        return provider is not None and provider.domain in REPLACEABLE_IMAGE_DOMAINS
 
     async def _is_unservable(self, img: MediaItemImage) -> bool:
         """Return whether an image is a local file the built-in provider refuses to serve."""
@@ -962,79 +972,10 @@ class AIArtworkProvider(MetadataProvider):
             return True
         return False
 
-    def _own_images(self, playlist: Playlist) -> list[MediaItemImage]:
-        """Return the covers this provider gave the playlist."""
-        return [img for img in playlist.metadata.images or [] if img.provider == self.instance_id]
-
-    def _remove_own_images(self, playlist: Playlist) -> None:
-        """Take this provider's covers off the playlist, leaving the files to the cleanup."""
-        if not self._own_images(playlist):
-            return
-        playlist.metadata.images = UniqueList(
-            [img for img in playlist.metadata.images or [] if img.provider != self.instance_id]
-        )
-
-    async def _delete_file(self, file_name: str) -> None:
-        """Delete a cover file, ignoring one that is already gone."""
-        with contextlib.suppress(OSError):
-            await asyncio.to_thread(Path(self._images_dir, Path(file_name).name).unlink, True)
-
-    async def _refresh_covers(self) -> None:
-        """
-        Refresh the playlists in scope that lack their cover or description.
-
-        This also puts back a description something else replaced, such as the smart playlist
-        provider when its rules are edited. Afterwards, orphaned cover files are removed.
-        """
-        image_engine = await select_image_engine(self, CONF_IMAGE_ENGINE)
-        text_engine = (
-            await select_ai_engine(self, CONF_TEXT_ENGINE)
-            if self.config.get_value(CONF_DESCRIPTIONS)
-            else None
-        )
-        referenced: set[str] = set()
-        async for playlist in self.mass.music.playlists.iter_library_items():
-            own_images = self._own_images(playlist)
-            if not self._in_scope(playlist):
-                if own_images:
-                    # the metadata refresh takes the cover off, so its file is orphaned below
-                    await self.mass.metadata.update_metadata(playlist, force_refresh=True)
-                continue
-            referenced.update(Path(img.path).name for img in own_images)
-            file_name: str | None = None
-            if image_engine is not None and await self._wants_cover(playlist):
-                file_name = await self._file_name(playlist, image_engine)
-                current = playlist.image
-                if current and current.provider == self.instance_id and current.path == file_name:
-                    file_name = None
-            needs_description = text_engine is not None and (
-                playlist.metadata.description is None
-                or playlist.metadata.description
-                != await self._stored_description(playlist, text_engine)
-            )
-            if file_name is None and not needs_description:
-                continue
-            # the metadata refresh generates them and stores the result in the library
-            await self.mass.metadata.update_metadata(playlist, force_refresh=True)
-            if file_name is not None:
-                referenced.add(file_name)
-        await self._remove_orphaned_files(referenced)
-
-    async def _remove_orphaned_files(self, referenced: set[str]) -> None:
-        """Delete cover files no playlist refers to any more."""
-        now = time.time()
-        for file_name in await asyncio.to_thread(os.listdir, self._images_dir):
-            if file_name in referenced:
-                continue
-            file_path = Path(self._images_dir, file_name)
-            try:
-                modified = (await asyncio.to_thread(file_path.stat)).st_mtime
-            except OSError:
-                continue
-            # a cover written moments ago may not be stored in the library yet
-            if now - modified < ORPHAN_GRACE_SECONDS:
-                continue
-            await self._delete_file(file_name)
+    @property
+    def _images_dir(self) -> str:
+        """Return the directory the covers are kept in, shared with the collages."""
+        return self.provider._images_dir
 
 
 def _context_from_rules(rules: dict[str, Any]) -> PlaylistContext:

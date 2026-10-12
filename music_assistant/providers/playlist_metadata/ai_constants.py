@@ -1,4 +1,4 @@
-"""Constants for the AI Artwork provider."""
+"""Constants for the AI generated artwork and descriptions of the Playlist Metadata provider."""
 
 from __future__ import annotations
 
@@ -6,32 +6,34 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-CONF_IMAGE_ENGINE: Final = "image_engine"
-CONF_TEXT_ENGINE: Final = "text_engine"
-CONF_USE_PROMPT_ENGINE: Final = "use_prompt_engine"
-CONF_DESCRIPTIONS: Final = "generate_descriptions"
-CONF_STYLE: Final = "style"
-CONF_CUSTOM_PROMPT: Final = "custom_prompt"
-CONF_TITLE_OVERLAY: Final = "title_overlay"
-CONF_PLAYLISTS: Final = "playlists"
-CONF_EXTRA_PLAYLISTS: Final = "extra_playlists"
-CONF_KEEP_EXISTING_ARTWORK: Final = "keep_existing_artwork"
-CONF_MAX_PER_HOUR: Final = "max_generations_per_hour"
-CONF_ACTION_REGENERATE: Final = "regenerate"
-CONF_PREVIEW_PLAYLIST: Final = "preview_playlist"
-CONF_PREVIEW_STYLE: Final = "preview_style"
-CONF_PREVIEW_CUSTOM_PROMPT: Final = "preview_custom_prompt"
-CONF_ACTION_PREVIEW: Final = "preview"
-CONF_PREVIEW_IMAGE: Final = "preview_image"
-CONF_PREVIEW_DESCRIPTION: Final = "preview_description"
+CONF_IMAGE_ENGINE: Final = "ai_image_engine"
+CONF_TEXT_ENGINE: Final = "ai_text_engine"
+CONF_USE_PROMPT_ENGINE: Final = "ai_use_prompt_engine"
+CONF_DESCRIPTIONS: Final = "ai_descriptions"
+CONF_STYLE: Final = "ai_style"
+CONF_CUSTOM_PROMPT: Final = "ai_custom_prompt"
+CONF_TITLE_OVERLAY: Final = "ai_title_overlay"
+CONF_PLAYLISTS: Final = "ai_playlists"
+CONF_EXTRA_PLAYLISTS: Final = "ai_extra_playlists"
+CONF_MAX_PER_HOUR: Final = "ai_max_per_hour"
+CONF_ACTION_REGENERATE: Final = "ai_regenerate"
+CONF_PREVIEW_PLAYLIST: Final = "ai_preview_playlist"
+CONF_PREVIEW_STYLE: Final = "ai_preview_style"
+CONF_PREVIEW_CUSTOM_PROMPT: Final = "ai_preview_custom_prompt"
+CONF_ACTION_PREVIEW: Final = "ai_preview"
+CONF_PREVIEW_IMAGE: Final = "ai_preview_image"
+CONF_PREVIEW_DESCRIPTION: Final = "ai_preview_description"
+
+# the value of the provider's artwork template that has the covers generated with AI
+TEMPLATE_AI: Final = "ai_generated"
 
 PLAYLISTS_SMART: Final = "smart"
 PLAYLISTS_ALL: Final = "all"
 
 DEFAULT_MAX_PER_HOUR: Final = 30
 
-# directory inside the storage path holding the generated covers
-IMAGES_DIR: Final = "ai_artwork"
+# the generated covers share the collage directory, told apart by this file name prefix
+IMAGE_PREFIX: Final = "ai_"
 IMAGE_EXTENSION: Final = ".jpg"
 CANVAS_SIZE: Final = 1024
 # an overlaid title takes at most this many lines; past that the font shrinks, down to
@@ -40,10 +42,6 @@ MAX_TITLE_LINES: Final = 3
 MIN_TITLE_SCALE: Final = 0.4
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
-
-# playlist_metadata's collage is regenerated on every refresh, so it never counts as artwork
-# worth keeping over a generated cover
-REPLACEABLE_IMAGE_DOMAINS: Final = frozenset({"playlist_metadata"})
 
 # image models take a while, a slow one well over a minute
 IMAGE_TIMEOUT_SECONDS: Final = 300
@@ -73,9 +71,6 @@ MAX_FAVORITES: Final = 6
 
 # separates the title from the artists in a seed label, as the smart playlist provider writes it
 SEED_SEPARATOR: Final = " \u2013 "
-
-# files written this recently may not be referenced by the library yet
-ORPHAN_GRACE_SECONDS: Final = 300
 
 
 class Style(StrEnum):

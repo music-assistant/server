@@ -248,6 +248,7 @@ async def create_image_engine_config_entries(
     depends_on: str | None = None,
     required: bool = False,
     category: str = "features",
+    depends_on_value: ConfigValueType | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
     Return the config entries letting the user pick an image generation engine.
@@ -257,6 +258,8 @@ async def create_image_engine_config_entries(
     :param mass: The Music Assistant instance to query.
     :param key: The config entry key holding the selected engine uid.
     :param depends_on: Optional key of the entry this picker should be shown for.
+    :param depends_on_value: Optional value of the depends_on entry this picker is shown for,
+        instead of for any set value.
     :param required: Reject a submission that leaves the picker empty. Only for setup flows;
         an options entry must stay optional so a provider with no selection still loads.
     :param category: The settings category to show the entries under.
@@ -268,6 +271,7 @@ async def create_image_engine_config_entries(
         required,
         category,
         unavailable_translation_key="image_engine_unavailable",
+        depends_on_value=depends_on_value,
     )
 
 
@@ -346,6 +350,7 @@ def _create_engine_config_entries(
     category: str = "features",
     *,
     unavailable_translation_key: str,
+    depends_on_value: ConfigValueType | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Build the picker (and unavailable alert) config entries for the given engines."""
     entry = ConfigEntry(
@@ -359,6 +364,7 @@ def _create_engine_config_entries(
             ConfigValueOption(engine.uid, title=engine_display_name(engine)) for engine in engines
         ],
         depends_on=depends_on,
+        depends_on_value=depends_on_value,
         category=category,
         read_only=not engines,
     )
@@ -370,6 +376,7 @@ def _create_engine_config_entries(
             key=f"{key}_unavailable",
             type=ConfigEntryType.ALERT,
             depends_on=depends_on,
+            depends_on_value=depends_on_value,
             category=category,
             # the alert text does not depend on what the picker is used for, so every
             # caller shares one source string instead of authoring its own copy

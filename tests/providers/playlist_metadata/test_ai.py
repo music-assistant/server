@@ -1,4 +1,4 @@
-"""Tests for the AI Artwork metadata provider."""
+"""Tests for the AI generated covers and descriptions of the playlist_metadata provider."""
 
 # the seed labels of smart playlists separate title and artists with an en dash
 # ruff: noqa: RUF001
@@ -31,15 +31,15 @@ from PIL import Image, ImageDraw
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.controllers.music.media.tracks import TrackPlayCount
-from music_assistant.providers.ai_artwork import AIArtworkProvider, _fit_title, _format_template
-from music_assistant.providers.ai_artwork.constants import (
+from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
+from music_assistant.providers.playlist_metadata.ai import _fit_title, _format_template
+from music_assistant.providers.playlist_metadata.ai_constants import (
     CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
     CONF_CUSTOM_PROMPT,
     CONF_DESCRIPTIONS,
     CONF_EXTRA_PLAYLISTS,
     CONF_IMAGE_ENGINE,
-    CONF_KEEP_EXISTING_ARTWORK,
     CONF_MAX_PER_HOUR,
     CONF_PLAYLISTS,
     CONF_PREVIEW_CUSTOM_PROMPT,
@@ -53,23 +53,27 @@ from music_assistant.providers.ai_artwork.constants import (
     CONF_USE_PROMPT_ENGINE,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
+    TEMPLATE_AI,
     Style,
 )
 
-INSTANCE_ID = "ai_artwork"
+INSTANCE_ID = "playlist_metadata"
 ENGINE_UID = "hass--test/ai_task.images"
 TEXT_ENGINE_UID = "openai_compatible--test/gemini-flash"
 DESCRIPTION = "Melodic house for the hours after midnight. RÜFÜS DU SOL, Lane 8 and more."
 
 DEFAULT_CONFIG: dict[str, Any] = {
     CONF_LOG_LEVEL: "GLOBAL",
+    "template": TEMPLATE_AI,
+    "fallback_template": "album_grid",
+    "skip_provider_playlists": True,
+    "enable_genre_detection": False,
     CONF_IMAGE_ENGINE: ENGINE_UID,
     CONF_STYLE: "music_assistant",
     CONF_CUSTOM_PROMPT: "",
     CONF_TITLE_OVERLAY: False,
     CONF_PLAYLISTS: PLAYLISTS_SMART,
     CONF_EXTRA_PLAYLISTS: [],
-    CONF_KEEP_EXISTING_ARTWORK: True,
     CONF_DESCRIPTIONS: True,
     CONF_TEXT_ENGINE: TEXT_ENGINE_UID,
     CONF_USE_PROMPT_ENGINE: False,
@@ -86,44 +90,50 @@ SMART_RULES = {
 
 
 @pytest.fixture
-async def provider(tmp_path: Path) -> AsyncGenerator[AIArtworkProvider]:
+async def provider(tmp_path: Path) -> AsyncGenerator[PlaylistMetadataProvider]:
     """Return an initialized provider with mocked image and text engines selected."""
     provider = _make_provider(tmp_path)
-    await provider.handle_async_init()
+    await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.ai_artwork.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
             AsyncMock(return_value=provider.test_engine),  # type: ignore[attr-defined]
         ),
         patch(
-            "music_assistant.providers.ai_artwork.select_ai_engine",
+            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
             AsyncMock(return_value=provider.test_text_engine),  # type: ignore[attr-defined]
         ),
     ):
         yield provider
 
 
-async def test_generates_and_stores_a_cover_in_front_of_the_other_images(
-    provider: AIArtworkProvider,
+async def test_generates_and_stores_a_cover_in_place_of_the_collage(
+    provider: PlaylistMetadataProvider,
 ) -> None:
-    """A smart playlist gets a cover, placed first so it is the one shown."""
-    collage = _image("collage.jpg", provider="playlist_metadata")
-    playlist = _smart_playlist(images=[collage])
+    """A smart playlist gets a cover, which takes the place of its collage."""
+    collage = _image("1_1791525935_thumb.jpg", provider=INSTANCE_ID)
+    Path(provider._images_dir, collage.path).write_bytes(b"collage")
+    fanart = MediaItemImage(type=ImageType.FANART, path="fanart.jpg", provider="spotify")
+    playlist = _smart_playlist(images=[collage, fanart])
 
     await provider.get_playlist_metadata(playlist)
 
     images = list(playlist.metadata.images or [])
     assert images[0].provider == INSTANCE_ID
     assert images[0].type == ImageType.THUMB
-    assert images[1] == collage
+    assert images[0].path.startswith("ai_")
+    assert images[1:] == [fanart]
     assert playlist.image == images[0]
+    assert not Path(provider._images_dir, collage.path).exists()
     stored = Path(provider._images_dir, images[0].path)
     with Image.open(stored) as cover:
         assert cover.size == (1024, 1024)
         assert cover.format == "JPEG"
 
 
-async def test_spotify_prompt_matches_the_cronicle_script(provider: AIArtworkProvider) -> None:
+async def test_spotify_prompt_matches_the_cronicle_script(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """The Spotify preset with the engine drawing the title reproduces the original prompt."""
     playlist = _smart_playlist(name="2000s Emo & Alt Rock")
     rules = {
@@ -159,7 +169,7 @@ async def test_spotify_prompt_matches_the_cronicle_script(provider: AIArtworkPro
     )
 
 
-async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider) -> None:
+async def test_smart_playlist_rules_shape_the_prompt(provider: PlaylistMetadataProvider) -> None:
     """Seeds, era, artists and genres of the rules all reach the prompt."""
     await provider.get_playlist_metadata(_smart_playlist())
 
@@ -181,7 +191,7 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: AIArtworkProvider
     ],
 )
 async def test_each_style_has_its_own_prompt(
-    provider: AIArtworkProvider, style: str, expected: str
+    provider: PlaylistMetadataProvider, style: str, expected: str
 ) -> None:
     """Every preset sends its own art direction."""
     _set_config(provider, **{CONF_STYLE: style})
@@ -191,7 +201,9 @@ async def test_each_style_has_its_own_prompt(
     assert expected in _sent_prompt(provider)
 
 
-async def test_title_overlay_asks_for_artwork_without_text(provider: AIArtworkProvider) -> None:
+async def test_title_overlay_asks_for_artwork_without_text(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """When the title is drawn afterwards, the engine is told to leave text out."""
     _set_config(provider, **{CONF_TITLE_OVERLAY: True})
 
@@ -202,7 +214,7 @@ async def test_title_overlay_asks_for_artwork_without_text(provider: AIArtworkPr
     assert "Typography" not in prompt
 
 
-async def test_custom_template_fills_known_placeholders(provider: AIArtworkProvider) -> None:
+async def test_custom_template_fills_known_placeholders(provider: PlaylistMetadataProvider) -> None:
     """A custom prompt gets the playlist values, unknown placeholders stay as typed."""
     _set_config(
         provider,
@@ -220,7 +232,7 @@ def test_format_template_takes_unbalanced_braces_literally() -> None:
 
 
 async def test_a_stored_cover_is_reused_without_calling_the_engine(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """The second refresh of an unchanged playlist does not pay for a new image."""
     playlist = _smart_playlist()
@@ -234,7 +246,7 @@ async def test_a_stored_cover_is_reused_without_calling_the_engine(
     assert [img.provider for img in playlist.metadata.images or []] == [INSTANCE_ID]
 
 
-async def test_changing_the_style_replaces_the_cover(provider: AIArtworkProvider) -> None:
+async def test_changing_the_style_replaces_the_cover(provider: PlaylistMetadataProvider) -> None:
     """A new style generates a new cover and removes the old one, file included."""
     playlist = _smart_playlist()
     await provider.get_playlist_metadata(playlist)
@@ -251,7 +263,7 @@ async def test_changing_the_style_replaces_the_cover(provider: AIArtworkProvider
     assert not Path(provider._images_dir, old.path).exists()
 
 
-async def test_renaming_the_playlist_replaces_the_cover(provider: AIArtworkProvider) -> None:
+async def test_renaming_the_playlist_replaces_the_cover(provider: PlaylistMetadataProvider) -> None:
     """The title is part of the artwork, so a new name needs a new cover."""
     playlist = _smart_playlist()
     await provider.get_playlist_metadata(playlist)
@@ -262,7 +274,7 @@ async def test_renaming_the_playlist_replaces_the_cover(provider: AIArtworkProvi
     assert _engine_calls(provider) == 2
 
 
-async def test_regular_playlists_need_to_be_opted_in(provider: AIArtworkProvider) -> None:
+async def test_regular_playlists_need_to_be_opted_in(provider: PlaylistMetadataProvider) -> None:
     """Only smart playlists get a cover unless a playlist is picked or all are included."""
     playlist = _playlist("builtin", item_id="42", is_editable=True)
     await provider.get_playlist_metadata(playlist)
@@ -278,7 +290,9 @@ async def test_regular_playlists_need_to_be_opted_in(provider: AIArtworkProvider
     assert _engine_calls(provider) == 2
 
 
-async def test_a_playlist_leaving_the_scope_loses_its_cover(provider: AIArtworkProvider) -> None:
+async def test_a_playlist_leaving_the_scope_loses_its_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """Opting a playlist out takes its generated cover off again."""
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
     playlist = _playlist("builtin", item_id="42", is_editable=True)
@@ -292,7 +306,7 @@ async def test_a_playlist_leaving_the_scope_loses_its_cover(provider: AIArtworkP
 
 
 async def test_builtin_playlists_that_can_not_be_edited_are_skipped(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """Music Assistant's own generated playlists keep their static artwork."""
     _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_ALL})
@@ -302,7 +316,7 @@ async def test_builtin_playlists_that_can_not_be_edited_are_skipped(
     assert _engine_calls(provider) == 0
 
 
-async def test_existing_artwork_is_kept(provider: AIArtworkProvider) -> None:
+async def test_existing_artwork_is_kept(provider: PlaylistMetadataProvider) -> None:
     """A cover of the playlist's own (service artwork, an added image) is left alone."""
     own_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
     playlist = _smart_playlist(images=[own_cover])
@@ -313,7 +327,9 @@ async def test_existing_artwork_is_kept(provider: AIArtworkProvider) -> None:
     assert list(playlist.metadata.images or []) == [own_cover]
 
 
-async def test_artwork_that_can_not_be_shown_is_not_kept(provider: AIArtworkProvider) -> None:
+async def test_artwork_that_can_not_be_shown_is_not_kept(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """A local file the built-in provider refuses to serve counts as no artwork at all."""
     _mass(provider).get_provider("builtin").resolve_image = AsyncMock(
         side_effect=FileNotFoundError("Invalid image reference")
@@ -329,20 +345,72 @@ async def test_artwork_that_can_not_be_shown_is_not_kept(provider: AIArtworkProv
     assert images[1] == broken_cover
 
 
-async def test_existing_artwork_is_replaced_when_not_kept(provider: AIArtworkProvider) -> None:
-    """With keeping turned off, the generated cover goes in front of the existing one."""
-    _set_config(provider, **{CONF_KEEP_EXISTING_ARTWORK: False})
-    own_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
-    playlist = _smart_playlist(images=[own_cover])
+async def test_service_artwork_is_kept(provider: PlaylistMetadataProvider) -> None:
+    """A provider playlist with a cover of its own keeps it, also with all playlists in scope."""
+    _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_ALL})
+    service_cover = _image("https://example.com/cover.jpg", provider="spotify")
+    playlist = _playlist("spotify")
+    playlist.metadata.images = UniqueList([service_cover])
 
     await provider.get_playlist_metadata(playlist)
 
-    images = list(playlist.metadata.images or [])
-    assert images[0].provider == INSTANCE_ID
-    assert images[1] == own_cover
+    assert _engine_calls(provider) == 0
+    assert list(playlist.metadata.images or []) == [service_cover]
 
 
-async def test_the_hourly_limit_postpones_generation(provider: AIArtworkProvider) -> None:
+async def test_the_collage_is_used_without_the_ai_template(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """With a collage template picked, nothing is generated with AI."""
+    _set_config(provider, template="album_fan")
+
+    with patch.object(provider, "_generate_and_write", AsyncMock(return_value=None)) as collage:
+        await provider.get_playlist_metadata(_smart_playlist())
+
+    assert _engine_calls(provider) == 0
+    assert collage.await_args_list[0].kwargs["template"] == "album_fan"
+
+
+async def test_the_fallback_template_makes_the_collage_meanwhile(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A playlist out of scope gets the collage, made with the fallback template."""
+    _set_config(provider, fallback_template="artist_radio")
+    thumb = MediaItemImage(
+        type=ImageType.THUMB,
+        path=os.path.join(provider._images_dir, "42_1_thumb.jpg"),
+        provider=INSTANCE_ID,
+    )
+
+    with patch.object(provider, "_generate_and_write", AsyncMock(return_value=thumb)) as collage:
+        metadata = await provider.get_playlist_metadata(
+            _playlist("builtin", item_id="42", is_editable=True)
+        )
+
+    assert _engine_calls(provider) == 0
+    assert {call.kwargs["template"] for call in collage.await_args_list} == {"artist_radio"}
+    assert metadata is not None
+    assert thumb in (metadata.images or [])
+
+
+async def test_a_failed_generation_keeps_the_previous_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A playlist keeps its generated cover while a new one can not be made."""
+    playlist = _smart_playlist()
+    await provider.get_playlist_metadata(playlist)
+    first = playlist.image
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("quota exceeded")
+    )
+    playlist.name = "Renamed"
+
+    await provider.get_playlist_metadata(playlist)
+
+    assert playlist.image == first
+
+
+async def test_the_hourly_limit_postpones_generation(provider: PlaylistMetadataProvider) -> None:
     """Covers over the limit are not generated now but scheduled for later."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
@@ -357,12 +425,12 @@ async def test_the_hourly_limit_postpones_generation(provider: AIArtworkProvider
     assert _mass(provider).call_later.call_args.args[2] == second.uri
 
 
-async def test_the_hourly_limit_survives_a_reload(provider: AIArtworkProvider) -> None:
+async def test_the_hourly_limit_survives_a_reload(provider: PlaylistMetadataProvider) -> None:
     """Covers generated before a reload (as a settings change causes) still count."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
 
-    await provider.handle_async_init()
+    await provider._ai.setup()
     second = _smart_playlist(item_id="2")
     await provider.get_playlist_metadata(second)
 
@@ -371,27 +439,29 @@ async def test_the_hourly_limit_survives_a_reload(provider: AIArtworkProvider) -
 
 
 async def test_the_hourly_limit_forgets_generations_older_than_an_hour(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """Stored generations from over an hour ago no longer count after a reload."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
-    with patch("music_assistant.providers.ai_artwork.time.time", return_value=1_000_000.0):
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.time.time", return_value=1_000_000.0
+    ):
         await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
 
-    await provider.handle_async_init()
+    await provider._ai.setup()
     await provider.get_playlist_metadata(_smart_playlist(item_id="2"))
 
     assert _engine_calls(provider) == 2
 
 
-async def test_a_failing_engine_leaves_the_playlist_untouched(
-    provider: AIArtworkProvider,
+async def test_a_failing_engine_leaves_the_collage_in_place(
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """An engine error is logged, not raised into the metadata refresh."""
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
         side_effect=RuntimeError("quota exceeded")
     )
-    collage = _image("collage.jpg", provider="playlist_metadata")
+    collage = _image("1_1791525935_thumb.jpg", provider=INSTANCE_ID)
     playlist = _smart_playlist(images=[collage])
 
     await provider.get_playlist_metadata(playlist)
@@ -403,14 +473,15 @@ async def test_a_failing_engine_leaves_the_playlist_untouched(
 async def test_without_an_image_engine_nothing_is_generated(tmp_path: Path) -> None:
     """With no engine available the provider does nothing."""
     provider = _make_provider(tmp_path)
-    await provider.handle_async_init()
+    await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.ai_artwork.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
             AsyncMock(return_value=None),
         ),
         patch(
-            "music_assistant.providers.ai_artwork.select_ai_engine", AsyncMock(return_value=None)
+            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+            AsyncMock(return_value=None),
         ),
     ):
         await provider.get_playlist_metadata(_smart_playlist())
@@ -418,7 +489,9 @@ async def test_without_an_image_engine_nothing_is_generated(tmp_path: Path) -> N
     assert _engine_calls(provider) == 0
 
 
-async def test_the_prompt_engine_writes_the_visual_concept(provider: AIArtworkProvider) -> None:
+async def test_the_prompt_engine_writes_the_visual_concept(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """With a prompt engine, its scene description replaces the generic concept sentence."""
     _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
@@ -433,7 +506,7 @@ async def test_the_prompt_engine_writes_the_visual_concept(provider: AIArtworkPr
 
 
 async def test_regular_playlist_context_comes_from_its_tracks(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """A playlist without rules is described by its most common artists and genres."""
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
@@ -442,7 +515,7 @@ async def test_regular_playlist_context_comes_from_its_tracks(
         _track("Just Dance", "Lady Gaga", {"Pop"}),
         _track("Vogue", "Madonna", {"Dance"}),
     ]
-    _mass(provider).music.playlists.tracks = MagicMock(return_value=_async_iter(tracks))
+    _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
 
     await provider.get_playlist_metadata(_playlist("builtin", item_id="42", is_editable=True))
 
@@ -454,7 +527,7 @@ async def test_regular_playlist_context_comes_from_its_tracks(
     assert "Artists/genres: Lady Gaga, Madonna, Pop, Dance." in prompt
 
 
-async def test_resolve_image_returns_a_stored_cover(provider: AIArtworkProvider) -> None:
+async def test_resolve_image_returns_a_stored_cover(provider: PlaylistMetadataProvider) -> None:
     """A stored cover is served from the images directory."""
     Path(provider._images_dir, "1_abc.jpg").write_bytes(b"jpeg")
 
@@ -463,7 +536,7 @@ async def test_resolve_image_returns_a_stored_cover(provider: AIArtworkProvider)
 
 @pytest.mark.parametrize("path", ["../secret.txt", "/etc/passwd", "sub/../../secret.txt"])
 async def test_resolve_image_rejects_paths_outside_the_images_dir(
-    provider: AIArtworkProvider, path: str
+    provider: PlaylistMetadataProvider, path: str
 ) -> None:
     """A path from the library must never reach outside our directory."""
     Path(provider._images_dir).parent.joinpath("secret.txt").write_text("secret")
@@ -472,15 +545,10 @@ async def test_resolve_image_rejects_paths_outside_the_images_dir(
         await provider.resolve_image(path)
 
 
-async def test_scheduled_refresh_generates_missing_covers_and_removes_orphans(
-    provider: AIArtworkProvider,
+async def test_scheduled_refresh_generates_missing_covers(
+    provider: PlaylistMetadataProvider,
 ) -> None:
-    """The hourly pass refreshes playlists lacking their cover and deletes unreferenced files."""
-    orphan = Path(provider._images_dir, "9_dead.jpg")
-    orphan.write_bytes(b"old")
-    os.utime(orphan, (time.time() - 3600, time.time() - 3600))
-    fresh_orphan = Path(provider._images_dir, "9_new.jpg")
-    fresh_orphan.write_bytes(b"new")
+    """The hourly pass refreshes the playlists in scope that lack their cover."""
     missing = _smart_playlist(item_id="1")
     out_of_scope = _playlist("builtin", item_id="2", is_editable=True)
     _mass(provider).music.playlists.iter_library_items = MagicMock(
@@ -488,49 +556,101 @@ async def test_scheduled_refresh_generates_missing_covers_and_removes_orphans(
     )
     _mass(provider).metadata.update_metadata = AsyncMock()
 
-    await provider._refresh_covers()
+    await provider._ai.refresh()
 
     _mass(provider).metadata.update_metadata.assert_awaited_once_with(missing, force_refresh=True)
+
+
+async def test_the_cleanup_keeps_covers_in_use_and_removes_orphans(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Generated covers share the collage cleanup: only unreferenced old files are deleted."""
+    in_use = Path(provider._images_dir, "ai_1_abc.jpg")
+    orphan = Path(provider._images_dir, "ai_9_dead.jpg")
+    fresh_orphan = Path(provider._images_dir, "ai_9_new.jpg")
+    for path in (in_use, orphan):
+        path.write_bytes(b"old")
+        os.utime(path, (time.time() - 3600, time.time() - 3600))
+    fresh_orphan.write_bytes(b"new")
+    playlist = _smart_playlist(item_id="1", images=[_image(in_use.name, provider=INSTANCE_ID)])
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        return_value=_async_iter([playlist])
+    )
+
+    await provider._cleanup_stale_images()
+
+    assert in_use.exists()
     assert not orphan.exists()
     # written moments ago, so possibly not stored in the library yet
     assert fresh_orphan.exists()
 
 
-async def test_refreshes_soon_after_loading(provider: AIArtworkProvider) -> None:
+async def test_refreshes_soon_after_loading(tmp_path: Path) -> None:
     """Besides the hourly run, loading (also after a settings change) refreshes soon after."""
+    provider = _make_provider(tmp_path)
     mass = _mass(provider)
 
     await provider.loaded_in_mass()
 
-    assert (
-        mass.tasks.register_scheduled_task.call_args.kwargs["handler"] == provider._refresh_covers
-    )
+    handlers = [
+        call.kwargs["handler"] for call in mass.tasks.register_scheduled_task.call_args_list
+    ]
+    assert provider._ai.refresh in handlers
     mass.call_later.assert_called_once_with(
-        120, provider._refresh_covers, task_id=f"{INSTANCE_ID}_catch_up"
+        120, provider._ai.refresh, task_id=f"{INSTANCE_ID}_ai_catch_up"
     )
 
     await provider.unload()
 
-    mass.cancel_timer.assert_called_once_with(f"{INSTANCE_ID}_catch_up")
+    mass.cancel_timer.assert_called_once_with(f"{INSTANCE_ID}_ai_catch_up")
+
+
+async def test_no_hourly_refresh_without_ai(tmp_path: Path) -> None:
+    """With AI turned off, only the catch-up after loading runs, to swap out old covers."""
+    provider = _make_provider(tmp_path)
+    _set_config(provider, template="album_grid", **{CONF_DESCRIPTIONS: False})
+    mass = _mass(provider)
+
+    await provider.loaded_in_mass()
+
+    handlers = [
+        call.kwargs["handler"] for call in mass.tasks.register_scheduled_task.call_args_list
+    ]
+    assert provider._ai.refresh not in handlers
+    mass.call_later.assert_called_once_with(
+        120, provider._ai.refresh, task_id=f"{INSTANCE_ID}_ai_catch_up"
+    )
 
 
 async def test_refresh_takes_the_cover_off_playlists_that_left_the_scope(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
-    """A playlist no longer in scope is refreshed so its cover comes off, and the file goes."""
+    """A playlist no longer in scope is refreshed so its cover makes way for the collage."""
     _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_SMART})
-    old_cover = Path(provider._images_dir, "5_cover.jpg")
-    old_cover.write_bytes(b"old")
-    os.utime(old_cover, (time.time() - 3600, time.time() - 3600))
     left = _playlist("spotify", item_id="5")
-    left.metadata.images = UniqueList([_image("5_cover.jpg", provider=INSTANCE_ID)])
+    left.metadata.images = UniqueList([_image("ai_5_cover.jpg", provider=INSTANCE_ID)])
     _mass(provider).music.playlists.iter_library_items = MagicMock(return_value=_async_iter([left]))
     _mass(provider).metadata.update_metadata = AsyncMock()
 
-    await provider._refresh_covers()
+    await provider._ai.refresh()
 
     _mass(provider).metadata.update_metadata.assert_awaited_once_with(left, force_refresh=True)
-    assert not old_cover.exists()
+
+
+async def test_refresh_puts_the_collage_back_after_switching_templates(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Picking a collage template swaps the generated covers out on the next refresh."""
+    _set_config(provider, template="album_grid")
+    playlist = _smart_playlist(images=[_image("ai_234_cover.jpg", provider=INSTANCE_ID)])
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        return_value=_async_iter([playlist])
+    )
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._ai.refresh()
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
 
 
 def test_a_long_title_is_fitted_whole() -> None:
@@ -555,7 +675,9 @@ def test_a_word_wider_than_the_cover_is_split_not_dropped() -> None:
     assert "".join(lines) == title
 
 
-async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProvider) -> None:
+async def test_writes_a_description_for_a_smart_playlist(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """A smart playlist gets a description from its rules and the listener's play counts."""
     _mass(provider).music.tracks.most_played_by_artists = AsyncMock(
         return_value=[
@@ -581,7 +703,7 @@ async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProv
 
 
 async def test_a_stored_description_is_reapplied_without_calling_the_engine(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """A description replaced by something else is put back from the cache."""
     await provider.get_playlist_metadata(_smart_playlist())
@@ -595,7 +717,7 @@ async def test_a_stored_description_is_reapplied_without_calling_the_engine(
 
 
 async def test_renaming_the_playlist_rewrites_the_description(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """The stored description belongs to the playlist name it was written for."""
     await provider.get_playlist_metadata(_smart_playlist())
@@ -605,7 +727,7 @@ async def test_renaming_the_playlist_rewrites_the_description(
     assert _text_calls(provider) == 2
 
 
-async def test_descriptions_can_be_turned_off(provider: AIArtworkProvider) -> None:
+async def test_descriptions_can_be_turned_off(provider: PlaylistMetadataProvider) -> None:
     """With descriptions off the playlist keeps its own."""
     _set_config(provider, **{CONF_DESCRIPTIONS: False})
     playlist = _smart_playlist()
@@ -617,7 +739,7 @@ async def test_descriptions_can_be_turned_off(provider: AIArtworkProvider) -> No
     assert _text_calls(provider) == 0
 
 
-async def test_the_hourly_limit_postpones_descriptions(provider: AIArtworkProvider) -> None:
+async def test_the_hourly_limit_postpones_descriptions(provider: PlaylistMetadataProvider) -> None:
     """Descriptions over the limit are left to a later refresh."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
@@ -630,7 +752,7 @@ async def test_the_hourly_limit_postpones_descriptions(provider: AIArtworkProvid
 
 
 async def test_a_failing_text_engine_leaves_the_description_untouched(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """A text engine error is logged, not raised into the metadata refresh."""
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
@@ -645,14 +767,16 @@ async def test_a_failing_text_engine_leaves_the_description_untouched(
 
 
 async def test_regenerate_makes_new_covers_and_descriptions(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """The regenerate action keys every cover and description anew, and starts a refresh."""
     first = _smart_playlist()
     await provider.get_playlist_metadata(first)
     _mass(provider).create_task = MagicMock(side_effect=lambda coro, **_kw: coro.close())
 
-    with patch("music_assistant.providers.ai_artwork.time.time", return_value=2_000_000_000.0):
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.time.time", return_value=2_000_000_000.0
+    ):
         await provider.handle_config_action(CONF_ACTION_REGENERATE)
     second = _smart_playlist(images=list(first.metadata.images or []))
     await provider.get_playlist_metadata(second)
@@ -666,7 +790,7 @@ async def test_regenerate_makes_new_covers_and_descriptions(
 
 
 async def test_preview_shows_covers_and_description_without_storing(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """The preview shows a labelled cover per style and the description, and keeps neither."""
     playlist = _smart_playlist(name="Late Night Drive")
@@ -695,7 +819,7 @@ async def test_preview_shows_covers_and_description_without_storing(
     assert not playlist.metadata.description
 
 
-async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) -> None:
+async def test_preview_uses_its_own_style_settings(provider: PlaylistMetadataProvider) -> None:
     """The preview tries its own styles and prompt, and the configured title setting."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(
         return_value=_smart_playlist(name="Late Night Drive")
@@ -713,7 +837,7 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
     with (
         _no_engine_pickers(),
         patch(
-            "music_assistant.providers.ai_artwork._render_cover", return_value=_png()
+            "music_assistant.providers.playlist_metadata.ai._render_cover", return_value=_png()
         ) as render_cover,
     ):
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
@@ -722,7 +846,7 @@ async def test_preview_uses_its_own_style_settings(provider: AIArtworkProvider) 
     assert render_cover.call_args.args[1] is not None
 
 
-async def test_preview_shows_every_preset_by_default(provider: AIArtworkProvider) -> None:
+async def test_preview_shows_every_preset_by_default(provider: PlaylistMetadataProvider) -> None:
     """Without styles picked, every preset is previewed once, each as its own image."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
@@ -737,7 +861,9 @@ async def test_preview_shows_every_preset_by_default(provider: AIArtworkProvider
     ]
 
 
-async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkProvider) -> None:
+async def test_preview_still_shows_the_styles_that_worked(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """One style failing leaves it out instead of failing the whole preview."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
@@ -763,7 +889,7 @@ async def test_preview_still_shows_the_styles_that_worked(provider: AIArtworkPro
     ]
 
 
-async def test_preview_without_a_description(provider: AIArtworkProvider) -> None:
+async def test_preview_without_a_description(provider: PlaylistMetadataProvider) -> None:
     """A text engine that fails leaves the description out and still shows the covers."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
@@ -779,7 +905,7 @@ async def test_preview_without_a_description(provider: AIArtworkProvider) -> Non
     assert CONF_PREVIEW_DESCRIPTION not in keys
 
 
-async def test_preview_fails_when_no_style_worked(provider: AIArtworkProvider) -> None:
+async def test_preview_fails_when_no_style_worked(provider: PlaylistMetadataProvider) -> None:
     """When every style fails, the preview reports the engine's error."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
@@ -791,7 +917,7 @@ async def test_preview_fails_when_no_style_worked(provider: AIArtworkProvider) -
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
 
-async def test_preview_needs_a_playlist(provider: AIArtworkProvider) -> None:
+async def test_preview_needs_a_playlist(provider: PlaylistMetadataProvider) -> None:
     """Pressing preview without a playlist picked asks for one and generates nothing."""
     with pytest.raises(ActionUnavailable, match="Pick a playlist"):
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
@@ -799,7 +925,7 @@ async def test_preview_needs_a_playlist(provider: AIArtworkProvider) -> None:
     assert _engine_calls(provider) == 0
 
 
-async def test_settings_page_has_no_preview_until_asked(provider: AIArtworkProvider) -> None:
+async def test_settings_page_has_no_preview_until_asked(provider: PlaylistMetadataProvider) -> None:
     """The regular config entries offer the preview button but no preview image."""
     _mass(provider).music.playlists.iter_library_items = MagicMock(
         side_effect=lambda: _async_iter([_smart_playlist(name="Late Night Drive")])
@@ -818,7 +944,9 @@ async def test_settings_page_has_no_preview_until_asked(provider: AIArtworkProvi
     ]
 
 
-async def test_changing_preview_settings_does_not_reload(provider: AIArtworkProvider) -> None:
+async def test_changing_preview_settings_does_not_reload(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """Only preview settings changing keeps the provider loaded; anything else reloads."""
     config = MagicMock()
     with patch(
@@ -838,7 +966,7 @@ async def test_changing_preview_settings_does_not_reload(provider: AIArtworkProv
 
 
 async def test_scheduled_refresh_puts_back_replaced_descriptions(
-    provider: AIArtworkProvider,
+    provider: PlaylistMetadataProvider,
 ) -> None:
     """A playlist whose cover is current is only refreshed when its description was replaced."""
     current = _smart_playlist(item_id="1")
@@ -851,16 +979,16 @@ async def test_scheduled_refresh_puts_back_replaced_descriptions(
     )
     _mass(provider).metadata.update_metadata = AsyncMock()
 
-    await provider._refresh_covers()
+    await provider._ai.refresh()
     _mass(provider).music.playlists.iter_library_items = MagicMock(
         return_value=_async_iter([replaced])
     )
-    await provider._refresh_covers()
+    await provider._ai.refresh()
 
     _mass(provider).metadata.update_metadata.assert_awaited_once_with(replaced, force_refresh=True)
 
 
-def _make_provider(tmp_path: Path) -> AIArtworkProvider:
+def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     """Construct the provider on a mocked Music Assistant."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path / "data")
@@ -871,26 +999,23 @@ def _make_provider(tmp_path: Path) -> AIArtworkProvider:
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
     smart_playlist_provider.get_smart_playlist_rules = AsyncMock(return_value=SMART_RULES)
-    collage_provider = MagicMock()
-    collage_provider.domain = "playlist_metadata"
     builtin_provider = MagicMock()
     builtin_provider.domain = "builtin"
     builtin_provider.resolve_image = AsyncMock(side_effect=lambda path: path)
     providers = {
         "smart_playlist": smart_playlist_provider,
-        "playlist_metadata": collage_provider,
         "builtin": builtin_provider,
     }
     mass.get_provider = MagicMock(side_effect=lambda instance_id: providers.get(instance_id))
 
     manifest = MagicMock()
-    manifest.domain = "ai_artwork"
+    manifest.domain = "playlist_metadata"
     config = MagicMock()
     config.instance_id = INSTANCE_ID
     config.get_value = MagicMock(
         side_effect=lambda key, default=None: DEFAULT_CONFIG.get(key, default)
     )
-    provider = AIArtworkProvider(mass, manifest, config, set())
+    provider = PlaylistMetadataProvider(mass, manifest, config, set())
     _set_config(provider)
 
     engine = MagicMock()
@@ -938,7 +1063,7 @@ class _FakeCache:
         self.data[(key, provider, category)] = (data, checksum)
 
 
-def _set_config(provider: AIArtworkProvider, **overrides: Any) -> None:
+def _set_config(provider: PlaylistMetadataProvider, **overrides: Any) -> None:
     """Make the provider read the default config with the given overrides."""
     current = getattr(provider, "_test_config", dict(DEFAULT_CONFIG))
     current.update(overrides)
@@ -1034,33 +1159,33 @@ def _no_engine_pickers() -> Iterator[None]:
     """Leave the engine pickers out of the config entries, they have tests of their own."""
     with (
         patch(
-            "music_assistant.providers.ai_artwork.create_image_engine_config_entries",
+            "music_assistant.providers.playlist_metadata.ai.create_image_engine_config_entries",
             AsyncMock(return_value=()),
         ),
         patch(
-            "music_assistant.providers.ai_artwork.create_ai_engine_config_entries",
+            "music_assistant.providers.playlist_metadata.ai.create_ai_engine_config_entries",
             AsyncMock(return_value=()),
         ),
     ):
         yield
 
 
-def _mass(provider: AIArtworkProvider) -> MagicMock:
+def _mass(provider: PlaylistMetadataProvider) -> MagicMock:
     """Return the mocked Music Assistant of the provider."""
     return cast("MagicMock", provider.mass)
 
 
-def _text_calls(provider: AIArtworkProvider) -> int:
+def _text_calls(provider: PlaylistMetadataProvider) -> int:
     """Return how often the text engine was asked for a description."""
     return int(provider.test_text_engine.provider.ai_query.await_count)  # type: ignore[attr-defined]
 
 
-def _engine_calls(provider: AIArtworkProvider) -> int:
+def _engine_calls(provider: PlaylistMetadataProvider) -> int:
     """Return how often the image engine was asked for an image."""
     return int(provider.test_engine.provider.ai_generate_image.await_count)  # type: ignore[attr-defined]
 
 
-def _sent_prompt(provider: AIArtworkProvider) -> str:
+def _sent_prompt(provider: PlaylistMetadataProvider) -> str:
     """Return the prompt of the last image request."""
     return str(provider.test_engine.provider.ai_generate_image.await_args.args[0])  # type: ignore[attr-defined]
 
