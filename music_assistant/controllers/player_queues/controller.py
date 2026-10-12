@@ -1491,21 +1491,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return next_item
 
     def begin_stream_resume(
-        self,
-        queue_id: str,
-        queue_item_id: str,
-        old_seek_position: float,
-        resume_position: float,
+        self, queue_id: str, queue_item_id: str, resume_position: float
     ) -> None:
         """
         Continue the queue's timeline on a re-requested stream of its current item.
 
         Call when a player re-requests the item it plays and the new stream starts at
-        resume_position. A player that keeps its old stream falls back to old_seek_position.
+        resume_position. The timeline runs on from resume_position until the player's
+        position shows it switched to the new stream.
 
         :param queue_id: The queue whose current item is re-requested.
         :param queue_item_id: The re-requested (current) queue item.
-        :param old_seek_position: The item's seek offset in the stream the player is leaving.
         :param resume_position: Where the re-requested stream starts, in media seconds.
         """
         queue_data = self._queue_data[queue_id]
@@ -1514,7 +1510,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         now = time.time()
         queue_data.pending_stream_resume = PendingStreamResume(
             queue_item_id=queue_item_id,
-            old_seek_position=old_seek_position,
             resume_position=resume_position,
             started_at=now,
             device_elapsed=player.state.corrected_elapsed_time if player else None,

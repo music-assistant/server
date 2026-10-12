@@ -69,7 +69,7 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueue, QueueItem]:
 def _begin_resume(ctrl: PlayerQueuesController, item: QueueItem) -> None:
     """Re-request the playing track, as the streams controller does."""
     cast("MagicMock", ctrl.mass).players.get_player.return_value = _player(STREAM_ELAPSED)
-    ctrl.begin_stream_resume(QUEUE_ID, ITEM_ID, START_SEEK, RESUME_AT)
+    ctrl.begin_stream_resume(QUEUE_ID, ITEM_ID, RESUME_AT)
     assert item.streamdetails is not None
     item.streamdetails.seek_position = RESUME_AT
 
@@ -104,41 +104,21 @@ def test_counter_restart_commits_the_resume_position() -> None:
     assert ctrl._queue_data[QUEUE_ID].pending_stream_resume is None
 
 
-def test_player_that_keeps_its_old_stream_restores_the_start_offset() -> None:
-    """Without a counter restart within the timeout, the old stream's offset applies again."""
+def test_counter_frozen_while_buffering_keeps_bridging() -> None:
+    """A counter that stays frozen while the player buffers the new stream is not a switch."""
     ctrl, queue, item = _controller()
     _begin_resume(ctrl, item)
     queue_data = ctrl._queue_data[QUEUE_ID]
     assert queue_data.pending_stream_resume is not None
     queue_data.pending_stream_resume = dataclasses.replace(
         queue_data.pending_stream_resume,
-        started_at=queue_data.pending_stream_resume.started_at - 11,
+        started_at=queue_data.pending_stream_resume.started_at - 12,
     )
 
-    ctrl._update_queue_from_player(_player(STREAM_ELAPSED + 11))  # type: ignore[arg-type]
+    ctrl._update_queue_from_player(_player(STREAM_ELAPSED))  # type: ignore[arg-type]
 
-    assert queue.elapsed_time == START_SEEK + STREAM_ELAPSED + 11
-    assert item.streamdetails is not None
-    assert item.streamdetails.seek_position == START_SEEK
-    assert queue_data.pending_stream_resume is None
-
-
-def test_counter_restart_reported_after_the_timeout_commits_the_resume_position() -> None:
-    """A restarted counter first heard after the timeout is on the new stream, not the old one."""
-    ctrl, queue, item = _controller()
-    _begin_resume(ctrl, item)
-    queue_data = ctrl._queue_data[QUEUE_ID]
+    assert RESUME_AT + 12 <= queue.elapsed_time < RESUME_AT + 13
     assert queue_data.pending_stream_resume is not None
-    # an early join: too little was played for the restart to read as a drop
-    queue_data.pending_stream_resume = dataclasses.replace(
-        queue_data.pending_stream_resume,
-        device_elapsed=6,
-        started_at=queue_data.pending_stream_resume.started_at - 11,
-    )
-
-    ctrl._update_queue_from_player(_player(9))  # type: ignore[arg-type]
-
-    assert queue.elapsed_time == RESUME_AT + 9
     assert item.streamdetails is not None
     assert item.streamdetails.seek_position == RESUME_AT
-    assert queue_data.pending_stream_resume is None
+    assert _last_playing_elapsed(ctrl) <= queue.elapsed_time

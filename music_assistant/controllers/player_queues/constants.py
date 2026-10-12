@@ -138,7 +138,3 @@ PROBED_DURATION_MEDIA_TYPES = (
 # A forward skip never lands closer than this to the end of the item. The item then finishes on
 # its own and the queue advances normally.
 SKIP_END_MARGIN = 1
-
-# Seconds a player gets to switch to a re-requested stream of its current item. One that still
-# reports the old stream's position after this kept playing the old stream.
-STREAM_RESUME_HANDOFF_TIMEOUT = 10

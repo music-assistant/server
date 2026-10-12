@@ -45,8 +45,6 @@ class PendingStreamResume:
     """A re-requested stream of the current item that the player has not switched to yet."""
 
     queue_item_id: str
-    # the item's seek offset in the stream the player is leaving
-    old_seek_position: float
     # where the re-requested stream starts, in media seconds
     resume_position: float
     started_at: float
@@ -106,7 +104,7 @@ class PlayerQueueData:
     # which the crossfade preload raises to a track the player was never given, this only
     # moves when audio actually goes out
     last_served_item_id: str | None = None
-    # a re-requested stream of the current item, until the player is heard on it (or not)
+    # a re-requested stream of the current item, until the player is heard on it
     pending_stream_resume: PendingStreamResume | None = None
     # queue_item_ids whose audio reached the player during the current load, plus the item it
     # was still playing when that load started. The tracker only reports a play for, or ends the

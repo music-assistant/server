@@ -896,10 +896,7 @@ class StreamsController(CoreController):
                 player, queue, queue_item, request
             ):
                 self.mass.player_queues.begin_stream_resume(
-                    queue_id,
-                    queue_item_id,
-                    queue_item.streamdetails.seek_position,
-                    resume_position,
+                    queue_id, queue_item_id, resume_position
                 )
                 queue_item.streamdetails.seek_position = resume_position
                 queue_item.streamdetails.fade_in = False

@@ -128,9 +128,7 @@ async def test_rerequest_after_the_first_response_finished_resumes_at_the_live_p
     assert streamdetails.seek_position == int(LIVE_ELAPSED)
     assert streamdetails.fade_in is False
     player_queues = cast("MagicMock", ctrl.mass).player_queues
-    player_queues.begin_stream_resume.assert_called_once_with(
-        QUEUE_ID, ITEM_ID, START_SEEK, int(LIVE_ELAPSED)
-    )
+    player_queues.begin_stream_resume.assert_called_once_with(QUEUE_ID, ITEM_ID, int(LIVE_ELAPSED))
 
 
 async def test_repeat_of_the_same_item_starts_from_its_start_offset() -> None:

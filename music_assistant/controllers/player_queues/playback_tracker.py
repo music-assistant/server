@@ -42,7 +42,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
-from music_assistant.controllers.player_queues.constants import STREAM_RESUME_HANDOFF_TIMEOUT
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     build_queue_item,
@@ -940,21 +939,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         """Return the media position in the current item for the player's stream position."""
         queue_data = self._queue_data[queue.queue_id]
         if (pending := queue_data.pending_stream_resume) is not None:
-            streamdetails = current_item.streamdetails if current_item else None
             if (
                 current_item is not None
-                and streamdetails is not None
                 and current_item.queue_item_id == pending.queue_item_id
                 and pending.device_elapsed is not None
                 and player_elapsed >= pending.device_elapsed - 2
             ):
                 # a counter that did not drop back still belongs to the stream the player leaves
-                since_start = time.time() - pending.started_at
-                if since_start <= STREAM_RESUME_HANDOFF_TIMEOUT:
-                    return pending.resume_position + since_start * speed
-                # within 3 s of the old stream's projected counter: the player kept that stream
-                if player_elapsed >= pending.device_elapsed + since_start - 3:
-                    streamdetails.seek_position = pending.old_seek_position
+                return pending.resume_position + (time.time() - pending.started_at) * speed
             queue_data.pending_stream_resume = None
         elapsed_time = player_elapsed * speed
         if current_item and current_item.streamdetails and current_item.streamdetails.seek_position:
