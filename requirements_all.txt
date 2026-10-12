@@ -37,7 +37,7 @@ defusedxml==0.7.1
 deno==2.9.6
 duration-parser==1.0.1
 fastmcp==3.4.7
-getmac==0.9.5
+getmac==0.9.6
 gql[all]==4.0.0
 hass-client==1.4.0
 hassfeld==0.3.14
