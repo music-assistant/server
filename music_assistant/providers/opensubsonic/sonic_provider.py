@@ -222,7 +222,7 @@ class OpenSonicProvider(MusicProvider):
         try:
             success = await self.conn.ping()
             if not success:
-                raise CredentialError
+                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
         except (AuthError, CredentialError) as e:
             msg = (
                 f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."

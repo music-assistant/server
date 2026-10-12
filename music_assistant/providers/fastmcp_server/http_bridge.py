@@ -130,10 +130,10 @@ async def _start_asgi_lifespan(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
             msg = ack.get("message", "ASGI lifespan startup failed")
-            raise RuntimeError(msg)
+            raise RuntimeError(msg)  # noqa: TRY301 - cleanup in except below
         if ack.get("type") != "lifespan.startup.complete":
             msg = f"Unexpected ASGI lifespan event during startup: {ack!r}"
-            raise RuntimeError(msg)
+            raise RuntimeError(msg)  # noqa: TRY301 - cleanup in except below
     except BaseException:
         # Don't leak the background lifespan task on any non-success exit
         # from the startup negotiation (timeout, unexpected event, cancel).

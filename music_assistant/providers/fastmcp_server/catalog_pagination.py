@@ -132,10 +132,10 @@ def decode_cursor(cursor: str) -> CursorState:
         padding = "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
         if not isinstance(payload, dict) or set(payload) != {"v", "m", "q", "o", "r"}:
-            raise ValueError
+            raise ValueError  # noqa: TRY301 - converted to PaginationError
         mode = payload["m"]
         if mode not in ("search", "catalog"):
-            raise ValueError
+            raise ValueError  # noqa: TRY301 - converted to PaginationError
         state = CursorState(
             version=payload["v"],
             mode=cast("DiscoveryMode", mode),
