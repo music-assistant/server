@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from aioaudiobookshelf.schema.author import Author, AuthorExpanded
 from aioaudiobookshelf.schema.library import LibraryItemExpandedBook
 
-from music_assistant.providers.audiobookshelf.parsers import parse_audiobook
+from music_assistant.providers.audiobookshelf.parsers import parse_audiobook, parse_author
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook
@@ -88,3 +89,27 @@ def test_audiobook_cover_url_has_no_token() -> None:
 
     assert images is not None
     assert [image.path for image in images] == [f"{BASE_URL}/api/items/book1/cover?ts=2000"]
+
+
+@pytest.mark.parametrize("author_type", [Author, AuthorExpanded])
+def test_author_image(author_type: type[Author]) -> None:
+    """The author image is taken from the plain author of get_author as well."""
+    abs_author = author_type.from_dict(
+        {
+            "id": "author1",
+            "name": "Ada Lovelace",
+            "addedAt": 1000,
+            "updatedAt": 2000,
+            "imagePath": "/metadata/authors/author1.jpg",
+            "numBooks": 1,
+        }
+    )
+
+    artist = parse_author(
+        abs_author=abs_author, instance_id=INSTANCE_ID, domain="audiobookshelf", base_url=BASE_URL
+    )
+
+    assert artist.metadata.images is not None
+    assert [image.path for image in artist.metadata.images] == [
+        f"{BASE_URL}/api/authors/author1/image"
+    ]

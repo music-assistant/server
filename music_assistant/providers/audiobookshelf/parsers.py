@@ -4,7 +4,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from aioaudiobookshelf.schema.author import AuthorExpanded as AbsAuthorExpanded
+from aioaudiobookshelf.schema.author import Author as AbsAuthor
 from aioaudiobookshelf.schema.author import AuthorMinified as AbsAuthorMinified
 from aioaudiobookshelf.schema.author import Narrator as AbsNarrator
 from aioaudiobookshelf.schema.library import (
@@ -390,7 +390,7 @@ def parse_audiobook(
 
 def parse_author(
     *,
-    abs_author: AbsAuthorExpanded | AbsAuthorMinified,
+    abs_author: AbsAuthor | AbsAuthorMinified,
     instance_id: str,
     domain: str,
     base_url: str,
@@ -409,12 +409,13 @@ def parse_author(
         artist_type=ArtistType.AUTHOR,
     )
     # cover
-    if isinstance(abs_author, AbsAuthorExpanded) and abs_author.image_path is not None:
+    # a plain Author, as get_author returns it, carries the image too
+    if isinstance(abs_author, AbsAuthor) and abs_author.image_path is not None:
         cover_url = f"{base_url}/api/authors/{abs_author.id_}/image"
         mass_artist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
-    elif isinstance(abs_author, AbsAuthorExpanded) and abs_author.image_path is None:
+    elif isinstance(abs_author, AbsAuthor) and abs_author.image_path is None:
         mass_artist.metadata.images = UniqueList([])
 
     return mass_artist
