@@ -854,6 +854,18 @@ def test_cap_native_thread_pools_sets_env() -> None:
             assert os.environ[env_var] == "2"
 
 
+def test_set_model_cache_dirs_points_torch_hub_into_cache_dir(tmp_path: Path) -> None:
+    """Model downloads land in the MA cache dir instead of the possibly unwritable ~/.cache."""
+    import torch  # noqa: PLC0415
+
+    with patch.dict(os.environ):
+        os.environ.pop("TORCH_HOME", None)
+        os.environ.pop("HF_HOME", None)
+        util.set_model_cache_dirs(str(tmp_path))
+        assert torch.hub.get_dir() == str(tmp_path / "torch" / "hub")
+        assert os.environ["HF_HOME"] == str(tmp_path / "huggingface")
+
+
 def test_cap_native_thread_pools_respects_operator_value() -> None:
     """An operator-supplied cap is kept, reported back, and applied to the other pools."""
     with (
