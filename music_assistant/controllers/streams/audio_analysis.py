@@ -23,7 +23,7 @@ from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
@@ -805,21 +805,85 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         Return the scalar audio features for several tracks, in request order.
 
         Each entry is an object with item_id and provider_instance_id_or_domain. The result
-        holds one entry per request entry: the features, or None when not analyzed.
+        holds one entry per request entry: the features, or None when not analyzed. A
+        malformed entry rejects the whole request with an error naming its index.
+
+        Rows are fetched with one query per music provider in the request rather than one
+        per track.
 
         :param items: Tracks to look up, at most FEATURES_BATCH_MAX_ITEMS.
         """
-        if len(items) > FEATURES_BATCH_MAX_ITEMS:
+        # entries arrive as untyped JSON, so validate each one rather than trust the hint
+        raw_items: list[Any] = list(items)
+        if len(raw_items) > FEATURES_BATCH_MAX_ITEMS:
             msg = f"At most {FEATURES_BATCH_MAX_ITEMS} items per request"
-            raise ValueError(msg)
-        results: list[dict[str, Any] | None] = []
-        for item in items:
-            item_id = item.get("item_id")
-            provider = item.get("provider_instance_id_or_domain")
-            if not item_id or not provider:
-                results.append(None)
+            raise InvalidDataError(msg)
+        requests: list[tuple[str, str]] = []
+        for index, item in enumerate(raw_items):
+            if not isinstance(item, Mapping):
+                msg = f"items[{index}]: expected an object"
+                raise InvalidDataError(msg)
+            for field in ("item_id", "provider_instance_id_or_domain"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value:
+                    msg = f"items[{index}]: missing or invalid {field}"
+                    raise InvalidDataError(msg)
+            requests.append((item["item_id"], item["provider_instance_id_or_domain"]))
+        results: list[dict[str, Any] | None] = [None] * len(requests)
+        if not self._database_ready or not requests:
+            return results
+
+        # resolve each submitted provider once to the key analysis rows are stored under
+        prov_keys: dict[str, str | None] = {}
+        for _item_id, submitted in requests:
+            if submitted not in prov_keys:
+                provider = self.mass.get_provider(submitted)
+                prov_keys[submitted] = (
+                    (provider.domain if provider.is_streaming_provider else provider.instance_id)
+                    if isinstance(provider, MusicProvider)
+                    else None
+                )
+        wanted: dict[str, set[str]] = {}
+        for item_id, submitted in requests:
+            if (prov_key := prov_keys[submitted]) is not None:
+                wanted.setdefault(prov_key, set()).add(item_id)
+
+        # one query per provider key (bounded by the batch cap), merged in memory
+        rows_by_track: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        for prov_key, item_ids in wanted.items():
+            ids = sorted(item_ids)
+            params: dict[str, Any] = {"provider": prov_key, "media_type": MediaType.TRACK.value}
+            placeholders = []
+            for idx, item_id in enumerate(ids):
+                params[f"item_id_{idx}"] = item_id
+                placeholders.append(f":item_id_{idx}")
+            rows = await self.database.get_rows_from_query(
+                f"SELECT id, item_id, aa_provider_domain, CAST(header AS BLOB) AS header, "
+                f"payload FROM {AA_TABLE_ANALYSIS} "
+                f"WHERE provider = :provider AND media_type = :media_type "
+                f"AND item_id IN ({', '.join(placeholders)}) "
+                "ORDER BY timestamp_created ASC",
+                params,
+                limit=0,
+            )
+            for row in rows:
+                rows_by_track.setdefault((prov_key, str(row["item_id"])), []).append(row)
+
+        available_aa_domains = self._available_aa_domains()
+        unparsable_ids: list[Any] = []
+        merged_by_track: dict[tuple[str, str], AudioAnalysisData | None] = {
+            key: _merged_from_rows(
+                track_rows, available_aa_domains, TRACK_EXPORT_AA_PRIORITY, unparsable_ids
+            )
+            for key, track_rows in rows_by_track.items()
+        }
+        for row_id in unparsable_ids:
+            await self.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
+        for index, (item_id, submitted) in enumerate(requests):
+            if (prov_key := prov_keys[submitted]) is None:
                 continue
-            results.append(await self.get_features(item_id, provider))
+            if (analysis := merged_by_track.get((prov_key, item_id))) is not None:
+                results[index] = _features_from_analysis(analysis)
         return results
 
     async def set_track_loudness(
