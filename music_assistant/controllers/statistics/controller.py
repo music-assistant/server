@@ -45,10 +45,45 @@ if TYPE_CHECKING:
 # Statistics cache TTL: 5 minutes
 STATISTICS_CACHE_TTL = 300
 STATISTICS_CACHE_MAX_ENTRIES = 128
-MAX_PLAY_HISTORY_PAGE_SIZE = 500
+MAX_STATISTICS_RESULT_LIMIT = 500
 _STATISTICS_CACHE_CLEARERS: list[Callable[[], None]] = []
+_PLAY_HISTORY_EVENT_TYPES = (
+    MediaType.TRACK.value,
+    MediaType.RADIO.value,
+    MediaType.AUDIOBOOK.value,
+    MediaType.PODCAST_EPISODE.value,
+)
+_PLAY_HISTORY_EVENT_TYPE_SQL = ", ".join(
+    f"'{media_type}'" for media_type in _PLAY_HISTORY_EVENT_TYPES
+)
+_TRACK_HISTORY_CTE = f"""
+    history_tracks AS (
+        SELECT play_history.id AS play_id, provider_mappings.item_id AS track_id
+        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+        INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+            ON provider_mappings.media_type = play_history.media_type
+            AND provider_mappings.provider_instance = play_history.provider
+            AND provider_mappings.provider_item_id = play_history.item_id
+        WHERE play_history.userid = :user_id
+            AND play_history.media_type = :media_type
+            AND play_history.timestamp >= :cutoff_timestamp
+        UNION
+        SELECT play_history.id AS play_id, CAST(play_history.item_id AS INTEGER) AS track_id
+        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+        WHERE play_history.userid = :user_id
+            AND play_history.media_type = :media_type
+            AND play_history.provider = 'library'
+            AND play_history.timestamp >= :cutoff_timestamp
+    )
+"""
 
 T = TypeVar("T")
+
+
+def _validate_statistics_limit(limit: int) -> int:
+    if limit < 1:
+        raise InvalidDataError("Statistics limit must be at least 1")
+    return min(limit, MAX_STATISTICS_RESULT_LIMIT)
 
 
 def cache_statistics(
@@ -146,6 +181,7 @@ class StatisticsController(CoreController):
 
         if not user_id:
             return []
+        limit = _validate_statistics_limit(limit)
 
         cutoff_timestamp = self._get_period_cutoff(period)
 
@@ -185,9 +221,6 @@ class StatisticsController(CoreController):
             if row["image"]:
                 image_dict = json_loads(row["image"])
                 if image_dict:
-                    # Fix provider instance IDs to domain-only
-                    if "provider" in image_dict and "--" in image_dict["provider"]:
-                        image_dict["provider"] = image_dict["provider"].split("--")[0]
                     image = MediaItemImage.from_dict(image_dict)
 
             item_mapping = ItemMapping(
@@ -227,25 +260,9 @@ class StatisticsController(CoreController):
         if not user:
             return []
 
+        limit = _validate_statistics_limit(limit)
         query = f"""
-            WITH history_tracks AS (
-                SELECT play_history.id, provider_mappings.item_id as track_id
-                FROM {DB_TABLE_PLAY_HISTORY} as play_history
-                INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} as provider_mappings
-                    ON provider_mappings.media_type = play_history.media_type
-                    AND provider_mappings.provider_instance = play_history.provider
-                    AND provider_mappings.provider_item_id = play_history.item_id
-                WHERE play_history.userid = :user_id
-                    AND play_history.media_type = :media_type
-                    AND play_history.timestamp >= :cutoff_timestamp
-                UNION ALL
-                SELECT play_history.id, CAST(play_history.item_id AS INTEGER) as track_id
-                FROM {DB_TABLE_PLAY_HISTORY} as play_history
-                WHERE play_history.userid = :user_id
-                    AND play_history.media_type = :media_type
-                    AND play_history.provider = 'library'
-                    AND play_history.timestamp >= :cutoff_timestamp
-            )
+            WITH {_TRACK_HISTORY_CTE}
             SELECT genres.name, COUNT(*) as play_count
             FROM history_tracks
             INNER JOIN {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} as genre_mappings
@@ -284,6 +301,7 @@ class StatisticsController(CoreController):
 
         if not user_id:
             return []
+        limit = _validate_statistics_limit(limit)
 
         cutoff_timestamp = self._get_period_cutoff(period)
 
@@ -402,6 +420,7 @@ class StatisticsController(CoreController):
             FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND timestamp >= :cutoff_timestamp
+                AND media_type IN ({_PLAY_HISTORY_EVENT_TYPE_SQL})
             GROUP BY time_bucket
             ORDER BY time_bucket ASC
         """
@@ -444,6 +463,7 @@ class StatisticsController(CoreController):
             FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND timestamp >= :cutoff_timestamp
+                AND media_type IN ({_PLAY_HISTORY_EVENT_TYPE_SQL})
             GROUP BY hour, weekday
             ORDER BY weekday, hour
         """
@@ -480,29 +500,47 @@ class StatisticsController(CoreController):
 
         if not user_id:
             return []
+        limit = _validate_statistics_limit(limit)
+        if group_by not in ("artist", "genre"):
+            raise InvalidDataError("group_by must be 'artist' or 'genre'")
 
         cutoff_timestamp = self._get_period_cutoff(period)
 
-        # Estimate artist listening time from completed track plays.
-        if group_by != "artist":
-            # Only artist grouping supported for now
-            return []
-
-        query = f"""
-            SELECT
-                json_extract(artist_data.value, '$.item_id') as artist_item_id,
-                json_extract(artist_data.value, '$.provider') as artist_provider,
-                MAX(json_extract(artist_data.value, '$.name')) as name,
-                COUNT(*) * 180 as estimated_seconds
-            FROM {DB_TABLE_PLAY_HISTORY} as play_history,
-                json_each(play_history.artists) as artist_data
-            WHERE play_history.userid = :user_id
-                AND play_history.media_type = :media_type
-                AND play_history.timestamp >= :cutoff_timestamp
-                AND play_history.artists IS NOT NULL
-            GROUP BY artist_item_id, artist_provider
-            ORDER BY estimated_seconds DESC
-        """
+        if group_by == "artist":
+            query = f"""
+                SELECT
+                    json_extract(artist_data.value, '$.item_id') as artist_item_id,
+                    json_extract(artist_data.value, '$.provider') as artist_provider,
+                    MAX(json_extract(artist_data.value, '$.name')) as name,
+                    COUNT(*) * 180 as estimated_seconds
+                FROM {DB_TABLE_PLAY_HISTORY} as play_history,
+                    json_each(play_history.artists) as artist_data
+                WHERE play_history.userid = :user_id
+                    AND play_history.media_type = :media_type
+                    AND play_history.timestamp >= :cutoff_timestamp
+                    AND play_history.artists IS NOT NULL
+                GROUP BY artist_item_id, artist_provider
+                ORDER BY estimated_seconds DESC
+            """
+        else:
+            query = f"""
+                WITH {_TRACK_HISTORY_CTE}, genre_plays AS (
+                    SELECT DISTINCT
+                        history_tracks.play_id,
+                        genres.item_id AS genre_id,
+                        genres.name AS name
+                    FROM history_tracks
+                    INNER JOIN {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} AS genre_mappings
+                        ON genre_mappings.media_id = history_tracks.track_id
+                        AND genre_mappings.media_type = :media_type
+                    INNER JOIN {DB_TABLE_GENRES} AS genres
+                        ON genres.item_id = genre_mappings.genre_id
+                )
+                SELECT name, COUNT(*) * 180 as estimated_seconds
+                FROM genre_plays
+                GROUP BY genre_id
+                ORDER BY estimated_seconds DESC, name
+            """
 
         params = {
             "user_id": user_id,
@@ -528,6 +566,8 @@ class StatisticsController(CoreController):
         """
         Get play counts grouped by decade.
 
+        Tracks linked to multiple albums use their earliest known album year.
+
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.
         """
@@ -536,22 +576,26 @@ class StatisticsController(CoreController):
 
         if not user_id:
             return []
+        limit = _validate_statistics_limit(limit)
 
         cutoff_timestamp = self._get_period_cutoff(period)
 
         query = f"""
-            SELECT
-                (albums.year / 10) * 10 as decade,
-                COUNT(*) as play_count
-            FROM {DB_TABLE_PLAY_HISTORY} as playlog
-            INNER JOIN {DB_TABLE_ALBUM_TRACKS} as album_tracks
-                ON playlog.item_id = album_tracks.track_id
-            INNER JOIN {DB_TABLE_ALBUMS} as albums
-                ON album_tracks.album_id = albums.item_id
-            WHERE playlog.userid = :user_id
-                AND playlog.media_type = :media_type
-                AND playlog.timestamp >= :cutoff_timestamp
-                AND albums.year IS NOT NULL
+            WITH {_TRACK_HISTORY_CTE}, track_decades AS (
+                SELECT album_tracks.track_id, MIN(albums.year) AS year
+                FROM {DB_TABLE_ALBUM_TRACKS} as album_tracks
+                INNER JOIN {DB_TABLE_ALBUMS} as albums
+                    ON album_tracks.album_id = albums.item_id
+                WHERE albums.year IS NOT NULL
+                GROUP BY album_tracks.track_id
+            ), history_decades AS (
+                SELECT history_tracks.play_id, (track_decades.year / 10) * 10 AS decade
+                FROM history_tracks
+                INNER JOIN track_decades
+                    ON history_tracks.track_id = track_decades.track_id
+            )
+            SELECT decade, COUNT(*) as play_count
+            FROM history_decades
             GROUP BY decade
             ORDER BY decade DESC
         """
@@ -596,7 +640,7 @@ class StatisticsController(CoreController):
             raise InvalidDataError("Play history limit must be at least 1")
         if offset < 0:
             raise InvalidDataError("Play history offset cannot be negative")
-        limit = min(limit, MAX_PLAY_HISTORY_PAGE_SIZE)
+        limit = min(limit, MAX_STATISTICS_RESULT_LIMIT)
 
         if media_types is None:
             media_types = MediaType.ALL

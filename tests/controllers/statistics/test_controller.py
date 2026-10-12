@@ -8,14 +8,17 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.statistics.controller import (
-    MAX_PLAY_HISTORY_PAGE_SIZE,
+    MAX_STATISTICS_RESULT_LIMIT,
     STATISTICS_CACHE_MAX_ENTRIES,
     cache_statistics,
 )
@@ -142,8 +145,14 @@ async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> N
         return_value=user,
     ):
         results = await mass.statistics.get_genre_distribution(period="all_time")
+        listening_time = await mass.statistics.get_listening_time(
+            period="all_time", group_by="genre"
+        )
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_listening_time(group_by="mood")
 
     assert [(result.name, result.value) for result in results] == [("Rock", 2)]
+    assert [(result.name, result.minutes) for result in listening_time] == [("Rock", 6.0)]
 
 
 async def test_play_history_supports_stable_offset_pagination(mass: MusicAssistant) -> None:
@@ -192,10 +201,197 @@ async def test_play_history_validates_and_caps_pagination(mass: MusicAssistant) 
         with pytest.raises(InvalidDataError):
             await mass.statistics.get_play_history(offset=-1)
 
-        await mass.statistics.get_play_history(limit=MAX_PLAY_HISTORY_PAGE_SIZE + 1)
+        await mass.statistics.get_play_history(limit=MAX_STATISTICS_RESULT_LIMIT + 1)
 
     assert get_rows.await_args is not None
-    assert get_rows.await_args.kwargs["limit"] == MAX_PLAY_HISTORY_PAGE_SIZE
+    assert get_rows.await_args.kwargs["limit"] == MAX_STATISTICS_RESULT_LIMIT
+
+
+async def test_statistics_aggregation_limits_are_validated_and_capped(
+    mass: MusicAssistant,
+) -> None:
+    """Every public aggregation rejects unbounded limits and applies the same cap."""
+    user = await mass.webserver.auth.create_user("statistics-aggregation-limits")
+    aggregation_calls = (
+        lambda limit: mass.statistics.get_top_items(MediaType.TRACK, limit=limit),
+        lambda limit: mass.statistics.get_genre_distribution(limit=limit),
+        lambda limit: mass.statistics.get_artist_distribution(limit=limit),
+        lambda limit: mass.statistics.get_listening_time(limit=limit),
+        lambda limit: mass.statistics.get_decade_distribution(limit=limit),
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ),
+        patch.object(
+            mass.music.database,
+            "get_rows_from_query",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as get_rows,
+    ):
+        for call in aggregation_calls:
+            with pytest.raises(InvalidDataError):
+                await call(0)
+        for call in aggregation_calls:
+            await call(MAX_STATISTICS_RESULT_LIMIT + 1)
+
+    assert [call.kwargs["limit"] for call in get_rows.await_args_list] == [
+        MAX_STATISTICS_RESULT_LIMIT
+    ] * len(aggregation_calls)
+
+
+async def test_play_history_artwork_preserves_provider_instance(mass: MusicAssistant) -> None:
+    """Artwork paths keep their exact provider lookup key when returned to clients."""
+    user = await mass.webserver.auth.create_user("statistics-artwork-provider")
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "track-1",
+            "provider": "test-provider",
+            "media_type": MediaType.TRACK.value,
+            "userid": user.user_id,
+            "name": "Track with provider artwork",
+            "timestamp": 1_000,
+            "image": serialize_to_json(
+                {
+                    "type": "thumb",
+                    "path": "covers/track-1.jpg",
+                    "provider": "test-provider--account",
+                    "remotely_accessible": False,
+                }
+            ),
+        },
+    )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+
+    assert results[0].item.image is not None
+    assert results[0].item.image.provider == "test-provider--account"
+
+
+async def test_play_trends_exclude_container_history_rows(mass: MusicAssistant) -> None:
+    """Trends count playable history events, not artist/album/playlist selections."""
+    user = await mass.webserver.auth.create_user("statistics-playable-events")
+    media_types = (
+        MediaType.TRACK,
+        MediaType.RADIO,
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST_EPISODE,
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.PLAYLIST,
+        MediaType.PODCAST,
+    )
+    for index, media_type in enumerate(media_types):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"item-{index}",
+                "provider": "test-provider",
+                "media_type": media_type.value,
+                "userid": user.user_id,
+                "name": f"Item {index}",
+                "timestamp": 1_000,
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        trend = await mass.statistics.get_plays_over_time(period="all_time")
+        activity = await mass.statistics.get_listening_activity(period="all_time")
+
+    assert sum(point.value for point in trend) == 4
+    assert sum(point.value for point in activity) == 4
+
+
+async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums(
+    mass: MusicAssistant,
+) -> None:
+    """Provider plays map to library tracks and count once despite duplicate album links."""
+    user = await mass.webserver.auth.create_user("statistics-decades")
+    track_ids = []
+    for name in ("Mapped track", "Library track"):
+        track_ids.append(
+            await mass.music.database.insert(
+                DB_TABLE_TRACKS,
+                {
+                    "name": name,
+                    "sort_name": name.casefold(),
+                    "metadata": "{}",
+                    "search_name": name.casefold(),
+                    "search_sort_name": name.casefold(),
+                },
+            )
+        )
+
+    album_ids = []
+    for year in (1982, 1998, 1985):
+        album_ids.append(
+            await mass.music.database.insert(
+                DB_TABLE_ALBUMS,
+                {
+                    "name": f"Album {year}",
+                    "sort_name": f"album {year}",
+                    "album_type": "album",
+                    "year": year,
+                    "metadata": "{}",
+                    "search_name": f"album {year}",
+                    "search_sort_name": f"album {year}",
+                },
+            )
+        )
+    for track_id, album_id in (
+        (track_ids[0], album_ids[0]),
+        (track_ids[0], album_ids[1]),
+        (track_ids[1], album_ids[2]),
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": track_ids[0],
+            "provider_domain": "test",
+            "provider_instance": "test-provider",
+            "provider_item_id": "provider-track-1",
+        },
+    )
+    for item_id, provider in (
+        ("provider-track-1", "test-provider"),
+        (str(track_ids[1]), "library"),
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": item_id,
+                "timestamp": 1_000,
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_decade_distribution(period="all_time")
+
+    assert [(result.name, result.value) for result in results] == [("1980s", 2)]
 
 
 async def test_played_item_ids_reflects_new_history_immediately(mass: MusicAssistant) -> None:
