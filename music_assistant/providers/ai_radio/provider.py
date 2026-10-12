@@ -209,9 +209,10 @@ class AIRadioProvider(
         self._unloading = True
         if self._engine_recheck_task and not self._engine_recheck_task.done():
             self._engine_recheck_task.cancel()
-        for state in self._dj_queues.values():
+        for queue_id, state in self._dj_queues.items():
             if state.task and not state.task.done():
                 state.task.cancel()
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()

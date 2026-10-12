@@ -30,9 +30,9 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(name="mass")
-def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
-    """Run on a library-only instance: these tests only touch the library."""
-    return music_mass
+def mass_fixture(music_mass_with_cache: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a cache store: album listings are cached."""
+    return music_mass_with_cache
 
 
 def _mapping(provider_instance: str, item_id: str, in_library: bool = True) -> ProviderMapping:
@@ -252,7 +252,11 @@ async def test_album_tracks_skip_an_unavailable_mapping(mass: MusicAssistant) ->
     db_album = await _seed_album(mass, with_library_tracks=True)
     await _album_tracks_with_failure(mass, db_album, MediaNotFoundError("Album not found"))
     stored = await mass.music.albums.get_library_item(db_album.item_id)
-    fetch = await _album_tracks_with_failure(mass, stored, MediaNotFoundError("Album not found"))
+    # assembled anew, as a refresh does, instead of served from the cache
+    async with mass.cache.handle_refresh(True):
+        fetch = await _album_tracks_with_failure(
+            mass, stored, MediaNotFoundError("Album not found")
+        )
     assert [call.args[1] for call in fetch.call_args_list] == ["local_inst"]
 
 

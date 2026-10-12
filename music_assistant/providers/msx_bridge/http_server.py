@@ -1008,7 +1008,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         provider = request.query.get("provider", "library")
         try:
             tracks = sort_album_tracks(
-                await self.provider.mass.music.albums.tracks(item_id, provider)
+                await self.provider.mass.music.albums.tracks(item_id, provider, limit=None)
             )
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for album %s", item_id)
@@ -1113,7 +1113,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         start = _int_param(request.query, "start", 0)
         try:
             tracks = sort_album_tracks(
-                await self.provider.mass.music.albums.tracks(item_id, provider_name)
+                await self.provider.mass.music.albums.tracks(item_id, provider_name, limit=None)
             )
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for album playlist %s", item_id)
@@ -1520,7 +1520,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     async def _handle_album_tracks(self, request: web.Request) -> web.Response:
         """List tracks for an album."""
         item_id = request.match_info["item_id"]
-        tracks = await self.provider.mass.music.albums.tracks(item_id, "library")
+        tracks = await self.provider.mass.music.albums.tracks(item_id, "library", limit=None)
         return web.json_response(
             {
                 "items": [self._format_track(track) for track in tracks],
