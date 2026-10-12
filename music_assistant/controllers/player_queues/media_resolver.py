@@ -780,6 +780,7 @@ class MediaResolver:
                 item_id=album.item_id,
                 provider_instance_id_or_domain=album.provider,
                 in_library_only=album_items_conf == "library_tracks",
+                limit=None,
             )
             if album_track.available
         ]
