@@ -699,7 +699,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         listings = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.ARTIST_TOPTRACKS,
@@ -770,7 +770,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top albums in parallel
         # streaming providers attached to the artist (results resolved to library items)
@@ -1012,7 +1012,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider_filter: Optional provider instance ID to limit the result to.
         :param limit: Maximum number of similar artists to return.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         listings = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.SIMILAR_ARTISTS,
