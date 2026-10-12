@@ -156,6 +156,9 @@ class AsyncProcess:
         self._stdin_lock = asyncio.Lock()
         self._close_called = False
         self._stdin_eof = False
+        # set by close() when a reader kept stdout past the release budget: that
+        # reader then stays in charge of the stream until EOF
+        self._stdout_kept = False
         self._returncode: int | None = None
 
     @property
@@ -235,7 +238,7 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if self._close_called:
+        if self._close_called and not self._stdout_kept:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -253,7 +256,7 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if self._close_called:
+        if self._close_called and not self._stdout_kept:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -345,8 +348,9 @@ class AsyncProcess:
         """Read line from stdout."""
         # keyed on the close flag rather than the returncode (like read() and
         # readexactly()): a process that already exited still has its last
-        # lines sitting in the stream buffer, and those must still be readable
-        if self._close_called:
+        # lines sitting in the stream buffer, and those must still be readable.
+        # A reader close() left the stream to reads on until EOF.
+        if self._close_called and not self._stdout_kept:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -417,8 +421,8 @@ class AsyncProcess:
 
         # ensure we have no more readers active and stdout is drained; a reader that
         # keeps the stream past the release budget drains it itself
-        stdout_kept = not await self._acquire_stream(self._stdout_lock)
-        if self.proc.stdout and not stdout_kept and not self.proc.stdout.at_eof():
+        self._stdout_kept = not await self._acquire_stream(self._stdout_lock)
+        if self.proc.stdout and not self._stdout_kept and not self.proc.stdout.at_eof():
             cancelled = await self._drain_pipe(self.proc.stdout, cancelled)
         stderr_kept = False
         # if we have a stderr task active, allow it to finish
@@ -438,7 +442,7 @@ class AsyncProcess:
         terminate_attempts = 0
         while self.returncode is None:
             try:
-                if stdout_kept or stderr_kept:
+                if self._stdout_kept or stderr_kept:
                     # a pipe with a reader still on it cannot be read here as well
                     # (asyncio refuses the concurrent read), so only wait for the exit
                     await asyncio.wait_for(self.proc.wait(), 2)

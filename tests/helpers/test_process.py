@@ -39,15 +39,26 @@ _NOISY_CHILD = (
     "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
 )
 
-# Exits on SIGINT, but only after a pause and a last line, so a reader is still
-# blocked on stdout once close() stops waiting for it (the tests shorten that wait
-# to well below the pause).
-_SLOW_EXIT_CHILD = (
-    "import signal, sys, time; "
-    "signal.signal(signal.SIGINT, lambda *_: ("
-    "time.sleep(1), sys.stdout.write('bye\\n'), sys.stdout.flush(), sys.exit(0))); "
-    "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
-)
+# Exits on SIGINT, but only after a pause, so a reader is still blocked on stdout
+# once close() stops waiting for it (the tests shorten that wait to well below the
+# pause), and then writes more than a pipe holds: unless something keeps reading,
+# it blocks on the full pipe instead of exiting.
+_SLOW_EXIT_LINE = "bye" * 21
+_SLOW_EXIT_LINES = 5000
+_SLOW_EXIT_CHILD = f"""
+import signal, sys, time
+
+def leave(*_):
+    time.sleep(1)
+    sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
+    sys.stdout.flush()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, leave)
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+time.sleep(30)
+"""
 
 
 @pytest.fixture(name="piped_process")
@@ -415,7 +426,7 @@ async def test_close_leaves_a_live_reader_in_charge_of_stdout(
 
     assert proc.returncode == 0
     await asyncio.wait_for(reader, 5)
-    assert lines == ["ready", "bye"]
+    assert lines == ["ready", *[_SLOW_EXIT_LINE] * _SLOW_EXIT_LINES]
 
 
 @pytest.mark.asyncio
