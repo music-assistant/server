@@ -401,10 +401,10 @@ def register_meta_discovery(
         name=SEARCH_TOOL_NAME,
         annotations=ToolAnnotations(
             title="Search tools",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def search_tools(
@@ -433,10 +433,10 @@ def register_meta_discovery(
         name=GET_TOOL_SCHEMA_NAME,
         annotations=ToolAnnotations(
             title="Get tool schema",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_tool_schema(tool_name: str) -> dict[str, Any]:
@@ -460,10 +460,10 @@ def register_meta_discovery(
         name=CALL_TOOL_NAME,
         annotations=ToolAnnotations(
             title="Call tool",
-            readOnlyHint=False,
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=False,
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=False,
         ),
         output_schema=COMMAND_ENVELOPE_SCHEMA,
     )  # type: ignore[untyped-decorator, unused-ignore]

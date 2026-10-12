@@ -50,7 +50,7 @@ async def test_runtime_has_three_tools_and_preserves_resources_and_prompts(
                 "get_tool_schema",
                 "call_tool",
             }
-            assert {str(item.uriTemplate) for item in await client.list_resource_templates()} >= {
+            assert {str(item.uri_template) for item in await client.list_resource_templates()} >= {
                 "catalog://commands{?cursor,limit}",
                 "player://{player_id}",
                 "queue://{queue_id}",

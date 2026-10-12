@@ -14,8 +14,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.exceptions import ToolError
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError, ToolError
 from mcp.types import INVALID_REQUEST, METHOD_NOT_FOUND
 from music_assistant_models.auth import AuthProviderType, Scope
 from music_assistant_models.errors import (
@@ -1429,6 +1428,13 @@ class DynamicAPIAdapter:
                 f"Capability {capability!r} requires confirmation; set it to Allow or use an "
                 "elicitation-capable client"
             ) from None
+        except ToolError as exc:
+            # FastMCP refuses server-initiated elicitation on sessionless
+            # (2026-07-28) connections and inside background tasks.
+            raise ToolError(
+                f"Capability {capability!r} requires confirmation; set it to Allow or use an "
+                "elicitation-capable client"
+            ) from exc
         except McpError as exc:
             if exc.error.code in (INVALID_REQUEST, METHOD_NOT_FOUND):
                 raise ToolError(
