@@ -3220,7 +3220,7 @@ class StreamsAudio:
             if not self._may_mix_across_sample_rates(
                 player_id, flow_mode, sample_rate, next_sample_rate
             ):
-                self.logger.debug(
+                self.logger.info(
                     "Skipping the tail overlap of %s: the player does not play gapless across "
                     "different sample rates (%s vs %s)",
                     queue_item.name,
