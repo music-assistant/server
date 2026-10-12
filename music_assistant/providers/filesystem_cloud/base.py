@@ -100,7 +100,7 @@ async def run_cloud_setup(
         stored_secret = client_secret
         try:
             if not client_secret:
-                raise SetupFlowError("A client secret is required", translation_key="required")
+                raise SetupFlowError("A client secret is required", translation_key="required")  # noqa: TRY301 - shown as form error
             setup_data[CONF_REFRESH_TOKEN] = await authorize(session, client_id, client_secret)
             await session.finish(setup_data)
             return

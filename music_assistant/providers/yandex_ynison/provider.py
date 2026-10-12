@@ -898,7 +898,7 @@ class YandexYnisonProvider(PluginProvider):
             try:
                 sd = await provider.get_stream_details(track_id, media_type)
                 if sd.provider != provider.instance_id:
-                    raise _StreamOwnerMismatchError(
+                    raise _StreamOwnerMismatchError(  # noqa: TRY301 - re-raised by except below
                         f"Stream details for {track_id} belong to {sd.provider}, "
                         f"expected {provider.instance_id}"
                     )

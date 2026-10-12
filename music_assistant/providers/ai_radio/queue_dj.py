@@ -75,7 +75,7 @@ class AIRadioQueueDJMixin:
                 else:
                     host_id = str(host_id).strip()
                     if host_id not in self._hosts:
-                        raise InvalidDataError(f"Unknown host id: {host_id}")
+                        raise InvalidDataError(f"Unknown host id: {host_id}")  # noqa: TRY301 - re-raised after cleanup
                     armed = self._arm_dj_state(queue_id, host_id)
                 await self._write_queue_dj()
             # stale clips carry the old host's persona, so they must go before a replan

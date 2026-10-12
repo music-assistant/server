@@ -171,7 +171,7 @@ class AirPlayPairing:
             if self.protocol == StreamingProtocol.AIRPLAY2:
                 return await self._finish_cli_pair_setup(pin)
             if not self._session:
-                raise PlayerCommandFailed("Pairing not started")
+                raise PlayerCommandFailed("Pairing not started")  # noqa: TRY301 - handled by except below
             return await self._finish_raop_pairing(pin)
         except PlayerCommandFailed:
             raise
