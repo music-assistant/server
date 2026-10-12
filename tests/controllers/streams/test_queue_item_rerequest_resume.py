@@ -161,8 +161,11 @@ async def test_rerequest_during_a_pending_handoff_keeps_its_baseline() -> None:
     player_queues.queue_data.return_value.pending_stream_resume = SimpleNamespace(
         queue_item_id=ITEM_ID
     )
+    # the first re-request already moved the offset; playback has run on past the lead since
+    _queue_item(ctrl).streamdetails.seek_position = int(LIVE_ELAPSED)
+    player_queues.get.return_value.corrected_elapsed_time = LIVE_ELAPSED + 6
 
-    assert await _serve(ctrl, _make_request()) == START_SEEK
+    assert await _serve(ctrl, _make_request()) == int(LIVE_ELAPSED)
     player_queues.begin_stream_resume.assert_not_called()
 
 
