@@ -938,17 +938,25 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
     ) -> float:
         """Return the media position in the current item for the player's stream position."""
         queue_data = self._queue_data[queue.queue_id]
+        switched_item_id: str | None = None
         if (pending := queue_data.pending_stream_resume) is not None:
-            if (
-                current_item is not None
-                and current_item.queue_item_id == pending.queue_item_id
-                and pending.device_elapsed is not None
-                and player_elapsed >= pending.device_elapsed - 2
-            ):
-                # a counter that did not drop back still belongs to the stream the player leaves
-                return pending.resume_position + (time.time() - pending.started_at) * speed
+            if current_item is not None and current_item.queue_item_id == pending.queue_item_id:
+                if (
+                    pending.device_elapsed is not None
+                    and player_elapsed >= pending.device_elapsed - 2
+                ):
+                    # a counter that did not drop back still belongs to the stream the player leaves
+                    return pending.resume_position + (time.time() - pending.started_at) * speed
+                switched_item_id = pending.queue_item_id
             queue_data.pending_stream_resume = None
         elapsed_time = player_elapsed * speed
         if current_item and current_item.streamdetails and current_item.streamdetails.seek_position:
             elapsed_time += current_item.streamdetails.seek_position
+        if (
+            switched_item_id is not None
+            and (prev_state := queue_data.prev_state) is not None
+            and prev_state["current_item_id"] == switched_item_id
+        ):
+            # the bridge runs ahead while the player buffers the new stream
+            prev_state["last_playing_elapsed_time"] = int(elapsed_time)
         return elapsed_time

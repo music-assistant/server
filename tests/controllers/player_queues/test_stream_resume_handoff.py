@@ -122,3 +122,22 @@ def test_counter_frozen_while_buffering_keeps_bridging() -> None:
     assert item.streamdetails is not None
     assert item.streamdetails.seek_position == RESUME_AT
     assert _last_playing_elapsed(ctrl) <= queue.elapsed_time
+
+
+def test_counter_restart_after_a_freeze_rebases_the_last_played_position() -> None:
+    """The bridge ran ahead while the player buffered; the restart sets where playback really is."""
+    ctrl, queue, item = _controller()
+    _begin_resume(ctrl, item)
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    assert queue_data.pending_stream_resume is not None
+    queue_data.pending_stream_resume = dataclasses.replace(
+        queue_data.pending_stream_resume,
+        started_at=queue_data.pending_stream_resume.started_at - 9,
+    )
+    ctrl._update_queue_from_player(_player(STREAM_ELAPSED))  # type: ignore[arg-type]
+    assert _last_playing_elapsed(ctrl) >= RESUME_AT + 9
+
+    ctrl._update_queue_from_player(_player(0.5))  # type: ignore[arg-type]
+
+    assert queue.elapsed_time == RESUME_AT + 0.5
+    assert _last_playing_elapsed(ctrl) == RESUME_AT
