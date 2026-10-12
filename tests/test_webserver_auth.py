@@ -61,11 +61,11 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
     PendingLogin,
-    pkce_challenge,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
