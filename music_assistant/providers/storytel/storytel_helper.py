@@ -132,6 +132,7 @@ class StorytelHelper:
         self.provider_domain = provider_domain
         self._kids_mode = kids_mode
         self._languages = languages or {}
+        self._available_languages: dict[str, str] = {}
         self._resource_version: str | None = None
         self._revalidate_lock = Lock()
         self.logger = logger or logging.getLogger("storytel_helper")
@@ -147,12 +148,31 @@ class StorytelHelper:
         return self._session
 
     @property
+    def languages(self) -> dict[str, str]:
+        """Return the currently selected content languages, mapping name to ISO value."""
+        return self._languages
+
+    @languages.setter
+    def languages(self, value: dict[str, str]) -> None:
+        self._languages = value
+
+    @property
     def languages_query(self) -> str:
         """Return comma-separated ISO language codes for API queries."""
         if not self._languages:
             return "en"
         iso_values = sorted(self._languages.values())
         return ",".join(iso_values)
+
+    @property
+    def available_languages(self) -> dict[str, str]:
+        """
+        Return the content languages available to the authenticated account.
+
+        Mapping of name to ISO value, populated from the account's own language list on
+        login/revalidation. Empty until the first successful authentication.
+        """
+        return self._available_languages
 
     @property
     def kids_mode_query(self) -> str:
@@ -216,6 +236,7 @@ class StorytelHelper:
             msg = data.get("message") or "Invalid credentials"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages = self._parse_available_languages(acc)
         return self._auth
 
     async def revalidate_account(self) -> StorytelAuth:
@@ -242,6 +263,7 @@ class StorytelHelper:
             msg = data.get("message") or "Revalidation failed"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages = self._parse_available_languages(acc)
         return self._auth
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1053,6 +1075,23 @@ class StorytelHelper:
         cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
         enc: bytes = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
+
+    @staticmethod
+    def _parse_available_languages(acc: dict[str, Any]) -> dict[str, str]:
+        """
+        Parse the content languages available to the account from a login/revalidation response.
+
+        :param acc: the ``accountInfo`` dict from a login or revalidation response.
+        """
+        languages: dict[str, str] = {}
+        for entry in acc.get("allLanguageObjects") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            iso_value = entry.get("isoValue")
+            if isinstance(name, str) and name and isinstance(iso_value, str) and iso_value:
+                languages[name] = iso_value
+        return languages
 
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:

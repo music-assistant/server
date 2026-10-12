@@ -61,3 +61,36 @@ async def test_zero_order_in_series_does_not_show_as_episode_zero(
     data["seriesInfo"] = {"id": "podcast-1", "orderInSeries": 0}
     episode = await helper._parse_podcast_episode_item(data)
     assert episode.episode_number is None
+
+
+def test_parse_available_languages_maps_name_to_iso_value() -> None:
+    """AllLanguageObjects entries become a name -> isoValue mapping."""
+    acc = {
+        "allLanguageObjects": [
+            {"id": 6, "isoValue": "nn", "name": "Norwegian", "localizedName": "Norsk"},
+            {"id": 2, "isoValue": "en", "name": "English", "localizedName": "Engelsk"},
+            {"id": 1, "isoValue": "sv", "name": "Swedish", "localizedName": "Svensk"},
+        ]
+    }
+    assert StorytelHelper._parse_available_languages(acc) == {
+        "Norwegian": "nn",
+        "English": "en",
+        "Swedish": "sv",
+    }
+
+
+@pytest.mark.parametrize(
+    "acc",
+    [
+        {},
+        {"allLanguageObjects": None},
+        {"allLanguageObjects": []},
+        {"allLanguageObjects": ["not-a-dict"]},
+        {"allLanguageObjects": [{"id": 1, "name": "", "isoValue": "sv"}]},
+        {"allLanguageObjects": [{"id": 1, "name": "Swedish", "isoValue": ""}]},
+        {"allLanguageObjects": [{"id": 1, "name": "Swedish"}]},
+    ],
+)
+def test_parse_available_languages_ignores_malformed_entries(acc: dict[str, Any]) -> None:
+    """Missing, malformed or empty entries are skipped rather than raising."""
+    assert StorytelHelper._parse_available_languages(acc) == {}

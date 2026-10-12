@@ -122,6 +122,11 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             default_languages = [name for name in setup_languages if isinstance(name, str)]
         else:
             default_languages = list(DEFAULT_LANGUAGES)
+        # Once authenticated, only offer the languages this account actually has access to
+        # (which depends on its region/subscription), falling back to the static list otherwise.
+        language_options = ALL_LANGUAGES
+        if self._api is not None and self._api.available_languages:
+            language_options = self._api.available_languages
         return (
             ConfigEntry(
                 key=CONF_LANGUAGES,
@@ -129,7 +134,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 multi_value=True,
                 required=False,
                 default_value=default_languages,
-                options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
+                options=[ConfigValueOption(name, name) for name in sorted(language_options.keys())],
             ),
             ConfigEntry(
                 key=CONF_KIDS_MODE,
@@ -239,16 +244,6 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         if not username or not password:
             raise LoginFailed("Username/password required")
 
-        languages_list = self.get_setup_value(CONF_LANGUAGES)
-        if isinstance(languages_list, list) and languages_list:
-            self._languages = {
-                name: ALL_LANGUAGES[name]
-                for name in languages_list
-                if isinstance(name, str) and name in ALL_LANGUAGES
-            }
-        if not self._languages:
-            self._languages = DEFAULT_LANGUAGES.copy()
-
         self._kids_mode = bool(self.get_setup_value(CONF_KIDS_MODE))
 
         self._api = StorytelHelper(
@@ -265,6 +260,18 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             raise SetupFailedError("Invalid Storytel username or password")
         except ProviderUnavailableError as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
+        available_languages = self._api.available_languages or ALL_LANGUAGES
+        languages_list = self.get_setup_value(CONF_LANGUAGES)
+        if isinstance(languages_list, list) and languages_list:
+            self._languages = {
+                name: available_languages[name]
+                for name in languages_list
+                if isinstance(name, str) and name in available_languages
+            }
+        if not self._languages:
+            self._languages = DEFAULT_LANGUAGES.copy()
+        self._api.languages = self._languages
+
         try:
             await self._api.fetch_resource_version()
         except ProviderUnavailableError as err:
