@@ -13,6 +13,8 @@ from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 from music_assistant.constants import MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -95,6 +97,43 @@ async def query_tts_engine_with_language_fallback(
         # the error message carries the classifier's certainty, so it is logged as-is
         (logger or LOGGER).warning("%s, retrying with the engine's default voice", err)
         return await query_tts_engine(engine, message, None, timeout, options)
+
+
+def match_tts_language(
+    language: str, supported_languages: Iterable[str], country: str | None = None
+) -> str | None:
+    """
+    Return the entry of an engine's supported languages that fits the requested language.
+
+    Returns None when the engine supports no variant of the language at all.
+
+    :param language: The requested language, a bare code like 'nl' or a regional one
+        like 'nl-NL' or 'nl_NL'.
+    :param supported_languages: The languages the engine accepts, in its own spelling.
+    :param country: Optional region to prefer when several variants fit, like 'NL'.
+    """
+    wanted_language, _, wanted_region = language.replace("_", "-").partition("-")
+    wanted_language = wanted_language.casefold()
+    candidates: list[tuple[str, str]] = []
+    for supported in supported_languages:
+        base, _, region = supported.replace("_", "-").partition("-")
+        if base.casefold() == wanted_language:
+            candidates.append((supported, region.upper()))
+    if not candidates:
+        return None
+    # the order mirrors Home Assistant's own language matching: the requested region, the
+    # bare code, the caller's country, U.S. English and the region spelled like the language
+    regions = [wanted_region.upper(), ""]
+    if country:
+        regions.append(country.upper())
+    if wanted_language == "en":
+        regions.append("US")
+    regions.append(wanted_language.upper())
+    for region in regions:
+        for supported, supported_region in candidates:
+            if supported_region == region:
+                return supported
+    return candidates[0][0]
 
 
 def resolve_tts_language(mass: MusicAssistant) -> str | None:
