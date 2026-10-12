@@ -1,6 +1,7 @@
 """Test YouTube Music Provider."""
 
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,8 +10,13 @@ from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.ytmusic import YoutubeMusicProvider
+from music_assistant.providers.ytmusic import (
+    CONF_COOKIE,
+    CONF_PO_TOKEN_SERVER_URL,
+    YoutubeMusicProvider,
+)
 
 
 @pytest.fixture
@@ -94,6 +100,66 @@ async def test_init_unreachable_po_token_server_is_a_retried_setup_failure(
     assert not isinstance(exc_info.value, LoginFailed)
     assert exc_info.value.translation_key == "po_token_server_unreachable"
     assert exc_info.value.translation_owner == "provider.ytmusic"
+
+
+@pytest.mark.parametrize(
+    ("login_cleared", "expected_key", "expected_message"),
+    [
+        (True, "cookies_expired", "Your YouTube Music cookies have expired"),
+        (False, "login_failed", "User does not have Youtube Music Premium"),
+    ],
+)
+async def test_init_distinguishes_expired_cookies_from_missing_premium(
+    provider: YoutubeMusicProvider,
+    login_cleared: bool,
+    expected_key: str,
+    expected_message: str,
+) -> None:
+    """Cookies YouTube invalidated during the premium check are not reported as no Premium."""
+    cookiejar = [SimpleNamespace(name="LOGIN_INFO"), SimpleNamespace(name="SID")]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            if login_cleared:
+                # YouTube clears LOGIN_INFO via Set-Cookie when it invalidates the session
+                cookiejar[:] = [c for c in cookiejar if c.name != "LOGIN_INFO"]
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "251"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    provider.mass.metadata = MagicMock(locale="en_US")
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc; LOGIN_INFO=xyz",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        pytest.raises(LoginFailed) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == expected_key
+    assert expected_message in str(exc_info.value)
+    if login_cleared:
+        assert exc_info.value.translation_owner == "provider.ytmusic"
+        assert "Premium" not in str(exc_info.value)
 
 
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
