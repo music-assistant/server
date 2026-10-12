@@ -157,10 +157,12 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 return await method(*args, **kwargs)
             except LoginFailed:
                 await self.api.revalidate_account()
+                self._sync_reconciled_languages()
                 return await method(*args, **kwargs)
             except ExceptionGroup as err:
                 if err.subgroup(LoginFailed):
                     await self.api.revalidate_account()
+                    self._sync_reconciled_languages()
                     return await method(*args, **kwargs)
                 raise _unwrap_single_exception(err) from err
 
@@ -184,11 +186,13 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     yield item
             except LoginFailed:
                 await self.api.revalidate_account()
+                self._sync_reconciled_languages()
                 async for item in method(*args, **kwargs):
                     yield item
             except ExceptionGroup as err:
                 if err.subgroup(LoginFailed):
                     await self.api.revalidate_account()
+                    self._sync_reconciled_languages()
                     async for item in method(*args, **kwargs):
                         yield item
                     return
@@ -713,3 +717,19 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             return dict(self._api.default_languages)
         first_name, first_iso = next(iter(account_languages.items()))
         return {first_name: first_iso}
+
+    def _sync_reconciled_languages(self) -> None:
+        """
+        Mirror the helper's post-revalidation language reconciliation onto the provider.
+
+        ``StorytelHelper.revalidate_account()`` drops or falls back a selection that is no
+        longer available to the account, but only updates its own internal mapping; without
+        this, the provider's own ``_languages`` and the persisted ``CONF_LANGUAGES`` config
+        value would keep advertising languages the refreshed options no longer offer.
+        """
+        if self._api is None:
+            return
+        reconciled_languages = self._api.languages
+        if reconciled_languages != self._languages:
+            self._languages = reconciled_languages
+            self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
