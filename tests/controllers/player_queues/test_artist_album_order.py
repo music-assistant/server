@@ -152,6 +152,26 @@ def _stub_provider(mass: MusicAssistant, albums: list[Album]) -> AsyncMock:
     return lookup
 
 
+def _stub_providers(mass: MusicAssistant, states: dict[str, str]) -> None:
+    """
+    Load the named providers in the given state: "up", "down" or "no albums".
+
+    A provider that is down is not returned, as MA's own provider lookup does.
+    """
+    get_provider = mass.get_provider
+
+    def _get_provider(instance: str, *args: Any, **kwargs: Any) -> Any:
+        if instance not in states:
+            return get_provider(instance, *args, **kwargs)
+        if states[instance] == "down":
+            return None
+        lists_albums = states[instance] == "up"
+        return Mock(available=True, supports_feature=Mock(return_value=lists_albums))
+
+    mass.get_provider = _get_provider  # type: ignore[method-assign, assignment]
+    mass.music.get_unique_providers = Mock(return_value=list(states))  # type: ignore[method-assign]
+
+
 def _set_order(mass: MusicAssistant, order: str) -> None:
     """Set the artist order option."""
     mass.config.set_raw_core_config_value("player_queues", CONF_DEFAULT_ENQUEUE_ORDER_ARTIST, order)
@@ -718,7 +738,7 @@ async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssi
             raise MediaNotFoundError("provider is offline")
         return [arrival]
 
-    mass.music.get_unique_providers = Mock(return_value=["offline", "streaming"])  # type: ignore[method-assign]
+    _stub_providers(mass, {"offline": "up", "streaming": "up"})
     mass.music.artists.albums = AsyncMock(side_effect=_albums)  # type: ignore[method-assign]
     mass.music.albums.tracks = AsyncMock(return_value=[_track("Arrival 1")])  # type: ignore[method-assign]
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
@@ -728,18 +748,46 @@ async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssi
     assert _names(result) == ["Arrival 1"]
 
 
-async def test_an_artist_whose_albums_cant_be_listed_plays_nothing(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("outage", ["unavailable", "error"])
+async def test_an_artist_whose_albums_cant_be_listed_plays_nothing(
+    mass: MusicAssistant, outage: str
+) -> None:
     """When no provider can list the artist's albums, the artist plays nothing, not shuffled songs."""
     artist = Artist(
         item_id="abba",
-        provider="offline",
+        provider="streaming",
         name="ABBA",
         provider_mappings={
-            ProviderMapping(item_id="abba", provider_domain="offline", provider_instance="offline")
+            ProviderMapping(
+                item_id="abba", provider_domain="streaming", provider_instance="streaming"
+            )
         },
     )
-    mass.music.get_unique_providers = Mock(return_value=["offline"])  # type: ignore[method-assign]
-    mass.music.artists.albums = AsyncMock(side_effect=MediaNotFoundError("provider is offline"))  # type: ignore[method-assign]
+    _stub_providers(mass, {"streaming": "down" if outage == "unavailable" else "up"})
+    if outage == "error":
+        mass.music.artists.albums = AsyncMock(side_effect=MediaNotFoundError("provider is offline"))  # type: ignore[method-assign]
+    mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track("Dancing Queen")]
+    )
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    assert await mass.player_queues._media_resolver.get_artist_tracks(artist) == []
+
+
+async def test_a_provider_that_cant_list_albums_does_not_hide_an_outage(
+    mass: MusicAssistant,
+) -> None:
+    """A provider without album listing doesn't count as having found no albums."""
+    artist = Artist(
+        item_id="abba",
+        provider="streaming",
+        name="ABBA",
+        provider_mappings={
+            ProviderMapping(item_id="abba", provider_domain=domain, provider_instance=domain)
+            for domain in ("files", "streaming")
+        },
+    )
+    _stub_providers(mass, {"files": "no albums", "streaming": "down"})
     mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
         return_value=[_track("Dancing Queen")]
     )
@@ -754,17 +802,7 @@ async def test_library_albums_play_when_no_provider_can_list_albums(mass: MusicA
     artist.provider_mappings.add(
         ProviderMapping(item_id="abba", provider_domain="offline", provider_instance="offline")
     )
-    library_albums = mass.music.artists.albums
-
-    async def _albums(
-        item_id: str, provider_instance_id_or_domain: str, provider_filter: str | None = None
-    ) -> list[Album]:
-        if provider_instance_id_or_domain == "offline":
-            raise MediaNotFoundError("provider is offline")
-        return await library_albums(item_id, provider_instance_id_or_domain, provider_filter)
-
-    mass.music.get_unique_providers = Mock(return_value=["offline"])  # type: ignore[method-assign]
-    mass.music.artists.albums = _albums  # type: ignore[method-assign]
+    _stub_providers(mass, {"offline": "down"})
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
@@ -899,7 +937,7 @@ async def test_an_artist_with_albums_never_falls_back_to_shuffled_songs(
     """
     Albums that come back empty play nothing, as they do on their own.
 
-    The artist still counts as playing albums, so the queue's shuffle stays off.
+    The artist still counts as playing albums, which turns the queue's shuffle off.
     """
     artist = await _add_artist(mass)
     # a saved streaming album stores no tracks

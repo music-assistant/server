@@ -14,7 +14,7 @@ import random
 from types import NoneType
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from music_assistant_models.enums import ArtistType, MediaType, SortField
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature, SortField
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -52,7 +52,11 @@ from music_assistant.helpers.collections import (
     get_collection_item_media_type_from_item_id,
 )
 from music_assistant.helpers.compare import compare_album
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -142,7 +146,8 @@ class MediaResolver:
         Return the tracks to play for the given artist, and whether they are its albums.
 
         With an album order, these are the artist's albums one after the other, each as it
-        plays on its own. An artist without albums to play gets the selected tracks shuffled.
+        plays on its own. An artist with no albums gets the selected tracks shuffled. One whose
+        albums can't be listed or loaded plays nothing.
 
         :param artist: The artist to play.
         """
@@ -697,8 +702,8 @@ class MediaResolver:
         """
         Return the artist's albums that the selection setting covers.
 
-        Each album comes with its copies on other providers, the one to play first. Returns None
-        when there is no library album and no provider could list the artist's albums.
+        Each album is a list of its copies, in the order to try them. Returns None when there is
+        no library album and no provider could list the artist's albums.
 
         :param artist: The artist to fetch the albums of.
         :param selection: The artist selection setting.
@@ -732,7 +737,7 @@ class MediaResolver:
                 ):
                     continue
                 # an album plays once, even when the library or another provider has it unlinked;
-                # the other copy is kept for when its tracks can't be fetched
+                # the other copy plays when this one has nothing to play
                 if album_copies := next(
                     (copies for copies in albums if compare_album(album, copies[0])), None
                 ):
@@ -813,7 +818,7 @@ class MediaResolver:
         Each album plays as it does on its own. An album is left out when no copy it may play
         from has tracks to play.
 
-        :param albums: The albums to play, in order, each with its copies, the one to play first.
+        :param albums: The albums to play, in order, each a list of its copies to try in turn.
         """
         tracks: list[Track] = []
         for start in range(0, len(albums), ALBUM_LOOKUP_BATCH):
@@ -841,7 +846,9 @@ class MediaResolver:
         """
         Return the tracks of the first copy of an album with tracks to play.
 
-        :param copies: The album's copies, the one to play first.
+        The last copy's result is returned as it is, even when empty or failing.
+
+        :param copies: The album's copies, in the order to try them.
         """
         library_tracks = (
             self.mass.config.get_raw_core_config_value(
@@ -933,7 +940,8 @@ class MediaResolver:
         """
         Return all of the artist's albums across its (streaming) providers.
 
-        Returns None when every provider failed to list them.
+        Returns None when no provider listed them and at least one was unavailable or failed.
+        A provider that can't list artist albums at all is left out.
 
         :param artist: The artist to resolve provider albums for.
         """
@@ -942,6 +950,20 @@ class MediaResolver:
         listed = failed = False
         for mapping in artist.provider_mappings:
             if mapping.provider_instance not in unique_providers:
+                continue
+            # the albums lookup answers an empty list for these, so they are told apart first
+            provider = self.mass.get_provider(
+                mapping.provider_instance, provider_type=MusicProvider
+            )
+            if provider is None:
+                failed = True
+                self.logger.warning(
+                    "Unable to fetch albums for artist %s from provider %s: provider unavailable",
+                    artist.name,
+                    mapping.provider_instance,
+                )
+                continue
+            if not provider.supports_feature(ProviderFeature.ARTIST_ALBUMS):
                 continue
             try:
                 albums.extend(
