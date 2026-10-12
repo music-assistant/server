@@ -1959,3 +1959,93 @@ async def test_get_wave_form_none_without_rms() -> None:
     """wave_form returns None when no AA provider stored RMS energy."""
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
     assert await c.get_wave_form("track-1", "test-provider") is None
+
+
+@pytest.mark.asyncio
+async def test_get_features_merges_rhythm_and_descriptors() -> None:
+    """Features combine Smart Fades rhythm/key with Sonic Analysis descriptors."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(SONIC_ANALYSIS_DOMAIN, 1, energy=0.8, valence=0.3, danceability=0.7),
+            _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 2, bpm=124.0, key="A", mode="minor"),
+        ]
+    )
+    result = await c.get_features("track-1", "test-provider")
+    assert result is not None
+    assert result["bpm"] == 124.0
+    assert result["key"] == "A"
+    assert result["mode"] == "minor"
+    assert result["energy"] == pytest.approx(0.8)
+    assert result["valence"] == pytest.approx(0.3)
+    assert result["danceability"] == pytest.approx(0.7)
+    assert result["arousal"] is None
+    assert "beats" not in result
+    assert "rms_energy" not in result
+    assert "clap_embedding" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_features_include_beats() -> None:
+    """Beats and downbeats are returned only when asked for."""
+    c = _analysis_controller_with_rows(
+        [_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0, beats=[0.5, 1.0], downbeats=[0.5])]
+    )
+    result = await c.get_features("track-1", "test-provider", include_beats=True)
+    assert result is not None
+    assert result["beats"] == pytest.approx([0.5, 1.0])
+    assert result["downbeats"] == pytest.approx([0.5])
+
+
+@pytest.mark.asyncio
+async def test_get_features_none_when_not_analyzed() -> None:
+    """A track with no stored analysis returns None."""
+    c = _analysis_controller_with_rows([])
+    assert await c.get_features("track-1", "test-provider") is None
+
+
+@pytest.mark.asyncio
+async def test_get_features_batch_keeps_order_and_skips_invalid() -> None:
+    """Batch returns one entry per request, None for malformed entries."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=100.0)])
+    result = await c.get_features_batch(
+        [
+            {"item_id": "track-1", "provider_instance_id_or_domain": "test-provider"},
+            {"item_id": "track-1"},
+        ]
+    )
+    assert len(result) == 2
+    assert result[0] is not None
+    assert result[0]["bpm"] == 100.0
+    assert result[1] is None
+
+
+@pytest.mark.asyncio
+async def test_get_features_batch_rejects_oversized_request() -> None:
+    """Batch requests above the cap are refused."""
+    c = _analysis_controller_with_rows([])
+    items = [{"item_id": str(i), "provider_instance_id_or_domain": "p"} for i in range(101)]
+    with pytest.raises(ValueError, match="At most"):
+        await c.get_features_batch(items)
+
+
+@pytest.mark.asyncio
+async def test_get_features_renames_level_fields() -> None:
+    """Sonic Analysis level approximations are exported as rms_db/rms_range_db/sample_peak_db."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(
+                SONIC_ANALYSIS_DOMAIN,
+                1,
+                loudness_integrated=-8.1,
+                loudness_range=6.2,
+                true_peak=-0.4,
+            )
+        ]
+    )
+    result = await c.get_features("track-1", "test-provider")
+    assert result is not None
+    assert result["rms_db"] == pytest.approx(-8.1)
+    assert result["rms_range_db"] == pytest.approx(6.2)
+    assert result["sample_peak_db"] == pytest.approx(-0.4)
+    for old in ("loudness_integrated", "loudness_range", "true_peak"):
+        assert old not in result

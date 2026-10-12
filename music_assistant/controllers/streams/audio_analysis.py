@@ -100,6 +100,35 @@ MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
 _CANDIDATE_TRACKS_TABLE = "candidate_tracks"
 _CANDIDATE_KEYS_BATCH_SIZE = 5000
 
+# Scalar AudioAnalysisData fields exported by audio_analysis/features, as
+# (AudioAnalysisData attribute, client-facing key). Arrays (envelopes, embeddings) are left
+# out to keep responses small; beats are opt-in. The level fields are renamed on export
+# because under the export priority they come from Sonic Analysis, which writes
+# approximations rather than EBU R128 values: rms_db is the mean RMS level (dBFS),
+# rms_range_db the spread of the RMS level (dB), sample_peak_db the sample peak (dBFS).
+FEATURE_EXPORT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("duration", "duration"),
+    ("loudness_integrated", "rms_db"),
+    ("loudness_range", "rms_range_db"),
+    ("true_peak", "sample_peak_db"),
+    ("bpm", "bpm"),
+    ("beats_per_bar", "beats_per_bar"),
+    ("key", "key"),
+    ("mode", "mode"),
+    ("energy", "energy"),
+    ("danceability", "danceability"),
+    ("valence", "valence"),
+    ("arousal", "arousal"),
+    ("speechiness", "speechiness"),
+    ("instrumentalness", "instrumentalness"),
+    ("acousticness", "acousticness"),
+    ("brightness", "brightness"),
+    ("harmonic_complexity", "harmonic_complexity"),
+    ("roughness", "roughness"),
+    ("rhythmic_regularity", "rhythmic_regularity"),
+)
+FEATURES_BATCH_MAX_ITEMS = 100
+
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
@@ -119,6 +148,29 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
         return row[key]
     except IndexError, KeyError, TypeError:
         return None
+
+
+def _features_from_analysis(
+    analysis: AudioAnalysisData, include_beats: bool = False
+) -> dict[str, Any]:
+    """
+    Build the client-facing feature dict for audio_analysis/features.
+
+    :param analysis: Merged analysis for one track.
+    :param include_beats: Also include the beat and downbeat timestamp lists.
+    """
+    features: dict[str, Any] = {}
+    for attr, key in FEATURE_EXPORT_FIELDS:
+        value = getattr(analysis, attr)
+        if isinstance(value, float) and not isfinite(value):
+            value = None
+        features[key] = value
+    if include_beats:
+        features["beats"] = [float(v) for v in analysis.beats] if analysis.beats else None
+        features["downbeats"] = (
+            [float(v) for v in analysis.downbeats] if analysis.downbeats else None
+        )
+    return features
 
 
 def _parse_row(
@@ -710,6 +762,65 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         if analysis is None or analysis.rms_energy is None:
             return None
         return [float(value) for value in analysis.rms_energy]
+
+    @api_command("audio_analysis/features")
+    async def get_features(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        include_beats: bool = False,
+    ) -> dict[str, Any] | None:
+        """
+        Return the stored scalar audio features for a track, or None when it was never analyzed.
+
+        Exposes what the audio analysis providers already computed (rhythm and key from Smart
+        Fades, descriptors such as energy and valence from Sonic Analysis) so clients can sort,
+        filter or visualize tracks without re-analyzing audio. Fields a provider did not write
+        are None. The 1800-bin envelopes and the CLAP embedding are never included; use
+        audio_analysis/wave_form for the energy envelope.
+
+        The level fields are Sonic Analysis approximations, not EBU R128 measurements:
+        rms_db is the mean RMS level (dBFS), rms_range_db the spread of the RMS level (dB)
+        and sample_peak_db the sample peak (dBFS).
+
+        :param item_id: Provider-native item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param include_beats: Also return the beat and downbeat timestamps (seconds).
+        """
+        analysis = await self.get_audio_analysis(
+            item_id,
+            provider_instance_id_or_domain,
+            priority=TRACK_EXPORT_AA_PRIORITY,
+        )
+        if analysis is None:
+            return None
+        return _features_from_analysis(analysis, include_beats=include_beats)
+
+    @api_command("audio_analysis/features/batch")
+    async def get_features_batch(
+        self,
+        items: list[dict[str, str]],
+    ) -> list[dict[str, Any] | None]:
+        """
+        Return the scalar audio features for several tracks, in request order.
+
+        Each entry is an object with item_id and provider_instance_id_or_domain. The result
+        holds one entry per request entry: the features, or None when not analyzed.
+
+        :param items: Tracks to look up, at most FEATURES_BATCH_MAX_ITEMS.
+        """
+        if len(items) > FEATURES_BATCH_MAX_ITEMS:
+            msg = f"At most {FEATURES_BATCH_MAX_ITEMS} items per request"
+            raise ValueError(msg)
+        results: list[dict[str, Any] | None] = []
+        for item in items:
+            item_id = item.get("item_id")
+            provider = item.get("provider_instance_id_or_domain")
+            if not item_id or not provider:
+                results.append(None)
+                continue
+            results.append(await self.get_features(item_id, provider))
+        return results
 
     async def set_track_loudness(
         self,
