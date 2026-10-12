@@ -80,7 +80,12 @@ from PIL import Image
 from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import AnnouncementFeature, Player, PlayerMedia
+from music_assistant.models.player import (
+    MEDIA_IDENTITY_KEYS,
+    AnnouncementFeature,
+    Player,
+    PlayerMedia,
+)
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
 from .bridge_role import BridgePlayerRole
@@ -232,6 +237,12 @@ CAST_APP_READY_TIMEOUT = 30.0
 # Longest gap since elapsed_time_last_updated across which corrected_elapsed_time
 # is still trusted for metadata progress.
 MAX_PROGRESS_EXTRAPOLATION = 30.0
+
+# PlayerMedia fields behind MEDIA_IDENTITY_KEYS, derived so the same-item check in
+# play_media() cannot drift from what update_state() treats as a media change.
+_MEDIA_IDENTITY_FIELDS = tuple(
+    sorted(key.partition(".")[2] for key in MEDIA_IDENTITY_KEYS if "." in key)
+)
 
 # Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
 # anything else falls back to the generic "pairing_failed" abort.
@@ -1506,6 +1517,7 @@ class SendspinPlayer(SendspinBasePlayer):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
+        prev_media_identity = self._media_identity()
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
@@ -1523,6 +1535,16 @@ class SendspinPlayer(SendspinBasePlayer):
 
         await self.playback_session.start(media)
         self.update_state()
+        if self.synced_to is None and self._media_identity() == prev_media_identity:
+            # Push progress explicitly: a seek restarts the item that is already playing,
+            # so current_media's identity is unchanged and update_state() won't debounce
+            # a metadata push through the normal media-changed callback. A changed
+            # identity is left to that callback, so a track change pushes only once.
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+                abort_existing=True,
+            )
 
         if cast_app_ready is None:
             return
@@ -1677,7 +1699,7 @@ class SendspinPlayer(SendspinBasePlayer):
                         # a member's own failure outranks the readiness timeout
                         ready.result()
                 if stuck := [m.display_name for m, f in pending_cast if not f.done()]:
-                    raise PlayerCommandFailed(
+                    raise PlayerCommandFailed(  # noqa: TRY301 - triggers member rollback below
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s",
                         translation_key="cast_app_members_not_ready",
                         translation_owner=self.translation_owner,
@@ -2028,6 +2050,12 @@ class SendspinPlayer(SendspinBasePlayer):
                     self.logger.exception(
                         "Error notifying bridge %s of an explicit stop", client.client_id
                     )
+
+    def _media_identity(self) -> tuple[object, ...] | None:
+        """Return the current media values that trigger on_player_media_updated when changed."""
+        if (current_media := self.state.current_media) is None:
+            return None
+        return tuple(getattr(current_media, field) for field in _MEDIA_IDENTITY_FIELDS)
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""

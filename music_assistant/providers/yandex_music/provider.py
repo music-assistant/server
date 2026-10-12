@@ -682,7 +682,7 @@ class YandexMusicProvider(MusicProvider):
             name=name,
         )
 
-    async def browse(  # noqa: PLR0911, PLR0915
+    async def browse(  # noqa: C901, PLR0911, PLR0912, PLR0915
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """

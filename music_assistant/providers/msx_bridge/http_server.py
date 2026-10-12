@@ -156,7 +156,7 @@ class MSXHTTPServer:
         # binding to 127.0.0.1 would prevent TV connections.
         site = web.TCPSite(
             self._runner,
-            "0.0.0.0",
+            "0.0.0.0",  # noqa: S104 - serves MSX clients on the LAN
             self.port,
             reuse_address=True,
             reuse_port=True,

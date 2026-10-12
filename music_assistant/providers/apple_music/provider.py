@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -32,6 +33,7 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
+from .helpers.utils import is_apple_id
 from .library import AppleMusicLibraryManager
 from .media import AppleMusicMediaManager
 from .recommendations import AppleMusicRecommendationManager
@@ -153,51 +155,69 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        _require_apple_id(prov_artist_id)
         return await self.media_manager.get_artist(prov_artist_id)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        _require_apple_id(prov_album_id)
         return await self.media_manager.get_album(prov_album_id)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        _require_apple_id(prov_track_id)
         return await self.media_manager.get_track(prov_track_id)
 
     async def get_playlist(
         self, prov_playlist_id: str, is_favourite: bool | None = None
     ) -> Playlist:
         """Get full playlist details by id."""
+        _require_apple_id(prov_playlist_id)
         if prov_playlist_id.startswith("ra."):
             return await self.recommendation_manager.get_station_playlist(prov_playlist_id)
         return await self.media_manager.get_playlist(prov_playlist_id, is_favourite)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        if not is_apple_id(prov_album_id):
+            return []
         return await self.media_manager.get_album_tracks(prov_album_id)
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
         media_type, _, item_id = path.partition("/")
+        if not is_apple_id(item_id):
+            return ""
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
+        if not is_apple_id(prov_playlist_id):
+            return []
         return await self.media_manager.get_playlist_tracks(prov_playlist_id, page)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.media_manager.get_artist_albums(prov_artist_id)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.media_manager.get_artist_toptracks(prov_artist_id)
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
+        if not is_apple_id(prov_track_id):
+            return []
         return await self.recommendation_manager.get_similar_tracks(prov_track_id, limit)
 
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.recommendation_manager.get_similar_artists(prov_artist_id, limit)
 
     # ------------------------------------------------------------------
@@ -287,3 +307,13 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
+
+
+def _require_apple_id(item_id: str) -> None:
+    """
+    Raise MediaNotFoundError for an id that cannot exist on Apple Music, without a request.
+
+    :param item_id: The provider item id to check.
+    """
+    if not is_apple_id(item_id):
+        raise MediaNotFoundError(f"{item_id} is not an Apple Music id")

@@ -60,7 +60,6 @@ from music_assistant.helpers.playlists import (
     media_item_to_playlist_item,
 )
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
-from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import MusicProvider
@@ -314,10 +313,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         if not supported_types:
             msg = f"Provider {provider.name} does not support creating playlists"
-            raise InvalidDataError(msg)
-
-        if not is_safe_name(name):
-            msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
 
         if len(media_types_set.difference(supported_types)) > 0:
@@ -574,8 +569,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if MediaType.TRACK not in provider.supported_media_types:
             raise InvalidDataError(f"Provider {provider.name} does not support track playlists")
         destination_name = name or source_playlist.name
-        if not is_safe_name(destination_name):
-            raise InvalidDataError(f"{destination_name} is not a valid Playlist name")
 
         user = get_current_user()
         source_provider, source_item_id = self._select_provider_id(source_playlist)
@@ -788,7 +781,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             allow_impersonation=True,
         )
 
-    async def _handle_migrate_playlist(
+    async def _handle_migrate_playlist(  # noqa: C901, PLR0912
         self,
         source_playlist_id: str,
         source_playlist_item_id: str,
@@ -1526,7 +1519,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    async def _handle_add_playlist_tracks(
+    async def _handle_add_playlist_tracks(  # noqa: C901, PLR0912
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         """Handle adding playlist items inside a managed task."""

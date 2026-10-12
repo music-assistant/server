@@ -8,7 +8,7 @@ import importlib
 import logging
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
@@ -111,8 +111,8 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
-CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
-DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -1281,7 +1281,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 episode.metadata.release_date = datetime.fromisoformat(release_date)
         return episode
 
-    async def _get_stream_format(self, item_id: str) -> dict[str, Any]:
+    async def _get_stream_format(
+        self, item_id: str, *, require_login: bool = False
+    ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
@@ -1305,10 +1307,20 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                had_login = _has_login_cookie(ydl.cookiejar)
                 try:
                     info = ydl.extract_info(url, download=False)
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
+                # YouTube clears LOGIN_INFO when it invalidates the session, which is how
+                # yt-dlp detects rotated cookies
+                if require_login and had_login and not _has_login_cookie(ydl.cookiejar):
+                    raise LoginFailed(
+                        "Your YouTube Music cookies have expired. "
+                        "Please reconfigure this provider with fresh cookies.",
+                        translation_key="cookies_expired",
+                        translation_owner=self.translation_owner,
+                    )
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
                 stream_format: dict[str, Any] | None = next(
                     format_selector({"formats": info["formats"]}), None
@@ -1350,7 +1362,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
-        stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        stream_format = await self._get_stream_format(
+            YTM_PREMIUM_CHECK_TRACK_ID, require_login=True
+        )
         # Only premium users can stream the HQ stream of this song
         format_id: str = stream_format["format_id"]
         return format_id == "141"
@@ -1413,6 +1427,11 @@ def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
         case "DISLIKE":
             return False
     return None
+
+
+def _has_login_cookie(cookiejar: Iterable[Any]) -> bool:
+    """Return whether the cookie jar holds the YouTube LOGIN_INFO session cookie."""
+    return any(cookie.name == "LOGIN_INFO" for cookie in cookiejar)
 
 
 @lru_cache

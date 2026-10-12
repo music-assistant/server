@@ -105,7 +105,7 @@ class SendspinProxyHandler:
                     await wsock.close(code=1011, message=b"Internal server error")
                     return wsock
             if internal_ws is None:
-                raise RuntimeError("Retry loop exited without connecting or returning")
+                raise RuntimeError("Retry loop exited without connecting or returning")  # noqa: TRY301 - handled by except below
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")

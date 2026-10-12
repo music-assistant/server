@@ -304,7 +304,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
     """Call async function using the throttler with retries."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
@@ -323,7 +323,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                         return await func(self, *args, **kwargs)
                     except ResourceTemporarilyUnavailable as e:
                         self.logger.info(
-                            f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
+                            "Attempt %s/%s failed: %s", attempt + 1, throttler.retry_attempts, e
                         )
                         server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                         if server_wait > MAX_WAIT_TIME:
@@ -354,7 +354,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                                 # a rate limit applies to the whole account, so hold back every
                                 # other caller for as long as we back off ourselves
                                 throttler.set_cooldown(sleep_time)
-                            self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
+                            self.logger.info("Retrying in %.1f seconds...", sleep_time)
                             honored_until = time.monotonic() + sleep_time
                             await asyncio.sleep(sleep_time)
                         elif isinstance(e, RateLimited):
