@@ -9,10 +9,19 @@ import socketio
 import socketio.exceptions
 from aioaudiobookshelf.client import SocketClient
 from aioaudiobookshelf.client.session_configuration import SessionConfiguration
+from aioaudiobookshelf.exceptions import ApiError as AbsApiError
+from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
+from aioaudiobookshelf.exceptions import NotFoundError as AbsNotFoundError
+from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
 from aiohttp import ClientConnectionError, web
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf import Audiobookshelf
@@ -61,7 +70,7 @@ async def test_failed_sync_keeps_library_ids(provider: Audiobookshelf) -> None:
 
     with (
         patch.object(MusicProvider, "sync_library", _fail_while_paging),
-        pytest.raises(AbsServiceUnavailableError),
+        pytest.raises(ProviderUnavailableError),
     ):
         await provider.sync_library(MediaType.AUDIOBOOK)
 
@@ -183,3 +192,27 @@ async def test_unload_shuts_down_socket_on_failing_logout(provider: Audiobookshe
         await provider.unload()
 
     socket_logout.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("abs_error", "mass_error"),
+    [
+        (AbsNotFoundError, MediaNotFoundError),
+        (AbsServiceUnavailableError, ProviderUnavailableError),
+        (AbsApiError, MusicAssistantError),
+        # the relogin after an expired refresh token fails
+        (RefreshTokenExpiredError, LoginFailed),
+    ],
+)
+async def test_abs_errors_raised_as_mass_errors(
+    provider: Audiobookshelf, abs_error: type[Exception], mass_error: type[Exception]
+) -> None:
+    """Mass only handles its own errors, e.g. to fall back to another provider."""
+    provider._client.get_my_media_progress = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider._client.get_library_item_book = AsyncMock(side_effect=abs_error)  # type: ignore[method-assign]
+
+    with (
+        patch.object(provider, "reauthenticate", AsyncMock(side_effect=AbsLoginError)),
+        pytest.raises(mass_error),
+    ):
+        await provider.get_audiobook("book1")

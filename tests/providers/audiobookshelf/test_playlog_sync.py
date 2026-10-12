@@ -7,6 +7,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aioaudiobookshelf.exceptions import NotFoundError as AbsNotFoundError
 from aioaudiobookshelf.schema.media_progress import MediaProgress
 from aioaudiobookshelf.schema.user import User
 from music_assistant_models.enums import MediaType
@@ -177,3 +178,13 @@ async def test_episode_fetched_once_for_repeated_progresses(
 
     get_podcast_episode.assert_awaited_once_with("pod1 ep1", add_progress=False)
     assert cast("AsyncMock", playlog_provider.mass.music.mark_item_played).await_count == 2
+
+
+async def test_progress_of_a_deleted_podcast_is_skipped(playlog_provider: Audiobookshelf) -> None:
+    """A progress of a podcast deleted on abs doesn't end the playlog sync."""
+    _install_dict_backed_cache(playlog_provider)
+    playlog_provider._client.get_library_item_podcast = AsyncMock(side_effect=AbsNotFoundError)  # type: ignore[method-assign]
+
+    await playlog_provider._update_playlog_episode(_episode_progress(last_update=1000))
+
+    cast("AsyncMock", playlog_provider.mass.music.mark_item_played).assert_not_called()

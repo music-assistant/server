@@ -90,6 +90,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
@@ -202,17 +203,27 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
     ) -> Callable[P, Coroutine[Any, Any, R]]:
-        """Decorate a method to handle an expired refresh token by relogin."""
+        """Decorate a method to relogin on an expired refresh token and raise mass errors."""
 
         @functools.wraps(method)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             self = cast("Audiobookshelf", args[0])
             try:
-                return await method(*args, **kwargs)
-            except RefreshTokenExpiredError:
-                self.logger.debug("Refresh token expired. Trying to renew.")
-                await self.reauthenticate()
-                return await method(*args, **kwargs)
+                try:
+                    return await method(*args, **kwargs)
+                except RefreshTokenExpiredError:
+                    self.logger.debug("Refresh token expired. Trying to renew.")
+                    await self.reauthenticate()
+                    return await method(*args, **kwargs)
+            # mass only handles its own errors, e.g. to fall back to another provider
+            except AbsNotFoundError as err:
+                raise MediaNotFoundError("Item not found on Audiobookshelf.") from err
+            except AbsServiceUnavailableError as err:
+                raise ProviderUnavailableError("Audiobookshelf is unreachable.") from err
+            except AbsLoginError as err:
+                raise LoginFailed("Login to Audiobookshelf failed.") from err
+            except AbsError as err:
+                raise MusicAssistantError(f"Audiobookshelf request failed: {err!r}") from err
 
         return wrapper
 
@@ -516,6 +527,7 @@ for more details.
                     abs_narrator=abs_narrator, instance_id=self.instance_id, domain=self.domain
                 )
 
+    @handle_refresh_token
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get an author or narrator."""
         for library_id, narrator_ids in self.libraries.narrators.items():
@@ -918,6 +930,7 @@ for more details.
             media_progress=progress,
         )
 
+    @handle_refresh_token
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream of item."""
         # We always create a playback session. The default is direct playback.
