@@ -17,8 +17,8 @@ from functools import partial
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
+from urllib.parse import unquote, urlsplit
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -46,7 +46,7 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
-from music_assistant.helpers.tts import TTSLanguageNotSupportedError
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, ImageEngine, PluginProvider, TTSEngine
 
@@ -89,7 +89,7 @@ if TYPE_CHECKING:
 
 DOMAIN = "hass"
 CONF_URL = "url"
-CONF_AUTH_TOKEN = "token"
+CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
@@ -104,6 +104,16 @@ DEVICE_REGISTRY_CACHE_TTL = 60
 AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
+# HA paths a media player's entity_picture points at, the only images this provider resolves
+IMAGE_PATH_PREFIXES: Final = (
+    "/api/media_player_proxy/",
+    "/api/image_proxy/",
+    "/api/image/serve/",
+    "/local/",
+)
+IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
+IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -174,6 +184,9 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
     _tts_engines: list[TTSEngine]
+    # languages per TTS entity, as Home Assistant reports them; an entity whose list could
+    # not be read is absent and gets the requested language passed through unchanged
+    _tts_languages: dict[str, tuple[str, ...]]
     _startup_complete: bool = False
     _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
@@ -254,6 +267,7 @@ class HomeAssistantProvider(PluginProvider):
         self._ai_engines = []
         self._image_engines = []
         self._tts_engines = []
+        self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
@@ -608,11 +622,31 @@ class HomeAssistantProvider(PluginProvider):
         return states
 
     async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path."""
+        """
+        Fetch an entity picture from Home Assistant.
+
+        :param path: The HA-relative image path, as found in a media player's entity_picture.
+        :raises FileNotFoundError: When the path is not an HA image path, or HA does not
+            answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        path_segments = unquote(path.split("?", 1)[0]).split("/")
+        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
+            raise FileNotFoundError("Image not found")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
-            return await response.read()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""
@@ -717,6 +751,17 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("TTS entity is not available")
+        if language and (supported := self._tts_languages.get(entity_id)) is not None:
+            # Home Assistant only accepts a language spelled exactly as the entity lists it
+            country = self.mass.metadata.locale.partition("_")[2] or None
+            matched = match_tts_language(language, supported, country)
+            if matched is None:
+                self.logger.debug(
+                    "TTS engine %s has no voice for language '%s', using its default",
+                    entity_id,
+                    language,
+                )
+            language = matched
         ha_url, headers, http_session = self._get_ha_http()
         # the tts_get_url payload field is called engine_id but takes a tts entity_id
         payload: dict[str, Any] = {"engine_id": entity_id, "message": message}
@@ -1118,12 +1163,14 @@ class HomeAssistantProvider(PluginProvider):
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
         image_engines.sort(key=lambda engine: engine.name)
+        tts_languages = await self._fetch_tts_languages() if tts_engines else {}
         changed = (self._tts_engines, self._ai_engines, self._image_engines) != (
             tts_engines,
             ai_engines,
             image_engines,
         )
         self._tts_engines = tts_engines
+        self._tts_languages = tts_languages
         self._ai_engines = ai_engines
         self._image_engines = image_engines
         self._supported_features.discard(ProviderFeature.TTS)
@@ -1138,6 +1185,21 @@ class HomeAssistantProvider(PluginProvider):
         # during startup the load itself signals once we are done.
         if changed and self._startup_complete:
             self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
+
+    async def _fetch_tts_languages(self) -> dict[str, tuple[str, ...]]:
+        """Return the languages each TTS entity accepts, leaving out the ones without a list."""
+        try:
+            result = await self.hass.send_command("tts/engine/list")
+        except BaseHassClientError as err:
+            self.logger.debug("Could not read the languages of the TTS engines: %s", err)
+            return {}
+        providers = result.get("providers") if isinstance(result, dict) else None
+        languages: dict[str, tuple[str, ...]] = {}
+        for provider in providers or ():
+            supported = provider.get("supported_languages")
+            if isinstance(supported, list):
+                languages[str(provider["engine_id"])] = tuple(str(code) for code in supported)
+        return languages
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""

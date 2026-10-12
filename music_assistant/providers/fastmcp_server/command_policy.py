@@ -696,7 +696,7 @@ async def _config_value_is_secure(
         elif isinstance(player_id := arguments.get("player_id"), str) and player_id:
             entries = mass.config.get_player_config_entries(player_id)
         else:
-            raise ValueError("Config value arguments do not identify a target")
+            raise ValueError("Config value arguments do not identify a target")  # noqa: TRY301 - converted to ToolError below
         if inspect.isawaitable(entries):
             entries = await entries
         entry = next((entry for entry in entries if entry.key == key), None)

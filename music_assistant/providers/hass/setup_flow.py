@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -11,7 +10,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
-from music_assistant.controllers.webserver.helpers.login_flow import pkce_challenge
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
 from . import CONF_AUTH_TOKEN, CONF_URL, CONF_VERIFY_SSL
@@ -95,13 +94,13 @@ async def _authenticate(session: SetupSession, hass_url: str) -> str:
     # as the client id, so the local callback is used directly - unlike Spotify/Google/
     # Microsoft, no fixed hosted-bounce redirect needs to be pre-registered
     client_id = base_url(callback)
-    code_verifier = secrets.token_urlsafe(64)
+    code_verifier, code_challenge = generate_pkce_pair()
     auth_url = get_auth_url(
         hass_url,
         callback,
         client_id=client_id,
         state=session.flow_id,
-        code_challenge=pkce_challenge(code_verifier),
+        code_challenge=code_challenge,
     )
     params = await session.external(auth_url, step_id="auth")
     if params.get("state") != session.flow_id:

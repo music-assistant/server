@@ -17,7 +17,7 @@ def _content_length_off_by_one_error() -> UpnpCommunicationError:
     """Build the exact exception chain the Busch-Jaeger radio triggers."""
     try:
         try:
-            raise ContentLengthError(
+            raise ContentLengthError(  # noqa: TRY301 - builds exception chain
                 "Not enough data to satisfy content length header (received 593 of 594 bytes)."
             )
         except ContentLengthError as content_err:
@@ -26,7 +26,7 @@ def _content_length_off_by_one_error() -> UpnpCommunicationError:
             ) from content_err
     except ClientPayloadError as payload_err:
         try:
-            raise UpnpCommunicationError(repr(payload_err)) from payload_err
+            raise UpnpCommunicationError(repr(payload_err)) from payload_err  # noqa: TRY301 - builds exception chain
         except UpnpCommunicationError as comm_err:
             return comm_err
 

@@ -825,7 +825,7 @@ class SonosPlayer(Player):
         except Exception:
             self.logger.exception("Failed to update player state")
 
-    def update_attributes(self) -> None:  # noqa: PLR0915
+    def update_attributes(self) -> None:  # noqa: C901, PLR0912, PLR0915
         """Update the player attributes."""
         if not self._sleeps_as_power_off:
             # for a player that sleeps as powered off, the connect and disconnect paths own this
