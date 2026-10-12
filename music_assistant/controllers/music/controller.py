@@ -184,14 +184,6 @@ class RecentPlayedTrack(NamedTuple):
     artists: list[ItemMapping]
 
 
-class PlaylogProviderItem(NamedTuple):
-    """A provider's playlog entry with the progress state recorded for it."""
-
-    media_type: MediaType
-    item_id: str
-    fully_played: bool
-
-
 def _album_title_match(base: str, other: str) -> str:
     """
     Return a query part relating two album rows that may name the same album.
@@ -1211,14 +1203,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def get_playlog_provider_item_ids(
         self, provider_instance_id: str, limit: int = 0, userid: str | None = None
-    ) -> list[PlaylogProviderItem]:
-        """
-        Return a provider's playlog entries, with the ids and progress state it uses itself.
-
-        :param provider_instance_id: Provider whose entries to return.
-        :param limit: Maximum number of rows to read, 0 for all.
-        :param userid: Look up this user instead of the provider's own.
-        """
+    ) -> list[tuple[MediaType, str]]:
+        """Return a list of MediaType and provider_item_id of items in playlog of provider."""
         # check if there is a provider user
         # this method is not available in the frontend, so no need to check for session users.
         user: User | None = None
@@ -1241,10 +1227,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = user.user_id
         db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
-        result: list[PlaylogProviderItem] = []
+        result: list[tuple[MediaType, str]] = []
         for db_row in db_rows:
-            # fully_played is nullable, an unknown value is not played
-            fully_played = parse_optional_bool(db_row["fully_played"]) or False
             if db_row["provider"] == "library":
                 # If the provider is library, we need to make sure that the item
                 # is part of the passed provider_instance_id.
@@ -1264,18 +1248,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 if len(subrow) != 1:
                     continue
-                result.append(
-                    PlaylogProviderItem(
-                        MediaType.AUDIOBOOK, subrow[0]["provider_item_id"], fully_played
-                    )
-                )
+                result.append((MediaType.AUDIOBOOK, subrow[0]["provider_item_id"]))
                 continue
             # non library - item id is provider_item_id
-            result.append(
-                PlaylogProviderItem(
-                    MediaType(db_row["media_type"]), db_row["item_id"], fully_played
-                )
-            )
+            result.append((MediaType(db_row["media_type"]), db_row["item_id"]))
 
         return result
 

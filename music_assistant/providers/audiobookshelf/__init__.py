@@ -194,8 +194,6 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         self.libraries = LibrariesHelper()
         # library_id -> {narrator name: ABS narrator id}, refreshed on each audiobook sync
         self._narrator_ids: dict[str, dict[str, str]] = {}
-        # abs item id -> fully_played as mass recorded it
-        self._playlog_state: dict[str, bool] = {}
 
     @staticmethod
     def handle_refresh_token(
@@ -347,7 +345,6 @@ for more details.
 
         # progress guard
         self.progress_guard = ProgressGuard()
-        await self._refresh_playlog_state()
 
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
@@ -1857,7 +1854,6 @@ for more details.
 
         known_ids = self._get_all_known_item_ids()
         abs_ids_with_progress = set()
-        ma_ids_with_progress = await self._refresh_playlog_state()
 
         for progress in progresses:
             # save progress ids for later
@@ -1890,8 +1886,13 @@ for more details.
                 await self._update_playlog_episode(progress)
         self.logger.debug(f"Updated {__updated_items} from full playlog.")
 
+        # Get MA's known progresses of ABS.
         # In ABS the user may discard a progress, which removes the progress completely.
         # There is no socket notification for this event.
+        ma_playlog_state = await self.mass.music.get_playlog_provider_item_ids(
+            provider_instance_id=self.instance_id
+        )
+        ma_ids_with_progress = {x for _, x in ma_playlog_state}
         discarded_progress_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
         for discarded_progress_id in discarded_progress_ids:
             if len(discarded_progress_id.split(" ")) == 1:
@@ -1901,7 +1902,6 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
-                    self._playlog_state.pop(discarded_progress_id, None)
                     await self.mass.music.mark_item_unplayed(
                         discarded_item, provider_instance_id=self.instance_id
                     )
@@ -1909,7 +1909,6 @@ for more details.
                 with suppress(MediaNotFoundError):
                     discarded_item = await self._get_playlog_podcast_episode(discarded_progress_id)
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
-                    self._playlog_state.pop(discarded_progress_id, None)
                     await self.mass.music.mark_item_unplayed(
                         discarded_item, provider_instance_id=self.instance_id
                     )
@@ -1928,9 +1927,6 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        if progress.is_finished and self._playlog_state.get(progress.library_item_id):
-            # already counted by mass, reporting it again would raise play_count
-            return
         if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(
                 mass_audiobook, provider_instance_id=self.instance_id
@@ -1943,8 +1939,6 @@ for more details.
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
             )
-        # only once mass holds it, so a failed call is not taken for an applied one
-        self._playlog_state[progress.library_item_id] = progress.is_finished
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1958,9 +1952,6 @@ for more details.
             mass_episode = await self._get_playlog_podcast_episode(_episode_id)
         except MediaNotFoundError:
             return
-        if progress.is_finished and self._playlog_state.get(_episode_id):
-            # already counted by mass, reporting it again would raise play_count
-            return
         if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(
                 mass_episode, provider_instance_id=self.instance_id
@@ -1973,18 +1964,6 @@ for more details.
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
             )
-        # only once mass holds it, so a failed call is not taken for an applied one
-        self._playlog_state[_episode_id] = progress.is_finished
-
-    async def _refresh_playlog_state(self) -> set[str]:
-        """Reload what mass recorded for this provider, returns the ids with a progress."""
-        self._playlog_state = {
-            x.item_id: x.fully_played
-            for x in await self.mass.music.get_playlog_provider_item_ids(
-                provider_instance_id=self.instance_id
-            )
-        }
-        return set(self._playlog_state)
 
     # other abs clients report the progress of a playing episode every 15s
     @use_cache(300)

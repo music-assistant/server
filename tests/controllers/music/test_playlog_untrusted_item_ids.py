@@ -5,7 +5,6 @@ from __future__ import annotations
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PROVIDER_MAPPINGS
-from music_assistant.controllers.music.controller import PlaylogProviderItem
 from music_assistant.mass import MusicAssistant
 
 ABS_INSTANCE = "audiobookshelf--AbCd"
@@ -49,4 +48,4 @@ async def test_playlog_provider_item_ids_ignores_injected_item_id(mass: MusicAss
 
     result = await mass.music.get_playlog_provider_item_ids(ABS_INSTANCE, userid=user.user_id)
 
-    assert result == [PlaylogProviderItem(MediaType.AUDIOBOOK, "abs-book-1", False)]
+    assert result == [(MediaType.AUDIOBOOK, "abs-book-1")]
