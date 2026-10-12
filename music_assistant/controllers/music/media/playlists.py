@@ -789,7 +789,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
 
-    async def _handle_migrate_playlist(
+    async def _handle_migrate_playlist(  # noqa: C901, PLR0912
         self,
         source_playlist_id: str,
         source_playlist_item_id: str,
@@ -1555,7 +1555,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
-    async def _handle_add_playlist_tracks(
+    async def _handle_add_playlist_tracks(  # noqa: C901, PLR0912
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         """Handle adding playlist items inside a managed task."""

@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN: Final[str] = "token"
-CONF_MANUAL_TOKEN: Final[str] = "manual_token"
+CONF_TOKEN: Final[str] = "token"  # noqa: S105 - config key
+CONF_MANUAL_TOKEN: Final[str] = "manual_token"  # noqa: S105 - config key
 CONF_QUALITY: Final[str] = "quality"
 CONF_BASE_URL: Final[str] = "base_url"
 
@@ -14,8 +14,8 @@ CONF_BASE_URL: Final[str] = "base_url"
 CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
 # Stored authentication credentials
-CONF_X_TOKEN: Final[str] = "x_token"
-CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
+CONF_X_TOKEN: Final[str] = "x_token"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN: Final[str] = "refresh_token"  # noqa: S105 - config key
 CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 
 # Advanced toggle: enable a token-wide concurrency cap to keep MA below

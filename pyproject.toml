@@ -27,7 +27,7 @@ dependencies = [
   "getmac==0.9.5",
   "mashumaro==3.22",
   "music-assistant-models==1.1.221",
-  "music-assistant-frontend==2.17.337",
+  "music-assistant-frontend==2.17.338",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -240,19 +240,14 @@ ignore = [
   "PTH120",
   "PTH123",
   "G004",
-  "S105",
   "S106",
   "SLF001",
   "SIM102",
   "PERF401",
   "ARG002",
-  "S311",
   "TRY301",
-  "PLR0912",
   "B904",
   "S324",
-  "ERA001",
-  "C901",
   "S304",
   "TRY300",
   "S608",
@@ -268,6 +263,10 @@ extend-select = ["D213"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S104"] # Tests use wildcard addresses as fixture data
+# tests use made-up tokens and passwords as fixtures
+"tests/**" = ["S105"]
+# the provider templates show example code in comments
+"music_assistant/providers/_demo_*/**" = ["ERA001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

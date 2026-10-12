@@ -99,8 +99,8 @@ TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 # Max number of (newest first) tokens returned by the auth/tokens command
 TOKEN_LIST_LIMIT = 100
 
-HA_TOKEN_SETTING_KEY = "ha_integration_token"
-HA_TOKEN_NAME = "Home Assistant Integration"
+HA_TOKEN_SETTING_KEY = "ha_integration_token"  # noqa: S105 - config key
+HA_TOKEN_NAME = "Home Assistant Integration"  # noqa: S105 - display name
 
 # English names of the builtin user roles, in the order the roles are listed
 BUILTIN_ROLE_NAMES = {

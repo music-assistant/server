@@ -810,7 +810,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
             # Not using internal URL, return as-is
             return ha_url
 
-        # Priority: external > cloud > internal
+        # External goes before cloud, cloud before internal
         # External is the manually configured external URL
         # Cloud is the Nabu Casa cloud URL
         # Internal is the local network URL

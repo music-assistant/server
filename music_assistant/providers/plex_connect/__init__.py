@@ -51,7 +51,7 @@ CONF_PLAYER_NAME = "player_name"
 CONF_DEVICE_CLASS = "device_class"
 CONF_PORT = "port"
 # plex.tv device token, stored in setup_data (encrypted) once the player is linked
-CONF_PLEXTV_TOKEN = "plextv_token"
+CONF_PLEXTV_TOKEN = "plextv_token"  # noqa: S105 - config key
 CONF_ACTION_START_LINK = "start_link"
 CONF_ACTION_COMPLETE_LINK = "complete_link"
 CONF_ACTION_UNLINK = "unlink"

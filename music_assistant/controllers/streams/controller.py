@@ -745,7 +745,7 @@ class StreamsController(CoreController):
             if (transport := request.transport) is not None:
                 transport.abort()
 
-    async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
+    async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback

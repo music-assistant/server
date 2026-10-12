@@ -566,7 +566,7 @@ class SyncGroupPlayer(Player):
         """
         await self._require_sync_leader().set_repeat(repeat_mode)
 
-    async def set_members(  # noqa: PLR0915
+    async def set_members(  # noqa: PLR0912, PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
@@ -1073,12 +1073,12 @@ class SyncGroupPlayer(Player):
     #     (_active_session_player) so leader/handoff bookkeeping is done on
     #     the right object
     #   - choose new leaders that keep protocol continuity
-    #     (_member_supports_protocol_domain / _select_sync_leader)
+    #     (_member_supports_protocol_domain / _select_sync_leader)  # noqa: ERA001
     #   - downshift to the native protocol once every remaining member can play
     #     on it (_all_members_can_play_on_domain)
     #   - stay aligned with the protocol's own view of the group, both in member
     #     order (_align_members_with_session) and in who leads it
-    #     (_protocol_group_leader)
+    #     (_protocol_group_leader)  # noqa: ERA001
     # The helpers below cover those needs. Composition decisions (which protocol
     # to use given the current member mix) intentionally live in the group:
     # individual protocol providers don't have visibility into the rest of the

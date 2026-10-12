@@ -1368,7 +1368,6 @@ def get_changed_keys(
     """Compare 2 dicts and return set of changed keys."""
     # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
     return set(get_changed_dict_values(dict1, dict2, recursive).keys())
-    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
 def get_changed_dict_values(

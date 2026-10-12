@@ -784,7 +784,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         :param item: The updated library item.
         """
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: C901, PLR0911, PLR0912
         """
         Browse this provider's items.
 
@@ -1028,6 +1028,114 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             state.skipped_item_ids.setdefault(media_type, set()).add(item_id)
         else:
             state.incomplete_media_types.add(media_type)
+
+    def library_sync_album_tracks_enabled(self) -> bool:
+        """Return whether all tracks of an album should be imported into the library."""
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
+            )
+        )
+
+    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
+        """
+        Import all tracks of the given (provider) album into the Music Assistant library.
+
+        :param prov_album_id: The provider item id of the album.
+        :param album: The album the tracks belong to.
+            Fetched from the provider when not given.
+        """
+        self.logger.debug(
+            "Importing Album Tracks into the Music Assistant library for album %s.",
+            album.name if album else prov_album_id,
+        )
+        prov_tracks = await self.get_album_tracks(prov_album_id)
+        # some providers leave the (redundant) album off the tracks in an album listing.
+        # without it the track is stored unfiled, so resolve it once for the whole import.
+        if album is None and any(prov_track.album is None for prov_track in prov_tracks):
+            with suppress(MusicAssistantError, NotImplementedError):
+                album = await self.get_album(prov_album_id)
+        album_mapping = ItemMapping.from_item(album) if album else None
+        for item_count, prov_track in enumerate(prov_tracks, start=1):
+            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
+            try:
+                if prov_track.album is None and album_mapping is not None:
+                    prov_track.album = album_mapping
+                sync_details = cast(
+                    "TrackSyncDetails | None",
+                    await self.mass.music.tracks.get_library_item_sync_details(
+                        prov_track.provider_mappings,
+                    ),
+                )
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_track.provider_mappings:
+                            prov_map.in_library = True
+                        library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                        db_id = int(library_track.item_id)
+                    elif (
+                        not self._check_provider_mappings(sync_details, prov_track, True)
+                        # existing library track but provider mapping doesn't match
+                        # or backfill a missing album(_tracks) link for existing tracks
+                        or (prov_track.album and not sync_details.has_album)
+                    ):
+                        library_track = await self.mass.music.tracks.update_item_in_library(
+                            sync_details.item_id, prov_track
+                        )
+                        db_id = int(library_track.item_id)
+                    else:
+                        db_id = sync_details.item_id
+                    fallback_genres = (
+                        set(prov_track.metadata.genres)
+                        if prov_track.metadata and prov_track.metadata.genres
+                        else None
+                    )
+                    await self._sync_item_genres(
+                        MediaType.TRACK,
+                        prov_track.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
+                await asyncio.sleep(0)  # yield to eventloop
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
+
+    # DO NOT OVERRIDE BELOW
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for library sync tasks of this provider."""
+        if not self.mass.music.library_supported(self, media_type):
+            raise UnsupportedFeaturedException(
+                f"Library sync is not supported for {media_type} on {self.instance_id}"
+            )
+        return TaskSchedule.hourly(every=12)
+
+    def library_sync_deletions_enabled(self) -> bool:
+        """Return if Library sync deletions is enabled for this provider."""
+        conf_value = self.config.get_value(
+            CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key, CONF_ENTRY_LIBRARY_SYNC_DELETIONS.default_value
+        )
+        return bool(conf_value)
+
+    async def iter_playlist_tracks(
+        self,
+        prov_playlist_id: str,
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
+        """Iterate playlist tracks for the given provider playlist id."""
+        page = 0
+        while True:
+            tracks = await self.get_playlist_tracks(
+                prov_playlist_id,
+                page=page,
+            )
+            if not tracks:
+                break
+            for track in tracks:
+                yield track
+            page += 1
 
     async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915
         """Sync the given media type into the library and process its deletions."""
@@ -1335,15 +1443,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 )
         return cur_db_ids
 
-    def library_sync_album_tracks_enabled(self) -> bool:
-        """Return whether all tracks of an album should be imported into the library."""
-        return bool(
-            self.config.get_value(
-                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
-                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
-            )
-        )
-
     async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
@@ -1406,71 +1505,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 except Exception as err:
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
-
-    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
-        """
-        Import all tracks of the given (provider) album into the Music Assistant library.
-
-        :param prov_album_id: The provider item id of the album.
-        :param album: The album the tracks belong to.
-            Fetched from the provider when not given.
-        """
-        self.logger.debug(
-            "Importing Album Tracks into the Music Assistant library for album %s.",
-            album.name if album else prov_album_id,
-        )
-        prov_tracks = await self.get_album_tracks(prov_album_id)
-        # some providers leave the (redundant) album off the tracks in an album listing.
-        # without it the track is stored unfiled, so resolve it once for the whole import.
-        if album is None and any(prov_track.album is None for prov_track in prov_tracks):
-            with suppress(MusicAssistantError, NotImplementedError):
-                album = await self.get_album(prov_album_id)
-        album_mapping = ItemMapping.from_item(album) if album else None
-        for item_count, prov_track in enumerate(prov_tracks, start=1):
-            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            try:
-                if prov_track.album is None and album_mapping is not None:
-                    prov_track.album = album_mapping
-                sync_details = cast(
-                    "TrackSyncDetails | None",
-                    await self.mass.music.tracks.get_library_item_sync_details(
-                        prov_track.provider_mappings,
-                    ),
-                )
-                # batch all writes for this item into a single commit
-                async with self.mass.music.database.deferred_commit():
-                    if not sync_details:
-                        # add item to the library
-                        for prov_map in prov_track.provider_mappings:
-                            prov_map.in_library = True
-                        library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
-                        db_id = int(library_track.item_id)
-                    elif (
-                        not self._check_provider_mappings(sync_details, prov_track, True)
-                        # existing library track but provider mapping doesn't match
-                        # or backfill a missing album(_tracks) link for existing tracks
-                        or (prov_track.album and not sync_details.has_album)
-                    ):
-                        library_track = await self.mass.music.tracks.update_item_in_library(
-                            sync_details.item_id, prov_track
-                        )
-                        db_id = int(library_track.item_id)
-                    else:
-                        db_id = sync_details.item_id
-                    fallback_genres = (
-                        set(prov_track.metadata.genres)
-                        if prov_track.metadata and prov_track.metadata.genres
-                        else None
-                    )
-                    await self._sync_item_genres(
-                        MediaType.TRACK,
-                        prov_track.item_id,
-                        db_id,
-                        fallback_genres,
-                    )
-                await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
-                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
         """
@@ -1909,40 +1943,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     MediaType.RADIO, prov_item.item_id, db_id, cur_db_ids
                 )
         return cur_db_ids
-
-    # DO NOT OVERRIDE BELOW
-
-    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
-        """Return the default recurring schedule for library sync tasks of this provider."""
-        if not self.mass.music.library_supported(self, media_type):
-            raise UnsupportedFeaturedException(
-                f"Library sync is not supported for {media_type} on {self.instance_id}"
-            )
-        return TaskSchedule.hourly(every=12)
-
-    def library_sync_deletions_enabled(self) -> bool:
-        """Return if Library sync deletions is enabled for this provider."""
-        conf_value = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key, CONF_ENTRY_LIBRARY_SYNC_DELETIONS.default_value
-        )
-        return bool(conf_value)
-
-    async def iter_playlist_tracks(
-        self,
-        prov_playlist_id: str,
-    ) -> AsyncGenerator[PlaylistPlayableItem]:
-        """Iterate playlist tracks for the given provider playlist id."""
-        page = 0
-        while True:
-            tracks = await self.get_playlist_tracks(
-                prov_playlist_id,
-                page=page,
-            )
-            if not tracks:
-                break
-            for track in tracks:
-                yield track
-            page += 1
 
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType

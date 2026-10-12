@@ -111,8 +111,8 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
-CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
-DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"

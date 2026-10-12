@@ -591,7 +591,7 @@ class SnapcastMAStream:
             found within 20 attempts (extremely rare; the range has 201 values).
         """
         for _ in range(20):
-            port = random.randint(4953, 4953 + 200)
+            port = random.randint(4953, 4953 + 200)  # noqa: S311 - port pick
             if port not in used:
                 return port
         return None

@@ -5,9 +5,9 @@ from __future__ import annotations
 DOMAIN = "yandex_station"
 
 # Config entry keys
-CONF_X_TOKEN = "x_token"
-CONF_MUSIC_TOKEN = "music_token"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_X_TOKEN = "x_token"  # noqa: S105 - config key
+CONF_MUSIC_TOKEN = "music_token"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_REMEMBER_SESSION = "remember_session"
 CONF_COOKIES = "cookies"
 
