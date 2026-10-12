@@ -464,7 +464,7 @@ async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
     """
     An attached stderr reader that never sees EOF does not keep close() from reaping.
 
-    The reader is let go once the release budget is spent, and the child is
+    The reader is cancelled once the release budget is spent, and the child is
     escalated to SIGKILL like any other that holds its pipes open.
     """
     monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
@@ -481,6 +481,27 @@ async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
 
     assert proc.returncode == -SIGKILL
     assert reader.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_close_does_not_leave_stdout_to_a_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Two overlapping close() calls still leave stdout reporting EOF afterwards.
+
+    The second call times out on the locks the first one holds, which must not
+    pass for a reader keeping the stream: a later read would then wait forever
+    on a lock no reader is going to release.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(["sleep", "30"], stdout=True)
+    await proc.start()
+
+    await asyncio.gather(proc.close(), proc.close())
+
+    assert proc.returncode is not None
+    assert await asyncio.wait_for(proc.read_stdout(), 1) == b""
 
 
 def test_parse_child_process_name() -> None:
