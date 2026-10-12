@@ -166,32 +166,10 @@ class _SessionHarness:
             ),
         )
 
-    async def _source(self) -> AsyncIterator[bytes]:
-        index = 0
-        while True:
-            yield _ramp_slice(index)
-            index += 1
-
-    async def _sleep_to_limit_buffer(self, max_buffer_us: int) -> None:
-        assert max_buffer_us == _PRODUCER_BUFFER_LIMIT_US
-        self.entered += 1
-        await self.commit_permits.acquire()
-        self.returned += 1
-
     async def settle(self) -> None:
         """Let every other task run until it blocks, as a real 100 ms sleep would."""
         for _ in range(200):
             await asyncio.sleep(0)
-
-    async def _until(self, condition: Callable[[], bool]) -> None:
-        for _ in range(20_000):
-            if condition():
-                return
-            await asyncio.sleep(0)
-        raise AssertionError("playback loop stalled")
-
-    def _parked(self) -> bool:
-        return self.returned == self.released and self.entered == self.released + 1
 
     async def start(self) -> None:
         """Start playback and wait until the first commit is done."""
@@ -247,6 +225,28 @@ class _SessionHarness:
             expected = main_frame0 + (ts - main_ts0) * SAMPLE_RATE // 1_000_000
             offsets[(frame - expected) * 1_000_000 // SAMPLE_RATE] += 1
         return offsets
+
+    async def _source(self) -> AsyncIterator[bytes]:
+        index = 0
+        while True:
+            yield _ramp_slice(index)
+            index += 1
+
+    async def _sleep_to_limit_buffer(self, max_buffer_us: int) -> None:
+        assert max_buffer_us == _PRODUCER_BUFFER_LIMIT_US
+        self.entered += 1
+        await self.commit_permits.acquire()
+        self.returned += 1
+
+    async def _until(self, condition: Callable[[], bool]) -> None:
+        for _ in range(20_000):
+            if condition():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError("playback loop stalled")
+
+    def _parked(self) -> bool:
+        return self.returned == self.released and self.entered == self.released + 1
 
 
 def _assert_aligned(offsets: Counter[int]) -> None:
