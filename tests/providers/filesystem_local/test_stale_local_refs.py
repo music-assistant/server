@@ -66,8 +66,9 @@ async def test_prune_removes_only_the_dead_mapping_and_images(tmp_path: Path) ->
     controller.get_library_item = AsyncMock(return_value=library_item)
     controller.remove_provider_mapping = AsyncMock()
     controller.remove_provider_images = AsyncMock()
+    provider._storage_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-    await provider._prune_missing_local_refs(controller, 1)
+    assert await provider._prune_missing_local_refs(controller, [1])
 
     controller.remove_provider_mapping.assert_awaited_once_with(
         1, INSTANCE_ID, "Artist/OldAlbumFolder"
@@ -89,7 +90,7 @@ async def test_prune_never_drops_the_last_mapping(tmp_path: Path) -> None:
     controller.remove_provider_mapping = AsyncMock()
     controller.remove_provider_images = AsyncMock()
 
-    await provider._prune_missing_local_refs(controller, 2)
+    assert await provider._prune_missing_local_refs(controller, [2])
 
     controller.remove_provider_mapping.assert_not_called()
     controller.remove_provider_images.assert_not_called()
@@ -109,10 +110,52 @@ async def test_prune_keeps_one_mapping_when_all_are_stale(tmp_path: Path) -> Non
     controller.get_library_item = AsyncMock(return_value=library_item)
     controller.remove_provider_mapping = AsyncMock()
     controller.remove_provider_images = AsyncMock()
+    provider._storage_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-    await provider._prune_missing_local_refs(controller, 3)
+    assert await provider._prune_missing_local_refs(controller, [3])
 
     controller.remove_provider_mapping.assert_awaited_once_with(3, INSTANCE_ID, "Artist/OldFolder1")
+
+
+async def test_prune_keeps_everything_when_the_storage_dropped(tmp_path: Path) -> None:
+    """Storage that drops during the checks reads as missing files, so nothing is removed."""
+    provider = _make_provider(str(tmp_path))
+    library_item = MagicMock(
+        provider_mappings=[
+            _mapping("Artist/Album", "Artist/Album"),
+            _mapping("Artist/OldFolder", "Artist/OldFolder"),
+        ],
+        metadata=MagicMock(images=[_image(INSTANCE_ID, "Artist/Album/folder.jpg")]),
+    )
+    controller = MagicMock()
+    controller.get_library_item = AsyncMock(return_value=library_item)
+    controller.remove_provider_mapping = AsyncMock()
+    controller.remove_provider_images = AsyncMock()
+    provider._storage_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    assert not await provider._prune_missing_local_refs(controller, [4])
+
+    controller.remove_provider_mapping.assert_not_called()
+    controller.remove_provider_images.assert_not_called()
+
+
+async def test_prune_without_missing_files_skips_the_storage_check(tmp_path: Path) -> None:
+    """Items whose mappings and images all exist do not probe the storage."""
+    provider = _make_provider(str(tmp_path))
+    (tmp_path / "Artist" / "Album").mkdir(parents=True)
+    (tmp_path / "Artist" / "Album" / "folder.jpg").write_text("x")
+    library_item = MagicMock(
+        provider_mappings=[_mapping("Artist/Album", "Artist/Album")],
+        metadata=MagicMock(images=[_image(INSTANCE_ID, "Artist/Album/folder.jpg")]),
+    )
+    controller = MagicMock()
+    controller.get_library_item = AsyncMock(return_value=library_item)
+    storage_reachable = AsyncMock(return_value=True)
+    provider._storage_reachable = storage_reachable  # type: ignore[method-assign]
+
+    assert await provider._prune_missing_local_refs(controller, [5])
+
+    storage_reachable.assert_not_awaited()
 
 
 async def test_prune_all_visits_every_album_and_artist_of_this_instance(tmp_path: Path) -> None:
@@ -121,9 +164,8 @@ async def test_prune_all_visits_every_album_and_artist_of_this_instance(tmp_path
     mass = cast("MagicMock", provider.mass)
     get_rows = AsyncMock(side_effect=[[{"item_id": 1}, {"item_id": 2}], [{"item_id": 3}]])
     mass.music.database.get_rows_from_query = get_rows
-    prune = AsyncMock()
+    prune = AsyncMock(return_value=True)
     provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
-    provider._unreachable_folders = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     assert await provider._prune_all_missing_local_refs()
 
@@ -133,19 +175,21 @@ async def test_prune_all_visits_every_album_and_artist_of_this_instance(tmp_path
     assert f"provider_instance = '{INSTANCE_ID}'" in artist_query
     assert "media_type = 'artist'" in artist_query
     assert prune.await_args_list == [
-        call(mass.music.albums, 1),
-        call(mass.music.albums, 2),
-        call(mass.music.artists, 3),
+        call(mass.music.albums, [1, 2]),
+        call(mass.music.artists, [3]),
     ]
 
 
-async def test_prune_all_is_skipped_while_a_folder_is_unavailable(tmp_path: Path) -> None:
-    """Files below an unavailable folder read as missing, so the pass waits for a later sync."""
+async def test_prune_all_stops_when_the_album_check_could_not_run(tmp_path: Path) -> None:
+    """A pass that kept album references because the storage dropped is not done."""
     provider = _make_provider(str(tmp_path))
-    provider._unreachable_folders = AsyncMock(return_value=["Artist"])  # type: ignore[method-assign]
-    prune = AsyncMock()
+    mass = cast("MagicMock", provider.mass)
+    mass.music.database.get_rows_from_query = AsyncMock(
+        side_effect=[[{"item_id": 1}], [{"item_id": 3}]]
+    )
+    prune = AsyncMock(return_value=False)
     provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
 
     assert not await provider._prune_all_missing_local_refs()
 
-    prune.assert_not_called()
+    prune.assert_awaited_once_with(mass.music.albums, [1])

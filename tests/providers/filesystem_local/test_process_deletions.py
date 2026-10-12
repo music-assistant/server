@@ -105,7 +105,7 @@ async def test_process_deletions_prunes_survivors_not_removed_albums() -> None:
     await provider._process_deletions(set(album_by_path))
 
     albums.remove_item_from_library.assert_awaited_once_with("20")
-    prune.assert_awaited_once_with(albums, "10")
+    prune.assert_awaited_once_with(albums, {"10"})
 
 
 async def test_moved_track_still_gets_its_album_pruned() -> None:
@@ -138,7 +138,7 @@ async def test_moved_track_still_gets_its_album_pruned() -> None:
     await provider._process_deletions({old_path})
 
     albums.remove_item_from_library.assert_not_called()
-    prune.assert_awaited_once_with(albums, "10")
+    prune.assert_awaited_once_with(albums, {"10"})
 
 
 async def test_empty_id_is_skipped() -> None:
