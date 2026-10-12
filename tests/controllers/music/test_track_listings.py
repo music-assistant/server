@@ -40,7 +40,7 @@ def _names(items: list[Any]) -> list[str]:
 
 
 async def test_track_albums_follow_the_listing_contract(mass: MusicAssistant) -> None:
-    """The albums of a track are searched for once, then searched, sorted and paged."""
+    """The albums of a track are searched, sorted and paged, in search order by default."""
     await mass.music.albums.add_item_to_library(create_album("qobuz_1", "lib", name="Library"))
     search = AsyncMock(
         return_value=SearchResults(
@@ -56,7 +56,6 @@ async def test_track_albums_follow_the_listing_contract(mass: MusicAssistant) ->
         return _names(await mass.music.tracks.albums("song", "qobuz_1", **kwargs))
 
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
         patch.object(mass.music.tracks, "get", AsyncMock(return_value=_song_on("x", "X"))),
         patch.object(mass.music, "search", search),
     ):
@@ -65,10 +64,22 @@ async def test_track_albums_follow_the_listing_contract(mass: MusicAssistant) ->
         assert await _albums(sort_field=SortField.NAME) == ["Apple", "Library", "Zebra"]
         assert await _albums(search="zeb") == ["Zebra"]
         assert await _albums(limit=1, offset=2) == ["Apple"]
+        assert await _albums(limit=0) == ["Zebra", "Library", "Apple"]
         assert await _albums(in_library_only=True) == ["Library"]
-        with pytest.raises(InvalidDataError):
-            await _albums(sort_field=SortField.DURATION)
-    search.assert_awaited_once()
+
+
+async def test_track_albums_reject_an_unsupported_sort_before_searching(
+    mass: MusicAssistant,
+) -> None:
+    """A sort the albums of a track do not offer fails before anything is searched."""
+    search = AsyncMock(return_value=SearchResults())
+    with (
+        patch.object(mass.music.tracks, "get", AsyncMock(return_value=_song_on("x", "X"))),
+        patch.object(mass.music, "search", search),
+        pytest.raises(InvalidDataError),
+    ):
+        await mass.music.tracks.albums("song", "qobuz_1", sort_field=SortField.DURATION)
+    search.assert_not_awaited()
 
 
 async def test_library_track_albums_are_the_whole_set(mass: MusicAssistant) -> None:
@@ -124,8 +135,13 @@ async def test_similar_tracks_follow_the_listing_contract(mass: MusicAssistant) 
     assert fetch.await_args.args[2] == SIMILAR_ITEMS_LIMIT
 
 
-async def test_similar_tracks_with_a_lookup_are_assembled_every_time(mass: MusicAssistant) -> None:
-    """A lookup changes what is assembled, so that listing is not kept."""
+@pytest.mark.parametrize(
+    "variant", [{"allow_lookup": True}, {"preferred_provider_instances": ["qobuz_1"]}]
+)
+async def test_similar_tracks_of_a_variant_are_assembled_every_time(
+    mass: MusicAssistant, variant: dict[str, Any]
+) -> None:
+    """A lookup or a provider preference changes what is assembled, so that listing is not kept."""
     fetch = AsyncMock(return_value=([create_track("qobuz_1", "t1", name="One")], None))
     with (
         patch.object(mass, "get_provider", return_value=_similar_tracks_provider()),
@@ -135,7 +151,7 @@ async def test_similar_tracks_with_a_lookup_are_assembled_every_time(mass: Music
         patch.object(mass.music.tracks, "_get_similar_tracks_from_provider", fetch),
     ):
         for _ in range(2):
-            tracks = await mass.music.tracks.similar_tracks("ref", "qobuz_1", allow_lookup=True)
+            tracks = await mass.music.tracks.similar_tracks("ref", "qobuz_1", **variant)
             assert _names(tracks) == ["One"]
     assert fetch.await_count == 2
 

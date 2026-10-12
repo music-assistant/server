@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import ArtistType, SortDirection, SortField
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ArtistType, ProviderSharing, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -23,6 +25,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.listing_cache import Listing
+from tests.common import set_music_source_access
 
 from .helpers import create_album, create_track
 
@@ -166,17 +169,19 @@ async def test_appears_on_follows_the_listing_contract(mass: MusicAssistant) -> 
 
 
 @pytest.mark.parametrize(
-    ("method", "fetch", "kind"),
+    ("method", "fetch", "kind", "default"),
     [
-        ("tracks", "get_provider_artist_tracks", "track"),
-        ("albums", "get_provider_artist_albums", "album"),
-        ("top_tracks", "get_provider_artist_toptracks", "track"),
-        ("top_albums", "get_provider_artist_topalbums", "album"),
-        ("similar_artists", "get_provider_artist_similar_artists", "artist"),
+        # sorted by sort name unless asked otherwise
+        ("tracks", "get_provider_artist_tracks", "track", ["Apple", "Mango", "Zebra"]),
+        ("albums", "get_provider_artist_albums", "album", ["Apple", "Mango", "Zebra"]),
+        # a ranking keeps the provider's order
+        ("top_tracks", "get_provider_artist_toptracks", "track", list(NAMES)),
+        ("top_albums", "get_provider_artist_topalbums", "album", list(NAMES)),
+        ("similar_artists", "get_provider_artist_similar_artists", "artist", list(NAMES)),
     ],
 )
 async def test_provider_artist_listings_are_assembled_once(
-    mass: MusicAssistant, method: str, fetch: str, kind: str
+    mass: MusicAssistant, method: str, fetch: str, kind: str, default: list[str]
 ) -> None:
     """A provider artist's listing is fetched once, from the instance its provider resolves to."""
     items = _items(kind)
@@ -192,7 +197,7 @@ async def test_provider_artist_listings_are_assembled_once(
         patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
         patch.object(mass.music.artists, fetch, provider_fetch),
     ):
-        default = await _listing()
+        assert await _listing() == default
         # the domain and the instance it resolves to share one listing
         assert await _listing("qobuz") == default
         assert await _listing(sort_field=SortField.NAME) == ["Apple", "Mango", "Zebra"]
@@ -226,6 +231,82 @@ async def test_ranked_artist_listings_keep_the_ranking_by_default(
         assert _names(listing) == ["Zebra", "Mango", "Apple"]
     # the aggregation over the artist's providers is cached too
     library_fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("method", "fetch", "kind"),
+    [
+        ("top_tracks", "get_library_artist_toptracks", "track"),
+        ("top_albums", "get_library_artist_topalbums", "album"),
+        ("similar_artists", "get_library_artist_similar_artists", "artist"),
+    ],
+)
+async def test_library_artist_ranking_is_kept_per_provider_filter(
+    mass: MusicAssistant, method: str, fetch: str, kind: str
+) -> None:
+    """A library artist's ranking limited to one provider is a listing of its own."""
+    library_fetch = AsyncMock(return_value=Listing(_items(kind)))
+    with patch.object(mass.music.artists, fetch, library_fetch):
+        for _ in range(2):
+            await getattr(mass.music.artists, method)("1", "library")
+            await getattr(mass.music.artists, method)("1", "library", provider_filter="qobuz_1")
+    assert [call.args for call in library_fetch.await_args_list] == [
+        ("1", None),
+        ("1", "qobuz_1"),
+    ]
+
+
+async def test_provider_artist_tracks_follow_the_calling_users_music_sources(
+    mass: MusicAssistant,
+) -> None:
+    """The tracks a library album adds to a provider artist are those the calling user may see."""
+    artist = await mass.music.artists.add_item_to_library(_artist())
+    album = await mass.music.albums.add_item_to_library(_album("album1", "Album"))
+    for number, (name, source) in enumerate((("Shared", "qobuz_1"), ("Private", "tidal_1")), 1):
+        track = _track(f"t{number}", name)
+        track.provider_mappings = {
+            ProviderMapping(
+                item_id=f"t{number}",
+                provider_domain=source.split("_", maxsplit=1)[0],
+                provider_instance=source,
+                in_library=True,
+            )
+        }
+        track.artists = UniqueList([artist])
+        track.album = album
+        track.track_number = number
+        await mass.music.tracks.add_item_to_library(track)
+    # the second source is the private account of the first user
+    set_music_source_access(
+        mass,
+        {
+            "qobuz_1": None,
+            "tidal_1": ProviderAccess(owner="owner", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    # the provider lists no artist tracks of its own, so the artist's albums are listed
+    provider = SimpleNamespace(
+        instance_id="qobuz_1", available=True, supports_feature=lambda _feature: False
+    )
+
+    async def _tracks_as(user_id: str) -> list[str]:
+        user = User(user_id=user_id, username=user_id, role=UserRole.USER)
+        with patch(
+            "music_assistant.controllers.music.media.base.get_current_user", return_value=user
+        ):
+            return _names(await mass.music.artists.tracks("artist1", "qobuz_1"))
+
+    with (
+        patch.object(mass, "get_provider", return_value=provider),
+        patch.object(
+            mass.music.artists,
+            "get_provider_artist_albums",
+            AsyncMock(return_value=[_album("album1", "Album")]),
+        ),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=[])),
+    ):
+        assert await _tracks_as("owner") == ["Private", "Shared"]
+        assert await _tracks_as("guest") == ["Shared"]
 
 
 async def test_library_artist_listing_missing_a_provider_is_assembled_again(

@@ -294,6 +294,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_instance_id_or_domain,
                 lambda instance_id: self.get_provider_artist_tracks(item_id, instance_id),
                 item_type=Track,
+                # the tracks of an album in the library follow the calling user's music sources
+                narrowed_to=self._ensure_provider_filter(None),
             )
         return apply_listing(
             tracks,
@@ -631,9 +633,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         For a library item, the similar artists of the artist's music providers are aggregated
         (and deduplicated), falling back to metadata providers when those have none, optionally
         limited to a single provider instance. For a provider item, that provider's similar
-        artists listing is returned (may be empty if not supported). Either holds the most
-        similar artists the providers return, assembled once and served from the cache for a
-        while.
+        artists listing is returned (may be empty if not supported). Either holds at most the
+        25 most similar artists, assembled once and served from the cache for a while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
@@ -1741,7 +1742,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 extra_query_params={"artist_id": db_artist_id},
                 provider_filter=[provider_instance_id_or_domain],
             )
-
         return []
 
     def _parse_summary_row(
