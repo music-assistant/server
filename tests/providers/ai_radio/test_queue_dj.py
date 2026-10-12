@@ -24,6 +24,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
     EVENT_QUEUE_DJ_UPDATED,
+    RENDER_COOLDOWN_SECONDS,
 )
 from music_assistant.providers.ai_radio.media import AIRadioMediaMixin
 from music_assistant.providers.ai_radio.models import PlannedSection
@@ -121,6 +122,7 @@ class FakeMass:
         self.player_queues = player_queues
         self.tasks: list[asyncio.Task[Any]] = []
         self._tasks_by_id: dict[str, asyncio.Task[Any]] = {}
+        self.timers: list[tuple[float, Callable[..., Any], tuple[Any, ...], str | None]] = []
         # (queue_id, required) for every boundary-mix requirement the DJ placed or released
         self.boundary_mix_calls: list[tuple[str, bool]] = []
         self.streams = SimpleNamespace(
@@ -141,6 +143,12 @@ class FakeMass:
         if task_id:
             self._tasks_by_id[task_id] = task
         return task
+
+    def call_later(
+        self, delay: float, target: Callable[..., Any], *args: Any, task_id: str | None = None
+    ) -> None:
+        """Record the delayed call instead of scheduling it."""
+        self.timers.append((delay, target, args, task_id))
 
     def subscribe(self, *args: Any, **kwargs: Any) -> Any:
         """Return a no-op unsubscribe callback."""
@@ -1806,6 +1814,117 @@ async def test_a_repaired_clip_reopens_its_gap(tmp_path: Path) -> None:
 
     assert queues.deleted == [stale.queue_item_id]
     assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+async def test_replan_injects_nothing_while_the_dj_is_paused(tmp_path: Path) -> None:
+    """A DJ in its render cool-down plans no breaks, and plans again once it is over."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    state = dummy._dj_queues["queue-1"]
+    loop = asyncio.get_running_loop()
+    state.render_health.cooldown_until = loop.time() + 100
+
+    await dummy._replan_queue("queue-1")
+    assert dummy.player_queues.loads == []
+
+    state.render_health.cooldown_until = loop.time() - 1
+    await dummy._replan_queue("queue-1")
+    assert len(dummy.player_queues.loads) == 2
+
+
+async def test_pausing_the_dj_drops_its_pending_clips_and_books_a_replan(tmp_path: Path) -> None:
+    """A paused DJ takes its unaired breaks out, reopens their gaps and books the next pass."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    loading, *pending = [item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
+    assert len(pending) == 3
+    # the player moves on to the track before the first break: that break sits right after
+    # the guard, in the slot the queue is loading when its render fails
+    queues._queue.current_index = 1
+    queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+
+    dummy._pause_queue_dj("queue-1", loading.queue_item_id)
+
+    assert queues.deleted == [clip.queue_item_id for clip in pending]
+    assert queues._items[2] is loading
+    assert state.decided_gap_ids == {loading.extra_attributes[ATTR_GAP_NEXT_ID]}
+    # none of the breaks aired, so none keeps its guard weight
+    assert state.history["Song_Transition"] == []
+    assert dummy.mass.timers == [
+        (
+            RENDER_COOLDOWN_SECONDS,
+            dummy._schedule_replan,
+            ("queue-1",),
+            "ai_radio_dj_cooldown_queue-1",
+        )
+    ]
+
+
+async def test_pausing_keeps_a_failed_clip_that_sits_past_the_guard_slot(tmp_path: Path) -> None:
+    """A clip the queue reached behind an unplayable track stays, so the queue's walk holds."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    airing, failed, *pending = [
+        item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    # the first break is on air and the track behind it could not be loaded, so the queue
+    # walked on to the second break, whose render is the failure that pauses the DJ
+    queues._queue.current_index = queues._items.index(airing)
+    queues._queue.index_in_buffer = queues._queue.current_index
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+
+    dummy._pause_queue_dj("queue-1", failed.queue_item_id)
+
+    assert queues.deleted == [clip.queue_item_id for clip in pending]
+    assert failed in queues._items
+    assert state.decided_gap_ids == {
+        airing.extra_attributes[ATTR_GAP_NEXT_ID],
+        failed.extra_attributes[ATTR_GAP_NEXT_ID],
+    }
+
+
+async def test_pausing_forgets_the_failed_breaks_history_without_later_clips(
+    tmp_path: Path,
+) -> None:
+    """A failed break with nothing pending behind it still loses its guard weight."""
+    tracks = [_track(index) for index in range(5)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    *_aired, failed = [item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
+    state = dummy._dj_queues["queue-1"]
+    failed_song = max(song for song, _minute in state.history["Song_Transition"])
+    # the player is on the track right before the last break, which is the one that fails
+    queues._queue.current_index = queues._items.index(failed) - 1
+    queues._queue.index_in_buffer = queues._queue.current_index
+
+    dummy._pause_queue_dj("queue-1", failed.queue_item_id)
+
+    assert queues.deleted == []
+    assert failed_song not in [song for song, _minute in state.history["Song_Transition"]]
+
+
+async def test_a_pass_in_flight_when_the_pause_starts_injects_nothing(tmp_path: Path) -> None:
+    """A replan suspended on its token fetch while the DJ pauses puts no breaks back."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    state = dummy._dj_queues["queue-1"]
+    prepare_tokens = dummy._prepare_runtime_tokens
+
+    async def _pause_mid_pass(program: dict[str, Any]) -> dict[str, str]:
+        state.render_health.cooldown_until = asyncio.get_running_loop().time() + 100
+        return await prepare_tokens(program)
+
+    dummy._prepare_runtime_tokens = _pause_mid_pass  # type: ignore[method-assign]
+
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.loads == []
 
 
 async def test_replan_keeps_state_when_the_queue_is_not_registered_yet(tmp_path: Path) -> None:
