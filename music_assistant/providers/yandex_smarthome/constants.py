@@ -13,10 +13,10 @@ CONF_CONNECTION_TYPE = "connection_type"
 # HTTPS URL only to Yandex via a reverse proxy.
 CONF_EXTERNAL_BASE_URL = "external_base_url"
 CONF_CLOUD_INSTANCE_ID = "cloud_instance_id"
-CONF_CLOUD_INSTANCE_PASSWORD = "cloud_instance_password"
-CONF_CLOUD_CONNECTION_TOKEN = "cloud_connection_token"
+CONF_CLOUD_INSTANCE_PASSWORD = "cloud_instance_password"  # noqa: S105 - config key
+CONF_CLOUD_CONNECTION_TOKEN = "cloud_connection_token"  # noqa: S105 - config key
 CONF_SKILL_ID = "skill_id"
-CONF_SKILL_TOKEN = "skill_token"
+CONF_SKILL_TOKEN = "skill_token"  # noqa: S105 - config key
 CONF_EXPOSED_PLAYERS = "exposed_players"
 CONF_EXPOSED_PLAYLISTS = "exposed_playlists"
 
@@ -27,7 +27,7 @@ CONF_AUTO_CREATE_ARTIFACTS = "auto_create_artifacts"
 # Cached Yandex Passport x_token from the setup flow's Device Flow login. Reused on a
 # reconfigure so the user does not have to confirm the device code every time.
 # Long-lived (months); automatically refreshed on use.
-CONF_AUTH_X_TOKEN = "auth_x_token"
+CONF_AUTH_X_TOKEN = "auth_x_token"  # noqa: S105 - config key
 
 # Yandex account source: instance_id of a linked yandex_music provider to
 # borrow the x_token from, or the shared "__own__" sentinel for this
@@ -59,7 +59,7 @@ CLOUD_SKILL_CLIENT_ID_TEMPLATE = "yandex_smart_home:{instance_id}"
 # Account linking: fixed client_secret required by yaha-cloud.ru relay protocol.
 # This is NOT a per-install secret — the relay expects exactly this value.
 # Direct mode uses a per-install auto-generated secret instead (see CONF_DIRECT_CLIENT_SECRET).
-CLOUD_SKILL_CLIENT_SECRET = "secret"
+CLOUD_SKILL_CLIENT_SECRET = "secret"  # noqa: S105 - fixed value of the relay protocol
 
 # ---------------------------------------------------------------------------
 # Cloud Plus / Direct mode — Yandex Dialogs API
@@ -81,14 +81,14 @@ DIRECT_API_BASE_PATH = "/api/yandex_smarthome/v1.0"
 DIRECT_BACKEND_URI_PATH = "/api/yandex_smarthome"
 DIRECT_AUTH_BASE_PATH = "/api/yandex_smarthome/auth"
 DIRECT_HEALTH_RESPONSE = "Yandex Smart Home for Music Assistant"
-CONF_DIRECT_ACCESS_TOKEN = "direct_access_token"
-CONF_DIRECT_CLIENT_SECRET = "direct_client_secret"
+CONF_DIRECT_ACCESS_TOKEN = "direct_access_token"  # noqa: S105 - config key
+CONF_DIRECT_CLIENT_SECRET = "direct_client_secret"  # noqa: S105 - config key
 DIRECT_OAUTH_CLIENT_ID = "https://social.yandex.net/"
 OAUTH_CODE_EXPIRY = 300  # pending authorization codes expire after 5 minutes
 MAX_PENDING_CODES = 20  # hard cap on concurrent pending authorization codes (DoS protection)
 
 # ---------------------------------------------------------------------------
-# Timing (seconds)
+# Timing, in seconds
 # ---------------------------------------------------------------------------
 STATE_REPORT_DELAY = 1.0  # debounce window for batched state reports
 STATE_HEARTBEAT_INTERVAL = 3600  # report all states hourly

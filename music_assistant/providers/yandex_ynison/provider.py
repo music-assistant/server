@@ -926,7 +926,7 @@ class YandexYnisonProvider(PluginProvider):
             except Exception as err:
                 last_err = err
                 if attempt < _API_MAX_RETRIES - 1:
-                    jitter = backoff * random.uniform(0.75, 1.25)
+                    jitter = backoff * random.uniform(0.75, 1.25)  # noqa: S311 - retry jitter
                     self.logger.warning(
                         "get_stream_details attempt %d/%d failed: %s, retrying in %.1fs",
                         attempt + 1,

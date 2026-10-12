@@ -77,7 +77,7 @@ LOGGER = logging.getLogger(__name__)
 ACCOUNT_LOOKUP_TIMEOUT = 30
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
-TOKEN_URL = "https://accounts.spotify.com/api/token"
+TOKEN_URL = "https://accounts.spotify.com/api/token"  # noqa: S105 - URL
 
 # the developer client id is a public OAuth identifier (not a secret), so it is a plain
 # STRING that can be prefilled on reconfigure

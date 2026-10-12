@@ -500,6 +500,33 @@ def verify_oci_manifest(
     return digest, [runtime_manifests[platform] for platform in sorted(expected_platforms)]
 
 
+def verify_build_info(
+    build_info: object,
+    version: str,
+    source_sha: str,
+    wheel_sha256: str,
+) -> None:
+    """
+    Verify that the image identifies itself as the official build of this release.
+
+    :param build_info: Official build info the image reports, None for an unsupported install.
+    :param version: Release version.
+    :param source_sha: Exact source commit of the release.
+    :param wheel_sha256: SHA-256 digest of the release wheel.
+    """
+    if not isinstance(build_info, dict):
+        raise ReleaseWorkflowError(
+            "The image would report an unsupported installation: "
+            "it lacks the bundled app secrets or its build info"
+        )
+    expected = {"version": version, "revision": source_sha, "wheel_sha256": wheel_sha256}
+    for key, value in expected.items():
+        if build_info.get(key) != value:
+            raise ReleaseWorkflowError(
+                f"The image build info has {key} {build_info.get(key)!r} instead of {value!r}"
+            )
+
+
 def update_addon_release(
     config_path: Path,
     changelog_path: Path,
@@ -739,6 +766,13 @@ def _configure_compare_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_build_info_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--build-info-json", type=Path, required=True)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--wheel-sha256", required=True)
+
+
 def _configure_addon_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version", required=True)
@@ -795,6 +829,8 @@ def _build_parser() -> argparse.ArgumentParser:
     manifest_parser.add_argument("--source-sha", required=True)
     manifest_parser.add_argument("--wheel-sha256", required=True)
     manifest_parser.add_argument("--github-output", type=Path)
+
+    _configure_build_info_parser(subparsers.add_parser("verify-build-info"))
 
     addon_parser = subparsers.add_parser("update-addon")
     _configure_addon_parser(addon_parser)
@@ -912,6 +948,13 @@ def main() -> int:
                     "runtime_digests": " ".join(runtime_digests),
                 },
                 args.github_output,
+            )
+        elif args.command == "verify-build-info":
+            verify_build_info(
+                json.loads(args.build_info_json.read_text(encoding="utf-8")),
+                args.version,
+                args.source_sha,
+                args.wheel_sha256,
             )
         elif args.command == "update-addon":
             update_addon_release(

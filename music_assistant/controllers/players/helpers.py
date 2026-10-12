@@ -90,7 +90,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
         fn: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
     ) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]:
         @functools.wraps(fn)
-        async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> None:
+        async def wrapper(self: PlayerControllerT, /, *args: P.args, **kwargs: P.kwargs) -> None:
             """Log and handle_player_command commands to players."""
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking

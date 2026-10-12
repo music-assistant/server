@@ -1189,7 +1189,7 @@ async def is_port_in_use(port: int, host: str | None = None) -> bool:
         else:
             # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
             # A port is considered free if it can be bound on at least one address family.
-            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))  # noqa: S104 - probe whether the port is free
         for family, addr in candidates:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as _sock:
@@ -1368,7 +1368,6 @@ def get_changed_keys(
     """Compare 2 dicts and return set of changed keys."""
     # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
     return set(get_changed_dict_values(dict1, dict2, recursive).keys())
-    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
 def get_changed_dict_values(
@@ -2240,7 +2239,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     signature = inspect.signature(func)
 
     @functools.wraps(func)
-    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the bound method and args/kwargs.
         # the instance is part of the key because a decorated method may be inherited by
