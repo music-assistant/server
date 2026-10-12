@@ -363,3 +363,23 @@ async def test_an_album_that_fails_is_skipped_up_to_three_times(
     result = await Autoplay(mass.player_queues).get_album_tracks(queue)
 
     assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
+
+
+async def test_after_an_auto_track_the_albums_of_its_artist_play(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an Auto batch, the last track's artist plays on from after that track's album."""
+    artist = await _add_artist(mass)
+    waterloo = await _add_album(mass, artist, "Waterloo", 1974)
+    guest = await _library_artist(mass, "Guest")
+    await _add_album(mass, guest, "Early", 1985)
+    middle = await _add_album(mass, guest, "Middle", 1990)
+    await _add_album(mass, guest, "Late", 1995)
+    queue = _queue(
+        mass, monkeypatch, _queued_track([artist], waterloo), _queued_track([guest], middle)
+    )
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    assert _names(result) == ["Late 1", "Late 2", "Late 3"]

@@ -692,3 +692,38 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
 
     loaded = tracker.load.await_args.args[1]
     assert [x.media_item.item_id for x in loaded] == ["allowed"]
+
+
+async def test_an_album_batch_is_added_whole_without_the_recency_gate() -> None:
+    """The albums mode adds the album as it is: no recency gate, no second dislike filter."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
+    loader._autoplay.get_album_tracks = AsyncMock(return_value=[_track("a1"), _track("a2")])
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with patch(
+        "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
+    ) as gate:
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    gate.assert_not_called()
+    loaded = loader.load.await_args.args[1]
+    assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
+
+
+async def test_no_album_falls_back_to_auto_with_the_recency_gate() -> None:
+    """Without an album to play, the albums mode runs the Auto mode, gated as usual."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
+    loader._autoplay.get_album_tracks = AsyncMock(return_value=[])
+    loader._get_similar_tracks = AsyncMock(return_value=[_track("s1")])
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with patch(
+        "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
+    ) as gate:
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    loader._get_similar_tracks.assert_awaited_once()
+    gate.assert_called_once()
+    loader.load.assert_not_awaited()

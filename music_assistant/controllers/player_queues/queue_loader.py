@@ -695,7 +695,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             if isinstance(item.media_item, Track)
         }
         try:
-            if mode == AutoplayMode.PLAYLIST:
+            album_tracks = (
+                await self._autoplay.get_album_tracks(queue) if mode == AutoplayMode.ALBUMS else []
+            )
+            if album_tracks:
+                tracks = album_tracks
+            elif mode == AutoplayMode.PLAYLIST:
                 tracks = await self._autoplay.get_playlist_tracks(queue, existing_tracks)
             elif mode == AutoplayMode.LIBRARY:
                 tracks = await self._autoplay.get_library_tracks(queue, existing_tracks)
@@ -704,7 +709,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     queue_id, seed_items=queue_data.enqueued_media_items
                 )
             else:
-                # AUTO: try similar tracks first, fall back to the library mix. The similar
+                # AUTO, and ALBUMS without an album: try similar tracks first, then the library mix. The similar
                 # fetch raises when no provider can supply base/similar tracks, so suppress
                 # that here to make sure the library fallback still runs.
                 tracks = []
@@ -719,14 +724,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 "Autoplay failed to fetch tracks for queue %s: %s", queue.display_name, err
             )
             return
-        # route the autoplay batch through the recency engine so a recently-heard track isn't
-        # immediately re-added (ungated fallback keeps autoplay going if everything is recent)
-        windows = self._smart_shuffle.windows()
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
-        tracks = gate_tracks(
-            [track for track in tracks if isinstance(track, Track)], snapshot, windows
-        )
-        tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
+        # an album plays whole, and its disliked tracks are already left out
+        if not album_tracks:
+            # route the autoplay batch through the recency engine so a recently-heard track isn't
+            # immediately re-added (ungated fallback keeps autoplay going if everything is recent)
+            windows = self._smart_shuffle.windows()
+            snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
+            tracks = gate_tracks(
+                [track for track in tracks if isinstance(track, Track)], snapshot, windows
+            )
+            tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
         queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
