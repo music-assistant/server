@@ -121,6 +121,13 @@ class FakeMass:
         self.player_queues = player_queues
         self.tasks: list[asyncio.Task[Any]] = []
         self._tasks_by_id: dict[str, asyncio.Task[Any]] = {}
+        # (queue_id, required) for every boundary-mix requirement the DJ placed or released
+        self.boundary_mix_calls: list[tuple[str, bool]] = []
+        self.streams = SimpleNamespace(
+            set_boundary_mix_required=lambda queue_id, _owner, required: (
+                self.boundary_mix_calls.append((queue_id, required))
+            )
+        )
 
     def create_task(
         self, target: Coroutine[Any, Any, Any], task_id: str | None = None
@@ -162,6 +169,7 @@ class DummyQueueDJ(
             "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
         }
         self._stations: dict[str, dict[str, Any]] = {}
+        self._sections: dict[str, dict[str, Any]] = {}
         self._armed_show_queues: dict[str, str] = {}
         self._show_library_ids: dict[str, str] = {}
         self._dj_queues: dict[str, Any] = {}
@@ -417,6 +425,45 @@ async def test_ensure_show_dj_arms_host_for_show_queue(tmp_path: Path) -> None:
     assert state.host_id == "amy"
     assert state.station_id == "morning_show"
     assert dj._armed_show_queues["q1"] == "morning_show"
+
+
+def _let_amy_post(dj: DummyQueueDJ) -> None:
+    """Give host amy one section whose break carries over the next track."""
+    dj._sections["talk_over"] = {"id": "talk_over", "allow_post": True}
+    dj._hosts["amy"]["section_ids"] = ["talk_over"]
+
+
+async def test_arming_a_posting_show_requires_mixed_boundaries(tmp_path: Path) -> None:
+    """A show whose host carries a break over the next track asks for mixed boundaries."""
+    dj = _dj_harness(tmp_path)
+    _let_amy_post(dj)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+
+    await dj._ensure_show_dj("q1")
+
+    assert dj.mass.boundary_mix_calls == [("q1", True)]
+
+
+async def test_arming_a_show_without_posting_sections_asks_for_nothing(tmp_path: Path) -> None:
+    """A show whose breaks never carry over places no requirement on the queue."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+
+    await dj._ensure_show_dj("q1")
+
+    assert dj.mass.boundary_mix_calls == []
+
+
+async def test_disabling_the_show_dj_releases_the_requirement(tmp_path: Path) -> None:
+    """Detaching or disabling the show's host lets go of the mixed boundaries."""
+    dj = _dj_harness(tmp_path)
+    _let_amy_post(dj)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    await dj._ensure_show_dj("q1")
+
+    await dj.set_queue_dj("q1", None)
+
+    assert dj.mass.boundary_mix_calls == [("q1", True), ("q1", False)]
 
 
 async def test_ensure_show_dj_skips_when_already_armed_this_play(tmp_path: Path) -> None:

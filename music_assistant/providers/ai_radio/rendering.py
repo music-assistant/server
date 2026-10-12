@@ -499,12 +499,19 @@ class AIRadioRenderMixin:
         if next_item is None or not isinstance(next_item.media_item, Track):
             self._post_skipped(queue_item.name, "no next track in the queue")
             return None
-        # the overlap is only mixed at a flow stream's boundary
+        # the overlap is only mixed at a flow stream's boundary or between the item streams
+        # of a player that plays gapless; a show requires its boundaries mixed before its
+        # first play start, so its first clip already passes here
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if queue is None or not (
-            queue.flow_mode or self.mass.streams.flow_mode_required(queue.queue_id)
+            queue.flow_mode
+            or self.mass.streams.flow_mode_required(queue.queue_id)
+            or self.mass.streams.boundary_mix_required(queue.queue_id)
+            or self.mass.streams.mixes_item_boundaries(queue.queue_id)
         ):
-            self._post_skipped(next_item.name, "the player does not stream in flow mode")
+            self._post_skipped(
+                next_item.name, "the player neither plays gapless nor streams in flow mode"
+            )
             return None
         # which copy of the track streams is only known once its stream details are
         # resolved: the queue resolves them now rather than when the clip nears its end,
