@@ -715,11 +715,9 @@ async def test_ai_generate_image_downloads_the_returned_image() -> None:
 
     async with _start_provider(states) as (provider, hass):
         hass.send_command = AsyncMock(
-            return_value={"response": {"url": "/api/ai_task/images/x.png?authSig=abc"}}
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
         )
-        with patch.object(
-            provider, "resolve_image", AsyncMock(return_value=b"png")
-        ) as resolve_image:
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")) as fetch_image:
             assert await provider.ai_generate_image("A sunset") == b"png"
 
         hass.send_command.assert_awaited_once_with(
@@ -733,7 +731,7 @@ async def test_ai_generate_image_downloads_the_returned_image() -> None:
             },
             return_response=True,
         )
-        resolve_image.assert_awaited_once_with("/api/ai_task/images/x.png?authSig=abc")
+        fetch_image.assert_awaited_once_with("/ai_task/image/x.png?authSig=abc")
 
 
 async def test_ai_generate_image_uses_a_task_name_per_image() -> None:
@@ -742,9 +740,9 @@ async def test_ai_generate_image_uses_a_task_name_per_image() -> None:
 
     async with _start_provider(states) as (provider, hass):
         hass.send_command = AsyncMock(
-            return_value={"response": {"url": "/api/ai_task/images/x.png?authSig=abc"}}
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
         )
-        with patch.object(provider, "resolve_image", AsyncMock(return_value=b"png")):
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")):
             await asyncio.gather(provider.ai_generate_image("A"), provider.ai_generate_image("B"))
 
         task_names = {
@@ -761,15 +759,48 @@ async def test_ai_generate_image_fetches_an_absolute_url_from_the_connected_inst
     async with _start_provider(states) as (provider, hass):
         hass.send_command = AsyncMock(
             return_value={
-                "response": {"url": "https://ha.example.com/api/ai_task/images/x.png?authSig=abc"}
+                "response": {"url": "https://ha.example.com/ai_task/image/x.png?authSig=abc"}
             }
         )
-        with patch.object(
-            provider, "resolve_image", AsyncMock(return_value=b"png")
-        ) as resolve_image:
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")) as fetch_image:
             await provider.ai_generate_image("A sunset")
 
-        resolve_image.assert_awaited_once_with("/api/ai_task/images/x.png?authSig=abc")
+        fetch_image.assert_awaited_once_with("/ai_task/image/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_is_fetched_although_not_an_entity_picture() -> None:
+    """The generated image is fetched, while resolve_image keeps refusing its path."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
+        )
+        get = _mock_image_response(provider, [b"png"], content_type="image/png")
+
+        assert await provider.ai_generate_image("A sunset") == b"png"
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image("/ai_task/image/x.png?authSig=abc")
+
+        get.assert_called_once_with(
+            "http://homeassistant.local:8123/ai_task/image/x.png?authSig=abc",
+            headers={"Authorization": "Bearer token"},
+        )
+
+
+async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> None:
+    """Only the path Home Assistant serves generated images from is fetched."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(return_value={"response": {"url": "/api/states"}})
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock()) as fetch_image,
+            pytest.raises(MusicAssistantError),
+        ):
+            await provider.ai_generate_image("A sunset")
+
+        fetch_image.assert_not_awaited()
 
 
 async def test_ai_generate_image_raises_without_an_image() -> None:

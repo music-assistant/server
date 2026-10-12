@@ -112,6 +112,8 @@ IMAGE_PATH_PREFIXES: Final = (
     "/api/image/serve/",
     "/local/",
 )
+# where Home Assistant serves the images an AI Task generated, behind a signed link
+AI_TASK_IMAGE_PATH_PREFIX: Final = "/ai_task/image/"
 IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
 IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
@@ -629,24 +631,9 @@ class HomeAssistantProvider(PluginProvider):
         :raises FileNotFoundError: When the path is not an HA image path, or HA does not
             answer with an image within the size limit.
         """
-        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
-        path_segments = unquote(path.split("?", 1)[0]).split("/")
-        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
+        if not path.startswith(IMAGE_PATH_PREFIXES):
             raise FileNotFoundError("Image not found")
-        ha_url, headers, http_session = self._get_ha_http()
-        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
-            response.raise_for_status()
-            if not response.content_type.startswith("image/"):
-                raise FileNotFoundError("Image not found")
-            if (response.content_length or 0) > IMAGE_MAX_BYTES:
-                raise FileNotFoundError("Image too large")
-            # the declared length can be absent or wrong, so cap what is actually read
-            data = bytearray()
-            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
-                data.extend(chunk)
-                if len(data) > IMAGE_MAX_BYTES:
-                    raise FileNotFoundError("Image too large")
-            return bytes(data)
+        return await self._fetch_image(path)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""
@@ -710,9 +697,10 @@ class HomeAssistantProvider(PluginProvider):
         # the link may be prefixed with a Home Assistant URL we can not reach, so only its
         # (signed) path is fetched from the URL we are connected to
         parts = urlsplit(url)
-        return await self.resolve_image(
-            f"{parts.path}?{parts.query}" if parts.query else parts.path
-        )
+        if not parts.path.startswith(AI_TASK_IMAGE_PATH_PREFIX):
+            msg = f"AI Task returned an unexpected image link: {url}"
+            raise MusicAssistantError(msg)
+        return await self._fetch_image(f"{parts.path}?{parts.query}" if parts.query else parts.path)
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
@@ -1030,6 +1018,31 @@ class HomeAssistantProvider(PluginProvider):
             _decompress_state(entity_id, compressed_state)
             for entity_id, compressed_state in compressed_states.items()
         ]
+
+    async def _fetch_image(self, path: str) -> bytes:
+        """
+        Fetch an image from the connected Home Assistant instance.
+
+        :param path: The HA-relative image path.
+        :raises FileNotFoundError: When HA does not answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        if ".." in unquote(path.split("?", 1)[0]).split("/"):
+            raise FileNotFoundError("Image not found")
+        ha_url, headers, http_session = self._get_ha_http()
+        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
+            response.raise_for_status()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
