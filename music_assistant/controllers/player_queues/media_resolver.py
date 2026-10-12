@@ -141,7 +141,9 @@ class MediaResolver:
             "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
         )
         if artist_items_conf == "top_tracks":
-            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            tracks = await self.mass.music.artists.top_tracks(
+                artist.item_id, artist.provider, limit=None
+            )
             random.shuffle(tracks)
             return tracks
         # legacy "library_album_tracks" also resolves to the in-library tracks
@@ -152,7 +154,9 @@ class MediaResolver:
         if artist_items_conf == "prefer_library":
             tracks = await self._library_artist_tracks(artist)
             if not tracks:
-                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+                tracks = await self.mass.music.artists.top_tracks(
+                    artist.item_id, artist.provider, limit=None
+                )
             random.shuffle(tracks)
             return tracks
         result: list[Track] = []
@@ -271,7 +275,7 @@ class MediaResolver:
         for artist in artists:
             try:
                 top_tracks = await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider
+                    artist.item_id, artist.provider, limit=None
                 )
                 # a provider can list top tracks that are all unplayable here, which must
                 # not stand in for the artist's playable tracks
@@ -279,7 +283,7 @@ class MediaResolver:
                 if not artist_tracks:
                     # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
                     all_tracks = await self.mass.music.artists.tracks(
-                        artist.item_id, artist.provider
+                        artist.item_id, artist.provider, limit=None
                     )
                     artist_tracks = [track for track in all_tracks if track.available]
             except PROVIDER_FETCH_ERRORS as err:
@@ -579,7 +583,10 @@ class MediaResolver:
         async with ImpersonatedUser(self.mass, user=userid):
             # ensure we get the position status on the current user
             all_audiobooks = await self.mass.music.artists.audiobooks(
-                author_narrator.item_id, author_narrator.provider, author_narrator.artist_type
+                author_narrator.item_id,
+                author_narrator.provider,
+                author_narrator.artist_type,
+                limit=None,
             )
         for book in all_audiobooks:
             # do not use get_resume_position here, as an artist may potentially have a lot of audiobooks,
@@ -702,7 +709,7 @@ class MediaResolver:
         """
         if (library_artist := await self._resolve_library_artist(artist)) is None:
             return []
-        return await self.mass.music.artists.tracks(library_artist.item_id, "library")
+        return await self.mass.music.artists.tracks(library_artist.item_id, "library", limit=None)
 
     async def _provider_artist_tracks(self, artist: Artist) -> list[Track]:
         """
@@ -717,7 +724,9 @@ class MediaResolver:
                 continue
             try:
                 tracks.extend(
-                    await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
+                    await self.mass.music.artists.tracks(
+                        mapping.item_id, mapping.provider_instance, limit=None
+                    )
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing provider must not drop the tracks of the artist's other providers

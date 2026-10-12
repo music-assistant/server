@@ -23,6 +23,8 @@ CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
+# how many similar artists or tracks the providers are asked for, the size of such a listing
+SIMILAR_ITEMS_LIMIT: Final[int] = 25
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block

@@ -13,6 +13,7 @@ from music_assistant_models.enums import (
     ArtistType,
     ExternalID,
     ImageType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -49,10 +50,13 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
 )
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
     compare_album,
@@ -251,76 +255,181 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Track]:
         """
-        Return the tracks for a artist.
+        Return the tracks of an artist, searched, sorted and paged.
 
         For a library item, the in-library tracks are returned, optionally limited to a single
         provider instance with the provider_filter. For a provider item, that provider's
-        tracks listing is returned (which may be empty if it is not supported).
+        tracks listing is returned (which may be empty if it is not supported), assembled once
+        and served from the cache for a while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the (library) result to.
+        :param search: Only list the tracks whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the sort name when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of tracks to return; 0 returns them all.
+        :param offset: Number of tracks to skip.
+        :raises InvalidDataError: When the sort field is not offered for artist tracks.
         """
+        # an unsupported sort is rejected before the tracks are assembled
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_TRACKS, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_artist_tracks(item_id, provider_filter=provider_filter)
-        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_tracks(item_id, provider_instance_id_or_domain)
+            tracks = await self.get_library_artist_tracks(item_id, provider_filter=provider_filter)
+        else:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            tracks = await self._cached_item_listing(
+                ListingType.ARTIST_TRACKS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda instance_id: self.get_provider_artist_tracks(item_id, instance_id),
+                item_type=Track,
+            )
+        return apply_listing(
+            tracks,
+            ListingType.ARTIST_TRACKS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def albums(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Album]:
         """
-        Return the albums for an artist.
+        Return the albums of an artist, searched, sorted and paged.
 
         For a library item, the in-library albums are returned, optionally limited to a single
         provider instance with the provider_filter. For a provider item, that provider's
-        albums listing is returned (which may be empty if it is not supported).
+        albums listing is returned (which may be empty if it is not supported), assembled once
+        and served from the cache for a while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the (library) result to.
+        :param search: Only list the albums whose name or artist name contains this text.
+        :param sort_field: Sort field, the sort name when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of albums to return; 0 returns them all.
+        :param offset: Number of albums to skip.
+        :raises InvalidDataError: When the sort field is not offered for artist albums.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_ALBUMS, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
-        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+            albums = await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
+        else:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            albums = await self._cached_item_listing(
+                ListingType.ARTIST_ALBUMS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda instance_id: self.get_provider_artist_albums(item_id, instance_id),
+                item_type=Album,
+            )
+        return apply_listing(
+            albums,
+            ListingType.ARTIST_ALBUMS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def appears_on(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Album]:
         """
         Return the albums an artist appears on without being an album artist.
 
-        These are the albums of the artist's library tracks, newest first, as summary items.
-        Only available for library artists; empty for a provider item.
+        These are the albums of the artist's library tracks, newest first by default, as
+        summary items. Only available for library artists; empty for a provider item.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the tracks to.
+        :param search: Only list the albums whose name or artist name contains this text.
+        :param sort_field: Sort field, newest first (ORIGINAL) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of albums to return; 0 returns them all.
+        :param offset: Number of albums to skip.
+        :raises InvalidDataError: When the sort field is not offered for this listing.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_APPEARS_ON, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain != "library":
             return []
-        return await self.get_library_artist_appears_on(item_id, provider_filter=provider_filter)
+        return apply_listing(
+            await self.get_library_artist_appears_on(item_id, provider_filter=provider_filter),
+            ListingType.ARTIST_APPEARS_ON,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
-    async def discography(self, item_id: str, provider_instance_id_or_domain: str) -> list[Album]:
+    async def discography(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[Album]:
         """
-        Return the discography of a library artist as MusicBrainz knows it, newest first.
+        Return a library artist's discography as MusicBrainz knows it, searched, sorted and paged.
 
-        Every album, EP and single credited to the artist is listed. The ones in the library
-        are the library albums themselves; the others are MusicBrainz albums, which resolve
-        to the user's music providers when opened or added to the library.
+        Every album, EP and single credited to the artist is listed, newest first by default.
+        The ones in the library are the library albums themselves; the others are MusicBrainz
+        albums, which resolve to the user's music providers when opened or added to the library.
 
         :param item_id: The library item id of the artist.
         :param provider_instance_id_or_domain: The provider of the artist, must be ``library``.
+        :param search: Only list the albums whose name or artist name contains this text.
+        :param sort_field: Sort field, newest first (ORIGINAL) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of albums to return; 0 returns them all.
+        :param offset: Number of albums to skip.
+        :raises InvalidDataError: When the artist is not a library artist, or the sort field
+            is not offered for a discography.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_DISCOGRAPHY, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain != "library":
             msg = "A discography is only available for library artists"
             raise InvalidDataError(msg)
@@ -328,7 +437,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
             return []
-        library_albums = await self.albums(item_id, "library")
+        library_albums = await self.albums(item_id, "library", limit=None)
         mbid = artist.mbid
         if not mbid:
             # an artist not yet identified on MusicBrainz is identified for this listing only;
@@ -373,80 +482,202 @@ class ArtistsController(MediaControllerBase[Artist]):
                     cover_provider,
                 )
             )
-        return discography
+        return apply_listing(
+            discography,
+            ListingType.ARTIST_DISCOGRAPHY,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def top_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Track]:
         """
-        Return the top/featured tracks for an artist.
+        Return the top/featured tracks of an artist, searched, sorted and paged.
 
         For a library item, the top tracks of the artist's music providers are aggregated (and
         deduplicated), falling back to metadata providers when those have none, optionally
         limited to a single provider instance. For a provider item, that provider's top tracks
-        listing is returned (may be empty if not supported).
+        listing is returned (may be empty if not supported). Either is assembled once and
+        served from the cache for a while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
+        :param search: Only list the tracks whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the providers' ranking (ORIGINAL) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of tracks to return; 0 returns them all.
+        :param offset: Number of tracks to skip.
+        :raises InvalidDataError: When the sort field is not offered for top tracks.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_TOP_TRACKS, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_artist_toptracks(item_id, provider_filter=provider_filter)
-        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
+            tracks = await self._cached_item_listing(
+                ListingType.ARTIST_TOP_TRACKS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda _library: self.get_library_artist_toptracks(item_id, provider_filter),
+                item_type=Track,
+                narrowed_to=self._ensure_provider_filter(provider_filter),
+            )
+        else:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            tracks = await self._cached_item_listing(
+                ListingType.ARTIST_TOP_TRACKS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda instance_id: self.get_provider_artist_toptracks(item_id, instance_id),
+                item_type=Track,
+            )
+        return apply_listing(
+            tracks,
+            ListingType.ARTIST_TOP_TRACKS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def top_albums(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Album]:
         """
-        Return the top/featured albums for an artist.
+        Return the top/featured albums of an artist, searched, sorted and paged.
 
         For a library item, the top albums of all the artist's providers are aggregated (and
         deduplicated), optionally limited to a single provider instance. For a provider
         item, that provider's top albums listing is returned (may be empty if not supported).
+        Either is assembled once and served from the cache for a while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
+        :param search: Only list the albums whose name or artist name contains this text.
+        :param sort_field: Sort field, the providers' ranking (ORIGINAL) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of albums to return; 0 returns them all.
+        :param offset: Number of albums to skip.
+        :raises InvalidDataError: When the sort field is not offered for top albums.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_TOP_ALBUMS, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_artist_topalbums(item_id, provider_filter=provider_filter)
-        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_topalbums(item_id, provider_instance_id_or_domain)
+            albums = await self._cached_item_listing(
+                ListingType.ARTIST_TOP_ALBUMS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda _library: self.get_library_artist_topalbums(item_id, provider_filter),
+                item_type=Album,
+                narrowed_to=self._ensure_provider_filter(provider_filter),
+            )
+        else:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            albums = await self._cached_item_listing(
+                ListingType.ARTIST_TOP_ALBUMS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda instance_id: self.get_provider_artist_topalbums(item_id, instance_id),
+                item_type=Album,
+            )
+        return apply_listing(
+            albums,
+            ListingType.ARTIST_TOP_ALBUMS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def similar_artists(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         provider_filter: str | None = None,
-        limit: int = 25,
+        limit: int | None = 500,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        offset: int = 0,
     ) -> list[Artist]:
         """
-        Return similar artists for an artist.
+        Return the artists similar to an artist, searched, sorted and paged.
 
         For a library item, the similar artists of the artist's music providers are aggregated
         (and deduplicated), falling back to metadata providers when those have none, optionally
         limited to a single provider instance. For a provider item, that provider's similar
-        artists listing is returned (may be empty if not supported).
+        artists listing is returned (may be empty if not supported). Either holds the most
+        similar artists the providers return, assembled once and served from the cache for a
+        while.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
-        :param limit: Maximum number of similar artists to return.
+        :param limit: Maximum number of similar artists to return; 0 returns them all.
+        :param search: Only list the artists whose name contains this text.
+        :param sort_field: Sort field, the providers' ranking (ORIGINAL) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param offset: Number of similar artists to skip.
+        :raises InvalidDataError: When the sort field is not offered for similar artists.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.SIMILAR_ARTISTS, sort_field, sort_direction
+        )
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_artist_similar_artists(
-                item_id, provider_filter=provider_filter, limit=limit
+            artists = await self._cached_item_listing(
+                ListingType.SIMILAR_ARTISTS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda _library: self.get_library_artist_similar_artists(
+                    item_id, provider_filter, limit=SIMILAR_ITEMS_LIMIT
+                ),
+                item_type=Artist,
+                narrowed_to=self._ensure_provider_filter(provider_filter),
             )
-        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
-        return await self.get_provider_artist_similar_artists(
-            item_id, provider_instance_id_or_domain, limit=limit
+        else:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            artists = await self._cached_item_listing(
+                ListingType.SIMILAR_ARTISTS,
+                item_id,
+                provider_instance_id_or_domain,
+                lambda instance_id: self.get_provider_artist_similar_artists(
+                    item_id, instance_id, limit=SIMILAR_ITEMS_LIMIT
+                ),
+                item_type=Artist,
+            )
+        return apply_listing(
+            artists,
+            ListingType.SIMILAR_ARTISTS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
         )
 
     if TYPE_CHECKING:
@@ -458,6 +689,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_instance_id_or_domain: str,
             artist_type: ArtistType = ArtistType.AUTHOR,
             in_library_only: bool = False,
+            search: str | None = None,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            limit: int | None = 500,
+            offset: int = 0,
             *,
             collapse_collections: Literal[False] = False,
         ) -> list[Audiobook]: ...
@@ -469,6 +705,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_instance_id_or_domain: str,
             artist_type: ArtistType = ArtistType.AUTHOR,
             in_library_only: bool = False,
+            search: str | None = None,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            limit: int | None = 500,
+            offset: int = 0,
             *,
             collapse_collections: Literal[True],
         ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
@@ -479,18 +720,51 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
         *,
         collapse_collections: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
-        Return audiobooks for an artist.
+        Return the audiobooks of an artist, searched, sorted and paged.
 
         Artist_type can be omitted for in-library artists.
 
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param artist_type: Whether the artist is listed as the author or the narrator.
+        :param in_library_only: Only list the audiobooks that are in the library.
+        :param search: Only list the audiobooks (or collections) whose name contains this text.
+        :param sort_field: Sort field, the sort name when omitted; a collection has no
+            duration of its own and sorts as the shortest.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of audiobooks to return; 0 returns them all.
+        :param offset: Number of audiobooks to skip.
         :param collapse_collections: Collapse available collections. Only applies to
             in-library items; when in_library_only is False, provider items are
             appended as plain audiobooks alongside the collapsed collections.
+        :raises InvalidDataError: When the sort field is not offered for artist audiobooks.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ARTIST_AUDIOBOOKS, sort_field, sort_direction
+        )
+
+        def _listed(
+            items: Sequence[Audiobook | MediaCollection[Audiobook]],
+        ) -> list[Audiobook | MediaCollection[Audiobook]]:
+            return apply_listing(
+                items,
+                ListingType.ARTIST_AUDIOBOOKS,
+                search=search,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                limit=limit,
+                offset=offset,
+            )
+
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
@@ -505,12 +779,16 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         if not library_artist:
             if artist_type == ArtistType.AUTHOR:
-                return await self.get_provider_author_audiobooks(
-                    item_id, provider_instance_id_or_domain
+                return _listed(
+                    await self.get_provider_author_audiobooks(
+                        item_id, provider_instance_id_or_domain
+                    )
                 )
             if artist_type == ArtistType.NARRATOR:
-                return await self.get_provider_narrator_audiobooks(
-                    item_id, provider_instance_id_or_domain
+                return _listed(
+                    await self.get_provider_narrator_audiobooks(
+                        item_id, provider_instance_id_or_domain
+                    )
                 )
             return []
 
@@ -522,7 +800,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
             # return in-library items only
-            return result
+            return _listed(result)
         # return all (unique) items from all providers
         # initialize unique_ids with db_items to prevent duplicates
         unique_ids: set[str] = set()
@@ -573,7 +851,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_error is not None and not has_available_item(result):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise provider_error
-        return result
+        return _listed(result)
 
     async def get_library_author_narrator_audiobooks(
         self,
@@ -593,6 +871,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         query = f"audiobooks.item_id in ({subquery})"
         return await self.mass.music.audiobooks.get_library_items_by_query(
+            limit=0,
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
             collapse_collections=collapse_collections,
@@ -673,19 +952,20 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str | int,
         provider_filter: str | None = None,
-    ) -> list[Track]:
+    ) -> Listing[Track]:
         """
         Return the top tracks for an in-library artist, aggregated across its providers.
 
         The result combines (and deduplicates, preserving order) the top tracks from the music
         providers attached to the artist. Metadata and plugin providers implementing the feature
-        are only consulted when those return nothing. Empty when no provider yields a result.
+        are only consulted when those return nothing. Empty when no provider yields a result,
+        incomplete when a provider failed.
 
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
         """
         ref_item = await self.get_library_item(item_id)
-        listings = await self._get_library_artist_listings(
+        listings, failed = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.ARTIST_TOPTRACKS,
             self._ensure_provider_filter(provider_filter),
@@ -705,7 +985,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ):
                     continue
                 result.append(candidate)
-        return result
+        return Listing(result, complete=not failed)
 
     async def get_provider_artist_topalbums(
         self,
@@ -744,13 +1024,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str | int,
         provider_filter: str | None = None,
-    ) -> list[Album]:
+    ) -> Listing[Album]:
         """
         Return the top albums for an in-library artist, aggregated across all its providers.
 
         The result combines (and deduplicates, preserving order) the top albums from every
         provider attached to the artist and any metadata/plugin provider implementing the
-        feature. Empty when no provider yields a result.
+        feature. Empty when no provider yields a result, incomplete when a provider failed.
 
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
@@ -776,8 +1056,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
         # drop (and log) any provider that failed so one bad provider can't sink the listing
         listings: list[list[Album]] = []
+        failed = False
         for listing in per_provider:
             if isinstance(listing, BaseException):
+                failed = True
                 self.logger.warning(
                     "Error fetching top albums for artist %s from a provider",
                     ref_item.name,
@@ -795,21 +1077,27 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ):
                     continue
                 result.append(candidate)
-        return result
+        return Listing(result, complete=not failed)
 
     async def get_provider_artist_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Track]:
-        """Return all tracks for an artist on given provider."""
+    ) -> Listing[Track]:
+        """
+        Return all tracks for an artist on given provider.
+
+        Without an artist tracks listing of its own, the provider's tracks of the artist's
+        albums are listed: a failing album leaves the listing incomplete, and is only raised
+        when it leaves nothing to play.
+        """
         provider = self.mass.get_provider(
             provider_instance_id_or_domain, provider_type=MusicProvider
         )
         if provider is None or not provider.available:
-            return []  # guard against unavailable provider
+            return Listing([])  # guard against unavailable provider
         if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
-            return await provider.get_artist_tracks(item_id)
+            return Listing(await provider.get_artist_tracks(item_id))
         # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
         result: list[Track] = []
         unique_ids: set[str] = set()
@@ -839,7 +1127,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_error is not None and not any(track.available for track in result):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise provider_error
-        return result
+        return Listing(result, complete=provider_error is None)
 
     async def get_library_artist_tracks(
         self,
@@ -855,6 +1143,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
         query = f"tracks.item_id in ({subquery})"
         return await self.mass.music.tracks.get_library_items_by_query(
+            limit=0,
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
             provider_filter=self._ensure_provider_filter(provider_filter),
@@ -894,6 +1183,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
         query = f"albums.item_id in ({subquery})"
         return await self.mass.music.albums.get_library_items_by_query(
+            limit=0,
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
             provider_filter=self._ensure_provider_filter(provider_filter),
@@ -988,21 +1278,21 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
         provider_filter: str | None = None,
         limit: int = 25,
-    ) -> list[Artist]:
+    ) -> Listing[Artist]:
         """
         Return similar artists for an in-library artist, aggregated across its providers.
 
         The result combines (and deduplicates, preserving order) the similar artists from the
         music providers attached to the artist. Metadata and plugin providers implementing the
         feature are only consulted when those return nothing. Empty when no provider yields a
-        result.
+        result, incomplete when a provider failed.
 
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
         :param limit: Maximum number of similar artists to return.
         """
         ref_item = await self.get_library_item(item_id)
-        listings = await self._get_library_artist_listings(
+        listings, failed = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.SIMILAR_ARTISTS,
             self._ensure_provider_filter(provider_filter),
@@ -1022,7 +1312,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ):
                     continue
                 result.append(candidate)
-        return result[:limit]
+        return Listing(result[:limit], complete=not failed)
 
     async def get_library_artist_types(self) -> list[ArtistType]:
         """Get all supported in-library artist types."""
@@ -1214,7 +1504,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         allowed: list[str] | None,
         music_fetch: Callable[[ProviderMapping], Awaitable[list[T]]],
         discovery_fetch: Callable[[MusicDiscoveryMixin], Awaitable[list[T]]],
-    ) -> list[list[T]]:
+    ) -> tuple[list[list[T]], bool]:
         """
         Return the per-provider listings of a feature for an in-library artist.
 
@@ -1227,6 +1517,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param allowed: Optional provider instance IDs to limit the providers to.
         :param music_fetch: Fetches the listing for one of the artist's provider mappings.
         :param discovery_fetch: Fetches the listing from a metadata or plugin provider.
+        :returns: The listings of the providers that answered, and whether any provider failed.
         """
         listings, failed = await self._gather_provider_listings(
             ref_item,
@@ -1239,10 +1530,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         if any(listings) or failed:
             # a music provider that failed (e.g. rate limited) must not turn into more
             # requests against the same services through a metadata provider
-            return listings
+            return listings, failed
         # metadata providers such as Last.fm resolve every item through music-service searches,
         # so they are a fallback rather than a parallel source
-        listings, _failed = await self._gather_provider_listings(
+        return await self._gather_provider_listings(
             ref_item,
             feature,
             [
@@ -1253,7 +1544,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if allowed is None or prov.instance_id in allowed
             ],
         )
-        return listings
 
     async def _gather_provider_listings[T](
         self, ref_item: Artist, feature: ProviderFeature, fetches: list[Awaitable[list[T]]]
@@ -1446,10 +1736,12 @@ class ArtistsController(MediaControllerBase[Artist]):
             subquery = f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
             query = f"audiobooks.item_id in ({subquery})"
             return await self.mass.music.audiobooks.get_library_items_by_query(
+                limit=0,
                 extra_query_parts=[query],
                 extra_query_params={"artist_id": db_artist_id},
                 provider_filter=[provider_instance_id_or_domain],
             )
+
         return []
 
     def _parse_summary_row(
