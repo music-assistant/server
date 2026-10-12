@@ -501,6 +501,31 @@ async def test_library_album_tracks_of_a_hidden_album_are_not_found(
 @pytest.mark.parametrize(
     "listing",
     [
+        pytest.param(lambda music, db_id: music.artists.tracks(db_id, "library"), id="tracks"),
+        pytest.param(lambda music, db_id: music.artists.albums(db_id, "library"), id="albums"),
+        pytest.param(
+            lambda music, db_id: music.artists.appears_on(db_id, "library"), id="appears_on"
+        ),
+        pytest.param(
+            lambda music, db_id: music.artists.discography(db_id, "library"), id="discography"
+        ),
+    ],
+)
+async def test_library_listings_of_a_hidden_artist_are_not_found(
+    music: MusicController, listing: Callable[[MusicController, str], Awaitable[list[object]]]
+) -> None:
+    """Listing a library artist held only by a hidden source is a miss, not an empty list."""
+    library_artist = await music.artists.add_item_to_library(_artist(THEIRS, "ar1"))
+
+    with _as_user(OWNER):
+        assert await listing(music, library_artist.item_id) == []
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await listing(music, library_artist.item_id)
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
         pytest.param(lambda music, prov: music.artists.top_tracks("ar1", prov), id="top_tracks"),
         pytest.param(lambda music, prov: music.artists.top_albums("ar1", prov), id="top_albums"),
         pytest.param(

@@ -332,7 +332,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain != "library":
             msg = "A discography is only available for library artists"
             raise InvalidDataError(msg)
-        artist = await self.get_library_item(item_id)
+        artist = await self._get_visible_library_item(item_id)
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
             return []
@@ -859,7 +859,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return all in-library tracks for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Tracks only available for artists of type ARTIST")
             return []
@@ -896,7 +896,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return all in-library albums for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Albums only available for artists of type ARTIST")
             return []
@@ -921,7 +921,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider_filter: Optional provider instance ID to limit the tracks to.
         """
         db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Albums only available for artists of type ARTIST")
             return []
@@ -1180,6 +1180,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 }
             )
         return Artist.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
+
+    async def _get_visible_library_item(self, item_id: str | int) -> Artist:
+        """Return the library artist, not found when none of its sources is the caller's."""
+        artist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
+        if artist is None:
+            raise MediaNotFoundError(f"Artist {item_id} not found in library")
+        return artist
 
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None
