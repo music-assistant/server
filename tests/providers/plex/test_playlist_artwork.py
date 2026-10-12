@@ -19,13 +19,15 @@ def _plex_playlist(**attrs: str) -> PlexPlaylist:
     """Build a plexapi playlist from the xml Plex returns for it."""
     data = ET.Element(
         "Playlist",
-        key="/playlists/42/items",
-        ratingKey="42",
-        title="Certified",
-        summary="The songs that have earned their spot.",
-        smart="1",
-        composite=COMPOSITE,
-        **attrs,
+        {
+            "key": "/playlists/42/items",
+            "ratingKey": "42",
+            "title": "Certified",
+            "summary": "The songs that have earned their spot.",
+            "smart": "1",
+            "composite": COMPOSITE,
+            **attrs,
+        },
     )
     return PlexPlaylist(MagicMock(), data)
 
