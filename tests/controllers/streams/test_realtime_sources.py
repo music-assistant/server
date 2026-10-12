@@ -2247,6 +2247,29 @@ async def test_single_item_handler_paces_by_source(
     assert seen["extra_input_args"] == output_pacing_args(profile)
 
 
+@pytest.mark.parametrize("crossfade", [True, False], ids=["crossfade", "plain"])
+async def test_single_item_handler_reports_its_player_connection(
+    monkeypatch: pytest.MonkeyPatch, crossfade: bool
+) -> None:
+    """The item stream is told, from the request's transport, whether the player is still there."""
+    controller, request, _seen = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    if not crossfade:
+        controller.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_item_stream(request)
+
+    stream_call = (
+        controller.audio.get_queue_item_stream_with_smartfade.call_args
+        if crossfade
+        else controller.audio.get_queue_item_stream.call_args
+    )
+    connected = stream_call.kwargs["consumer_connected"]
+    assert connected() is True
+    request.transport = None
+    assert connected() is False
+
+
 def _flow_handler(
     monkeypatch: pytest.MonkeyPatch, *, is_realtime: bool
 ) -> tuple[Any, MagicMock, dict[str, Any]]:

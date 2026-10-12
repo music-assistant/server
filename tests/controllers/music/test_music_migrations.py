@@ -1118,3 +1118,40 @@ async def test_migration_drops_stale_mappings_of_a_clean_classical_genre(
         f"SELECT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
     )
     assert [row["media_id"] for row in mapping_rows] == [10]
+
+
+async def test_migration_adds_is_endless_column_to_radios(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-67 database gets the radios.is_endless column, defaulting every row to endless.
+
+    A pre-existing dynamic station is an endless feed and a plain station an endless
+    stream, so both default correctly. Running the migration twice is harmless.
+    """
+    await database.execute("ALTER TABLE radios ADD COLUMN is_dynamic BOOLEAN NOT NULL DEFAULT 0")
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (1, '[]', 1)"
+    )
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (2, '[]', 0)"
+    )
+    await database.commit()
+    assert "is_endless" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=66,
+            create_tables=AsyncMock(),
+        )
+
+    assert "is_endless" in await _table_columns(database, "radios")
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, is_endless FROM radios ORDER BY item_id"
+    )
+    assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
