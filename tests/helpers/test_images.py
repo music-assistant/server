@@ -25,6 +25,7 @@ from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
     create_thumb_hash,
+    detect_image_content_format,
     detect_provider_icons,
     get_image_data,
     get_image_thumb,
@@ -134,6 +135,18 @@ async def test_original_size_in_source_format_passes_bytes_through(
 
     assert jpeg_result == jpeg_data
     assert png_result == png_data
+
+
+async def test_original_size_in_other_format_is_converted(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """An original-size request in a format other than the source's is still converted."""
+    jpeg_path = tmp_path / "art.jpg"
+    jpeg_path.write_bytes(_make_jpeg_bytes())
+
+    result = await get_image_thumb(mass_minimal, str(jpeg_path), 0, "builtin", image_format="PNG")
+
+    assert detect_image_content_format(result) == "png"
 
 
 async def test_thumb_path_reuses_existing_cache_file(
