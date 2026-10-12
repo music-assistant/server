@@ -709,9 +709,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     queue_id, seed_items=queue_data.enqueued_media_items
                 )
             else:
-                # AUTO, and ALBUMS without an album: try similar tracks first, then the library mix. The similar
-                # fetch raises when no provider can supply base/similar tracks, so suppress
-                # that here to make sure the library fallback still runs.
+                # AUTO, and ALBUMS without an album: try similar tracks first, then the library
+                # mix. The similar fetch raises when no provider can supply base/similar tracks,
+                # so suppress that here to make sure the library fallback still runs.
                 tracks = []
                 with suppress(MusicAssistantError):
                     tracks = await self._get_similar_tracks(

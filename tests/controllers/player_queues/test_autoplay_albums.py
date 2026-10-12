@@ -144,19 +144,18 @@ async def test_queued_album_mappings_match_by_id_only(mass: MusicAssistant) -> N
     assert _album_names(result) == ["Album 1998", "Album 2005"]
 
 
-@pytest.mark.parametrize("anchor_kind", ["single", "other artist"])
+@pytest.mark.parametrize("anchor_kind", ["single", "compilation", "other artist"])
 async def test_an_anchor_outside_the_list_is_placed_by_its_year(
     mass: MusicAssistant, anchor_kind: str
 ) -> None:
-    """A single or another artist's album counts as before the albums of its year."""
+    """A single, a compilation or another artist's album counts as before its year's albums."""
     artist, _ = await _artist_with_years(mass, 1995, 1998, 2005)
     if anchor_kind == "single":
         anchor = await _add_album(mass, artist, "Zebra", 1998, album_type=AlbumType.SINGLE)
     else:
+        name = VARIOUS_ARTISTS_NAME if anchor_kind == "compilation" else "Other"
         other = await mass.music.artists.add_item_to_library(
-            Artist(
-                item_id="0", provider="library", name="Other", provider_mappings=_library_mapping()
-            )
+            Artist(item_id="0", provider="library", name=name, provider_mappings=_library_mapping())
         )
         anchor = await _add_album(mass, other, "Zebra", 1998)
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)

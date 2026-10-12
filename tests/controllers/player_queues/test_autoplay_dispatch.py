@@ -701,11 +701,17 @@ async def test_an_album_batch_is_added_whole_without_the_recency_gate() -> None:
     loader._autoplay.get_album_tracks = AsyncMock(return_value=[_track("a1"), _track("a2")])
     loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
 
-    with patch(
-        "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
-    ) as gate:
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
+        ) as gate,
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.without_disliked_tracks"
+        ) as dislikes,
+    ):
         await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
 
+    dislikes.assert_not_called()
     gate.assert_not_called()
     loaded = loader.load.await_args.args[1]
     assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
