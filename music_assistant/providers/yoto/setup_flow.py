@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-import pkce
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
@@ -15,6 +14,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_params,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str) -> str:
     :param session: The setup session driving the flow.
     :param client_id: The Yoto developer client id.
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     redirect_uri, state = hosted_bounce_redirect(session.callback_url)
     params = {
         "response_type": "code",

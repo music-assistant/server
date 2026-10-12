@@ -161,7 +161,7 @@ Manages individual WebSocket connections:
 **Sign-in flow ([helpers/login_flow.py](helpers/login_flow.py)):**
 - Pending sign-ins (`PendingLoginStore`): 10 minutes each, single use, at most 100 at once
 - How a client reaches the server (`AuthTransport`: direct, Remote Access or Ingress)
-- PKCE S256 helpers
+- PKCE S256 verification of client code verifiers
 
 ## Authentication System
 
