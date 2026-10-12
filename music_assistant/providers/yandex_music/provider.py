@@ -390,6 +390,7 @@ class _WaveState:
     def __init__(self) -> None:
         self.session_id: str | None = None
         self.batch_id: str | None = None
+        self.track_batch_ids: dict[str, str | None] = {}
         self.last_track_id: str | None = None
         self.playlist_next_cursor: str | None = None
         self.seen_track_ids: set[str] = set()
@@ -403,12 +404,20 @@ class _WaveState:
         """Clear playback state for a new session, retaining station settings and lock."""
         self.session_id = None
         self.batch_id = None
+        self.track_batch_ids.clear()
         self.last_track_id = None
         self.playlist_next_cursor = None
         self.radio_started_sent = False
         self.ended = False
         self.prefetched.clear()
         self.seen_track_ids.clear()
+
+    def remember_track_batch(self, tracks: Sequence[YandexTrack], batch_id: str | None) -> None:
+        """Keep the originating batch for track feedback until the session resets."""
+        for track in tracks:
+            track_id = getattr(track, "id", None)
+            if track_id is not None:
+                self.track_batch_ids[str(track_id)] = batch_id
 
 
 class YandexMusicProvider(MusicProvider):
@@ -2369,7 +2378,7 @@ class YandexMusicProvider(MusicProvider):
         reporting via ``play_audio`` still works in that case — only the
         rotor recommendation signal is lost.
 
-        :param wave: Station state carrying session_id + batch_id.
+        :param wave: Station state carrying the session and each track's originating batch.
         :param station_id: Rotor station ID (used only for logging here).
         :param event_type: Rotor event type (radioStarted, trackStarted, …).
         :param track_id: Yandex track ID the event refers to.
@@ -2388,7 +2397,9 @@ class YandexMusicProvider(MusicProvider):
             event_type,
             track_id=track_id,
             total_played_seconds=total_played_seconds,
-            batch_id=wave.batch_id,
+            batch_id=wave.track_batch_ids.get(track_id, wave.batch_id)
+            if track_id
+            else wave.batch_id,
         )
 
     async def _prefetch_rotor_session(self, station_key: str) -> None:
@@ -2470,6 +2481,7 @@ class YandexMusicProvider(MusicProvider):
             wave.ended = ended
             if batch_id:
                 wave.batch_id = batch_id
+            wave.remember_track_batch(tracks, batch_id)
             wave.prefetched.extend(tracks)
 
     async def _fetch_rotor_session_batch(
@@ -2508,6 +2520,7 @@ class YandexMusicProvider(MusicProvider):
                 wave.ended = ended
                 if batch_id:
                     wave.batch_id = batch_id
+                wave.remember_track_batch(tracks, batch_id)
                 return (tracks, batch_id)
 
         base_station, preset_settings = _split_wave_mode(station_id)
@@ -2520,6 +2533,7 @@ class YandexMusicProvider(MusicProvider):
             wave.session_id = session_id
         if batch_id:
             wave.batch_id = batch_id
+        wave.remember_track_batch(tracks, batch_id)
         return (tracks, batch_id)
 
     async def _browse_waves(

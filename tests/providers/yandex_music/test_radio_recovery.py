@@ -8,7 +8,9 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 from ya_passport_auth import SecretStr
 from yandex_music import ClientAsync, Track
 
@@ -33,6 +35,81 @@ def make_station_provider() -> tuple[YandexMusicProvider, ClientAsync, _WaveStat
     wave.settings = {"language": "russian"}
     provider._wave_states = {"user:onyourwave#discover": wave}
     return provider, raw, wave
+
+
+@pytest.mark.parametrize("seconds", [7, 100])
+@pytest.mark.parametrize("drain_limit", [0, 1, 2])
+@pytest.mark.parametrize("ended", [False, True])
+async def test_prefetch_keeps_feedback_batch_with_each_track(
+    seconds: int, drain_limit: int, ended: bool
+) -> None:
+    """Prefetch and queue refill cannot change the batch of a still-playing track."""
+    provider, raw, wave = make_station_provider()
+    provider.config = Mock(instance_id="yandex_music_instance")
+    provider.manifest = Mock(domain="yandex_music")
+    wave.reset_session()
+    station = "user:onyourwave#discover"
+    responses = iter(
+        [
+            {
+                "radioSessionId": "session",
+                "batchId": "first-batch",
+                "sequence": [{"type": "track", "track": {"id": 42}, "liked": False}],
+            },
+            [{"id": 42}],
+            {
+                "batchId": "next-batch",
+                "terminated": ended,
+                "sequence": [
+                    {"type": "track", "track": {"id": 43}, "liked": False},
+                    {"type": "track", "track": {"id": 44}, "liked": False},
+                ],
+            },
+            [{"id": 43}, {"id": 44}],
+        ]
+    )
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "feedback" in url:
+            return {"result": "ok"}
+        return next(responses)
+
+    post = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "post", post):
+        await provider.get_rotor_station_tracks(station, queue="42")
+        await provider._prefetch_rotor_session(station)
+        if drain_limit:
+            tracks = await provider.get_similar_tracks(f"42@{station}", limit=drain_limit)
+            assert [track.item_id for track in tracks] == [
+                f"{track_id}@{station}" for track_id in [43, 44][:drain_limit]
+            ]
+        for track_id in [42, 43, 44][: 1 + drain_limit]:
+            await provider.on_streamed(
+                StreamDetails(
+                    provider="yandex_music_instance",
+                    item_id=f"{track_id}@{station}",
+                    audio_format=AudioFormat(content_type=ContentType.FLAC),
+                    media_type=MediaType.TRACK,
+                    duration=100,
+                    seconds_streamed=seconds,
+                )
+            )
+    feedback = [call.kwargs["json"] for call in post.await_args_list if "feedback" in call.args[0]]
+    assert [body["batchId"] for body in feedback] == ["first-batch"] + ["next-batch"] * drain_limit
+    assert all(
+        body["event"]["type"] == ("trackFinished" if seconds == 100 else "skip")
+        for body in feedback
+    )
+
+
+def test_session_reset_discards_track_batch_metadata() -> None:
+    """A replacement session cannot use feedback metadata from its predecessor."""
+    _, _, wave = make_station_provider()
+    wave.remember_track_batch([Track(id=42)], "old-batch")
+    assert wave.track_batch_ids == {"42": "old-batch"}
+    wave.reset_session()
+    assert not wave.track_batch_ids
+    assert wave.settings == {"language": "russian"}
 
 
 async def test_station_recovers_unknown_session_once_and_preserves_settings() -> None:
