@@ -315,6 +315,18 @@ def cap_native_thread_pools() -> int:
     return budget
 
 
+def set_model_cache_dirs(cache_dir: str) -> None:
+    """
+    Point the torch and Hugging Face model caches into the Music Assistant cache dir.
+
+    Must be called before huggingface_hub is imported, as it reads HF_HOME at import time.
+    Operator-supplied values are kept.
+    """
+    # The default ~/.cache is unwritable when the container runs as a non-root user.
+    os.environ.setdefault("TORCH_HOME", os.path.join(cache_dir, "torch"))
+    os.environ.setdefault("HF_HOME", os.path.join(cache_dir, "huggingface"))
+
+
 async def verify_system_meets_requirements(
     *,
     feature_name: str,
