@@ -1376,6 +1376,18 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_MEDIA_PROGRESS}"
             )
 
+    if prev_version <= 66:
+        # add is_endless to radios; every existing row is an endless stream or feed,
+        # so the default is right
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_endless BOOLEAN DEFAULT 1 NOT NULL"
+            )
+        except Exception as err:
+            # create_tables makes a missing radios table with the column already in place
+            if "duplicate column" not in str(err) and "no such table" not in str(err):
+                raise
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
