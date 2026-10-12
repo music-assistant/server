@@ -52,8 +52,9 @@ _SECRET_KEY_SUFFIXES = (
     "access_key",
     "private_key",
 )
-# a config values map (its secure entries can have any key) and a guest join code
-_SECRET_KEYS = ("values", "code")
+# a config values map (its secure entries can have any key), a guest join code or sign-in
+# code, and a PKCE code verifier
+_SECRET_KEYS = ("values", "code", "code_verifier")
 _RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
 # without \u escapes, every redaction needs one of these in the (lowercased) message text:
 # the end of a secret key, a whole secret key or a JWT

@@ -307,6 +307,23 @@ def overlay_active(queue: PlayerQueue) -> bool:
     return queue.overlay_enabled and queue.overlay_source is not None
 
 
+def overlay_mixed_in(queue: PlayerQueue, queue_item: QueueItem, *, flow_mode: bool) -> bool:
+    """
+    Return True if the queue's audio overlay is mixed into the stream serving this item.
+
+    The overlay rides on the queue's continuous flow stream. Among per-item streams only
+    radio carries it, because a station never plays in flow mode and is one long-lived
+    stream of its own.
+
+    :param queue: The queue the item plays on.
+    :param queue_item: The item the stream serves.
+    :param flow_mode: Whether the stream is the queue's flow stream instead of a per-item one.
+    """
+    if not overlay_active(queue):
+        return False
+    return flow_mode or queue_item.media_type == MediaType.RADIO
+
+
 def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> int:
     """
     Return how many bytes of tail may be held back for a fade right now.
@@ -668,7 +685,8 @@ class StreamsAudio:
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
         allow_provider_match: bool = True,
         stop_paused_queues: bool = True,
-    ) -> AudioBuffer:
+        consumer_connected: Callable[[], bool] | None = None,
+    ) -> AudioBuffer | None:
         """
         Return a ready AudioBuffer for the given queue item.
 
@@ -684,6 +702,9 @@ class StreamsAudio:
             the candidates when all are saturated.
         :param stop_paused_queues: Whether another queue that is paused may be stopped to
             hand over the slot it holds.
+        :param consumer_connected: Reports whether the consumer this audio is for is still
+            connected; once it reports False, no source is opened for it.
+        :return: The buffer, or None when the consumer reported it left.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
@@ -698,6 +719,7 @@ class StreamsAudio:
                 capacity_wait_timeout,
                 allow_provider_match,
                 stop_paused_queues,
+                consumer_connected,
             )
 
     async def get_media_stream(
@@ -1539,7 +1561,7 @@ class StreamsAudio:
         finally:
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
-    async def get_queue_item_stream(
+    async def get_queue_item_stream(  # noqa: C901, PLR0912
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
@@ -1550,6 +1572,7 @@ class StreamsAudio:
         session_id: str | None = None,
         prepared_buffer: AudioBuffer | None = None,
         exact_seek: bool = False,
+        consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get the (PCM) audio stream for a single queue item.
@@ -1567,6 +1590,9 @@ class StreamsAudio:
         :param session_id: Queue session that owns processing-detail updates.
         :param prepared_buffer: Existing buffer that must be used without opening a new source.
         :param exact_seek: Preserve millisecond precision instead of user-seek quantization.
+        :param consumer_connected: Reports whether the consumer of this stream is still
+            connected; once it reports False before the source is opened, the stream ends
+            without audio and without marking the item.
         """
         streamdetails = queue_item.streamdetails
         assert streamdetails
@@ -1634,16 +1660,20 @@ class StreamsAudio:
         # filters are built because a source-capacity reselection can hand back another
         # provider's streamdetails, which everything below must then work with.
         seek_position_ms = int(seek_position * 1000)
+        audio_buffer: AudioBuffer | None
         try:
             if prepared_buffer is not None:
                 if streamdetails.buffer is not prepared_buffer or not prepared_buffer.is_valid(
                     seek_position_ms
                 ):
-                    raise AudioError("Prepared crossfade buffer is no longer available")
+                    raise AudioError("Prepared crossfade buffer is no longer available")  # noqa: TRY301 - handled by except below
                 audio_buffer = prepared_buffer
             else:
                 audio_buffer = await self.get_audio_buffer(
-                    queue_item, seek_position_ms=seek_position_ms, reason="streaming"
+                    queue_item,
+                    seek_position_ms=seek_position_ms,
+                    reason="streaming",
+                    consumer_connected=consumer_connected,
                 )
         except AudioError as err:
             streamdetails.stream_error = True
@@ -1655,6 +1685,10 @@ class StreamsAudio:
                 streamdetails.uri,
                 err,
             )
+            return
+        if audio_buffer is None:
+            # the consumer left while its audio was being prepared: nothing to serve, and
+            # nothing wrong with the item
             return
         streamdetails = queue_item.streamdetails
         assert streamdetails  # for type checking
@@ -1831,7 +1865,7 @@ class StreamsAudio:
                 streamdetails, finished, seconds_streamed, start_reported
             )
 
-    async def get_queue_item_stream_with_smartfade(
+    async def get_queue_item_stream_with_smartfade(  # noqa: C901, PLR0912
         self,
         player: Player,
         queue_item: QueueItem,
@@ -1839,6 +1873,7 @@ class StreamsAudio:
         crossfade_mode: CrossfadeMode = CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration: int = 10,
         session_id: str | None = None,
+        consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Return one queue item with a crossfade into the next item.
@@ -1849,6 +1884,9 @@ class StreamsAudio:
         :param crossfade_mode: Effective crossfade mode.
         :param standard_crossfade_duration: Configured standard crossfade duration.
         :param session_id: Queue session that owns processing-detail updates.
+        :param consumer_connected: Reports whether the consumer of this stream is still
+            connected; once it reports False, no source is opened for the item and no
+            fade into the next item is prepared.
         """
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
@@ -1990,6 +2028,7 @@ class StreamsAudio:
             normalization_override=norm_override,
             session_id=session_id,
             exact_seek=exact_buffer_seek,
+            consumer_connected=consumer_connected,
         ):
             total_chunks_received += 1
             tail_window.extend(chunk)
@@ -2008,6 +2047,12 @@ class StreamsAudio:
                 bytes_written += len(pcm_slice)
                 del tail_window[: len(pcm_slice)]
                 await asyncio.sleep(0)
+
+        if consumer_connected is not None and not consumer_connected():
+            # the boundary work below loads the next item and claims its fade on behalf of
+            # this stream, and the bookkeeping after it would write the empty stream back
+            # as the item's duration: neither is for a stream that lost its consumer
+            return
 
         #### HANDLE END OF TRACK
 
@@ -2321,7 +2366,7 @@ class StreamsAudio:
             ),
         )
 
-    async def get_queue_flow_stream(
+    async def get_queue_flow_stream(  # noqa: C901, PLR0912
         self,
         queue: PlayerQueue,
         start_queue_item: QueueItem,
@@ -2793,8 +2838,10 @@ class StreamsAudio:
                             # leave the queue's position mapping on the wrong track
                             # for the whole (source-paced) duration of the blend. The
                             # pre-counted tail makes way for that live credit.
+                            fadeout_timing = crossfade_smart_fade.timing_info
                             fadeout_share_seconds = (
-                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
+                                fadeout_timing.pre_crossfade_duration
+                                + fadeout_timing.crossfade_duration
                             )
                             fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
                             fadeout_share = (fadeout_share // frame_size) * frame_size
@@ -2808,8 +2855,8 @@ class StreamsAudio:
                                 fade_out_part=last_fadeout_part,
                                 pcm_format=pcm_format,
                             )
+                            crossfade_bytes_written = 0
                             try:
-                                crossfade_bytes_written = 0
                                 # closed before item_stream on an aborted flow: its
                                 # teardown stops the feeder that still holds a read
                                 # on item_stream, which must not be closed mid-read
@@ -3648,7 +3695,8 @@ class StreamsAudio:
         capacity_wait_timeout: float,
         allow_provider_match: bool,
         stop_paused_queues: bool,
-    ) -> AudioBuffer:
+        consumer_connected: Callable[[], bool] | None,
+    ) -> AudioBuffer | None:
         """
         Create or reuse a ready AudioBuffer within one queue-item preparation lock.
 
@@ -3660,6 +3708,9 @@ class StreamsAudio:
             the candidates when all are saturated.
         :param stop_paused_queues: Whether another queue that is paused may be stopped to
             hand over the slot it holds.
+        :param consumer_connected: Reports whether the consumer this audio is for is still
+            connected, or None when there is no consumer to lose.
+        :return: The buffer, or None when the consumer reported it left.
         """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
@@ -3726,6 +3777,14 @@ class StreamsAudio:
                         queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
+            # the preparation lock and the waits between attempts can outlast the consumer:
+            # a source opened for a request nobody reads anymore only ties up its slot
+            if consumer_connected is not None and not consumer_connected():
+                self.logger.debug(
+                    "Not opening the source of %s: its consumer is no longer connected",
+                    queue_item.name,
+                )
+                return None
             remaining = max(deadline - loop.time(), 0)
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}
@@ -4329,13 +4388,13 @@ class StreamsAudio:
             # a nested source raises through the stdin feeder, where ffmpeg's own exit
             # would otherwise flatten it into a generic AudioError
             if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-                raise feeder_exception
+                raise feeder_exception  # noqa: TRY301 - handled by except below
             if ffmpeg_proc.returncode not in (0, None):
                 log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
-                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
+                raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")  # noqa: TRY301 - handled by except below
             if bytes_sent == 0:
                 # edge case: no audio data was received at all
-                raise AudioError("No audio was received")
+                raise AudioError("No audio was received")  # noqa: TRY301 - handled by except below
             finished = True
         except (Exception, GeneratorExit, asyncio.CancelledError) as err:
             if isinstance(err, asyncio.CancelledError | GeneratorExit):
@@ -5317,7 +5376,7 @@ class StreamsAudio:
         try:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
-                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
+                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")  # noqa: TRY301 - handled by except below
             stream_prov = cast("AudioStreamMixin", provider)
             with request_priority(RequestPriority.HIGH):
                 streamdetails = await stream_prov.get_stream_details(

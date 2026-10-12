@@ -26,7 +26,6 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
-from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -43,18 +42,17 @@ from .constants import (
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
-    ATTR_SESSION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
-    EVENT_SESSIONS_UPDATED,
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
     NO_WEATHER_DATA_INSTRUCTION,
+    POST_LOAD_TIMEOUT,
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
@@ -75,8 +73,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
-
-    from .models import SessionState
 
 
 @dataclass(slots=True)
@@ -108,7 +104,6 @@ class AIRadioRenderMixin:
         config: ProviderConfig
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
-        _sessions: dict[str, SessionState]
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -128,7 +123,11 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {item_id} is not in any queue")
         prompt = str(queue_item.extra_attributes.get(ATTR_PROMPT) or "")
         if not prompt:
-            self._record_skip(queue_item, "clip has no prompt to render")
+            self.logger.warning(
+                "AI Radio clip %s (%s) skipped: clip has no prompt to render",
+                item_id,
+                queue_item.name,
+            )
             raise MediaNotFoundError(f"AI Radio clip {item_id} has no prompt to render")
 
         async with self._lock_for(item_id):
@@ -284,18 +283,12 @@ class AIRadioRenderMixin:
 
     def _candidate_queue_ids(self, clip_id: str) -> list[str]:
         """
-        Return the queue ids to search for a clip, the most likely one first.
+        Return the queue ids to search for a clip.
 
-        The owning session knows its queue, but the session registry is empty after a
-        restart while the clip lives on in the persisted queue, so every queue stays a
-        candidate. Clip ids carry a uuid4-based session id, so a hit is unambiguous.
+        Nothing tracks which queue a clip belongs to, so every queue is a candidate.
+        Clip ids carry a uuid4-based session id, so a hit is unambiguous.
         """
-        queue_ids = [queue.queue_id for queue in self.mass.player_queues.all()]
-        session = self._sessions.get(clip_id.rpartition("_")[0])
-        if session is not None and session.queue_id in queue_ids:
-            queue_ids.remove(session.queue_id)
-            queue_ids.insert(0, session.queue_id)
-        return queue_ids
+        return [queue.queue_id for queue in self.mass.player_queues.all()]
 
     def _find_clip_in_queue(self, clip_id: str, queue_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, paging through the queue."""
@@ -327,7 +320,6 @@ class AIRadioRenderMixin:
                 self.logger.warning(
                     "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
                 )
-                self._record_skip(queue_item, error)
                 raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
             # weather is optional in this clip, so the LLM must skip it rather than invent it
             for token in empty_weather_tokens:
@@ -354,7 +346,6 @@ class AIRadioRenderMixin:
             self.logger.warning(
                 "AI Radio clip %s (%s) failed to generate: %s", clip_id, queue_item.name, err
             )
-            self._record_skip(queue_item, f"generation failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed to generate") from err
         if max_chars > 0:
             text = soft_limit_text(text, max_chars=max_chars)
@@ -389,7 +380,6 @@ class AIRadioRenderMixin:
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            self._record_skip(queue_item, f"TTS failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
@@ -485,15 +475,6 @@ class AIRadioRenderMixin:
             return None
         return int(tags.duration) if tags.duration else None
 
-    def _record_skip(self, queue_item: QueueItem, error: str) -> None:
-        """Record a skipped clip on its owning session."""
-        session_id = str(queue_item.extra_attributes.get(ATTR_SESSION_ID) or "")
-        if (session := self._sessions.get(session_id)) is None:
-            return
-        session.skipped_sections += 1
-        session.last_render_error = error
-        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
-
     async def _plan_post(
         self, queue_item: QueueItem, clip_id: str, clip_duration: int | None
     ) -> TailOverlap | None:
@@ -514,18 +495,28 @@ class AIRadioRenderMixin:
     async def _plan_post_over(
         self, queue_item: QueueItem, next_item: QueueItem | None, clip_duration: int | None
     ) -> TailOverlap | None:
-        """Return how far the clip may carry over the given next item's intro, or None."""
+        """Return how far the clip may carry over the next track's intro, or None."""
         if next_item is None or not isinstance(next_item.media_item, Track):
             self._post_skipped(queue_item.name, "no next track in the queue")
             return None
-        # the overlap is only mixed at a flow stream's boundary; a show requires flow mode
-        # before its first play start, so its first clip already passes here
+        # the overlap is only mixed at a flow stream's boundary
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if queue is None or not (
             queue.flow_mode or self.mass.streams.flow_mode_required(queue.queue_id)
         ):
             self._post_skipped(next_item.name, "the player does not stream in flow mode")
             return None
+        # which copy of the track streams is only known once its stream details are
+        # resolved: the queue resolves them now rather than when the clip nears its end,
+        # as it will again then, and moves on to the item after a track it cannot play
+        loaded, reason = await self._load_next_item(queue_item)
+        if loaded is None:
+            self._post_skipped(next_item.name, reason)
+            return None
+        if not isinstance(loaded.media_item, Track):
+            self._post_skipped(loaded.name, "the item that plays next is not a track")
+            return None
+        next_item = loaded
         onset, reason = await self._resolve_vocal_onset(next_item)
         if onset is None:
             self._post_skipped(next_item.name, reason)
@@ -550,6 +541,20 @@ class AIRadioRenderMixin:
             onset,
         )
         return TailOverlap(duration=round(overlap, 3), next_queue_item_id=next_item.queue_item_id)
+
+    async def _load_next_item(self, queue_item: QueueItem) -> tuple[QueueItem | None, str]:
+        """Return the item the queue plays after the clip, loaded, or the reason it has none."""
+        try:
+            # a show starts on its opening clip, whose playback start waits for this
+            async with asyncio.timeout(POST_LOAD_TIMEOUT):
+                next_item = await self.mass.player_queues.load_next_queue_item(
+                    queue_item.queue_id, queue_item.queue_item_id
+                )
+        except TimeoutError:
+            return None, f"loading the next track took longer than {POST_LOAD_TIMEOUT:.0f}s"
+        except MusicAssistantError as err:
+            return None, f"the next track could not be loaded ({err})"
+        return next_item, ""
 
     async def _resolve_vocal_onset(self, queue_item: QueueItem) -> tuple[float | None, str]:
         """Return the second the track's vocal enters, and the reason when there is none."""
@@ -576,21 +581,12 @@ class AIRadioRenderMixin:
 
     async def _analysis_vocal_onset(self, queue_item: QueueItem) -> float | None:
         """Return the track's vocal onset from its stored audio analysis, or None."""
-        audio_analysis = self.mass.streams.audio_analysis
         # the analysis is keyed by the provider-native id of the copy that streams
-        if (streamdetails := queue_item.streamdetails) is not None:
-            return await audio_analysis.get_vocal_onset(
-                streamdetails.item_id, streamdetails.provider
-            )
-        media_item = cast("Track", queue_item.media_item)
-        # tried in the order playback would pick them: another master can have another intro
-        for mapping in rank_provider_mappings(media_item.provider_mappings):
-            if not mapping.available:
-                continue
-            onset = await audio_analysis.get_vocal_onset(mapping.item_id, mapping.provider_instance)
-            if onset is not None:
-                return onset
-        return None
+        if (streamdetails := queue_item.streamdetails) is None:
+            return None
+        return await self.mass.streams.audio_analysis.get_vocal_onset(
+            streamdetails.item_id, streamdetails.provider
+        )
 
     def _post_skipped(self, item_name: str, reason: str) -> None:
         """Log why an opted-in break does not carry over the next track."""

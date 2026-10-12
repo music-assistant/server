@@ -284,12 +284,12 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
             attrs = StateSyncMapper.create_speaker_attributes(new_speaker)
             if not attrs.mac or attrs.mac != self.player.player_id:
-                raise ConnectionError("MAC address verification failed after reconnect")
+                raise ConnectionError("MAC address verification failed after reconnect")  # noqa: TRY301 - triggers disconnect cleanup below
 
             # Guard against the case where this player instance has been replaced (e.g. after
             # a provider restart). Continuing would leave a dangling pywam connection open
             if self.mass.players.get_player(self.player.player_id) is not self.player:
-                raise ConnectionError("Player instance superseded; aborting reconnect")
+                raise ConnectionError("Player instance superseded; aborting reconnect")  # noqa: TRY301 - triggers disconnect cleanup below
 
             self.suppress_speaker_status_events(new_speaker)
             self.player.speaker = new_speaker

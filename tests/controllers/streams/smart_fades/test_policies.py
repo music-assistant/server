@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    EchoOut,
     TransitionStyle,
     TransitionTier,
 )
@@ -45,6 +46,7 @@ def _ctx(
     natural_entry: float = 0.0,
     outgoing_analysis: AudioAnalysisData | None = None,
     buffer_offset: float = 0.0,
+    bpm_diff_percent: float = 0.0,
 ) -> TransitionContext:
     deck = Deck(
         analysis=AudioAnalysisData(),
@@ -68,7 +70,7 @@ def _ctx(
         coda_zone=None,
         tier=tier,
         cross_meter=False,
-        bpm_diff_percent=0.0,
+        bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=None,
         vocal_in_placement=None,
         vocal_out_scoring=vocal_out_scoring,
@@ -192,7 +194,7 @@ class TestVocalCollisionPolicy:
 
 
 class TestRhythmClashPolicy:
-    """Reject/penalize two kicks playing on top of each other, for a segue only."""
+    """Reject/penalize two kicks on top of each other, in a segue or a dressed transition."""
 
     policy = RhythmClashPolicy()
     kicks = ((0.0, 45.0),)
@@ -200,9 +202,12 @@ class TestRhythmClashPolicy:
     def _kick_ctx(self) -> TransitionContext:
         return dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=self.kicks)
 
-    def test_rejects_a_segue_above_the_limit(self) -> None:
-        """A segue clashing for more than 2 weighted bars is rejected."""
-        candidate = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=2.01)
+    @pytest.mark.parametrize(
+        "style", [TransitionStyle.SEGUE, TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT]
+    )
+    def test_rejects_above_the_limit(self, style: TransitionStyle) -> None:
+        """A segue or a dressed transition clashing for more than 2 weighted bars is rejected."""
+        candidate = _candidate(style=style, rhythm_clash=2.01)
 
         assert self.policy.evaluate(candidate, self._kick_ctx()).rejected is True
 
@@ -215,7 +220,7 @@ class TestRhythmClashPolicy:
         assert self.policy.evaluate(half, self._kick_ctx()).penalty == pytest.approx(5.0)
 
     @pytest.mark.parametrize("style", [TransitionStyle.BLEND, TransitionStyle.CUT])
-    def test_other_styles_are_not_judged(self, style: TransitionStyle) -> None:
+    def test_a_blend_or_a_cut_is_not_judged(self, style: TransitionStyle) -> None:
         """A blend or a cut is never rejected or penalized for its kicks."""
         candidate = _candidate(style=style, rhythm_clash=9.0)
 
@@ -270,6 +275,15 @@ class TestVocalTruncationPolicy:
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(5.0, 19.5)]))
 
         assert self.policy.evaluate(candidate, ctx).rejected is False
+
+    def test_an_echo_out_truncates_at_its_cut(self) -> None:
+        """A phrase still singing past an echo's cut is cut off, though the echo rides on."""
+        echo = _candidate(duration=2.0, fade_end=20.0, style=TransitionStyle.ECHO_OUT)
+        plan = dataclasses.replace(echo.plan, echo=EchoOut(cut_s=18.0, beat_s=0.5))
+        candidate = dataclasses.replace(echo, plan=plan)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(16.0, 19.0)]))
+
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
     def test_inaudible_vocal_past_the_rms_boundary_never_counts(self) -> None:
         """Windows beyond audio_end are inaudible and cannot register as truncation."""

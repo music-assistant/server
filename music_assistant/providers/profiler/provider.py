@@ -170,7 +170,7 @@ class ProfilerProvider(PluginProvider):
         if self.get_config_value(CONF_CPU_PROFILE_ENABLED, False, return_type=bool):
             self.mass.create_task(self._cpu_profile_scheduler(), task_id="profiler_cpu_scheduler")
         self._unregister_diagnostics = self.mass.diagnostics.register_section(
-            f"provider.{self.instance_id}",
+            f"provider.{self.domain}.{self.instance_id}",
             self._get_diagnostics_section,
             timeout=DIAGNOSTICS_SECTION_TIMEOUT,
         )

@@ -16,7 +16,12 @@ from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
+)
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
@@ -91,7 +96,7 @@ async def _play_count(mass: MusicAssistant, table: str, item_id: str) -> int:
 async def _artist_user_initiated(mass: MusicAssistant, item_id: str, userid: str) -> int:
     """Read the user_initiated flag of an artist playlog row."""
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {"media_type": MediaType.ARTIST.value, "item_id": item_id, "userid": userid},
     )
     assert row is not None
@@ -106,14 +111,14 @@ async def test_played_track_credits_all_track_artists(mass: MusicAssistant) -> N
     track = await _add_track(mass, "Collab", [primary, featured])
 
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=True, userid=user.user_id
+        track, fully_played=True, queue_id="q1", user_initiated=True, userid=user.user_id
     )
 
     assert await _play_count(mass, DB_TABLE_ARTISTS, primary.item_id) == 1
     assert await _play_count(mass, DB_TABLE_ARTISTS, featured.item_id) == 1
     for artist in (primary, featured):
         rows = await mass.music.database.get_rows(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "media_type": MediaType.ARTIST.value,
                 "item_id": artist.item_id,
@@ -125,12 +130,18 @@ async def test_played_track_credits_all_track_artists(mass: MusicAssistant) -> N
 
 async def test_album_play_credits_album_artists_with_dedup(mass: MusicAssistant) -> None:
     """Marking an album played credits its album artists, skipping any in skip_artist_ids."""
+    user = await mass.webserver.auth.create_user("albumcreditdedup")
     kept = await _add_artist(mass, "Kept Artist")
     skipped = await _add_artist(mass, "Skipped Artist")
     album = await _add_album(mass, "An Album", [kept, skipped])
 
     await mass.music.mark_item_played(
-        album, fully_played=True, user_initiated=True, skip_artist_ids=[skipped.item_id]
+        album,
+        fully_played=True,
+        queue_id="q1",
+        user_initiated=True,
+        skip_artist_ids=[skipped.item_id],
+        userid=user.user_id,
     )
 
     assert await _play_count(mass, DB_TABLE_ALBUMS, album.item_id) == 1
@@ -145,7 +156,7 @@ async def test_track_credit_does_not_flag_artist_user_initiated(mass: MusicAssis
     track = await _add_track(mass, "A Song", [artist])
 
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=True, userid=user.user_id
+        track, fully_played=True, queue_id="q1", user_initiated=True, userid=user.user_id
     )
 
     assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 0
@@ -165,9 +176,45 @@ async def test_explicit_artist_play_survives_track_credit(mass: MusicAssistant) 
 
     # later, one of the artist's tracks auto-plays (not user-initiated)
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=False, userid=user.user_id
+        track,
+        fully_played=True,
+        queue_id="q1",
+        user_initiated=False,
+        userid=user.user_id,
     )
     assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 1
+
+
+async def test_track_and_album_play_write_separate_history_media_types(
+    mass: MusicAssistant,
+) -> None:
+    """A completed album credit creates its own album event beside the track event."""
+    user = await mass.webserver.auth.create_user("trackalbumhistory")
+    artist = await _add_artist(mass, "History Artist")
+    track = await _add_track(mass, "History Track", [artist])
+    album = await _add_album(mass, "History Album", [artist])
+
+    await mass.music.mark_item_played(
+        track,
+        fully_played=True,
+        queue_id="history-queue",
+        user_initiated=True,
+        userid=user.user_id,
+    )
+    await mass.music.mark_item_played(
+        album,
+        fully_played=True,
+        queue_id="history-queue",
+        user_initiated=True,
+        skip_artist_ids=[artist.item_id],
+        userid=user.user_id,
+    )
+
+    rows = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
+    assert {(row["media_type"], row["item_id"]) for row in rows} == {
+        (MediaType.TRACK.value, track.item_id),
+        (MediaType.ALBUM.value, album.item_id),
+    }
 
 
 def test_enqueued_album_decision() -> None:

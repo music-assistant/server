@@ -140,7 +140,7 @@ def _emit_exception(handler: DiagnosticsLogHandler, message: str = "it broke") -
     logger.propagate = False
     logger.addHandler(handler)
     try:
-        raise ValueError("boom")
+        raise ValueError("boom")  # noqa: TRY301 - simulates a failure
     except ValueError:
         logger.exception(message)
     finally:
@@ -169,7 +169,7 @@ def test_exception_lru_bound() -> None:
         # unique exception type per iteration -> unique fingerprint
         exc_type = type(f"CustomError{index}", (Exception,), {})
         try:
-            raise exc_type("boom")
+            raise exc_type("boom")  # noqa: TRY301 - simulates a failure
         except Exception:
             record = logging.LogRecord(
                 "test", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
@@ -218,7 +218,7 @@ def test_emit_does_no_disk_io() -> None:
     """Test that capturing an exception never reads source files (linecache)."""
     handler = DiagnosticsLogHandler()
     try:
-        raise ValueError("boom")
+        raise ValueError("boom")  # noqa: TRY301 - simulates a failure
     except ValueError:
         record = logging.LogRecord(
             "test.diagnostics", logging.ERROR, __file__, 1, "it broke", None, sys.exc_info()
@@ -254,13 +254,16 @@ async def test_get_report(mass: MusicAssistant) -> None:
     # device identifiers embedded in logger names must be redacted too
     logging.getLogger("aiosendspin.server.connection.20:F8:3B:09:03:E2").warning("closed")
     try:
-        raise RuntimeError("report traceback probe")
+        raise RuntimeError("report traceback probe")  # noqa: TRY301 - simulates a failure
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 6
+    assert report["schema_version"] == 7
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
+    assert report["system"]["unsupported_install"] is True
+    assert report["system"]["bundled_app_vars"] is False
+    assert report["system"]["build_info"] is None
     assert report["system"]["counts"]["threads"] > 0
     # child process counts by name (a dict on Linux, None where /proc is unavailable)
     assert "child_processes" in report["system"]["counts"]

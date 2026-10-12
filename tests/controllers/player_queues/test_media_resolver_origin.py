@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
@@ -31,6 +32,7 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 TIDAL = "tidal--abc"
 SPOTIFY = "spotify--def"
 GPODDER = "gpodder--ghi"
+AI_RADIO = "ai_radio--jkl"
 FILESYSTEM = "filesystem_local--xyz"
 FOLDER_PATH = "Music/Miles Davis/Kind of Blue"
 
@@ -216,6 +218,27 @@ async def test_a_podcast_pins_its_episodes_to_the_podcasts_provider() -> None:
 
     assert _container(resolved[0]) == ItemMapping.from_item(podcast)
     assert _pin(resolved[0]) == (GPODDER, "ep1")
+
+
+async def test_a_finite_radio_station_records_itself_but_pins_nothing() -> None:
+    """A station's tracklist can come from a builtin playlist, so its entries are not pinned."""
+    resolver = _resolver()
+    show = Radio(
+        item_id="show",
+        provider=AI_RADIO,
+        name="Morning show",
+        provider_mappings={_mapping(AI_RADIO, "show")},
+        is_dynamic=False,
+        is_endless=False,
+    )
+    track = _track("t1", TIDAL)
+    resolver.mass.music.radio.tracks = AsyncMock(return_value=[track])  # type: ignore[method-assign]
+
+    resolved = await resolver._resolve_media_items(show)
+
+    assert [x.item for x in resolved] == [track]
+    assert _container(resolved[0]) == ItemMapping.from_item(show)
+    assert _pin(resolved[0]) == (None, None)
 
 
 @pytest.mark.parametrize(

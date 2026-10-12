@@ -500,7 +500,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 

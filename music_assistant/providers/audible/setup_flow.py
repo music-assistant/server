@@ -92,7 +92,7 @@ async def run_setup(session: SetupSession) -> None:
         try:
             auth = await audible_custom_login(code_verifier, post_login_url, serial, locale)
             if not (auth.adp_token and auth.device_private_key):
-                raise LoginFailed(
+                raise LoginFailed(  # noqa: TRY301 - shown as form error
                     "Registration succeeded but signing keys were not obtained. Please try again."
                 )
         except LoginFailed as err:

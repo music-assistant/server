@@ -90,7 +90,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
@@ -127,6 +127,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
     """Return True if the item supplies its own on-demand track feed."""
     return isinstance(item, Playlist | Radio) and item.is_dynamic
+
+
+def is_finite_radio(item: MediaItemType | BrowseFolder) -> TypeGuard[Radio]:
+    """Return True for a radio station with a fixed tracklist the queue plays out and ends."""
+    return isinstance(item, Radio) and not item.is_endless and not item.is_dynamic
 
 
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
@@ -200,20 +205,18 @@ def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
     """Sort tracks by the given sort key."""
     key_map: dict[str, tuple[Any, bool]] = {
         "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
-        "name": (lambda t: (t.sort_name or t.name or "").lower(), False),
+        # name/artist/album sort on the displayed names, as the frontend lists them
+        "name": (lambda t: (t.name or "").lower(), False),
+        "sort_name": (lambda t: (t.sort_name or t.name or "").lower(), False),
         "artist": (
-            lambda t: (
-                (t.artists[0].sort_name or t.artists[0].name).lower()
-                if hasattr(t, "artists") and t.artists
-                else ""
-            ),
+            lambda t: t.artists[0].name.lower() if hasattr(t, "artists") and t.artists else "",
             False,
         ),
         "album": (
             lambda t: (
-                (t.album.sort_name or t.album.name).lower()
-                if hasattr(t, "album") and t.album
-                else ""
+                (t.album.name.lower() if hasattr(t, "album") and t.album else ""),
+                getattr(t, "disc_number", 0) or 0,
+                getattr(t, "track_number", 0) or 0,
             ),
             False,
         ),
@@ -277,7 +280,7 @@ def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
     for items in groups:
         total = len(items)
         for offset, item in enumerate(items):
-            positioned.append(((offset + random.random()) / total, item))
+            positioned.append(((offset + random.random()) / total, item))  # noqa: S311 - shuffle order
     positioned.sort(key=lambda entry: entry[0])
     return [item for _, item in positioned]
 

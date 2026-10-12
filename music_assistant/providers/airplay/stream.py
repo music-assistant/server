@@ -1016,7 +1016,7 @@ class AirPlayStream:
             ):
                 self._metadata_artwork_checksum = _artwork_identity(artwork_url)
 
-    async def _build_cli_args(  # noqa: PLR0915
+    async def _build_cli_args(  # noqa: C901, PLR0912, PLR0915
         self,
         use_shared_ptp: bool | None = None,
     ) -> list[str]:
@@ -1502,7 +1502,7 @@ class AirPlayStream:
             finally:
                 await self.commands_pipe.remove()
 
-    def _handle_status_line(self, line: str) -> bool:  # noqa: PLR0915
+    def _handle_status_line(self, line: str) -> bool:  # noqa: C901, PLR0912, PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
         player = self.player
         if "[STATUS] connected" in line:

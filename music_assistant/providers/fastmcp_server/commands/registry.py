@@ -255,7 +255,7 @@ class ProviderCommandSet:
                 mass=self._mass,
             )
             if deny_target_filtered and user_has_target_filters(user):
-                raise InsufficientPermissions(
+                raise InsufficientPermissions(  # noqa: TRY301 - audited by except below
                     "Server-wide diagnostics are not available to users with player "
                     "or provider filters"
                 )

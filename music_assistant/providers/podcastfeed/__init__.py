@@ -215,7 +215,7 @@ class PodcastMusicprovider(MusicProvider):
                 content_type = response.headers.get("content-type", "").lower()
                 if not content_type.startswith(("image/", "application/octet-stream")):
                     # Not an image - likely redirected to error page
-                    raise ClientError(f"Invalid content type: {content_type}")
+                    raise ClientError(f"Invalid content type: {content_type}")  # noqa: TRY301 - triggers cover fallback below
 
                 return await response.read()
 
