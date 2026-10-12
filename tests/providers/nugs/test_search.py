@@ -57,7 +57,8 @@ async def test_song_search_preserves_performance_identity(provider: NugsProvider
     provider.get_album_tracks.assert_not_awaited()
     writes = cast("AsyncMock", provider.mass.cache.set).call_args_list
     assert writes[0].args[0] == "nugs_search_track_504753"
-    assert writes[0].kwargs["persistent"] is True
+    assert writes[0].kwargs["persistent"] is False
+    assert writes[0].kwargs["expiration"] == 3600 * 24
     assert writes[0].kwargs["provider"] == provider.instance_id
 
 
@@ -279,6 +280,7 @@ async def test_transport_params_and_cache(provider: NugsProvider) -> None:
     [
         {"responseAvailabilityCode": 1, "Response": {}},
         {"responseAvailabilityCode": 0, "Response": None},
+        {"responseAvailabilityCode": 0, "Response": {"searchError": 1}},
     ],
 )
 async def test_transport_rejects_api_errors(provider: NugsProvider, payload: Any) -> None:

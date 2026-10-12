@@ -133,3 +133,28 @@ async def test_temporary_failure_retries_through_decorated_transport(
     assert request.call_count == 2
     failed.json.assert_not_awaited()
     failed.text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_search_uses_its_own_throttler(provider: NugsProvider) -> None:
+    """Legacy searches pass through the dedicated search gate as well as the shared one."""
+    _response(provider)
+    gate = AsyncMock()
+    provider.search_throttler = Mock(acquire=Mock(return_value=gate))
+
+    await _request(provider, "legacy")
+    provider.search_throttler.acquire.assert_called_once_with()
+    gate.__aenter__.assert_awaited_once()
+
+    await _request(provider, "authenticated")
+    provider.search_throttler.acquire.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_rejected_token_is_cleared(provider: NugsProvider) -> None:
+    """A 401 drops the stored token so the next request logs in again."""
+    _response(provider, 401)
+    provider._auth_token = "revoked"
+    with pytest.raises(LoginFailed):
+        await _request(provider, "authenticated")
+    assert provider._auth_token is None

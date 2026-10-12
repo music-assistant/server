@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -99,7 +100,10 @@ class NugsProvider(MusicProvider):
     _auth_token: str | None = None
     _token_expiry: float = 0
     _plan_quality_logged: bool = False
-    throttler = ThrottlerManager(rate_limit=1, period=1)
+    throttler = ThrottlerManager(rate_limit=5, period=1)
+    # the legacy search endpoint queues requests rather than returning 429s and slows
+    # to timeouts above roughly one search per second, so it has its own tighter gate
+    search_throttler = ThrottlerManager(rate_limit=1, period=1)
 
     @property
     def supported_media_types(self) -> set[MediaType]:
@@ -147,52 +151,12 @@ class NugsProvider(MusicProvider):
             return SearchResults()
         if not {MediaType.ARTIST, MediaType.ALBUM}.intersection(media_types):
             return SearchResults(tracks=await self._search_recordings(query, limit))
-        data = await self._get_catalog_search(query)
-        filters = self._get_search_filters(query, data)
-        artists: list[Artist] = []
-        albums: list[Album] = []
-        seen: set[str] = set()
-        if MediaType.ARTIST in media_types:
-            for item in data.get("artists") or []:
-                item_id = str(item.get("id") or "")
-                if not item_id or not item.get("name") or item_id in seen:
-                    continue
-                if filters and item_id != filters.get("artistIds"):
-                    continue
-                artists.append(self._parse_artist(item))
-                seen.add(item_id)
-                if len(artists) == limit:
-                    break
-        if MediaType.ALBUM in media_types:
-            if filters:
-                albums = [
-                    self._parse_album(item)
-                    for item in await self._get_search_releases(filters, limit)
-                ]
-            seen = {album.item_id for album in albums}
-            for item in data.get("albums") or []:
-                if len(albums) >= limit:
-                    break
-                item_id = str(item.get("id") or "")
-                if not item_id or not item.get("title") or item_id in seen:
-                    continue
-                # Discovery supplies titles and covers, but no artist or availability.
-                # Full details are resolved through get_album when the item is opened.
-                albums.append(
-                    self._parse_album(
-                        {
-                            **item,
-                            "artistID": None,
-                            "artistName": None,
-                            "image": {"url": item["coverImage"]}
-                            if item.get("coverImage")
-                            else None,
-                        }
-                    )
-                )
-                seen.add(item_id)
-        tracks = (
-            await self._search_recordings(query, limit) if MediaType.TRACK in media_types else []
+        if MediaType.TRACK not in media_types:
+            artists, albums = await self._search_catalog(query, media_types, limit)
+            return SearchResults(artists=artists, albums=albums)
+        (artists, albums), tracks = await asyncio.gather(
+            self._search_catalog(query, media_types, limit),
+            self._search_recordings(query, limit),
         )
         return SearchResults(artists=artists, albums=albums, tracks=tracks)
 
@@ -350,9 +314,9 @@ class NugsProvider(MusicProvider):
             await self.mass.cache.set(
                 f"{prefix}_{track.item_id}",
                 track.to_dict(),
-                expiration=3600 * 24 * 14,
+                expiration=3600 * 24 if search_results else 3600 * 24 * 14,
                 provider=self.instance_id,
-                persistent=True,
+                persistent=not search_results,
             )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -600,6 +564,63 @@ class NugsProvider(MusicProvider):
             filters["venueIds"] = ",".join(dict.fromkeys(venue_ids))
         return filters
 
+    async def _search_catalog(
+        self, query: str, media_types: list[MediaType], limit: int
+    ) -> tuple[list[Artist], list[Album]]:
+        """
+        Search the authenticated catalog for artists and releases.
+
+        :param query: Search query.
+        :param media_types: Media types to include.
+        :param limit: Maximum number of results per media type.
+        """
+        data = await self._get_catalog_search(query)
+        filters = self._get_search_filters(query, data)
+        artist_filter = filters.get("artistIds")
+        artists: list[Artist] = []
+        albums: list[Album] = []
+        seen: set[str] = set()
+        if MediaType.ARTIST in media_types:
+            for item in data.get("artists") or []:
+                item_id = str(item.get("id") or "")
+                if not item_id or not item.get("name") or item_id in seen:
+                    continue
+                if artist_filter and item_id != artist_filter:
+                    continue
+                artists.append(self._parse_artist(item))
+                seen.add(item_id)
+                if len(artists) == limit:
+                    break
+        if MediaType.ALBUM in media_types:
+            if filters:
+                albums = [
+                    self._parse_album(item)
+                    for item in await self._get_search_releases(filters, limit)
+                ]
+            seen = {album.item_id for album in albums}
+            for item in data.get("albums") or []:
+                if len(albums) >= limit:
+                    break
+                item_id = str(item.get("id") or "")
+                if not item_id or not item.get("title") or item_id in seen:
+                    continue
+                # Discovery supplies titles and covers, but no artist or availability.
+                # Full details are resolved through get_album when the item is opened.
+                albums.append(
+                    self._parse_album(
+                        {
+                            **item,
+                            "artistID": None,
+                            "artistName": None,
+                            "image": {"url": item["coverImage"]}
+                            if item.get("coverImage")
+                            else None,
+                        }
+                    )
+                )
+                seen.add(item_id)
+        return artists, albums
+
     @use_cache(3600)
     async def _get_catalog_search(self, query: str) -> dict[str, Any]:
         """Discover catalog entities using the authenticated Nugs search API."""
@@ -727,11 +748,14 @@ class NugsProvider(MusicProvider):
     async def _get_search_data(self, query: str) -> dict[str, Any]:
         """Retrieve cached search metadata from the public Nugs catalog."""
         try:
-            async with self.mass.http_session.get(
-                "https://streamapi.nugs.net/api.aspx",
-                params={"method": "catalog.search", "searchStr": query},
-                timeout=ClientTimeout(total=30),
-            ) as response:
+            async with (
+                self.search_throttler.acquire(),
+                self.mass.http_session.get(
+                    "https://streamapi.nugs.net/api.aspx",
+                    params={"method": "catalog.search", "searchStr": query},
+                    timeout=ClientTimeout(total=30),
+                ) as response,
+            ):
                 self._check_response_status(response)
                 # The legacy endpoint returns JSON with a text/html content type.
                 data = json_loads(await response.text())
@@ -744,6 +768,8 @@ class NugsProvider(MusicProvider):
         result = data.get("Response")
         if not isinstance(result, dict):
             raise InvalidDataError("Invalid Nugs catalog search response")
+        if result.get("searchError"):
+            raise InvalidDataError("Nugs catalog search failed")
         return result
 
     # both are fixed for the account, so track starts spend no requests on account lookups
@@ -902,6 +928,9 @@ class NugsProvider(MusicProvider):
             ) as response:
                 self._check_response_status(response)
                 return await response.json()
+        except LoginFailed:
+            self._auth_token = None
+            raise
         except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
             raise ResourceTemporarilyUnavailable("Nugs API connection failed") from err
         except (ContentTypeError, ValueError) as err:

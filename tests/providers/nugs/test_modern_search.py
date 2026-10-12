@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -203,11 +204,11 @@ async def test_track_only_skips_unused_discovery(provider: NugsProvider) -> None
 
 @pytest.mark.asyncio
 async def test_date_without_artist(provider: NugsProvider) -> None:
-    """An exact date returns concerts across artists instead of fuzzy album matches."""
+    """An exact date returns concerts across artists and keeps discovered artists."""
     _catalog(provider, _fixture("releases_date_monthDay"))
     result = await provider.search("2023-05-11", [MediaType.ALBUM, MediaType.ARTIST], 3)
     assert len(result.albums) == 3
-    assert not result.artists
+    assert [item.item_id for item in result.artists] == ["1125"]
     assert all(isinstance(album, Album) and album.year == 2023 for album in result.albums)
 
 
@@ -363,3 +364,59 @@ async def test_filtered_and_general_albums_merge(
         assert result.albums[0].name == release["title"]
         assert result.albums[0].artists
     assert request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_and_recording_searches_overlap(provider: NugsProvider) -> None:
+    """Recording search starts without waiting for catalog discovery to finish."""
+    recordings_started = asyncio.Event()
+
+    async def catalog(*_: Any) -> tuple[list[Any], list[Any]]:
+        await asyncio.wait_for(recordings_started.wait(), timeout=1)
+        return [], []
+
+    async def recordings(*_: Any) -> list[Any]:
+        recordings_started.set()
+        return []
+
+    provider._search_catalog = AsyncMock(side_effect=catalog)  # type: ignore[method-assign]
+    provider._search_recordings = AsyncMock(side_effect=recordings)  # type: ignore[method-assign]
+    await provider.search("Billy Strings", [MediaType.ARTIST, MediaType.TRACK])
+    provider._search_catalog.assert_awaited_once_with(
+        "Billy Strings", [MediaType.ARTIST, MediaType.TRACK], 5
+    )
+    provider._search_recordings.assert_awaited_once_with("Billy Strings", 5)
+
+
+@pytest.mark.asyncio
+async def test_catalog_only_search_skips_recordings(provider: NugsProvider) -> None:
+    """Artist and album searches make no legacy recording request."""
+    provider._search_catalog = AsyncMock(return_value=([], []))  # type: ignore[method-assign]
+    provider._search_recordings = AsyncMock()  # type: ignore[method-assign]
+    await provider.search("Billy Strings", [MediaType.ARTIST, MediaType.ALBUM])
+    provider._search_recordings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("Billy Strings 2023", ["1125"]),
+        ("2023", ["1125", "22"]),
+        ("Red Rocks", ["1125", "22"]),
+        ("Billy", ["1125", "22"]),
+    ],
+)
+async def test_artist_filter_applies_only_to_matched_artist(
+    provider: NugsProvider, query: str, expected: list[str]
+) -> None:
+    """Year and venue filters keep discovered artists; a matched artist narrows to itself."""
+    provider._get_catalog_search = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "artists": [{"id": 1125, "name": "Billy Strings"}, {"id": 22, "name": "Phish"}],
+            "venues": [{"id": 42, "name": "Red Rocks Amphitheatre"}],
+        }
+    )
+    provider._get_search_releases = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    result = await provider.search(query, [MediaType.ARTIST])
+    assert [item.item_id for item in result.artists] == expected
