@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
     SetupFailedError,
@@ -507,6 +508,19 @@ class TestSourceSelection:
         provider = _make_provider()
         provider._active_player_id = "old-player"
         provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("stop failed"))
+
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        assert provider._active_player_id == "new-player"
+        assert provider._in_use_by_player == "new-player"
+
+    async def test_vanished_previous_player_keeps_selection(self) -> None:
+        """A previous player that disappeared during the handoff must not abort selection."""
+        provider = _make_provider()
+        provider._active_player_id = "old-player"
+        provider.mass.players.cmd_stop = AsyncMock(
+            side_effect=PlayerUnavailableError("old-player is gone")
+        )
 
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
 
@@ -2958,6 +2972,19 @@ class TestPausePlayback:
         assert provider._stream_stop_event.is_set()
         # _externally_paused stays False on the failure path — we're not in a
         # "successfully paused, expecting resume" state.
+        assert provider._externally_paused is False
+
+    async def test_cmd_stop_unavailable_player_keeps_bridge_id(self) -> None:
+        """An unavailable player on external pause is handled like a failed stop."""
+        provider = _make_provider()
+        provider._active_player_id = "spb_bridge1"
+        provider._in_use_by_player = "player1"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerUnavailableError("gone"))
+
+        await provider._pause_playback()
+
+        assert provider._active_player_id == "spb_bridge1"
+        assert provider._stream_stop_event.is_set()
         assert provider._externally_paused is False
 
     async def test_unexpected_cmd_stop_error_propagates(self) -> None:
