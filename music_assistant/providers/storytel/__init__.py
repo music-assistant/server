@@ -117,16 +117,12 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         Credentials are collected in the setup flow and persisted in setup_data.
         The options page only exposes persisted discovery settings.
         """
-        setup_languages = self.get_setup_value(CONF_LANGUAGES)
-        if isinstance(setup_languages, list) and setup_languages:
-            default_languages = [name for name in setup_languages if isinstance(name, str)]
-        else:
-            default_languages = list(DEFAULT_LANGUAGES)
         # Once authenticated, only offer the languages this account actually has access to
         # (which depends on its region/subscription), falling back to the static list otherwise.
         language_options = ALL_LANGUAGES
         if self._api is not None and self._api.available_languages:
             language_options = self._api.available_languages
+        default_languages = list(self._account_fallback_languages())
         return (
             ConfigEntry(
                 key=CONF_LANGUAGES,
@@ -263,13 +259,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
 
         account_languages = self._api.available_languages
         available_languages = account_languages or ALL_LANGUAGES
-        if account_languages:
-            fallback_languages = dict(self._api.default_languages)
-            if not fallback_languages:
-                first_name, first_iso = next(iter(account_languages.items()))
-                fallback_languages = {first_name: first_iso}
-        else:
-            fallback_languages = DEFAULT_LANGUAGES.copy()
+        fallback_languages = self._account_fallback_languages()
         # Read the raw persisted value (bypassing the config entry's own default_value fallback used for display) so an unset selection is distinguishable from one that merely happens to match that display default.
         languages_list = self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_LANGUAGES
@@ -702,3 +692,21 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         """Fetch the full Storytel recommendation payload with items."""
         recommendations = await self.api.get_recommendations()
         return recommendations or []
+
+    def _account_fallback_languages(self) -> dict[str, str]:
+        """
+        Return the languages to use when no explicit selection has been made, mapping name to ISO.
+
+        Mirrors the authenticated account's own checked-by-default languages, falling back to
+        any language it still has access to, or else the static default before authentication
+        or when the account reports no language data at all.
+        """
+        if self._api is None:
+            return DEFAULT_LANGUAGES.copy()
+        account_languages = self._api.available_languages
+        if not account_languages:
+            return DEFAULT_LANGUAGES.copy()
+        if self._api.default_languages:
+            return dict(self._api.default_languages)
+        first_name, first_iso = next(iter(account_languages.items()))
+        return {first_name: first_iso}
