@@ -81,7 +81,7 @@ from music_assistant.helpers.guest_access import (
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
-from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -1542,7 +1542,7 @@ class SendspinProvider(PlayerProvider):
             raise InvalidCommand(f"Client {client_id} did not register")
         return player
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
@@ -1595,6 +1595,7 @@ class SendspinProvider(PlayerProvider):
                     self.logger.debug("Client %s disconnected after unregister", client_id)
                     return
 
+            mac_player_id = await self._take_over_mac_player(client_id, sendspin_client)
             player = self._create_player(
                 client_id, sendspin_client, existing_player, bridge_hello_snapshot
             )
@@ -1613,6 +1614,11 @@ class SendspinProvider(PlayerProvider):
                     "Client %s already registered while handling add event", client_id
                 )
                 player._unsubscribe_client_callbacks()
+            else:
+                if mac_player_id:
+                    self.mass.players.delete_player_config(
+                        mac_player_id, replacement_player_id=client_id
+                    )
         finally:
             self._finish_client_event(client_id)
 
@@ -1853,6 +1859,37 @@ class SendspinProvider(PlayerProvider):
                 continue
             self.logger.debug("Removing orphan virtual player config %s", player_id)
             self.mass.players.delete_player_config(player_id)
+
+    async def _take_over_mac_player(
+        self, client_id: str, sendspin_client: SendspinClient
+    ) -> str | None:
+        """
+        Move a device's player from its MAC address id over to its encrypted client id.
+
+        :param client_id: The connected client.
+        :param sendspin_client: That client, for its connection and hello.
+        :return: The player id that was taken over, or None.
+        """
+        connection = sendspin_client.connection
+        info = sendspin_client.info_or_none
+        if connection is None or not connection.is_encrypted or info is None:
+            return None
+        mac_address = info.device_info.mac_address if info.device_info else None
+        if not mac_address or not is_valid_mac_address(mac_address):
+            return None
+        mac_player_id = mac_address.upper()
+        config = self.mass.config
+        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
+            return None
+        if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
+            return None
+        if (mac_client := self.server_api.get_client(mac_player_id)) and mac_client.is_connected:
+            return None
+        self.logger.info("Moving player %s over to client id %s", mac_player_id, client_id)
+        # frees the protocol slot on the parent player for the new client id
+        await self.mass.players.unregister(mac_player_id)
+        self.mass.players.carry_over_player_config(mac_player_id, client_id)
+        return mac_player_id
 
 
 def _virtual_player_noop(*_args: object) -> None:
