@@ -449,6 +449,10 @@ for more details.
     @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
+        libraries = await self._client.get_all_libraries()
+        if len(libraries) == 0:
+            self._log_no_libraries()
+        previous = LibrariesHelper.from_dict(self.libraries.to_dict())
         if media_type == MediaType.AUDIOBOOK:
             self.libraries.audiobooks.clear()
             self._narrator_ids.clear()
@@ -461,9 +465,6 @@ for more details.
             self.libraries.authors.clear()
             self.libraries.narrators.clear()
 
-        libraries = await self._client.get_all_libraries()
-        if len(libraries) == 0:
-            self._log_no_libraries()
         for library in libraries:
             if library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.AUDIOBOOK:
                 self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
@@ -481,7 +482,12 @@ for more details.
                 self.libraries.narrators[library.id_] = set()
                 self.libraries.authors[library.id_] = set()
 
-        await super().sync_library(media_type)
+        try:
+            await super().sync_library(media_type)
+        except BaseException:
+            # don't leave the library ids half rebuilt, browse relies on them
+            self.libraries = previous
+            raise
         await self._cache_set_helper_libraries()
 
         # update playlog

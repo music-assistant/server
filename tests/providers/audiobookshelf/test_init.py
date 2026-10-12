@@ -1,6 +1,7 @@
 """Tests for Audiobookshelf provider initialization."""
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -45,6 +46,26 @@ async def test_sync_library_clears_stale_library_ids(provider: Audiobookshelf) -
     assert len(provider.libraries.audiobooks) == 0
     # Only audiobooks are cleared — podcasts dict is untouched by an AUDIOBOOK sync
     assert "pod_stale" in provider.libraries.podcasts
+
+
+async def test_failed_sync_keeps_library_ids(provider: Audiobookshelf) -> None:
+    """A sync failing part way leaves the ids of the previous sync in place."""
+    provider.libraries.audiobooks["lib1"].item_ids.update({"book1", "book2"})
+    book_library = Mock(id_="lib1", media_type="book")
+    book_library.name = "Audiobooks"
+    provider._client.get_all_libraries = AsyncMock(return_value=[book_library])  # type: ignore[method-assign]
+
+    async def _fail_while_paging(*_args: Any) -> None:
+        provider.libraries.audiobooks["lib1"].item_ids.add("book1")
+        raise AbsServiceUnavailableError
+
+    with (
+        patch.object(MusicProvider, "sync_library", _fail_while_paging),
+        pytest.raises(AbsServiceUnavailableError),
+    ):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+
+    assert provider.libraries.audiobooks["lib1"].item_ids == {"book1", "book2"}
 
 
 @pytest.mark.asyncio
