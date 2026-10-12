@@ -134,7 +134,7 @@ async def test_next_podcast_episode_follows_the_played_one() -> None:
     resolver, queues = _resolver()
     podcast = _podcast()
     played = _episode("ep1", 1, podcast)
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [_episode("ep1", 1, podcast), _episode("ep2", 2, podcast), _episode("ep3", 3, podcast)]
         )
@@ -152,7 +152,7 @@ async def test_next_podcast_episode_skips_fully_played() -> None:
     """An episode the user already finished is passed over."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [
                 _episode("ep1", 1, podcast),
@@ -173,7 +173,7 @@ async def test_next_podcast_episode_at_end_of_feed() -> None:
     """The last episode of a podcast has no successor, so playback stops there."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter([_episode("ep1", 1, podcast), _episode("ep2", 2, podcast)])
     )
 

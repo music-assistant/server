@@ -183,7 +183,8 @@ def _ids(items: list[Track]) -> list[str]:
         (ListingType.PLAYLIST_TRACKS, SortField.TIMESTAMP_ADDED, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
         (ListingType.PLAYLIST_TRACKS, SortField.TIMESTAMP_ADDED, SortDirection.DESC, ["t1", "t4", "t2", "t3"]),
         (ListingType.PLAYLIST_TRACKS, SortField.ARTIST_NAME, SortDirection.ASC, ["t2", "t4", "t3", "t1"]),
-        (ListingType.PLAYLIST_TRACKS, SortField.ALBUM_NAME, SortDirection.ASC, ["t3", "t4", "t1", "t2"]),
+        # within an album the disc and track order holds
+        (ListingType.PLAYLIST_TRACKS, SortField.ALBUM_NAME, SortDirection.ASC, ["t4", "t3", "t1", "t2"]),
         (ListingType.VERSIONS, SortField.PROVIDER, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
         (ListingType.LIBRARY_TRACKS, SortField.LAST_PLAYED, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
         # the original order has no direction
@@ -220,6 +221,23 @@ def test_apply_listing_sorts_albums_by_year() -> None:
         albums, listing, sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
     )
     assert [a.item_id for a in ascending] == ["a2", "a3", "a1"]
+
+
+def test_apply_listing_sorts_on_the_album_then_its_disc_and_track_order() -> None:
+    """A sort on the album name lists the tracks of each album in disc and track order."""
+    tracks = [create_track("qobuz_1", item_id) for item_id in ("t1", "t2", "t3", "t4", "t5")]
+    for track, album, disc_number, track_number in zip(
+        tracks,
+        ("Beta", "alpha", "Alpha", "Beta", "Alpha"),
+        (1, 2, 0, 1, 1),
+        (1, 1, 2, 2, 1),
+        strict=True,
+    ):
+        track.album = create_album("qobuz_1", f"{track.item_id}_album", name=album)
+        track.disc_number, track.track_number = disc_number, track_number
+    result = apply_listing(tracks, ListingType.PLAYLIST_TRACKS, sort_field=SortField.ALBUM_NAME)
+    # a disc 0 counts as the first disc
+    assert _ids(result) == ["t5", "t3", "t2", "t1", "t4"]
 
 
 def test_apply_listing_uses_the_listing_default(tracks: list[Track]) -> None:

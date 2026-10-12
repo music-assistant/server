@@ -1727,7 +1727,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(
+    async def mark_item_played(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -1834,6 +1834,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played=seconds_played or 0,
                 userid=user.user_id if user else None,
             )
+            if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+                # the cached episode listing holds the played state the provider reports
+                await invalidate_listings(self.mass, media_item.podcast)
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1950,6 +1953,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self._signal_playlog_updated(
             reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
         )
+        if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+            # the cached episode listing holds the played state the provider reports
+            await invalidate_listings(self.mass, media_item.podcast)
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         self._forward_play_report(media_item, user, fully_played=False, position=0)

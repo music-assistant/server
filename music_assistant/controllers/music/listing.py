@@ -125,9 +125,10 @@ def _artist_name(item: ListingItem) -> str:
     return _normalize(artists[0].name) if artists else ""
 
 
-def _album_name(item: ListingItem) -> str:
+def _album_name(item: ListingItem) -> tuple[str, int, int]:
+    # the tracks of one album keep their disc and track order
     album = getattr(item, "album", None)
-    return _normalize(album.name) if album else ""
+    return (_normalize(album.name) if album else "", *_track_number(item))
 
 
 def _track_number(item: ListingItem) -> tuple[int, int]:

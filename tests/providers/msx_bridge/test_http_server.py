@@ -410,12 +410,12 @@ async def test_msx_search_input_marks_page_compressed(
         ("/msx/recently-played.json", "tracks", "library_items", True, True),
         ("/msx/albums/album-1/tracks.json", "albums", "tracks", True, True),
         ("/msx/artists/artist-1/albums.json", "artists", "albums", True, True),
-        ("/msx/playlists/playlist-1/tracks.json", "playlists", "tracks", False, True),
+        ("/msx/playlists/playlist-1/tracks.json", "playlists", "iter_tracks", False, True),
         ("/msx/playlist/album/album-1.json", "albums", "tracks", True, False),
         (
             "/msx/playlist/playlist/playlist-1.json",
             "playlists",
-            "tracks",
+            "iter_tracks",
             False,
             False,
         ),
@@ -1146,7 +1146,9 @@ async def test_msx_playlist_tracks(provider: MSXBridgeProvider, mass_mock: Mock)
     async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
-    mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
+    mass_mock.music.playlists.iter_tracks = Mock(
+        side_effect=lambda *_a, **_k: _mock_playlist_tracks()
+    )
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -2306,7 +2308,9 @@ async def test_msx_playlist_playlist_endpoint(provider: MSXBridgeProvider, mass_
     async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
-    mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
+    mass_mock.music.playlists.iter_tracks = Mock(
+        side_effect=lambda *_a, **_k: _mock_playlist_tracks()
+    )
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))

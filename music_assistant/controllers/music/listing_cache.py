@@ -26,6 +26,7 @@ from music_assistant.helpers.api import parse_value
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ListingType
+    from music_assistant_models.media_items import ItemMapping
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -100,16 +101,17 @@ async def cached_listing[ItemT: MediaItem](
     return cast("list[ItemT]", items)
 
 
-async def invalidate_listings(mass: MusicAssistant, item: MediaItem) -> None:
+async def invalidate_listings(mass: MusicAssistant, item: MediaItem | ItemMapping) -> None:
     """
     Drop the cached listings of a container whose contents changed, under every id it has.
 
     :param mass: The MusicAssistant instance.
-    :param item: The container (an album, a playlist, ...).
+    :param item: The container (an album, a playlist, ...), or a reference to it.
     """
+    mappings = item.provider_mappings if isinstance(item, MediaItem) else ()
     uris = {
         create_uri(item.media_type, mapping.provider_instance, mapping.item_id)
-        for mapping in item.provider_mappings
+        for mapping in mappings
     }
     if item.uri:
         uris.add(item.uri)
