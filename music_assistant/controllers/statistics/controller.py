@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import time
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar
+from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType, MediaType
@@ -32,6 +31,7 @@ from music_assistant.constants import (
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import SerializableType, json_loads
@@ -44,9 +44,7 @@ if TYPE_CHECKING:
 
 # Statistics cache TTL: 5 minutes
 STATISTICS_CACHE_TTL = 300
-STATISTICS_CACHE_MAX_ENTRIES = 128
 MAX_STATISTICS_RESULT_LIMIT = 500
-_STATISTICS_CACHE_INVALIDATORS: list[Callable[[], None]] = []
 _PLAY_HISTORY_EVENT_TYPES = (
     MediaType.TRACK.value,
     MediaType.RADIO.value,
@@ -89,48 +87,31 @@ def _validate_statistics_limit(limit: int) -> int:
 def cache_statistics(
     ttl: int = STATISTICS_CACHE_TTL,
 ) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
-    """Cache decorator for statistics methods with TTL."""
+    """Cache statistics through the shared cache controller, scoped by user and generation."""
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-        cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
-        cache_generation = 0
-
-        def invalidate_cache() -> None:
-            nonlocal cache_generation
-            cache_generation += 1
-            cache.clear()
-
-        _STATISTICS_CACHE_INVALIDATORS.append(invalidate_cache)
+        @use_cache(expiration=ttl)
+        @functools.wraps(func)
+        async def cached_method(
+            self: Any,
+            _user_id: str,
+            _cache_generation: str,
+            *args: Any,
+            **kwargs: Any,
+        ) -> T:
+            return await func(self, *args, **kwargs)
 
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
             user = get_current_user()
             user_id = user.user_id if user else "anonymous"
-
-            cache_key_parts = [func.__name__, user_id, *args]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}={kwargs[key]}")
-            cache_key = hashlib.md5("|".join(str(p) for p in cache_key_parts).encode()).hexdigest()
-
-            now = time.monotonic()
-            for expired_key, (cached_time, _) in tuple(cache.items()):
-                if now - cached_time >= ttl:
-                    del cache[expired_key]
-
-            if cache_key in cache:
-                _, cached_value = cache[cache_key]
-                cache.move_to_end(cache_key)
-                return cast("T", cached_value)
-
-            request_generation = cache_generation
-            result = await func(self, *args, **kwargs)
-            if request_generation != cache_generation:
-                return result
-            cache[cache_key] = (now, result)
-            cache.move_to_end(cache_key)
-            while len(cache) > STATISTICS_CACHE_MAX_ENTRIES:
-                cache.popitem(last=False)
-            return result
+            return await cached_method(
+                self,
+                user_id,
+                self._statistics_cache_generation,
+                *args,
+                **kwargs,
+            )
 
         return wrapper
 
@@ -145,6 +126,7 @@ class StatisticsController(CoreController):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
         super().__init__(mass)
+        self._statistics_cache_generation = uuid4().hex
         self.manifest.name = "Statistics controller"
         self.manifest.description = (
             "Music Assistant's core controller for playlog statistics and listening analytics."
@@ -152,11 +134,9 @@ class StatisticsController(CoreController):
         self.manifest.icon = "poll"
 
     def invalidate_statistics_cache(self, *, play_history_written: bool) -> None:
-        """Clear cached statistics after a completed play is recorded."""
-        if not play_history_written:
-            return
-        for invalidate_cache in _STATISTICS_CACHE_INVALIDATORS:
-            invalidate_cache()
+        """Invalidate prior statistics cache keys after a completed play is recorded."""
+        if play_history_written:
+            self._statistics_cache_generation = uuid4().hex
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""

@@ -11,6 +11,7 @@ from music_assistant_models.media_items import Track
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_CACHE,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_MEDIA_PROGRESS,
@@ -20,7 +21,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.statistics.controller import (
     MAX_STATISTICS_RESULT_LIMIT,
-    STATISTICS_CACHE_MAX_ENTRIES,
     cache_statistics,
 )
 from music_assistant.helpers.json import serialize_to_json
@@ -417,24 +417,59 @@ async def test_played_item_ids_reflects_new_history_immediately(mass: MusicAssis
     assert result == {("test-provider", "newly-played-track")}
 
 
-async def test_statistics_cache_evicts_old_entries() -> None:
-    """The statistics cache remains bounded when query parameters keep changing."""
-    calls: list[int] = []
+async def _wait_for_statistics_cache_entry(
+    mass: MusicAssistant,
+    user_id: str,
+    method_name: str = "cached_value",
+) -> list[dict[str, object]]:
+    assert mass.cache.database is not None
+    key_prefix = f"{method_name}.{user_id}."
+    for _ in range(100):
+        rows = await mass.cache.database.get_rows_from_query(
+            f"SELECT key FROM {DB_TABLE_CACHE} WHERE provider = :provider AND key LIKE :key_prefix",
+            {"provider": "statistics", "key_prefix": f"{key_prefix}%"},
+            limit=0,
+        )
+        if rows:
+            return [dict(row) for row in rows]
+        await asyncio.sleep(0.01)
+    pytest.fail(f"statistics cache entry for {user_id} was not stored")
+
+
+async def test_statistics_cache_uses_core_cache_and_scopes_by_user(
+    mass: MusicAssistant,
+) -> None:
+    """Statistics results use the shared cache with separate keys per current user."""
+    first_user = await mass.webserver.auth.create_user("statistics-cache-first")
+    second_user = await mass.webserver.auth.create_user("statistics-cache-second")
+    calls = 0
 
     @cache_statistics()
-    async def get_value(_self: object, value: int) -> int:
-        calls.append(value)
-        return value
+    async def cached_value(_self: object, _value: str) -> int:
+        nonlocal calls
+        calls += 1
+        return calls
 
     with patch(
         "music_assistant.controllers.statistics.controller.get_current_user",
-        return_value=None,
+        return_value=first_user,
     ):
-        for value in range(STATISTICS_CACHE_MAX_ENTRIES + 1):
-            await get_value(None, value)
-        await get_value(None, 0)
+        assert await cached_value(mass.statistics, "shared-args") == 1
+    await _wait_for_statistics_cache_entry(mass, first_user.user_id)
 
-    assert len(calls) == STATISTICS_CACHE_MAX_ENTRIES + 2
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=first_user,
+    ):
+        assert await cached_value(mass.statistics, "shared-args") == 1
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=second_user,
+    ):
+        assert await cached_value(mass.statistics, "shared-args") == 2
+
+    assert calls == 2
 
 
 async def test_statistics_cache_does_not_store_inflight_result_after_invalidation(
@@ -459,14 +494,13 @@ async def test_statistics_cache_does_not_store_inflight_result_after_invalidatio
         "music_assistant.controllers.statistics.controller.get_current_user",
         return_value=user,
     ):
-        in_flight_query: asyncio.Future[int] = asyncio.ensure_future(query(None))
+        in_flight_query: asyncio.Future[int] = asyncio.ensure_future(query(mass.statistics))
         await query_started.wait()
         mass.statistics.invalidate_statistics_cache(play_history_written=True)
         finish_query.set()
 
         assert await in_flight_query == 1
-        assert await query(None) == 2
-        assert await query(None) == 2
+        assert await query(mass.statistics) == 2
 
 
 async def test_plays_over_time_does_not_inherit_default_query_limit(
@@ -533,3 +567,11 @@ async def test_played_item_ids_returns_more_than_database_default_limit(
         result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
 
     assert {item_id for _, item_id in result} == expected_ids
+    await _wait_for_statistics_cache_entry(mass, user.user_id, "get_played_item_ids")
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        cached_result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
+
+    assert cached_result == result
