@@ -607,7 +607,7 @@ webserver/
 ├── helpers/
 │   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
 │   ├── auth_providers.py               # Authentication providers
-│   ├── login_flow.py                   # Pending sign-ins, transport and PKCE helpers
+│   ├── login_flow.py                   # Pending sign-ins, transport and PKCE verification
 │   └── ssl.py                          # SSL certificate helpers
 └── remote_access/
     ├── __init__.py                     # Remote access manager
