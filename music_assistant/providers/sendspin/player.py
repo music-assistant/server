@@ -1699,7 +1699,7 @@ class SendspinPlayer(SendspinBasePlayer):
                         # a member's own failure outranks the readiness timeout
                         ready.result()
                 if stuck := [m.display_name for m, f in pending_cast if not f.done()]:
-                    raise PlayerCommandFailed(
+                    raise PlayerCommandFailed(  # noqa: TRY301 - triggers member rollback below
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s",
                         translation_key="cast_app_members_not_ready",
                         translation_owner=self.translation_owner,

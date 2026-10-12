@@ -494,7 +494,7 @@ class SpotifyConnectProvider(PluginProvider):
                         daemon.last_context_uri, skip_to_uri=daemon.last_track_uri
                     )
                 else:
-                    raise self._not_active_error(daemon)
+                    raise self._not_active_error(daemon)  # noqa: TRY301 - re-raised by except below
             except AudioError:
                 raise
             except Exception as err:

@@ -591,7 +591,7 @@ def _evaluate_spdx_expression(license_str: str) -> bool | None:
         result = _evaluate_spdx_tokens(remaining)
         if remaining:
             # anything left over means we did not understand the string as a whole
-            raise _SpdxSyntaxError
+            raise _SpdxSyntaxError  # noqa: TRY301 - handled by except below
     except _SpdxSyntaxError:
         result = None
 

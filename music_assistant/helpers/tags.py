@@ -771,10 +771,10 @@ def parse_tags(
         res = subprocess.check_output(args, stderr=subprocess.PIPE, env=get_subprocess_env())  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
-            raise InvalidDataError(error["string"])
+            raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
         if not data.get("streams"):
             msg = "Not an audio file"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(msg)  # noqa: TRY301 - message rebuilt below
         tags = AudioTags.parse(data)
         del res
         del data

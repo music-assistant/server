@@ -1456,7 +1456,7 @@ class StreamsController(CoreController):
                 # rotated during the setup above: the sweep could not see this
                 # response yet, so it must end itself instead of streaming stale
                 client_disconnected = True
-                raise AbortFlowStream
+                raise AbortFlowStream  # noqa: TRY301 - handled by except below
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
             # mid-stream, instead of lingering until garbage collection finalizes

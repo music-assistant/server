@@ -37,7 +37,7 @@ defusedxml==0.7.1
 deno==2.9.6
 duration-parser==1.0.1
 fastmcp==3.4.7
-getmac==0.9.5
+getmac==0.9.6
 gql[all]==4.0.0
 hass-client==1.4.0
 hassfeld==0.3.14
@@ -73,7 +73,7 @@ pyamplipi==0.4.12
 pyatv==0.18.0
 pyblu==2.1.0
 PyChromecast==14.0.10
-pycryptodome==3.23.0
+pycryptodome==3.24.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.1.0
@@ -111,7 +111,7 @@ ya-passport-auth[ma]==2.2.0
 yadisk==3.4.1
 yandex-music[async]==3.2.1
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
-yoto-api==4.5.0
+yoto-api==4.5.1
 ytmusicapi==1.12.3
 zeroconf==0.151.5
 zvuk-music[async]==0.6.3
