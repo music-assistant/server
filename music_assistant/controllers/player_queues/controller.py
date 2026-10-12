@@ -83,7 +83,7 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.state import PendingStreamResume, PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -1025,6 +1025,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
+            queue_data.pending_stream_resume = None
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be
@@ -1380,10 +1381,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # using each playlog entry's recorded speed.
             _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
         else:
-            elapsed_time = player_elapsed * speed
-            if queue.current_item and queue.current_item.streamdetails:
-                if seek_pos := queue.current_item.streamdetails.seek_position:
-                    elapsed_time += seek_pos
+            elapsed_time = self._item_media_elapsed(
+                queue, queue.current_item, player_elapsed, speed
+            )
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
@@ -1489,6 +1489,40 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
 
         return next_item
+
+    def begin_stream_resume(
+        self,
+        queue_id: str,
+        queue_item_id: str,
+        old_seek_position: float,
+        resume_position: float,
+    ) -> None:
+        """
+        Continue the queue's timeline on a re-requested stream of its current item.
+
+        Call when a player re-requests the item it plays and the new stream starts at
+        resume_position. A player that keeps its old stream falls back to old_seek_position.
+
+        :param queue_id: The queue whose current item is re-requested.
+        :param queue_item_id: The re-requested (current) queue item.
+        :param old_seek_position: The item's seek offset in the stream the player is leaving.
+        :param resume_position: Where the re-requested stream starts, in media seconds.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        player = self.mass.players.get_player(queue_id)
+        now = time.time()
+        queue_data.pending_stream_resume = PendingStreamResume(
+            queue_item_id=queue_item_id,
+            old_seek_position=old_seek_position,
+            resume_position=resume_position,
+            started_at=now,
+            device_elapsed=player.state.corrected_elapsed_time if player else None,
+        )
+        queue.elapsed_time = resume_position
+        queue.elapsed_time_last_updated = now
+        if (prev_state := queue_data.prev_state) and prev_state["current_item_id"] == queue_item_id:
+            prev_state["last_playing_elapsed_time"] = int(resume_position)
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
         """Call when a player has (started) loading a track in the buffer."""

@@ -1,4 +1,4 @@
-"""Tests for resuming a queue item that a player re-requests while it is still streaming it."""
+"""Tests for resuming a queue item that a player re-requests while it is still playing it."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def _make_controller() -> StreamsController:
     ctrl = object.__new__(StreamsController)
     ctrl.logger = Mock()
     ctrl._open_item_streams = {}
+    ctrl._started_item_streams = {}
     ctrl._active_output_streams = 0
     ctrl.get_crossfade_mode = Mock(return_value=CrossfadeMode.DISABLED)  # type: ignore[method-assign]
     ctrl._update_audio_processing_context = Mock()  # type: ignore[method-assign]
@@ -51,9 +52,13 @@ def _make_controller() -> StreamsController:
     queue_item.duration = 300
     queue_item.extra_attributes = {}
     queue_item.streamdetails = MagicMock(
-        seek_position=START_SEEK, duration=300, is_realtime=False, stream_error=None
+        seek_position=START_SEEK,
+        duration=300,
+        fade_in=True,
+        is_realtime=False,
+        stream_error=None,
+        seconds_streamed=0,
     )
-    queue_item.streamdetails.seconds_streamed = 0
     ctrl.mass.player_queues.get_item.return_value = queue_item
     ctrl.mass.player_queues.get_next_item.return_value = None
 
@@ -78,20 +83,26 @@ def _make_controller() -> StreamsController:
     return ctrl
 
 
-async def _no_audio(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-    """Yield no audio at all."""
-    chunks: tuple[bytes, ...] = ()
-    for chunk in chunks:
-        yield chunk
+def _queue_item(ctrl: StreamsController) -> MagicMock:
+    """Return the queue item the controller serves."""
+    return cast("MagicMock", ctrl.mass).player_queues.get_item.return_value  # type: ignore[no-any-return]
 
 
-async def _serve(ctrl: StreamsController, request: MagicMock) -> int:
+async def _serve(
+    ctrl: StreamsController, request: MagicMock, chunks: tuple[bytes, ...] = ()
+) -> int:
     """Serve the request and return the seek position the item stream was built from."""
+
+    async def _audio(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        for chunk in chunks:
+            yield chunk
+
     response = MagicMock()
     response.prepare = AsyncMock()
+    response.write = AsyncMock()
     with (
         patch("aiohttp.web.StreamResponse", return_value=response),
-        patch("music_assistant.controllers.streams.controller.get_ffmpeg_stream", _no_audio),
+        patch("music_assistant.controllers.streams.controller.get_ffmpeg_stream", _audio),
     ):
         await ctrl.serve_queue_item_stream(request)
     audio = cast("MagicMock", ctrl.audio)
@@ -99,45 +110,56 @@ async def _serve(ctrl: StreamsController, request: MagicMock) -> int:
     return seek_position
 
 
-def _open_stream(ctrl: StreamsController, session_id: str = SESSION_ID) -> None:
-    """Register a still-open GET for the same item, as the player's first connection."""
-    first = _make_request(session_id)
-    ctrl._open_item_streams[QUEUE_ID] = [(session_id, first)]
+async def _play_first_response(ctrl: StreamsController, session_id: str = SESSION_ID) -> None:
+    """Serve and finish the player's first response for the item in the given session."""
+    cast("MagicMock", ctrl.mass).player_queues.queue_data.return_value.session_id = session_id
+    assert await _serve(ctrl, _make_request(session_id), chunks=(b"audio",)) == START_SEEK
 
 
-async def test_rerequest_of_the_playing_item_resumes_at_the_live_position() -> None:
-    """A second GET while the first is still open picks up where playback is now."""
+async def test_rerequest_after_the_first_response_finished_resumes_at_the_live_position() -> None:
+    """A second GET for an item already played in this session picks up where playback is now."""
     ctrl = _make_controller()
-    _open_stream(ctrl)
+    await _play_first_response(ctrl)
 
     assert await _serve(ctrl, _make_request()) == int(LIVE_ELAPSED)
 
-    queue_item = cast("MagicMock", ctrl.mass).player_queues.get_item.return_value
-    assert queue_item.streamdetails.seek_position == int(LIVE_ELAPSED)
+    streamdetails = _queue_item(ctrl).streamdetails
+    assert streamdetails.seek_position == int(LIVE_ELAPSED)
+    assert streamdetails.fade_in is False
+    player_queues = cast("MagicMock", ctrl.mass).player_queues
+    player_queues.begin_stream_resume.assert_called_once_with(
+        QUEUE_ID, ITEM_ID, START_SEEK, int(LIVE_ELAPSED)
+    )
 
 
 async def test_repeat_of_the_same_item_starts_from_its_start_offset() -> None:
     """With the same item up next (repeat one), the second GET is the repeat, not a resume."""
     ctrl = _make_controller()
-    _open_stream(ctrl)
+    await _play_first_response(ctrl)
     player_queues = cast("MagicMock", ctrl.mass).player_queues
-    player_queues.get_next_item.return_value = player_queues.get_item.return_value
-    queue_item = player_queues.get_item.return_value
+    player_queues.get_next_item.return_value = _queue_item(ctrl)
 
     assert await _serve(ctrl, _make_request()) == START_SEEK
-    assert queue_item.streamdetails.seek_position == START_SEEK
+    player_queues.begin_stream_resume.assert_not_called()
 
 
-async def test_fresh_request_starts_from_its_start_offset() -> None:
-    """Without another open stream for the item, the request is served from its start offset."""
+async def test_request_in_a_new_session_starts_from_its_start_offset() -> None:
+    """A user seek rotates the session, so its request keeps the offset it was loaded with."""
     ctrl = _make_controller()
+    await _play_first_response(ctrl, session_id="old-session")
+    cast("MagicMock", ctrl.mass).player_queues.queue_data.return_value.session_id = SESSION_ID
 
     assert await _serve(ctrl, _make_request()) == START_SEEK
 
 
-async def test_open_stream_of_another_session_is_not_a_rerequest() -> None:
-    """A lingering response of a previous session does not make the new one resume."""
+async def test_rerequest_right_after_the_start_keeps_the_start_offset() -> None:
+    """A player opening the url twice right after a track start gets the start offset both times."""
     ctrl = _make_controller()
-    _open_stream(ctrl, session_id="old-session")
+    await _play_first_response(ctrl)
+    queue = cast("MagicMock", ctrl.mass).player_queues.get.return_value
+    queue.corrected_elapsed_time = START_SEEK + 4.9
+    # the first connection is still open when the second request arrives
+    ctrl._open_item_streams[QUEUE_ID] = [(SESSION_ID, _make_request())]
 
     assert await _serve(ctrl, _make_request()) == START_SEEK
+    cast("MagicMock", ctrl.mass).player_queues.begin_stream_resume.assert_not_called()

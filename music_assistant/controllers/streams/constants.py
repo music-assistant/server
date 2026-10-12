@@ -127,6 +127,10 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
 
+# Seconds playback must be past an item's start offset before a repeated request for it resumes
+# at the live position; a player opening the url twice at the start gets the start offset twice.
+REREQUEST_MIN_RESUME_LEAD: Final[int] = 5
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"

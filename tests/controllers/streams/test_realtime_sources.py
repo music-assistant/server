@@ -2149,6 +2149,7 @@ def _single_item_handler(
     controller.mass = mass
     controller.audio = audio
     controller._open_item_streams = {}
+    controller._started_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
@@ -2300,6 +2301,7 @@ def _flow_handler(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._open_item_streams = {}
+    controller._started_item_streams = {}
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.DISABLED)

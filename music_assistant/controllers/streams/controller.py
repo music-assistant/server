@@ -95,6 +95,7 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
+    REREQUEST_MIN_RESUME_LEAD,
     BufferSize,
     PacingProfile,
     get_available_buffer_sizes,
@@ -277,6 +278,8 @@ class StreamsController(CoreController):
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
         self._open_item_streams: dict[str, list[tuple[str, web.BaseRequest]]] = {}
+        # (player_id, queue_item_id) pairs whose audio went out in the queue's current session
+        self._started_item_streams: dict[str, tuple[str, set[tuple[str, str]]]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -892,7 +895,14 @@ class StreamsController(CoreController):
             if resume_position := self._get_rerequest_resume_position(
                 player, queue, queue_item, request
             ):
+                self.mass.player_queues.begin_stream_resume(
+                    queue_id,
+                    queue_item_id,
+                    queue_item.streamdetails.seek_position,
+                    resume_position,
+                )
                 queue_item.streamdetails.seek_position = resume_position
+                queue_item.streamdetails.fade_in = False
 
             if queue_item.streamdetails.tail_overlap is not None:
                 self.logger.debug(
@@ -1090,6 +1100,9 @@ class StreamsController(CoreController):
                                 # so for example the next track can be enqueued
                                 self.mass.player_queues.track_loaded_in_buffer(
                                     queue_item.queue_id, queue_item.queue_item_id
+                                )
+                                self._mark_item_stream_started(
+                                    queue_id, session_id, player_id, queue_item_id
                                 )
                         except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
                             if pq_data.session_id != session_id:
@@ -2432,33 +2445,38 @@ class StreamsController(CoreController):
             or queue.current_item.queue_item_id != queue_item.queue_item_id
         ):
             return None
-        session_id = request.match_info["session_id"]
-        player_id = request.match_info["player_id"]
         # some players (WiiM) reopen the stream they are playing, e.g. when a follower joins
-        if not any(
-            open_session_id == session_id
-            and open_request is not request
-            and open_request.method == "GET"
-            and cast("web.Request", open_request).match_info.get("queue_item_id")
-            == queue_item.queue_item_id
-            and cast("web.Request", open_request).match_info.get("player_id") == player_id
-            for open_session_id, open_request in self._open_item_streams.get(queue.queue_id, [])
+        started = self._started_item_streams.get(queue.queue_id)
+        if (
+            started is None
+            or started[0] != request.match_info["session_id"]
+            or (request.match_info["player_id"], queue_item.queue_item_id) not in started[1]
         ):
             return None
         # repeat one enqueues this same url, and its prefetch arrives while this stream is open
         next_item = self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id)
         if next_item and next_item.queue_item_id == queue_item.queue_item_id:
             return None
-        if (resume_position := int(queue.corrected_elapsed_time)) <= streamdetails.seek_position:
+        resume_position = int(queue.corrected_elapsed_time)
+        if resume_position < streamdetails.seek_position + REREQUEST_MIN_RESUME_LEAD:
             return None
         self.logger.debug(
-            "Player %s re-requested %s while streaming it: resuming at %ss instead of %ss",
+            "Player %s re-requested %s while playing it: resuming at %ss instead of %ss",
             player.display_name,
             queue_item.name,
             resume_position,
             streamdetails.seek_position,
         )
         return resume_position
+
+    def _mark_item_stream_started(
+        self, queue_id: str, session_id: str, player_id: str, queue_item_id: str
+    ) -> None:
+        """Record that the player received audio of the item in the queue's session."""
+        started = self._started_item_streams.get(queue_id)
+        if started is None or started[0] != session_id:
+            started = self._started_item_streams[queue_id] = (session_id, set())
+        started[1].add((player_id, queue_item_id))
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
