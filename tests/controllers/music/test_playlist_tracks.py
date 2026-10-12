@@ -45,7 +45,9 @@ class _StubPlaylistProvider(MusicProvider):
         self.tracks = tracks
         self.page_size = page_size
         self.is_dynamic = False
+        self.failing_details = False
         self.failing_page: int | None = None
+        self.details_fetched = 0
         self.pages_fetched = 0
         # whether each page was asked for past the caches
         self.bypassed: list[bool] = []
@@ -58,6 +60,9 @@ class _StubPlaylistProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return the playlist, dynamic when the test says so."""
+        self.details_fetched += 1
+        if self.failing_details:
+            raise ResourceTemporarilyUnavailable("rate limited")
         return _playlist(self.instance_id, prov_playlist_id, is_dynamic=self.is_dynamic)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -142,6 +147,7 @@ async def test_playlist_tracks_follow_the_listing_contract(mass: MusicAssistant)
     """The items are searched, filtered, sorted and paged on the server, from one walk."""
     provider = _StubPlaylistProvider(_playlist_tracks(6))
     provider.tracks[1].favorite = True
+    provider.tracks[2].favorite = False
     db_playlist = await mass.music.playlists.add_item_to_library(_playlist(INSTANCE, PLAYLIST_ID))
 
     async def _tracks(**kwargs: Any) -> list[str]:
@@ -162,6 +168,7 @@ async def test_playlist_tracks_follow_the_listing_contract(mass: MusicAssistant)
         assert await _tracks(search="song 01") == ["t1"]
         assert await _tracks(search="album 0") == ["t2", "t4", "t6"]
         assert await _tracks(favorite=True) == ["t2"]
+        assert await _tracks(favorite=False) == ["t3"]
         assert await _tracks(limit=0) == ["t1", "t2", "t3", "t4", "t5", "t6"]
         with pytest.raises(InvalidDataError):
             await _tracks(sort_field=SortField.YEAR)
@@ -207,6 +214,26 @@ async def test_playlist_tracks_are_keyed_on_the_instance_of_the_provider(
         category=CACHE_CATEGORY_LISTINGS,
     )
     assert [item["item_id"] for item in cached] == ["t1", "t2"]
+
+
+async def test_a_cached_playlist_is_not_looked_up_again(mass: MusicAssistant) -> None:
+    """Whether a playlist outside the library is dynamic is looked up when it is fetched only."""
+    provider = _StubPlaylistProvider(_playlist_tracks(2))
+    with _with_provider(mass, provider):
+        for offset in (0, 1, 0):
+            await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE, limit=1, offset=offset)
+    assert provider.details_fetched == 1
+    assert provider.pages_fetched == 2
+
+
+async def test_a_playlist_without_details_is_served_but_not_kept(mass: MusicAssistant) -> None:
+    """A playlist whose details can not be fetched may be dynamic: it is listed, not kept."""
+    provider = _StubPlaylistProvider(_playlist_tracks(2))
+    provider.failing_details = True
+    with _with_provider(mass, provider):
+        for _ in range(2):
+            assert _ids(await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)) == ["t1", "t2"]
+    assert provider.pages_fetched == 4
 
 
 async def test_a_refresh_fetches_the_playlist_anew_and_keeps_that(mass: MusicAssistant) -> None:

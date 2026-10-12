@@ -225,9 +225,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param item_id: The playlist id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         :param force_refresh: Fetch the playlist anew instead of serving it from a cache.
-        :param allow_dynamic_tracks: Request a fresh sample from a dynamic playlist.
+        :param allow_dynamic_tracks: Request a fresh sample from a dynamic playlist; any
+            playlist is then fetched anew, as with force_refresh.
         :param strict_provider_instance: Do not fall back to another provider instance.
-        :param favorite: Only list the items the current user likes (True) or dislikes (False).
+        :param favorite: Only list the liked (True) or disliked (False) items.
         :param search: Only list the items whose name, album name or artist name contains
             this text.
         :param sort_field: Sort field, the playlist order (POSITION) when omitted.
@@ -248,26 +249,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         # playback/refill requests for dynamic playlists need a fresh sample
         force_refresh = force_refresh or allow_dynamic_tracks
-        list_playlist = partial(
-            self._list_provider_playlist,
-            item_id,
-            provider.instance_id,
-            force_refresh,
-            strict_provider_instance,
-        )
-        if await self._keeps_listing(provider, item_id, library_item):
+        # Music Assistant composes the playlists of its builtin provider and of plugins (smart
+        # playlists) for the user asking, and a dynamic playlist hands out a fresh sample
+        if (
+            not isinstance(provider, MusicProvider)
+            or provider.domain == "builtin"
+            or (library_item is not None and library_item.is_dynamic)
+        ):
+            listing = await self._list_provider_playlist(
+                item_id, provider.instance_id, force_refresh, strict_provider_instance
+            )
+            items = await with_user_favorites(self.mass, get_current_user(), listing.items)
+        else:
             # a refresh assembles the listing anew and replaces the cached one
             async with self.mass.cache.handle_refresh(True) if force_refresh else nullcontext():
                 items = await cached_listing(
                     self.mass,
                     ListingType.PLAYLIST_TRACKS,
                     create_uri(MediaType.PLAYLIST, provider.instance_id, item_id),
-                    list_playlist,
+                    partial(
+                        self._assemble_playlist,
+                        item_id,
+                        provider.instance_id,
+                        force_refresh,
+                        strict_provider_instance,
+                        library_item,
+                    ),
                     item_type=PlaylistPlayableItem,
                 )
-        else:
-            listing = await list_playlist()
-            items = await with_user_favorites(self.mass, get_current_user(), listing.items)
         if favorite is not None:
             items = [item for item in items if item.favorite is favorite]
         return apply_listing(
@@ -1158,6 +1167,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 destination_playlist.item_id,
                 destination_playlist,
             )
+            # a listing read while the tracks were being added holds only part of them
+            await invalidate_listings(self.mass, destination_playlist)
 
         if current_task := get_current_task():
             current_task.metadata.update(
@@ -1646,20 +1657,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         return provider if isinstance(provider, MediaCatalogMixin) else None
 
-    async def _keeps_listing(
-        self, provider: MediaCatalogMixin, item_id: str, library_item: Playlist | None
-    ) -> bool:
-        """Return whether the listing of a playlist is kept in the listing cache."""
-        # Music Assistant composes the playlists of its builtin provider and of plugins
-        # (smart playlists) itself, for the user asking
-        if not isinstance(provider, MusicProvider) or provider.domain == "builtin":
-            return False
-        playlist = library_item or await self.get(
-            item_id, provider.instance_id, allow_update_metadata=False
-        )
-        # a dynamic playlist hands out a fresh sample on every request
-        return not playlist.is_dynamic
-
     async def _iter_provider_playlist(
         self,
         item_id: str,
@@ -1717,6 +1714,28 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             return Listing(items, complete=False)
         return Listing(items)
+
+    async def _assemble_playlist(
+        self,
+        item_id: str,
+        provider_instance_id: str,
+        force_refresh: bool,
+        strict_provider_instance: bool,
+        library_item: Playlist | None,
+    ) -> Listing[PlaylistPlayableItem]:
+        """Return the items of a provider playlist, to be kept unless it is dynamic."""
+        listing = await self._list_provider_playlist(
+            item_id, provider_instance_id, force_refresh, strict_provider_instance
+        )
+        if library_item is not None or not listing.complete:
+            return listing
+        # whether a playlist outside the library is dynamic shows in its details only
+        try:
+            playlist = await self.get(item_id, provider_instance_id, allow_update_metadata=False)
+        except PROVIDER_FETCH_ERRORS:
+            return Listing(listing.items, complete=False)
+        # the fresh sample a dynamic playlist hands out is never kept
+        return Listing(listing.items, complete=not playlist.is_dynamic)
 
     @guard_single_request
     async def _get_provider_playlist_tracks(

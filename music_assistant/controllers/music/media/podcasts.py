@@ -195,8 +195,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
         :param item_id: The podcast id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
-        :param favorite: Only list the episodes the current user likes (True) or dislikes
-            (False).
+        :param favorite: Only list the liked (True) or disliked (False) episodes.
         :param fully_played: Only list the episodes the current user played to the end (True),
             or the ones not played to the end (False).
         :param search: Only list the episodes whose name contains this text.
@@ -248,7 +247,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider_instance_id_or_domain: str,
     ) -> AsyncGenerator[PodcastEpisode]:
         """
-        Yield all episodes of a podcast, as its provider lists them.
+        Yield all episodes of a podcast as its provider lists them, with the user's progress.
 
         :param item_id: The podcast id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
@@ -569,7 +568,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
             self._apply_resume_row(episode, resume_rows.get(episode.item_id))
 
     async def _get_resume_rows(self, provider_instance_id: str) -> dict[str, Mapping[str, Any]]:
-        """Return the current user's playlog rows of a provider's episodes, by episode id."""
+        """
+        Return the playlog rows of a provider's episodes, by episode id.
+
+        The rows are the current user's; without a user, the newest row of each episode.
+
+        :param provider_instance_id: The provider instance the episodes belong to.
+        """
         # Get user who initiated the query. Querying the userid as well is most useful
         # in a multi-user environment where a single instance provider is used.
         user: User | None = None

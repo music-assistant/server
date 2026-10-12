@@ -1727,7 +1727,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(  # noqa: PLR0915
+    async def mark_item_played(
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -1834,9 +1834,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played=seconds_played or 0,
                 userid=user.user_id if user else None,
             )
-            if isinstance(media_item, PodcastEpisode) and media_item.podcast:
-                # the cached episode listing holds the played state the provider reports
-                await invalidate_listings(self.mass, media_item.podcast)
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1953,9 +1950,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self._signal_playlog_updated(
             reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
         )
-        if isinstance(media_item, PodcastEpisode) and media_item.podcast:
-            # the cached episode listing holds the played state the provider reports
-            await invalidate_listings(self.mass, media_item.podcast)
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         self._forward_play_report(media_item, user, fully_played=False, position=0)
@@ -3488,15 +3482,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # a play report is background work
                 with request_priority(RequestPriority.LOW):
                     self.mass.create_task(
-                        music_prov.on_played(
-                            media_type=media_item.media_type,
-                            prov_item_id=prov_mapping.item_id,
-                            fully_played=fully_played,
-                            position=position,
-                            media_item=media_item,
-                            is_playing=is_playing,
+                        self._report_play(
+                            media_item,
+                            music_prov.on_played(
+                                media_type=media_item.media_type,
+                                prov_item_id=prov_mapping.item_id,
+                                fully_played=fully_played,
+                                position=position,
+                                media_item=media_item,
+                                is_playing=is_playing,
+                            ),
                         )
                     )
+
+    async def _report_play(self, media_item: MediaItemType, report: Awaitable[None]) -> None:
+        """
+        Make a play report to a music source.
+
+        :param media_item: The played item.
+        :param report: The report to the music source.
+        """
+        try:
+            await report
+        finally:
+            if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+                # the cached episode listing holds the played state the music source reports
+                await invalidate_listings(self.mass, media_item.podcast)
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """

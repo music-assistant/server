@@ -817,7 +817,7 @@ async def test_migration_reports_unsupported_source_items(
         ),
     ],
 )
-async def test_streaming_migration_handles_provider_duplicate_policy(
+async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: PLR0915
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
@@ -911,6 +911,9 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         ),
         patch.object(music.playlists, "update_item_in_library", AsyncMock()),
         patch(
+            "music_assistant.controllers.music.media.playlists.invalidate_listings", AsyncMock()
+        ) as invalidate_listings,
+        patch(
             "music_assistant.controllers.music.media.playlists._MIGRATION_VERIFY_RETRY_DELAYS",
             (),
         ),
@@ -951,6 +954,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         "target",
         expected_target_ids,
     )
+    # a listing of the destination read while the tracks were added is dropped
+    invalidate_listings.assert_awaited_once_with(music.mass, target_playlist)
     assert find_match.await_count == 3
     assert all(
         call.kwargs["allowed_provider_instances"] == {"spotify_1", "tidal_1"}
