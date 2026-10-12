@@ -172,7 +172,7 @@ def get_image_url(
 async def get_album_image_fallback(album: Album, provider: MSXBridgeProvider) -> str | None:
     """Get album image from its first track (albums often lack metadata images)."""
     try:
-        tracks = await provider.mass.music.albums.tracks(album.item_id, album.provider)
+        tracks = await provider.mass.music.albums.tracks(album.item_id, album.provider, limit=None)
         for track in tracks:
             if track.image:
                 return provider.mass.metadata.get_image_url(track.image)
