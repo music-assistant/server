@@ -163,8 +163,11 @@ class MediaResolver:
         if self._album_order_applies(artist, artist_items_conf) and (
             albums := await self._artist_albums(artist, artist_items_conf)
         ):
+            copies = {album_copies[0].uri: album_copies for album_copies in albums}
+            ordered = order_albums([album_copies[0] for album_copies in albums], order)
             return ArtistTracks(
-                await self._album_tracks_in_turn(order_albums(albums, order)), plays_albums=True
+                await self._album_tracks_in_turn([copies[album.uri] for album in ordered]),
+                plays_albums=True,
             )
         return ArtistTracks(
             await self._shuffled_artist_tracks(artist, artist_items_conf), plays_albums=False
@@ -687,9 +690,11 @@ class MediaResolver:
             and artist.artist_type not in (ArtistType.AUTHOR, ArtistType.NARRATOR)
         )
 
-    async def _artist_albums(self, artist: Artist, selection: str) -> list[Album]:
+    async def _artist_albums(self, artist: Artist, selection: str) -> list[list[Album]]:
         """
         Return the artist's albums that the selection setting covers.
+
+        Each album comes with its copies on other providers, the one to play first.
 
         :param artist: The artist to fetch the albums of.
         :param selection: The artist selection setting.
@@ -700,7 +705,9 @@ class MediaResolver:
         # singles are left out; library compilations stay, as a local collection may have no
         # albums otherwise
         albums = [
-            album for album in library_albums if album.album_type not in LIBRARY_ALBUM_SKIPPED_TYPES
+            [album]
+            for album in library_albums
+            if album.album_type not in LIBRARY_ALBUM_SKIPPED_TYPES
         ]
         if selection not in _LIBRARY_SELECTIONS:
             # add the albums found only on a provider, leaving out singles and compilations, as
@@ -712,17 +719,20 @@ class MediaResolver:
                 for album in library_albums
                 for mapping in album.provider_mappings
             }
-            provider_albums: list[Album] = []
             for album in await self._provider_artist_albums(artist):
                 if album.album_type in PROVIDER_ALBUM_SKIPPED_TYPES or any(
                     (mapping.provider_instance, mapping.item_id) in in_library
                     for mapping in album.provider_mappings
                 ):
                     continue
-                # an album plays once, even when the library or another provider has it unlinked
-                if not any(compare_album(album, other) for other in (*albums, *provider_albums)):
-                    provider_albums.append(album)
-            albums.extend(provider_albums)
+                # an album plays once, even when the library or another provider has it unlinked;
+                # the other copy is kept for when its tracks can't be fetched
+                if album_copies := next(
+                    (copies for copies in albums if compare_album(album, copies[0])), None
+                ):
+                    album_copies.append(album)
+                else:
+                    albums.append([album])
         return albums
 
     async def _album_tracks(self, album: Album) -> list[Track]:
@@ -790,23 +800,23 @@ class MediaResolver:
         random.shuffle(result)
         return result
 
-    async def _album_tracks_in_turn(self, albums: list[Album]) -> list[Track]:
+    async def _album_tracks_in_turn(self, albums: list[list[Album]]) -> list[Track]:
         """
         Return the tracks of the given albums, one album after the other.
 
-        Each album plays as it does on its own. An album whose tracks can't be fetched is
-        left out.
+        Each album plays as it does on its own. An album whose tracks can't be fetched from any
+        of its copies is left out.
 
-        :param albums: The albums to play, in order.
+        :param albums: The albums to play, in order, each with its copies, the one to play first.
         """
         tracks: list[Track] = []
         for start in range(0, len(albums), ALBUM_LOOKUP_BATCH):
             batch = albums[start : start + ALBUM_LOOKUP_BATCH]
             results = await asyncio.gather(
-                *(self._album_tracks(album) for album in batch),
+                *(self._album_copy_tracks(copies) for copies in batch),
                 return_exceptions=True,
             )
-            for album, result in zip(batch, results, strict=True):
+            for (album, *_), result in zip(batch, results, strict=True):
                 if isinstance(result, PROVIDER_FETCH_ERRORS):
                     self.logger.log(
                         provider_fetch_log_level(result),
@@ -820,6 +830,25 @@ class MediaResolver:
                 self.logger.debug("Playing %s tracks of album %s", len(result), album.name)
                 tracks.extend(result)
         return tracks
+
+    async def _album_copy_tracks(self, copies: list[Album]) -> list[Track]:
+        """
+        Return the tracks of the first copy of an album whose tracks can be fetched.
+
+        :param copies: The album's copies, the one to play first.
+        """
+        for album in copies[:-1]:
+            try:
+                return await self._album_tracks(album)
+            except PROVIDER_FETCH_ERRORS as err:
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch the tracks of album %s from %s, trying another copy: %s",
+                    album.name,
+                    album.provider,
+                    err,
+                )
+        return await self._album_tracks(copies[-1])
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
