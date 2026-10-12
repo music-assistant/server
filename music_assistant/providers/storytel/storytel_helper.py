@@ -276,6 +276,7 @@ class StorytelHelper:
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
         self._available_languages, _ = self._parse_languages(acc)
+        self._reconcile_languages()
         return self._auth
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1112,6 +1113,36 @@ class StorytelHelper:
             if entry.get("checkedByDefault"):
                 default[name] = iso_value
         return available, default
+
+    def _reconcile_languages(self) -> None:
+        """
+        Drop any selected languages no longer available to the account.
+
+        Called after revalidation refreshes ``available_languages``, so a previously
+        selected language that has since lost entitlement (e.g. a region or subscription
+        change) is no longer sent to the API. Falls back to the account's own
+        default-checked languages, or else any language it still has, rather than the
+        static default, since that may not be available to this account either.
+        """
+        if not self._available_languages:
+            return
+        valid_selection = {
+            name: iso_value
+            for name, iso_value in self._languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if valid_selection:
+            self._languages = valid_selection
+            return
+        fallback = {
+            name: iso_value
+            for name, iso_value in self._default_languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if not fallback:
+            first_name, first_iso = next(iter(self._available_languages.items()))
+            fallback = {first_name: first_iso}
+        self._languages = fallback
 
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:
